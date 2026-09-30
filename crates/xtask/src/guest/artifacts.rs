@@ -142,8 +142,10 @@ pub fn cube_verdict(dir: &Path) -> Result<(), String> {
 /// The textures directory for a release bundle, which carries the cube files as
 /// well as the flat maps.
 ///
-/// Staging for the e2e suite keeps asking [`textures_present`], since the
-/// renderer does not read the cube yet.
+/// Staging for the e2e suite keeps asking [`textures_present`]: it copies the
+/// whole directory, and the app takes the cube when every face is there and
+/// draws from the flat maps when not, so a host with only the flat maps still
+/// gets a valid run.
 pub fn release_textures_present(repo: &Path) -> Result<PathBuf, String> {
     let dir = textures_present(repo)?;
     cube_verdict(&dir).map(|()| dir)

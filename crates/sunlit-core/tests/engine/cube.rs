@@ -19,6 +19,7 @@ use sunlit_core::params::SceneParams;
 use crate::groups::FRAME;
 use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, test_params};
 use crate::sinks::{RecordingSink, screen};
+use crate::support;
 use crate::test_support::{self, ScratchDir};
 
 /// A textures directory holding the fixture bake, and a cache directory for
@@ -43,6 +44,13 @@ impl CubeFixture {
         config.cube_textures = CubeTextures::resolve(&self.dir.join("textures"));
         config.tile_geometry = tiles::FIXTURE;
         config.cache_dir = Some(self.cache());
+    }
+
+    /// Also name flat day and night maps, which the cube must make redundant.
+    fn configure_with_flat_maps(&self, config: &mut EngineConfig) {
+        self.configure(config);
+        config.texture_paths = support::write_surface_fixtures(&self.dir.join("flat")).paths();
+        config.texture_resolution = support::SURFACE_FIXTURE_WIDTH;
     }
 
     fn pack_exists(&self, kind: PackKind) -> bool {
@@ -80,14 +88,14 @@ fn rows<'a>(
 }
 
 /// The packs the first frame needs are built, their cubes made resident, and
-/// the engine says the textures are ready, with nothing but the cube faces
-/// behind it.
+/// the engine says the textures are ready, with flat maps named beside the
+/// cube faces and never decoded.
 #[test]
 fn the_first_frame_packs_make_the_textures_ready() {
     let _gpu = gpu();
     let fixture = CubeFixture::new("engine_cube_ready");
     let harness = Harness::start(|config| {
-        fixture.configure(config);
+        fixture.configure_with_flat_maps(config);
         config.params = blend_on(MARCH_10);
     });
     harness.wait_for_textures("the first-frame packs");
@@ -177,8 +185,105 @@ fn a_new_month_is_drawn_from_its_own_floor_and_a_publish_waits_for_it() {
     );
 }
 
+/// A publish requested before the first-frame packs land waits for them, and
+/// goes out from the cube rather than from the grid.
+#[test]
+fn a_publish_at_startup_waits_for_the_first_frame_packs() {
+    let _gpu = gpu();
+    let fixture = CubeFixture::new("engine_cube_startup");
+    let sink = Arc::new(RecordingSink::new(vec![screen("only", 0, 64, 32, true)]));
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(|config| {
+        fixture.configure(config);
+        config.wallpaper = sink_for_config;
+        config.params = blend_on(MARCH_10);
+    });
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut ready_first = false;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        match event {
+            EngineEvent::TexturesReady => ready_first = true,
+            EngineEvent::WallpaperSet(result) => {
+                assert!(result.is_ok(), "the publish should have succeeded");
+                assert!(
+                    ready_first,
+                    "the wallpaper went out before the packs landed"
+                );
+                let report = harness.engine.memory_report().expect("a report");
+                assert_eq!(rows(&report, "day_floor").len(), 1, "{report}");
+                assert_eq!(sink.publications().len(), 1);
+                return;
+            }
+            _ => {}
+        }
+    }
+    panic!("no publish within {TIMEOUT:?}");
+}
+
+/// The live clock crossing into the next month between two renders holds a
+/// publish until that month's floor is resident, even though nothing else has
+/// made the engine draw since.
+///
+/// The clock starts a second before the middle of October and moves one
+/// second, inside the two seconds the pause gate stays closed after the first
+/// frame, so November's pack is unbuilt when the publish is asked for.
+#[test]
+fn a_publish_after_the_month_turned_waits_for_the_new_floor() {
+    let _gpu = gpu();
+    let fixture = CubeFixture::new("engine_cube_turn");
+    let sink = Arc::new(RecordingSink::new(vec![screen("only", 0, 64, 32, true)]));
+    let before_noon = time::Date::from_calendar_date(2026, time::Month::October, 16)
+        .and_then(|date| date.with_hms(11, 59, 59))
+        .expect("a valid date")
+        .assume_utc();
+    let clock = Arc::new(MockClock::new(before_noon));
+    let (sink_for_config, clock_for_config) = (Arc::clone(&sink), Arc::clone(&clock));
+    let harness = Harness::start(|config| {
+        fixture.configure(config);
+        config.wallpaper = sink_for_config;
+        config.clock = clock_for_config;
+        config.params = SceneParams {
+            texture_index: 3,
+            ..test_params()
+        };
+        config.params.datetime.use_custom = false;
+    });
+    harness.wait_for_textures("October");
+    harness.settle();
+    assert!(
+        !fixture.pack_exists(PackKind::Day(10)),
+        "the pause gate should have kept November unbuilt"
+    );
+
+    clock.advance(std::time::Duration::from_secs(1));
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut ready_first = false;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        match event {
+            EngineEvent::TexturesReady => ready_first = true,
+            EngineEvent::WallpaperSet(result) => {
+                assert!(result.is_ok(), "the publish should have succeeded");
+                assert!(
+                    ready_first,
+                    "the wallpaper went out before November's floor was resident"
+                );
+                assert!(fixture.pack_exists(PackKind::Day(10)));
+                return;
+            }
+            _ => {}
+        }
+    }
+    panic!("no publish within {TIMEOUT:?}");
+}
+
 /// A pack that cannot be built is not waited for: the textures never become
 /// ready, and a wallpaper goes out from what there is instead of being held.
+/// Flat maps named beside the cube are not a fallback either: they are never
+/// decoded, so the grid is what there is.
 #[test]
 fn a_pack_that_fails_does_not_hold_a_publish() {
     let _gpu = gpu();
@@ -190,7 +295,7 @@ fn a_pack_that_fails_does_not_hold_a_publish() {
     let sink = Arc::new(RecordingSink::new(vec![screen("only", 0, 64, 32, true)]));
     let sink_for_config = Arc::clone(&sink);
     let harness = Harness::start(|config| {
-        fixture.configure(config);
+        fixture.configure_with_flat_maps(config);
         config.wallpaper = sink_for_config;
         config.params = blend_on(MARCH_10);
     });
@@ -206,6 +311,16 @@ fn a_pack_that_fails_does_not_hold_a_publish() {
             .all(|label| rows(&report, label).is_empty()),
         "nothing can be resident from packs that were never built:\n{report}"
     );
+
+    // A decode that had been started would land well inside this window.
+    let window = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < window {
+        let report = harness.engine.memory_report().expect("a report");
+        assert!(
+            rows(&report, "day_texture").is_empty() && rows(&report, "night_texture").is_empty(),
+            "the flat maps were decoded beside a cube surface:\n{report}"
+        );
+    }
 }
 
 /// Dropping the engine while its packs build stops the transcoder and returns,

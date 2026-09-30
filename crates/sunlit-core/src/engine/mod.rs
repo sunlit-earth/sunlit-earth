@@ -55,16 +55,6 @@ const SKY_INTERVAL: Duration = Duration::from_mins(2);
 /// How often a memory sample is appended to the metrics CSV.
 const METRICS_INTERVAL: Duration = Duration::from_mins(10);
 
-/// How long after its last frame the engine counts as busy, which is how long
-/// the transcoder's pause gate stays closed after one.
-///
-/// A drag or a slider sends a frame every tick, so the gate stays closed
-/// through it and opens this long after it stops; a lone frame every two
-/// minutes of live time closes it for this long and no more. Closing the gate
-/// cancels a build of the rest of the year, which costs up to one month's
-/// build each time, so the span is seconds rather than one tick.
-const BUSY_AFTER_A_FRAME: Duration = Duration::from_secs(2);
-
 /// How long a burst of display-change hints is allowed to settle before the
 /// monitors are asked for.
 ///
@@ -144,9 +134,6 @@ struct Engine {
     /// The transcoder and the month in force, when the globe is drawn from the
     /// cube surface.
     surface: Option<SurfaceFeed>,
-    /// Until when the engine counts as busy, on the injected clock. It starts
-    /// busy, since its first frames are on their way.
-    busy_until: Duration,
 }
 
 /// Whether preview frames are wanted, and whether one is owed right now.
@@ -218,6 +205,7 @@ impl Engine {
             tile_geometry,
             cache_dir.as_ref(),
             month,
+            now,
             &notify,
         );
 
@@ -293,7 +281,6 @@ impl Engine {
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
             surface,
-            busy_until: now + BUSY_AFTER_A_FRAME,
         })
     }
 
@@ -471,11 +458,10 @@ impl Engine {
 
         // Every tick rather than on the drain's schedule: a pack that landed is
         // one cheap check away, and the first frame of a first run waits on it.
-        if let Some(surface) = &mut self.surface {
-            if surface.drain(&mut self.renderer) {
-                self.dirty = true;
-            }
-            surface.set_busy(now < self.busy_until);
+        if let Some(surface) = &mut self.surface
+            && surface.drain(&mut self.renderer)
+        {
+            self.dirty = true;
         }
 
         if let Some(cloud) = &mut self.cloud {
@@ -540,6 +526,11 @@ impl Engine {
         if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
             self.publish_wallpaper();
         }
+
+        // Last, so that the gate opens only when nothing in this tick drew.
+        if let Some(surface) = &mut self.surface {
+            surface.relax(now);
+        }
     }
 
     /// Replace the requested MSAA count with one [`resolve_and_warn`] allows,
@@ -581,10 +572,13 @@ impl Engine {
         }
     }
 
-    /// The engine has just drawn, so the transcoder's pause gate stays closed
-    /// for a while.
+    /// The engine is about to draw, or has just drawn: the transcoder's pause
+    /// gate closes now and stays closed for a while.
     fn mark_busy(&mut self) {
-        self.busy_until = self.clock.elapsed() + BUSY_AFTER_A_FRAME;
+        let now = self.clock.elapsed();
+        if let Some(surface) = &mut self.surface {
+            surface.mark_busy(now);
+        }
     }
 
     /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that
@@ -594,6 +588,7 @@ impl Engine {
             return false;
         }
         self.sync_month();
+        self.mark_busy();
         let sky = self.sky_state();
         let outcome = self.renderer.render(&self.params, &sky);
         self.dirty = false;
@@ -736,6 +731,7 @@ fn start_surface(
     geometry: crate::assets::tiles::Geometry,
     cache_dir: Option<&std::path::PathBuf>,
     month: usize,
+    now: Duration,
     wake: &crate::assets::cloud_fetcher::NotifyFn,
 ) -> Option<SurfaceFeed> {
     if !textures.is_complete() {
@@ -752,6 +748,7 @@ fn start_surface(
         textures,
         geometry,
         month,
+        now,
         Arc::clone(wake),
     ))
 }

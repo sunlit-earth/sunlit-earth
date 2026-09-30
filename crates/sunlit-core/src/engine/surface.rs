@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::{error, info, warn};
 
@@ -19,6 +20,16 @@ use crate::assets::tiles::{
 };
 use crate::renderer::{Renderer, SurfaceLayer};
 
+/// How long after its last frame the engine counts as busy, which is how long
+/// the transcoder's pause gate stays closed after one.
+///
+/// A drag or a slider sends a frame every tick, so the gate stays closed
+/// through it and opens this long after it stops; a lone frame every two
+/// minutes of live time closes it for this long and no more. Closing the gate
+/// cancels a build of the rest of the year, which costs up to one month's
+/// build each time, so the span is seconds rather than one tick.
+const BUSY_AFTER_A_FRAME: Duration = Duration::from_secs(2);
+
 /// The transcoder and what the engine has done with its output.
 pub(super) struct SurfaceFeed {
     transcoder: Transcoder,
@@ -27,6 +38,8 @@ pub(super) struct SurfaceFeed {
     month: usize,
     /// Whether the pause gate is closed.
     paused: bool,
+    /// Until when the engine counts as busy, on the injected clock.
+    busy_until: Duration,
     /// How many of the transcoder's failures have reached the renderer.
     failures_seen: usize,
     /// The worker has finished, and its status will not change again.
@@ -36,6 +49,9 @@ pub(super) struct SurfaceFeed {
 impl SurfaceFeed {
     /// Start the transcoder over `textures`, with `month` in force.
     ///
+    /// The engine is busy until [`BUSY_AFTER_A_FRAME`] after `now`, since its
+    /// first frames are on their way.
+    ///
     /// `wake` is called on the transcoder's thread after every change of its
     /// status, so it must return at once and never panic; the engine's is a
     /// send on its own unbounded command channel.
@@ -44,6 +60,7 @@ impl SurfaceFeed {
         textures: CubeTextures,
         geometry: Geometry,
         month: usize,
+        now: Duration,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let mut config = TranscoderConfig::new(cache_dir.clone(), textures, month);
@@ -63,6 +80,7 @@ impl SurfaceFeed {
             cache_dir,
             month,
             paused: true,
+            busy_until: now + BUSY_AFTER_A_FRAME,
             failures_seen: 0,
             settled: false,
         }
@@ -114,12 +132,23 @@ impl SurfaceFeed {
             && self.install(PackKind::Day(month), renderer)
     }
 
-    /// Close the pause gate while the engine is busy and open it when it is
-    /// not, telling the transcoder only when that changes.
-    pub(super) fn set_busy(&mut self, busy: bool) {
-        if busy != self.paused {
-            self.paused = busy;
-            self.transcoder.set_paused(busy);
+    /// The engine is drawing or has just drawn at `now`: close the pause gate
+    /// and keep it closed for the busy span from here.
+    pub(super) fn mark_busy(&mut self, now: Duration) {
+        self.busy_until = now + BUSY_AFTER_A_FRAME;
+        self.set_paused(true);
+    }
+
+    /// Open the pause gate when the busy span has run out at `now`.
+    pub(super) fn relax(&mut self, now: Duration) {
+        self.set_paused(now < self.busy_until);
+    }
+
+    /// Tell the transcoder only when the gate changes.
+    fn set_paused(&mut self, paused: bool) {
+        if paused != self.paused {
+            self.paused = paused;
+            self.transcoder.set_paused(paused);
         }
     }
 
@@ -156,5 +185,58 @@ fn layer_of(kind: PackKind) -> SurfaceLayer {
         PackKind::Day(month) => SurfaceLayer::Day(month),
         PackKind::Night => SurfaceLayer::Night,
         PackKind::Mask => SurfaceLayer::Mask,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::tiles::FIXTURE;
+    use crate::test_support::{ScratchDir, write_cube_fixture};
+
+    const JUST: Duration = Duration::from_millis(1);
+
+    fn feed(name: &str) -> (ScratchDir, SurfaceFeed) {
+        let dir = ScratchDir::new(name);
+        write_cube_fixture(&dir.join("textures"));
+        let textures = CubeTextures::resolve(&dir.join("textures"));
+        let feed = SurfaceFeed::start(
+            dir.join("cache"),
+            textures,
+            FIXTURE,
+            0,
+            Duration::ZERO,
+            Arc::new(|| {}),
+        );
+        (dir, feed)
+    }
+
+    #[test]
+    fn the_gate_starts_closed_and_opens_when_the_busy_span_has_run_out() {
+        let (_dir, mut feed) = feed("surface_gate_opens");
+        assert!(feed.paused);
+
+        feed.relax(BUSY_AFTER_A_FRAME.saturating_sub(JUST));
+        assert!(feed.paused, "still inside the first span");
+        feed.relax(BUSY_AFTER_A_FRAME);
+        assert!(!feed.paused);
+    }
+
+    #[test]
+    fn a_frame_closes_an_open_gate_before_the_next_tick() {
+        let (_dir, mut feed) = feed("surface_gate_closes");
+        let idle = BUSY_AFTER_A_FRAME * 5;
+        feed.relax(idle);
+        assert!(!feed.paused);
+
+        feed.mark_busy(idle);
+        assert!(
+            feed.paused,
+            "closed by the frame itself, not by a later tick"
+        );
+        feed.relax((idle + BUSY_AFTER_A_FRAME).saturating_sub(JUST));
+        assert!(feed.paused);
+        feed.relax(idle + BUSY_AFTER_A_FRAME);
+        assert!(!feed.paused);
     }
 }

@@ -27,6 +27,11 @@ impl Engine {
     /// One request is remembered, not a queue of them: two wallpaper updates
     /// asked for during one reload are the same wallpaper.
     pub(super) fn publish_wallpaper(&mut self) {
+        // The month is judged before the textures are: a publish can arrive
+        // in a tick with nothing dirty, after the date crossed into the next
+        // month, and would otherwise find the old month's floor ready.
+        self.sync_month();
+
         // A debt that already stands has had its support answer, and the only
         // thing left that can change is whether the textures have landed. `tick`
         // comes back here every 50 ms until it is paid, and on Linux

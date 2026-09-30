@@ -56,6 +56,13 @@ const FIRST_FRAME: usize = 3;
 /// Called on the worker thread after every change of the status, with the new
 /// status, and never under the transcoder's lock. It should return promptly:
 /// the worker waits for it.
+///
+/// It must never block on the thread that holds the [`Transcoder`], since
+/// dropping the handle joins the worker and a callback waiting for the dropping
+/// thread would never return; a wake-up that cannot block, such as a send on an
+/// unbounded channel or a `try_send`, is what it is for. It must not panic
+/// either: a panic there ends the worker outside the guard around a build, and
+/// the phase it leaves behind never settles.
 pub type TranscodeNotify = Arc<dyn Fn(&TranscodeStatus) + Send + Sync>;
 
 /// What the worker is doing.

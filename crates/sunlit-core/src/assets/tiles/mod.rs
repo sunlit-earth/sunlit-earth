@@ -111,9 +111,15 @@ impl Geometry {
     }
 
     pub(crate) fn check(&self) -> Result<(), String> {
-        let coarsest = self.face >> self.levels.saturating_sub(1);
+        let most = crate::renderer::tiles::MAX_TILED_LEVELS;
+        if self.levels == 0 || self.levels > most {
+            return Err(format!(
+                "{self:?}: a page table entry names one to {most} tiled levels"
+            ));
+        }
+        let coarsest = self.face >> (self.levels - 1);
         let sizes = [self.face, self.tile, self.floor, self.mask];
-        if self.levels == 0 || sizes.iter().any(|s| !s.is_power_of_two()) {
+        if sizes.iter().any(|s| !s.is_power_of_two()) {
             return Err(format!("{self:?}: the sizes must be powers of two"));
         }
         if coarsest < self.tile || self.floor >= coarsest || self.mask >= self.face {
@@ -185,6 +191,10 @@ mod tests {
             },
             Geometry {
                 levels: 5,
+                ..GEOMETRY
+            },
+            Geometry {
+                levels: 40,
                 ..GEOMETRY
             },
             Geometry {

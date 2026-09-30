@@ -41,7 +41,7 @@ const KIND_TILE: u16 = 2;
 pub const MAX_TILE_LAYERS: u32 = 1 << LAYER_BITS;
 
 /// The most tiled levels a page table entry can name.
-const MAX_STEPS: u32 = 1 << (KIND_SHIFT - STEPS_SHIFT);
+pub const MAX_TILED_LEVELS: u32 = 1 << (KIND_SHIFT - STEPS_SHIFT);
 
 /// What one surface draws from at one cell of the page table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,7 +62,9 @@ impl PageEntry {
     /// # Panics
     ///
     /// If the layer or the steps do not fit their bits, which the tile array's
-    /// capacity and the geometry's check rule out.
+    /// capacity and the geometry's check rule out: the check holds a
+    /// geometry's `levels` to [`MAX_TILED_LEVELS`], and a tile is fewer steps
+    /// up than there are levels.
     #[must_use]
     pub fn encode(self) -> u16 {
         match self {
@@ -70,7 +72,7 @@ impl PageEntry {
             Self::Ocean => KIND_OCEAN << KIND_SHIFT,
             Self::Tile { layer, steps } => {
                 assert!(
-                    layer < MAX_TILE_LAYERS && steps < MAX_STEPS,
+                    layer < MAX_TILE_LAYERS && steps < MAX_TILED_LEVELS,
                     "layer {layer} {steps} levels up does not fit a page table entry"
                 );
                 let bits = u16::try_from(steps << STEPS_SHIFT | layer).expect("checked above");
@@ -83,7 +85,7 @@ impl PageEntry {
     #[must_use]
     pub fn decode(bits: u16) -> Option<Self> {
         let layer = u32::from(bits) & (MAX_TILE_LAYERS - 1);
-        let steps = (u32::from(bits) >> STEPS_SHIFT) & (MAX_STEPS - 1);
+        let steps = (u32::from(bits) >> STEPS_SHIFT) & (MAX_TILED_LEVELS - 1);
         match bits >> KIND_SHIFT {
             0 if bits == 0 => Some(Self::Floor),
             KIND_OCEAN if bits == KIND_OCEAN << KIND_SHIFT => Some(Self::Ocean),
@@ -877,6 +879,35 @@ mod tests {
         assert_eq!(PageEntry::Floor.encode(), 0, "a zeroed table is all floor");
         assert_eq!(PageEntry::decode(3 << KIND_SHIFT), None);
         assert_eq!(PageEntry::decode(1), None, "a floor with a layer");
+    }
+
+    /// The deepest geometry the check lets through names its coarsest tiles in
+    /// an entry, and one more level is refused by the check rather than left
+    /// to panic in the encoding on the engine thread.
+    #[test]
+    fn the_deepest_geometry_the_check_allows_fits_an_entry() {
+        let deepest = Geometry {
+            face: 4096,
+            levels: MAX_TILED_LEVELS,
+            tile: 128,
+            gutter: 8,
+            floor: 64,
+            mask: 1024,
+        };
+        deepest.check().expect("as many levels as an entry names");
+        let coarsest = PageEntry::Tile {
+            layer: MAX_TILE_LAYERS - 1,
+            steps: deepest.levels - 1,
+        };
+        assert_eq!(PageEntry::decode(coarsest.encode()), Some(coarsest));
+        let deeper = Geometry {
+            levels: deepest.levels + 1,
+            ..deepest
+        };
+        assert!(
+            deeper.check().is_err(),
+            "{deeper:?} has tiles an entry cannot name"
+        );
     }
 
     #[test]

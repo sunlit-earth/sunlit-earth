@@ -698,3 +698,51 @@ How fast the worker gives way. Starting June, the first pack past the first fram
 What the lowered priority buys. A foreground load of sixteen threads of integer work, 2.8 to 2.9 s alone, takes 2.8 to 2.9 s beside the transcoder building the year on a pool of sixteen, and 3.1 to 3.5 s beside the same year built through `ensure_pack` on a rayon pool of sixteen at normal priority, which itself went from 30.8 s alone to 34.9 s. The lowered transcoder pays for it instead: its year takes 37.1 s with the load beside it against 30.9 s alone, where the load ran for about 6 s of it. So on Windows the worker's threads take only the time the foreground leaves; how that holds against the engine's own render is for the engine wiring to measure.
 
 Not measured: the timings under Linux, where the unit test of `thread_priority` shows the nice value lowered by 10 on the worker and on the threads it makes and nothing more, and against the engine rendering beside it, which needs the engine to start the transcoder.
+
+## 23. Step 4: the wanted set
+
+Measured on 2026-09-30 on the machine of section 19.3 with `renderer::residency` as of the commit that added this section, through a throwaway harness in the run directory (`residency-bench/`, a release build with the tree's LTO settings) [M]. The stored predicate is the real May and night packs' constant-ocean flags, 725 and 716 of their 1,920 tiles, from a cache the transcoder built; the output is 3840 x 2160; the zoom slider is swept in 201 even steps from 0 to 1; the rule is the one docs/rendering.md describes (The wanted set), whose bounds all err toward the finer level.
+
+The worst in view over the zoom, day only, per place and lens:
+
+| Place (longitude, latitude) | fov 10: tiles, at radii | fov 20 | fov 30 |
+|---|---|---|---|
+| Europe and Africa (15, 20) | 510 at 18.4 | 478 at 9.3 | 449 at 6.4 |
+| Atlantic (-30, 0) | 480 at 18.7 | 456 at 9.2 | 433 at 6.4 |
+| Pacific (-150, 0) | 433 at 18.7 | 400 at 9.2 | 365 at 6.4 |
+| Americas (-80, 10) | 392 at 16.6 | 370 at 9.5 | 353 at 6.4 |
+| Asia (100, 30) | 550 at 19.1 | 528 at 9.5 | 509 at 6.4 |
+| North pole (0, 89.9) | 543 at 13.6 | 504 at 6.7 | 500 at 6.3 |
+| South pole (0, -89.9) | 357 at 13.6 | 313 at 6.7 | 307 at 6.3 |
+| Cube corner (45, 35.26) | 532 at 19.1 | 510 at 9.0 | 493 at 6.4 |
+
+The margin is empty at every one of these: the whole disk is in the frame, and the ring beyond the horizon is not wanted. With every tile stored the same peaks are 690 to 774, so the ocean flags remove about a third. The peak sits at the farthest zoom at which the 1024 level's texel still projects to more than a pixel at the limb, so the whole cap in view wants the 2048 level: 9.3 to 9.5 radii through the default lens, where the limb is 9.4 radii away and a 1024 texel there is 1 px, and correspondingly farther through the narrow lens and nearer through the wide one. Section 8's sweep sampled 5.76 and 11.5 radii, either side of it, and one view; at 5.76 the descent wants 443 here, within 2% of section 16's 435. So the worst case is about 550 tiles, a quarter over 435, and in blend mode, where the terminator band draws both surfaces, 592 at 9.3 radii with the Sun over longitude 105 E and a terminator width of 0.15 (plan departure 18).
+
+Along the zoom through the default lens over Europe and Africa: in view and margin with the real flags, in view with every tile stored, in view during a drag (the 2 px threshold, no rate), and the tiles a ray cast of every second pixel finds needed by the pixel's own footprint at 1 px, the level the rule would give if it measured each pixel rather than bounding each tile:
+
+| Radii | In view | Margin | All stored | Drag | Ray cast |
+|---|---|---|---|---|---|
+| 1.5 | 17 | 54 | 17 | 17 | 15 |
+| 2 | 53 | 73 | 53 | 53 | 45 |
+| 3 | 193 | 76 | 274 | 193 | 165 |
+| 4 | 310 | 62 | 457 | 310 | 287 |
+| 5.76 | 443 | 0 | 682 | 211 | 424 |
+| 8 | 468 | 0 | 719 | 153 | 456 |
+| 11.5 | 162 | 0 | 204 | 5 | 152 |
+| 15 | 163 | 0 | 202 | 0 | 150 |
+| 20 | 59 | 0 | 78 | 0 | 16 |
+| 40 and 80 | 0 | 0 | 0 | 0 | 0 |
+
+The descent wants 3% to 4% more than the ray cast at the two largest sets and 8% to 18% more between 2 and 4 radii, where the tiles along the frame's edges, whose bounding balls reach into the frame while they do not, and the tiles whose sliver in view the ray cast's stride misses, are a larger share of a smaller set; at 20 radii, where the floor is just too coarse at the middle of the disk, it wants 59 tiles of the 1024 level where 16 have a pixel that needs one, since a tile's bound (its nearest depth, the warp's largest stretch on it) passes 1 px for tiles well past the pixels that do. A drag halves the set where the two levels mix (5.76 and 8 radii) and changes nothing where the view wants the finest level at 2 px as well (up to 4 radii). At 40 and 80 radii nothing above the floor is wanted.
+
+Cost of one computation, 500 runs each, median, 95th percentile and worst:
+
+| Case | Median | p95 | Worst | Tiles |
+|---|---|---|---|---|
+| Near end, 1.5 radii | 0.021 ms | 0.021 ms | 0.056 ms | 71 |
+| Full disk, 5.76 | 0.085 ms | 0.088 ms | 0.131 ms | 443 |
+| Mixed levels, 8 | 0.090 ms | 0.113 ms | 0.225 ms | 468 |
+| Far end, 80 | 0.016 ms | 0.016 ms | 0.036 ms | 0 |
+| Drag at 5.76, 100 and 20 degrees a second | 0.194 ms | 0.210 ms | 0.344 ms | 245 |
+
+Three outputs at once (4K, 1080p and a 720p preview at 5.76 radii) take 0.174 ms. `Residency::new` for the shipped geometry takes 1.2 ms and is done once. Not measured: the loader's convergence after a drag, which the engine test of criterion 5 measures once T4b wires the set to the loader and tunes `MARGIN_TILES`, `DRAG_LEAD_SECONDS` and `DRAG_LEAD_STEPS` against it.

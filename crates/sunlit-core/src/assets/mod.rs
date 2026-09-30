@@ -8,3 +8,4 @@ pub mod mailbox;
 pub mod stars;
 pub mod texture_cache;
 pub mod texture_loader;
+pub mod tiles;

@@ -22,6 +22,9 @@ toml.workspace = true
 dirs.workspace = true
 tracing.workspace = true
 crossbeam-channel.workspace = true
+dds = { workspace = true, features = ["rayon"] }
+sha2.workspace = true
+crc32fast.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
@@ -54,7 +57,6 @@ dispatch2.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
-dds.workspace = true
 proptest.workspace = true
 
 [lints]

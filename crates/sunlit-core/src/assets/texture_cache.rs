@@ -259,46 +259,12 @@ fn write_cache(
         height = img.height,
         "cached a texture downscale"
     );
-    sweep_unfinished(image_path);
-    sweep_unfinished(meta_path);
-}
-
-/// Delete unfinished versions of `target` that some earlier writer left behind.
-///
-/// A unique temporary name per writer is what stops two of them truncating each
-/// other, and the cost of it is that nothing reuses the name: a process killed
-/// mid-write leaves a file that would otherwise sit in the cache directory
-/// forever, several megabytes at a time. Sweeping after a successful write bounds
-/// that to whatever accumulates between two writes of the same entry.
-///
-/// A writer of this same entry that is still working loses its temporary file
-/// here, and its own rename then fails with a warning; the entry it was building
-/// is the one that just landed, so the next run reads that rather than rebuilding
-/// anything. Orphans that never go away is the worse of the two.
-fn sweep_unfinished(target: &Path) {
-    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
-        return;
-    };
-    let prefix = format!("{}.", name.to_string_lossy());
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let found = entry.file_name().to_string_lossy().into_owned();
-        if found.starts_with(&prefix) && found.ends_with(UNFINISHED_SUFFIX) {
-            let path = entry.path();
-            match fs::remove_file(&path) {
-                Ok(()) => debug!(path = %path.display(), "removed an unfinished cache file"),
-                Err(e) => {
-                    debug!(path = %path.display(), error = %e, "could not remove an unfinished cache file");
-                }
-            }
-        }
-    }
+    crate::files::sweep_unfinished(image_path, UNFINISHED_SUFFIX);
+    crate::files::sweep_unfinished(meta_path, UNFINISHED_SUFFIX);
 }
 
 /// The suffix a cache entry that is not finished yet carries, which is also
-/// what [`sweep_unfinished`] looks for.
+/// what [`crate::files::sweep_unfinished`] looks for.
 const UNFINISHED_SUFFIX: &str = "~";
 
 /// A name for the not-yet-finished version of `path`, unique to this writer.

@@ -1207,6 +1207,7 @@ dependencies = [
  "astc-decode",
  "bitflags 2.11.0",
  "glam 0.25.0",
+ "rayon",
  "resize",
  "zerocopy",
 ]
@@ -4720,6 +4721,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71725ecd5e0197b54fe859055b108688472ab6a358f8fbe5cee4a556b1b5bfea"
 dependencies = [
+ "rayon",
  "rgb",
 ]
 
@@ -5452,6 +5454,7 @@ dependencies = [
  "approx",
  "astronomy-engine-bindings",
  "bytemuck",
+ "crc32fast",
  "crossbeam-channel",
  "dds",
  "dirs",
@@ -5470,6 +5473,7 @@ dependencies = [
  "proptest",
  "rustix 1.1.4",
  "serde",
+ "sha2",
  "time",
  "toml 0.9.12+spec-1.1.0",
  "tracing",

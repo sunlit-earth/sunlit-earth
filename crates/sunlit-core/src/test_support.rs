@@ -61,6 +61,44 @@ impl Drop for ScratchDir {
     }
 }
 
+/// The texture pipeline's committed fixture bake: cube faces of 16 texels,
+/// lossless, for January and July, the night and the water mask, in the
+/// layout the textures directory has.
+///
+/// No Rust JPEG XL encoder is in the dependency tree, so the tests read the
+/// files the pipeline's own fixture test keeps equal to a fresh bake rather
+/// than writing their own.
+pub fn cube_fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/texture-pipeline/tests/fixtures/cube")
+}
+
+/// Lay the fixture bake out under `dir` as a complete cube texture set: the
+/// first six months of the year from January's faces and the last six from
+/// July's, the night and the mask as they are.
+pub fn write_cube_fixture(dir: &Path) {
+    let source = cube_fixture_dir();
+    for month in 1..=12 {
+        let from = if month <= 6 { "200401" } else { "200407" };
+        copy_files(
+            &source.join("day").join(from),
+            &dir.join(format!("day/2004{month:02}")),
+        );
+    }
+    copy_files(&source.join("night"), &dir.join("night"));
+    copy_files(&source.join("mask"), &dir.join("mask"));
+}
+
+fn copy_files(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap_or_else(|e| panic!("create {}: {e}", to.display()));
+    let entries =
+        std::fs::read_dir(from).unwrap_or_else(|e| panic!("read {}: {e}", from.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("list {}: {e}", from.display()));
+        std::fs::copy(entry.path(), to.join(entry.file_name()))
+            .unwrap_or_else(|e| panic!("copy {}: {e}", entry.path().display()));
+    }
+}
+
 /// Where scratch directories are made.
 ///
 /// Cargo sets `CARGO_TARGET_TMPDIR` when it compiles an integration target and

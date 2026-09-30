@@ -777,7 +777,7 @@ Cost of one computation on a GPU, 500 runs each, median, 95th percentile and wor
 | Drag at 5.76, 100 and 20 degrees a second | 0.289 ms | 0.332 ms | 0.472 ms | 234 |
 | Blend at the defaults, 9.4 | 0.123 ms | 0.155 ms | 0.194 ms | 560 |
 
-`Residency::new` for the shipped geometry takes 1.2 ms and is done once. Not measured: the loader's convergence after a drag, which the engine test of criterion 5 measures once T4b wires the set to the loader and tunes `MARGIN_TILES`, `DRAG_LEAD_SECONDS` and `DRAG_LEAD_STEPS` against it.
+`Residency::new` for the shipped geometry takes 1.2 ms and is done once. The loader's convergence after a drag, and what the margin and the lead prefetch, are in section 25.
 
 ## 24. Step 4: the tile loader
 
@@ -819,3 +819,43 @@ The worst wanted set over the zoom, the lenses and the places, in view and with 
 | Blend, terminator 0.3, floor 0, ramp 1 | 4K and preview | 1,352 | 1,352 | 889 | 901 |
 
 A CPU adapter's sampler has no anisotropy, so its rule wants 67% to 75% of the tiles a GPU's does. On a GPU the largest sets with the margin are the sets in view, since the whole disk is in the frame at the zoom where they peak; on a CPU adapter they peak at 8 to 10 radii through the narrowest lens, and the largest set with the margin is up to 32 tiles more than the largest in view. The two budgets keep the same ratio to those peaks: `TILE_LAYER_BUDGET`, 900 BC7 layers on a GPU, 22.2 MiB, holds the day at 1.7 times its peak, blend at the default shading at 1.35 times, and blend with a preview at 1.07 times; `CPU_TILE_LAYER_BUDGET`, 640 RGBA8 layers on a CPU adapter, 63.3 MiB of system memory, holds the same at 1.57, 1.24 and 1.07 times. Only the shading sliders at their extremes pass either, by 19% on a GPU and 23% on a CPU adapter for one output and by 50% and 41% with a preview beside it; there the array takes the set in its order until its layers are spoken for, and the rest, the margin and then the coarser level farthest from the middle of the frame, draws from what is resident above it or from the floor (plan departure 22).
+
+## 25. Step 4: readiness, the exports and the drag
+
+Measured on 2026-09-30 on the machine of section 19.3 through real engines over the real May pack (`t4d/drain-bench` in the run directory, its `drag`, `publish` and `lead` programs, release builds with debug assertions) [M]. The preview is drawn and read back on every frame, as the app does with its window shown.
+
+A drag of 5 degrees of longitude every 50 ms, twelve moves from (-10, 20) at the day surface, timed from the last move until the loader's report shows the drag over and every tile in view of the 1 px set resident or failed (plan success criterion 5):
+
+| Adapter, preview, zoom | Seen as a drag | Missing in view during it, mean and worst | Drag seen to end | Missing then | Converged |
+|---|---|---|---|---|---|
+| RX 6800 XT, 1920 x 1088, 0 (1.5 radii) | 11 of 12 moves | 0, 0 | 103 ms | 0 of 21 | 103 ms |
+| RX 6800 XT, 3840 x 2160, 0 | 11 of 12 | 0, 0 | 102 ms | 0 of 21 | 102 ms |
+| RX 6800 XT, 1920 x 1088, 0.1 (2.2 radii) | 11 of 12 | 0, 0 | 104 ms | 0 of 75 | 104 ms |
+| RX 6800 XT, 3840 x 2160, 0.3 (4.0 radii) | 11 of 12 | 0, 0 | 111 to 112 ms | 0 of 423 | 111 to 113 ms |
+| WARP, 1920 x 1088, 0 | 9 of 12 | 0, 0 | 445 ms | 0 of 21 | 445 ms |
+| WARP, 1920 x 1088, 0.3 | 9 of 12 | 4.8, 22 | 530 ms | 62 of 173 | 928 ms |
+
+The first move of each drag is not one, since it follows a rest, and on the GPU the drag ends `DRAG_PAUSE` after the tick that drew its last move and converges in that same tick. On WARP a 1080p frame and its readback take about 200 ms: the last move is drawn up to a frame after it arrives, the pause counts from the end of that tick, and the tiles the drag's 2 px threshold left out then land at 41 RGBA8 tiles a tick, one tick a frame, which is the 400 ms between the drag's end and the convergence at zoom 0.3. Before the pause counted from the end of the tick, WARP saw none of the twelve moves as a drag, since each came more than 100 ms after the one before it was drawn (plan departure 25). The engine case `a_drag_converges_to_the_one_pixel_set_within_half_a_second_of_stopping` measures 100 ms on the mock clock over the Earth fixture on warp.
+
+What the margin and the lead prefetch, simulated with `Residency::wanted` over the same pack at the same drag, 60 degrees in steps of 5 degrees at 50 ms or 1.6 degrees at 16 ms: a tile in view that the set of the tick before did not ask for is one the frame draws from its ancestor if loads take a tick, and at the stop the 1 px set is held against the last drag set.
+
+| Constants (`MARGIN_TILES`, `DRAG_LEAD_SECONDS`, 3 steps) | 1080p, zoom 0 | 1080p, zoom 0.1 | 4K, zoom 0.3, 5 degrees | 4K, zoom 0.3, 1.6 degrees | 4K, zoom 0.3, set with margin | 4K, zoom 0.3, missing at the stop |
+|---|---|---|---|---|---|---|
+| 0, 0 s | 3.3 a tick, worst 5 | 6.0, 9 | 18.8, 22 | 6.1, 14 | 393 | 15 |
+| 1, 0 s | 0 | 0 | 18.1, 21 | 5.9, 14 | 413 | 15 |
+| 0, 0.15 s | 0.2, 3 | 0.5, 6 | 1.1, 13 | 0.2, 8 | 452 | 4 |
+| 1, 0.15 s (as built) | 0 | 0 | 1.1, 13 | 0.2, 8 | 470 | 4 |
+| 1, 0.3 s | 0 | 0 | 1.2, 13 | 0.2, 8 | 529 | 4 |
+
+Near the globe the margin is what keeps up: the frame's edge moves a tile or less a tick. Farther out, where the drag turns tiles over the limb, the lead is: without it 18 tiles a tick in view were not asked for, with it one. A lead of 0.3 s buys nothing over 0.15 s and asks for 59 more tiles, and every row wants nothing new in view at the stop at the near end, so the constants stay as T4a set them. At zoom 0.3 on a 1080p preview the 2 px set is the coarser level nearly everywhere, 397 to 402 of the 415 tiles of the 1 px set are not in it at the stop, and the worst tick, 109 tiles, is the first of the drag, where the set drops to the coarser level; those are the tiles the drag's threshold exists to leave out, and they load after it, in 3 drains on the Radeon. `UPLOAD_BUDGET` stays 4 MiB: on the Radeon the convergence is the pause and one tick, and on WARP a larger budget would take fewer ticks but lengthen each by 2.4 ms a tile through WARP's copy (section 24), which the frames between the uploads pay for.
+
+A 4K wallpaper asked for while a 1920 x 1088 preview's set is resident, which joins the 4K set at the front of the wanted set, timed from `RenderWallpaperNow` until `WallpaperSet`, and a second publish of the same with every tile resident:
+
+| Adapter, view | Preview in view | Set with the 4K render, in view | Missing when the set was computed | Published after | With every tile resident |
+|---|---|---|---|---|---|
+| RX 6800 XT, Asia (100, 30) at 8.3 radii | 153 | 642 | 165 | 39 ms | 10 ms |
+| RX 6800 XT, cube corner at 9.3 radii | 146 | 625 | 479 | 31 ms | 8 ms |
+| WARP, Asia at 8.3 radii | 50 | 270 | 179 | 1,212 ms | 245 ms |
+| WARP, cube corner at 5.1 radii | 163 | 409 | 205 | 1,869 ms | 432 ms |
+
+So a publish waits 20 to 30 ms for its tiles on the GPU and 1.0 to 1.4 s on WARP, well inside `TILE_WAIT`'s 5 s; on WARP each tick of the wait is a 1080p preview frame and its readback beside the 41 tiles uploaded. `Residency::cap` for one 4K output, which each export render and each wanted set computes once more (plan departure 23), takes a median of 0.041 to 0.060 ms and at worst 0.099 ms.

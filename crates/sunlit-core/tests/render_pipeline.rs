@@ -3464,6 +3464,85 @@ fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
     );
 }
 
+/// In blend mode the day half of a cell refines the day floor with the day's
+/// ocean color and the night half the night floor with the night's: over a
+/// table whose day half is the floor and whose night half is ocean, the lit
+/// side shows the day floor and the dark side the night's ocean.
+#[test]
+fn blend_mode_reads_each_half_of_the_page_table_for_its_own_surface() {
+    let ctx = RENDER_CTX.lock().unwrap();
+    let geometry = CODED_TILES;
+    let finest = Geometry::level_of(geometry.face);
+    let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
+    let everywhere: std::collections::HashSet<TileKey> = (0..6_u8)
+        .flat_map(|face| {
+            (0..cells).flat_map(move |row| {
+                (0..cells).map(move |col| TileKey {
+                    level: finest,
+                    face,
+                    row,
+                    col,
+                })
+            })
+        })
+        .collect();
+    let nowhere = std::collections::HashSet::new();
+    let mut table = PageTable::new(geometry);
+    table.rewrite(
+        [
+            Some(PageSurface {
+                pack: PackKind::Day(0),
+                ocean: &nowhere,
+            }),
+            Some(PageSurface {
+                pack: PackKind::Night,
+                ocean: &everywhere,
+            }),
+        ],
+        &TileLayers::new(1),
+        &CellLevels::finest(&geometry),
+    );
+    let pages = create_page_table(&ctx.device, &ctx.queue, &table);
+    let day_floor = create_solid_cube(&ctx.device, &ctx.queue, [[200, 40, 40, 255]; 6]);
+    let night_floor = create_solid_cube(&ctx.device, &ctx.queue, [[40, 40, 200, 255]; 6]);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let bind_group = bind_group_with(
+        &ctx,
+        [&flat, &flat],
+        &ctx.surface_sampler,
+        [&day_floor, &night_floor, &ctx.dummy_cube],
+        [&ctx.dummy_tiles[0], &pages],
+    );
+    let size = 64;
+    let night_ocean = [20, 160, 20, 255];
+    let base = Uniforms {
+        terminator_width: 0.2,
+        day_ocean: u32::from_le_bytes([90, 90, 90, 255]),
+        night_ocean: u32::from_le_bytes(night_ocean),
+        ..with_tiles(&looking_along(size, glam::Vec3::Z), &geometry)
+    };
+
+    let lit = Uniforms {
+        sun_dir: [0.0, 0.0, 1.0],
+        ..base
+    };
+    let day = middle_pixel(&render_with(&ctx, &lit, &bind_group, size, size), size);
+    assert!(
+        close(day, [200, 40, 40], 2),
+        "the lit side shows the day floor, which the day half names: {day:?}"
+    );
+    let dark = Uniforms {
+        sun_dir: [0.0, 0.0, -1.0],
+        ..base
+    };
+    let night = middle_pixel(&render_with(&ctx, &dark, &bind_group, size, size), size);
+    let [r, g, b, _] = night_ocean;
+    assert!(
+        close(night, [r, g, b], 1),
+        "the dark side shows the night's ocean, which the night half names: {night:?}"
+    );
+}
+
 /// What the Earth fixture's packs are cut to here, as the golden suite cuts
 /// them: `EARTH_GEOMETRY` in `tests/golden.rs` says how it relates to the
 /// shipped one.

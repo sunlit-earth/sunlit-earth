@@ -1282,9 +1282,9 @@ mod tests {
         )
         .expect("the app's startup.rs");
         let resolver = startup
-            .split("fn resolve_texture_paths")
+            .split("fn resolve_textures(")
             .nth(1)
-            .expect("resolve_texture_paths is where the app names its textures");
+            .expect("resolve_textures is where the app names its textures");
         let body = &resolver[..resolver.find("\n}").unwrap_or(resolver.len())];
         for name in TEXTURE_FILES {
             assert!(

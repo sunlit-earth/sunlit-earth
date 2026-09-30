@@ -1,13 +1,17 @@
 //! BC7 sampling against the RGBA8 texture it was encoded from.
 //!
-//! The surface tiles are BC7 wherever the adapter offers it, so what an
-//! adapter's BC7 sampler returns becomes part of every golden reference of the
-//! globe. These cases pin it on the adapter the golden suite runs on: the
-//! software adapter where the platform has one, the Metal device on macOS. One
-//! generated fixture is encoded with `dds` at the preset the transcoder uses,
-//! and one pipeline samples it and the original through the globe's sampler in
-//! two framings: one texel per pixel, and a receding plane that runs from
-//! magnification through minification under anisotropy.
+//! The tile cache holds the surfaces in BC7 on every adapter. One that offers
+//! block compression and is not a CPU samples the blocks themselves, so its BC7
+//! sampler is part of every picture of the globe it draws, the Metal golden
+//! references included; a CPU adapter samples them decoded to RGBA8 at upload,
+//! so on warp and lavapipe the goldens pass through BC7's quality and not
+//! through the adapter's decode. These cases pin the sampling itself on the
+//! adapter the golden suite runs on: the software adapter where the platform
+//! has one, the Metal device on macOS. One generated fixture is encoded with
+//! `dds` at the preset the transcoder uses, and one pipeline samples it and the
+//! original in two framings: one texel per pixel, and a quad whose footprint
+//! runs from magnification through minification under anisotropy, through the
+//! renderer's own surface sampler.
 
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -35,8 +39,12 @@ struct Varyings {
 @group(0) @binding(0) var surface: texture_2d<f32>;
 @group(0) @binding(1) var surface_sampler: sampler;
 
-// A quad as a triangle strip. The bottom edge is at w = 1 and the top edge at
-// w = far, so the texture recedes up the frame, repeated `u_span` times across.
+// A full-frame quad as a triangle strip, its bottom edge at w = 1 and its top
+// edge at w = far, with the texture repeated `u_span` times across. It is not
+// the image of a plane: each of the two triangles interpolates a projective map
+// of its own, and the two agree only along the diagonal they share. Between
+// them the footprint still runs from magnified at the bottom to minified and
+// anisotropic at the top, which is what the case is for.
 fn corner(index: u32, far: f32, u_span: f32) -> Varyings {
     let right = (index & 1u) == 1u;
     let top = (index & 2u) == 2u;
@@ -66,13 +74,13 @@ fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
 #[derive(Clone, Copy, Debug)]
 enum Framing {
     /// One texel per pixel at texel centers through an isotropic sampler, so the
-    /// frame is the level 0 texels themselves. The globe's sampler would not
+    /// frame is the level 0 texels themselves. An anisotropic sampler would not
     /// give that everywhere: lavapipe's anisotropic filter blurs even a
     /// footprint of one texel.
     Flat,
-    /// Through the globe's sampler, from four times magnified at the bottom to
-    /// eight texels per pixel at the top, over three mip levels and up to its
-    /// full anisotropy.
+    /// Through the renderer's surface sampler, over the quad `corner` draws,
+    /// from four times magnified at the bottom to eight texels per pixel at the
+    /// top, over three mip levels and up to the sampler's full anisotropy.
     Receding,
 }
 
@@ -93,7 +101,7 @@ struct Bc7Gpu {
     adapter: String,
     layout: wgpu::BindGroupLayout,
     texel_sampler: wgpu::Sampler,
-    globe_sampler: wgpu::Sampler,
+    surface_sampler: wgpu::Sampler,
     flat: wgpu::RenderPipeline,
     receding: wgpu::RenderPipeline,
     original: wgpu::Texture,
@@ -127,8 +135,9 @@ fn gpu() -> MutexGuard<'static, Bc7Gpu> {
 
 /// The golden suite's adapter, with BC requested where it is offered and the
 /// limits the app requests, so nothing here passes on a device the renderer
-/// would not get. Answers with the adapter's name and whether it offered BC.
-fn open_device() -> (wgpu::Device, wgpu::Queue, String, bool) {
+/// would not get. Answers with the adapter's name, whether it offered BC, and
+/// whether it is a CPU.
+fn open_device() -> (wgpu::Device, wgpu::Queue, String, bool, bool) {
     let instance = sunlit_core::wgpu_init::instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         force_fallback_adapter: true,
@@ -159,6 +168,7 @@ fn open_device() -> (wgpu::Device, wgpu::Queue, String, bool) {
         queue,
         format!("{} ({:?})", info.name, info.backend),
         bc,
+        info.device_type == wgpu::DeviceType::Cpu,
     )
 }
 
@@ -189,7 +199,7 @@ fn fixture_textures(
 
 impl Bc7Gpu {
     fn new() -> Self {
-        let (device, queue, adapter, bc) = open_device();
+        let (device, queue, adapter, bc, cpu_adapter) = open_device();
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bc7"),
             entries: &[
@@ -211,21 +221,17 @@ impl Bc7Gpu {
                 },
             ],
         });
-        // The globe's sampler is the one in `renderer::gpu_setup`.
-        let sampler = |anisotropy_clamp| {
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("bc7"),
-                address_mode_u: wgpu::AddressMode::Repeat,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                anisotropy_clamp,
-                ..Default::default()
-            })
+        // The renderer's own surface sampler, repeating across the quad as a
+        // cube never needs to, and the same without anisotropy.
+        let surface = wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            ..sunlit_core::renderer::surface_sampler_descriptor(cpu_adapter)
         };
-        let texel_sampler = sampler(1);
-        let globe_sampler = sampler(16);
+        let texel_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            anisotropy_clamp: 1,
+            ..surface.clone()
+        });
+        let surface_sampler = device.create_sampler(&surface);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bc7"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -276,7 +282,7 @@ impl Bc7Gpu {
             adapter,
             layout,
             texel_sampler,
-            globe_sampler,
+            surface_sampler,
             flat,
             receding,
             original,
@@ -316,7 +322,7 @@ impl Bc7Gpu {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(match framing {
                         Framing::Flat => &self.texel_sampler,
-                        Framing::Receding => &self.globe_sampler,
+                        Framing::Receding => &self.surface_sampler,
                     }),
                 },
             ],

@@ -363,8 +363,8 @@ const FOUR_OVER_PI: f32 = 1.2732395447351628;
 /// Its largest component is exactly +-1 and the other two are the equi-angular
 /// coordinates on that face, so the hardware's face selection and its face
 /// coordinates are the ones the bake used, with the cube in the world frame.
-/// It is continuous everywhere, face edges included, which is what lets its
-/// screen derivatives stand in for the implicit ones.
+/// It is continuous everywhere, face edges included, which is what makes the
+/// implicit derivatives of a sample through it sound.
 fn equi_angular(n: vec3<f32>) -> vec3<f32> {
     let a = abs(n);
     return atan(n / max(a.x, max(a.y, a.z))) * FOUR_OVER_PI;
@@ -378,18 +378,21 @@ struct Surface {
     water: f32,
 }
 
+/// The cubes are read with `textureSample`, whose implicit derivatives are the
+/// screen derivatives of `w`, and never with `textureSampleGrad`: naga's MSL
+/// writer passes every explicit gradient as `metal::gradient2d`, which Metal
+/// refuses from a cube. Both branches are taken on uniforms alone, so the
+/// samples stay in the uniform control flow `textureSample` needs.
 fn globe_surface(in: VertexOutput) -> Surface {
     let single = uniforms.terminator_width < 0.0;
     if (uniforms.flags & FLAG_CUBE_SURFACE) != 0u {
         let w = equi_angular(normalize(in.world_normal));
-        let dx = dpdx(w);
-        let dy = dpdy(w);
-        let day = textureSampleGrad(day_cube, sphere_sampler, w, dx, dy).rgb;
+        let day = textureSample(day_cube, sphere_sampler, w).rgb;
         if single {
             return Surface(day, vec3<f32>(0.0), 0.0);
         }
-        let night = textureSampleGrad(night_cube, sphere_sampler, w, dx, dy).rgb;
-        let water = textureSampleGrad(water_cube, sphere_sampler, w, dx, dy).r;
+        let night = textureSample(night_cube, sphere_sampler, w).rgb;
+        let water = textureSample(water_cube, sphere_sampler, w).r;
         return Surface(day, night, water);
     }
 

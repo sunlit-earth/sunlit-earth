@@ -263,14 +263,9 @@ pub(super) fn create_renderer(
         immediate_size: 0,
     });
 
-    let wgsl_source = format!(
-        "{}\n{}",
-        include_str!("../../shaders/blend.wgsl"),
-        include_str!("../../shaders/sphere.wgsl"),
-    );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("sphere_shader"),
-        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        source: wgpu::ShaderSource::Wgsl(sphere_shader_source().into()),
     });
 
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
@@ -545,6 +540,16 @@ const STAR_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     },
 ];
 
+/// The globe's shader as the renderer compiles it: the blend functions, then
+/// everything else.
+fn sphere_shader_source() -> String {
+    format!(
+        "{}\n{}",
+        include_str!("../../shaders/blend.wgsl"),
+        include_str!("../../shaders/sphere.wgsl"),
+    )
+}
+
 fn create_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
@@ -727,4 +732,67 @@ fn replace_render_textures(res: &mut Renderer, width: u32, height: u32, sample_c
     res.depth_texture = depth_texture;
     res.msaa_texture_view = msaa_texture_view;
     res.msaa_depth_view = msaa_depth_view;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sphere_shader_source;
+
+    /// The names naga's MSL writer gives the cube textures a translation
+    /// declares, each as it appears in front of `.sample(`.
+    fn cube_names(msl: &str) -> Vec<String> {
+        msl.split("texturecube<")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('>'))
+            .map(|(_, after)| {
+                after
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    /// The globe's shader translates to Metal without asking a cube for an
+    /// explicit gradient.
+    ///
+    /// naga's MSL writer turns every `textureSampleGrad` into a sample with
+    /// `metal::gradient2d`, which Metal accepts from a 2D texture or a 2D array
+    /// and refuses from a cube, so the pipeline fails to build on macOS alone.
+    /// This is the one place off a Mac that sees it.
+    #[test]
+    fn metal_is_never_asked_for_a_cube_gradient() {
+        let module = naga::front::wgsl::parse_str(&sphere_shader_source())
+            .unwrap_or_else(|e| panic!("the shader parses: {e}"));
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("the shader validates: {e:?}"));
+        let (msl, _) = naga::back::msl::write_string(
+            &module,
+            &info,
+            &naga::back::msl::Options::default(),
+            &naga::back::msl::PipelineOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("the shader translates to MSL: {e}"));
+
+        let cubes = cube_names(&msl);
+        assert!(
+            !cubes.is_empty(),
+            "the translation declares no cube, so this case checks nothing"
+        );
+        for line in msl.lines().filter(|line| line.contains("gradient2d")) {
+            for cube in &cubes {
+                assert!(
+                    !line.contains(&format!("{cube}.sample(")),
+                    "Metal refuses a cube sampled with explicit gradients:\n{}",
+                    line.trim()
+                );
+            }
+        }
+    }
 }

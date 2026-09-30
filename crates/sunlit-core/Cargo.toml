@@ -60,6 +60,7 @@ dispatch2.workspace = true
 [dev-dependencies]
 approx.workspace = true
 proptest.workspace = true
+naga = { workspace = true, features = ["wgsl-in", "msl-out"] }
 
 [lints]
 workspace = true

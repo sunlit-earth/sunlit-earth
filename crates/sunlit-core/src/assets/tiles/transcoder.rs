@@ -30,7 +30,7 @@
 //! objects, builds nothing at all. Dropping the handle cancels the pack in
 //! progress and joins the thread; a pack is written under a temporary name and
 //! renamed into place, so a cancel or a killed process leaves the previous pack
-//! or none, and the next build of that pack sweeps what a killed one left.
+//! or none, and the next start sweeps what a killed one left, whether or not that pack needs a build.
 
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};

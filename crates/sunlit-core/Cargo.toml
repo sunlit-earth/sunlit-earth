@@ -47,6 +47,7 @@ wayland-client.workspace = true
 rustix.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
 mach2.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true

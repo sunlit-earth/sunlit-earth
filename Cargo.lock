@@ -5462,6 +5462,7 @@ dependencies = [
  "glam 0.30.10",
  "image",
  "jxl-oxide",
+ "libc",
  "mach2",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",

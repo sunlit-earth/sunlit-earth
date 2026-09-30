@@ -18,7 +18,7 @@ use crate::assets::cube_layout::{CubeTextures, FACES, FaceSet, YEAR};
 use crate::assets::texture_loader;
 
 /// The suffix of a pack that is not finished yet.
-const UNFINISHED_SUFFIX: &str = "~";
+pub(super) const UNFINISHED_SUFFIX: &str = "~";
 
 /// The mask value of open water.
 const OPEN_WATER: u8 = 255;
@@ -647,19 +647,8 @@ fn write_pack(
 mod tests {
     use super::*;
     use crate::assets::tiles::cut::tests::smooth_cube;
-    use crate::assets::tiles::{CACHE_SUBDIR, decode_bc7};
+    use crate::assets::tiles::{CACHE_SUBDIR, FIXTURE, decode_bc7};
     use crate::test_support::{ScratchDir, write_cube_fixture};
-
-    /// The fixture bake's faces are 16 texels: two levels of 8 px tiles with a
-    /// 4 px gutter, a floor of 4 and a mask of 8.
-    const FIXTURE: Geometry = Geometry {
-        face: 16,
-        levels: 2,
-        tile: 8,
-        gutter: 4,
-        floor: 4,
-        mask: 8,
-    };
 
     struct Setup {
         dir: ScratchDir,

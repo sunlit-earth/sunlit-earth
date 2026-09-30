@@ -49,6 +49,7 @@ windows-sys = "0.59"
 windows = "0.62"
 winreg = "0.56"
 mach2 = "0.6"
+libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSScreen", "NSCell"] }
 objc2-foundation = { version = "0.3", features = [

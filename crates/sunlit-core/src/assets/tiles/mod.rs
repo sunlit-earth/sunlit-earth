@@ -26,12 +26,17 @@ mod build;
 mod codec;
 mod cut;
 mod pack;
+mod transcoder;
 
 use std::path::{Path, PathBuf};
 
 pub use build::{BuildError, BuildReport, Ensured, ensure_pack, expected_key};
 pub use codec::{BlockFormat, MipLevel, blob_bytes, decode_bc7, full_chain, mip_levels};
 pub use pack::{Entry, Pack, PackError, TileKey};
+pub use transcoder::{
+    PACKS, PackFailure, Phase, TranscodeNotify, TranscodeStatus, Transcoder, TranscoderConfig,
+    default_threads,
+};
 
 use super::cube_layout::{MONTHS, YEAR};
 
@@ -66,6 +71,19 @@ pub const GEOMETRY: Geometry = Geometry {
     gutter: 8,
     floor: 512,
     mask: 1024,
+};
+
+/// What the tests cut the texture pipeline's fixture bake to: its faces are 16
+/// texels, so two levels of 8 px tiles with a 4 px gutter, a floor of 4 and a
+/// mask of 8.
+#[cfg(test)]
+pub(crate) const FIXTURE: Geometry = Geometry {
+    face: 16,
+    levels: 2,
+    tile: 8,
+    gutter: 4,
+    floor: 4,
+    mask: 8,
 };
 
 impl Geometry {

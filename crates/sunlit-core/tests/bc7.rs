@@ -12,6 +12,8 @@
 //! original in two framings: one texel per pixel, and a quad whose footprint
 //! runs from magnification through minification under anisotropy, through the
 //! renderer's own surface sampler.
+//! A last case uploads one tile through the renderer's own tile upload into
+//! a BC7 array and reads both of its levels back, texel for texel.
 
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -598,5 +600,183 @@ fn the_tolerance_sees_one_mip_level_of_lost_detail() {
         "the fixture has too little detail for the golden tolerance to tell its level 0 \
          from its level 1 (mean {mean:.3}, {:.3}% outliers)",
         outliers * 100.0
+    );
+}
+
+/// Copies one level of layer 0 of a tile array to a frame of that level's
+/// size, texel for pixel, with no sampler in the way. The device this target
+/// opens has no compute stage.
+const TILE_PROBE: &str = r"
+@group(0) @binding(0) var tiles: texture_2d_array<f32>;
+
+@vertex
+fn vs_probe(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let corner = vec2<f32>(f32(index & 1u), f32(index >> 1u)) * 2.0 - 1.0;
+    return vec4<f32>(corner, 0.0, 1.0);
+}
+
+@fragment
+fn fs_level_0(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(tiles, vec2<u32>(at.xy), 0, 0);
+}
+
+@fragment
+fn fs_level_1(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(tiles, vec2<u32>(at.xy), 0, 1);
+}
+";
+
+impl Bc7Gpu {
+    /// Every texel of both levels of layer 0 of `array`, as RGBA8, the finest
+    /// level first.
+    fn probe_tile(&self, array: &wgpu::TextureView, size: u32) -> Vec<u8> {
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("bc7 tile probe"),
+                source: wgpu::ShaderSource::Wgsl(TILE_PROBE.into()),
+            });
+        let mut texels = Vec::new();
+        for (level, entry) in [(0, "fs_level_0"), (1, "fs_level_1")] {
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("bc7 tile probe"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_probe"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(entry),
+                        targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleStrip,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            let width = size >> level;
+            let target = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bc7 tile probe"),
+                size: wgpu::Extent3d {
+                    width,
+                    height: width,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(array),
+                }],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("bc7 tile probe"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.draw(0..4, 0..1);
+            }
+            self.queue.submit(std::iter::once(encoder.finish()));
+            texels.extend(
+                sunlit_core::renderer::read_texture_rgba8(
+                    &self.device,
+                    &self.queue,
+                    &target,
+                    width,
+                    width,
+                )
+                .expect("read the probe back"),
+            );
+        }
+        texels
+    }
+}
+
+/// A tile uploaded through the renderer's own upload into a BC7 array, which is
+/// what an adapter that samples the blocks gets, holds its blocks at both of
+/// its levels: the adapter decodes each texel of the layer as the encoder's own
+/// decoder does.
+#[test]
+fn a_tile_uploaded_to_a_bc7_array_holds_its_blocks() {
+    use sunlit_core::assets::tiles::{FIXTURE, PackKind, TileKey};
+    use sunlit_core::renderer::tiles::{SurfaceTiles, TileId, TileUpload};
+
+    let gpu = gpu();
+    if gpu.compressed.is_none() {
+        eprintln!("the adapter offers no BC formats, so its tiles are uploaded decoded");
+        return;
+    }
+    let size = FIXTURE.layer();
+    let source = fixture();
+    let crop: Vec<u8> = (0..size)
+        .flat_map(|row| {
+            let at = (((row + 100) * FIXTURE_SIZE + 60) * 4) as usize;
+            source[at..at + (size * 4) as usize].to_vec()
+        })
+        .collect();
+    let half = downsample_2x(&crop, size, size);
+    let blocks = [encode(&crop, size), encode(&half, size / 2)];
+    let id = TileId {
+        pack: PackKind::Night,
+        key: TileKey {
+            level: 4,
+            face: 2,
+            row: 1,
+            col: 0,
+        },
+    };
+
+    let mut tiles = SurfaceTiles::new(&gpu.device, FIXTURE, wgpu::TextureFormat::Bc7RgbaUnorm, 1);
+    let failed = tiles.upload(
+        &gpu.device,
+        &gpu.queue,
+        vec![TileUpload {
+            id,
+            blob: blocks.concat(),
+            layer: None,
+        }],
+    );
+    assert!(failed.is_empty(), "the tile uploads: {failed:?}");
+    let probed = gpu.probe_tile(tiles.array_view().expect("the array"), size);
+    let expected = [decode(&blocks[0], size), decode(&blocks[1], size / 2)].concat();
+    let worst = worst_channel(&probed, &expected);
+    println!("a BC7 tile layer against the encoder's decode: worst channel {worst}");
+    assert!(
+        worst <= DECODE_TOLERANCE,
+        "{} holds the tile's layer up to {worst} away from its blocks decoded",
+        gpu.adapter
     );
 }

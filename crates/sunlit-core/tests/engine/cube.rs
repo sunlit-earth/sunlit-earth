@@ -89,7 +89,8 @@ fn rows<'a>(
 
 /// The packs the first frame needs are built, their cubes made resident, and
 /// the engine says the textures are ready, with flat maps named beside the
-/// cube faces and never decoded.
+/// cube faces and never decoded. The page table is resident beside the cubes,
+/// and the tile array is not, since no tile has been uploaded.
 #[test]
 fn the_first_frame_packs_make_the_textures_ready() {
     let _gpu = gpu();
@@ -120,6 +121,18 @@ fn the_first_frame_packs_make_the_textures_ready() {
     assert!(
         rows(&report, "day_texture").is_empty() && rows(&report, "night_texture").is_empty(),
         "the flat maps are not loaded beside the cube:\n{report}"
+    );
+    let pages = rows(&report, "page_table");
+    assert_eq!(pages.len(), 1, "one page table:\n{report}");
+    let cells = tiles::FIXTURE.face / tiles::FIXTURE.tile;
+    assert_eq!(
+        (pages[0].width, pages[0].height, pages[0].layers),
+        (cells, cells, 6),
+        "a cell per finest tile of each face"
+    );
+    assert!(
+        rows(&report, "tile_array").is_empty(),
+        "no tile was uploaded, so the array was never created:\n{report}"
     );
     assert!(has_lit_pixels(&harness.export(FRAME.0, FRAME.1)));
 }

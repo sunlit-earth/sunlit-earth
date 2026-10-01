@@ -542,6 +542,44 @@ fn a_sweep_of_the_custom_date_across_the_year_shows_each_month_its_own_tiles() {
     }
 }
 
+/// The month ahead's pack lands after the first frames, in a tick that draws
+/// nothing, and its tiles are asked for all the same: with every read held and
+/// the date fixed, nothing else would draw a frame to ask for them.
+#[test]
+fn the_month_aheads_pack_landing_without_a_frame_asks_for_its_tiles() {
+    let _gpu = gpu();
+    let dir = ScratchDir::new("engine_months_ahead_lands");
+    test_support::write_earth_fixture(&dir.join("textures"));
+    let april = hand_over(2026, 4);
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let gate = TileGate::default();
+    gate.shut();
+    let (clock_for_config, gate_for_config) = (Arc::clone(&clock), gate.clone());
+    let harness = start(&dir, |config| {
+        config.every_floor = Some(true);
+        config.clock = clock_for_config;
+        config.tile_gate = gate_for_config;
+        config.params = on(&view(), april - time::Duration::hours(2));
+    });
+
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let report = tile_report(&harness);
+        if report.wanted[report.in_view..]
+            .iter()
+            .any(|id| id.pack == PackKind::Day(4))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "May's tiles were not asked for: {report:#?}"
+        );
+        harness.advance(&clock, IDLE);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// The live clock reads the next month ahead within a day of its hand-over,
 /// after everything of the month in force, and crosses into it without a
 /// wait: with every read held, the month in force's set in view is complete

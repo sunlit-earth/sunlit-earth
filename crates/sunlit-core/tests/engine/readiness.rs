@@ -65,6 +65,17 @@ fn rig_at(
     at: time::OffsetDateTime,
     prepare: impl FnOnce(&ScratchDir),
 ) -> Rig {
+    rig_configured(name, params, at, prepare, |_| {})
+}
+
+/// The same, with `configure` run on the engine's config last.
+fn rig_configured(
+    name: &str,
+    params: SceneParams,
+    at: time::OffsetDateTime,
+    prepare: impl FnOnce(&ScratchDir),
+    configure: impl FnOnce(&mut sunlit_core::engine::EngineConfig),
+) -> Rig {
     let dir = ScratchDir::new(name);
     test_support::write_earth_fixture(&dir.join("textures"));
     prepare(&dir);
@@ -80,6 +91,7 @@ fn rig_at(
         config.wallpaper = sink_for_config;
         config.clock = clock_for_config;
         config.tile_gate = gate_for_config;
+        configure(config);
     });
     harness.wait_for_textures("the floors and the preview's tiles");
     Rig {
@@ -405,6 +417,65 @@ fn a_publish_held_for_a_cube_has_its_tiles_read_ahead_of_it() {
     assert!(rig.sink.publications().is_empty());
 }
 
+/// The tile wait starts over only for what could newly make the tiles
+/// resident: the pack of the month in force or of the night landing, or the
+/// month changing. Packs of other months landing while a publish waits leave
+/// it counting.
+#[test]
+fn the_tile_wait_is_not_renewed_by_the_packs_of_other_months() {
+    let _gpu = gpu();
+    let rig = rig_configured(
+        "engine_ready_other_packs",
+        view(),
+        time::OffsetDateTime::UNIX_EPOCH,
+        |dir| {
+            let textures =
+                sunlit_core::assets::cube_layout::CubeTextures::resolve(&dir.join("textures"));
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let month = sunlit_core::scene::month::month_in_force(
+                &view().datetime,
+                time::OffsetDateTime::UNIX_EPOCH,
+            );
+            for kind in [PackKind::Mask, PackKind::Day(month), PackKind::Night] {
+                tiles::ensure_pack(&dir.join("cache"), kind, &textures, &EARTH, &cancel)
+                    .expect("build the pack");
+            }
+        },
+        |config| config.every_floor = Some(true),
+    );
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    ask_with_the_gate_shut(&rig, &before);
+
+    rig.harness
+        .advance(&rig.clock, TILE_WAIT.saturating_sub(Duration::from_secs(1)));
+    let deadline = Instant::now() + TIMEOUT;
+    while rig
+        .harness
+        .engine
+        .memory_report()
+        .expect("a report")
+        .expected
+        .iter()
+        .filter(|texture| texture.label == "day_floor")
+        .count()
+        < 12
+    {
+        assert!(Instant::now() < deadline, "the other months' packs landed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    rig.harness.settle();
+    assert!(rig.sink.publications().is_empty());
+
+    rig.harness.advance(&rig.clock, Duration::from_secs(1));
+    rig.harness.settle();
+    assert!(
+        !rig.sink.publications().is_empty(),
+        "the wait started over when a pack of another month landed"
+    );
+}
+
 /// Every pack of the year, built into `dir`'s cache before the engine starts.
 pub(crate) fn build_every_pack(dir: &ScratchDir) {
     let textures = sunlit_core::assets::cube_layout::CubeTextures::resolve(&dir.join("textures"));
@@ -415,12 +486,11 @@ pub(crate) fn build_every_pack(dir: &ScratchDir) {
     }
 }
 
-/// The tile wait counts from when the cubes are resident, so a month that
-/// changes while a publish waits starts it over once the new month's floor
-/// is in: none of that month's tiles could be read before. Every pack is
-/// built beforehand, so the new floor is resident the moment the date moves
-/// and no cube is ever on its way; the pack opened for its tiles is what
-/// starts the wait over.
+/// The tile wait counts from when the cubes are resident, and starts over
+/// when the month in force changes: none of the new month's tiles could be
+/// read before. Every pack is built beforehand, so the new floor is resident
+/// in the frame that names it and no cube is ever on its way, and the change
+/// of month is what starts the wait over, since it opens no pack.
 #[test]
 fn the_tile_wait_starts_over_when_the_month_in_force_changes() {
     let _gpu = gpu();

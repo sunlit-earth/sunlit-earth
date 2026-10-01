@@ -302,12 +302,17 @@ fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_ti
 
 /// Move the custom date into another month, and hand back that month.
 fn to_another_month(rig: &Rig) -> usize {
-    let mut other = view();
+    to_another_month_from(rig, view())
+}
+
+/// The same, with `params` the scene to move.
+fn to_another_month_from(rig: &Rig, params: SceneParams) -> usize {
+    let mut other = params;
     other.datetime.custom_day_of_year = 260;
     let month = sunlit_core::scene::month::month_in_force(&other.datetime, rig.clock.now_utc());
     assert_ne!(
         month,
-        sunlit_core::scene::month::month_in_force(&view().datetime, rig.clock.now_utc()),
+        sunlit_core::scene::month::month_in_force(&params.datetime, rig.clock.now_utc()),
         "the premise: another month"
     );
     rig.harness
@@ -366,6 +371,38 @@ fn a_publish_held_for_a_cube_waits_for_its_tiles_no_longer_than_the_tile_wait() 
     );
     rig.gate.open();
     assert!(rig.harness.wait_for_publish().is_ok());
+}
+
+/// A publish asked for while the new month's floor is on its way puts its
+/// screen's tiles in the set at once, the night's included, which are
+/// readable already: no frame is drawn before the floor lands, and nothing
+/// else would ask for them.
+#[test]
+fn a_publish_held_for_a_cube_has_its_tiles_read_ahead_of_it() {
+    let _gpu = gpu();
+    let mut blend = day_over(90.0, 0.0, 0.55);
+    blend.texture_index = 3;
+    blend.terminator_width = 1.0;
+    let rig = rig("engine_ready_ahead", blend, |_| {});
+    settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    rig.gate.shut();
+    let month = to_another_month_from(&rig, blend);
+    rig.harness.engine.send(EngineCommand::RenderWallpaperNow);
+    let report = report_when(&rig.harness, "the screen's night tiles are wanted", |r| {
+        r.wanted[..r.in_view]
+            .iter()
+            .any(|id| id.pack == PackKind::Night && id.key.level == finest())
+    });
+    assert!(
+        report
+            .wanted
+            .iter()
+            .all(|id| id.pack != PackKind::Day(month)),
+        "the premise: the new month's floor has not landed"
+    );
+    assert!(rig.sink.publications().is_empty());
 }
 
 /// Every pack of the year, built into `dir`'s cache before the engine starts.
@@ -562,6 +599,40 @@ fn a_publish_asked_for_as_the_engine_stops_goes_out_with_what_is_resident() {
         ..
     } = rig;
     harness.engine.send(EngineCommand::RenderWallpaperNow);
+    harness.engine.shutdown();
+    let mut results = Vec::new();
+    while let Ok(event) = harness.events.try_recv() {
+        if let EngineEvent::WallpaperSet(result) = event {
+            results.push(result);
+        }
+    }
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert!(results[0].is_ok(), "{results:?}");
+    assert_eq!(sink.publications().len(), 1);
+}
+
+/// A publish already waiting for its tiles when the engine stops goes out
+/// with what is resident, though its request came in an earlier batch.
+#[test]
+fn a_publish_waiting_for_its_tiles_as_the_engine_stops_goes_out_with_what_is_resident() {
+    let _gpu = gpu();
+    let rig = rig("engine_ready_stop_owed", view(), |_| {});
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    ask_with_the_gate_shut(&rig, &before);
+    rig.harness.advance(&rig.clock, TICK);
+    rig.harness.settle();
+    assert!(
+        rig.sink.publications().is_empty(),
+        "the premise: the publish is still waiting for its tiles"
+    );
+    let Rig {
+        dir: _dir,
+        harness,
+        sink,
+        ..
+    } = rig;
     harness.engine.shutdown();
     let mut results = Vec::new();
     while let Ok(event) = harness.events.try_recv() {

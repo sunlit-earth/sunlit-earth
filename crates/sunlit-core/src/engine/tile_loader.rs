@@ -1531,6 +1531,45 @@ mod tests {
         assert!(stand.evicted.is_empty());
     }
 
+    /// An export waits for the tiles the set took, and not for those it left
+    /// for want of layers, which never land.
+    #[test]
+    fn an_outputs_missing_tiles_leave_out_those_the_set_left_for_want_of_layers() {
+        let dir = ScratchDir::new("tile_loader_missing_for");
+        let pack = day_pack(&dir);
+        let output = Output {
+            camera: CameraParams::default(),
+            width: 1920,
+            height: 1080,
+            export: true,
+        };
+        let view = View {
+            outputs: std::slice::from_ref(&output),
+            month: 0,
+            ahead: None,
+            surfaces: Some(Surfaces::Day),
+            texture_resolution: 8192,
+            drag: None,
+        };
+
+        let mut roomy = loader(1, &pack);
+        let mut stand = Stand::new(1024);
+        roomy.want(&view, &mut stand);
+        let wanted = roomy
+            .missing_for(&output, &stand)
+            .expect("a set was computed");
+
+        let capacity = 2;
+        assert!(
+            wanted > capacity,
+            "the premise: {wanted} tiles wanted in view"
+        );
+        let mut loader = loader(1, &pack);
+        let mut stand = Stand::new(2);
+        loader.want(&view, &mut stand);
+        assert_eq!(loader.missing_for(&output, &stand), Some(capacity));
+    }
+
     /// The month ahead's tiles left for want of layers are not the frame's:
     /// only the month in force's count as left.
     #[test]

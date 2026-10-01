@@ -362,17 +362,22 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     // Memory: the whole point. A hidden path that parked one decoded frame per
     // update would cost hundreds of megabytes over these updates; this
     // architecture should add nothing per update at all.
-    for (step, bytes) in (1..).zip(&readings) {
-        if step % FLOOR_WINDOW == 0
-            && let Some(bytes) = bytes
-        {
-            println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
-        }
+    let window = usize::try_from(FLOOR_WINDOW).expect("window fits in usize");
+    for (row, chunk) in readings.chunks(window).enumerate() {
+        let first = row * window + 1;
+        let values: Vec<String> = chunk
+            .iter()
+            .map(|bytes| bytes.map_or_else(|| "-".to_owned(), |b| format!("{:.1}", mib(b))))
+            .collect();
+        println!(
+            "  steps {first:>3} to {:>3}, private MiB: {}",
+            first + chunk.len() - 1,
+            values.join(" ")
+        );
     }
 
     let floor = |from: u64| -> Option<u64> {
         let from = usize::try_from(from).expect("step fits in usize");
-        let window = usize::try_from(FLOOR_WINDOW).expect("window fits in usize");
         readings[from..from + window]
             .iter()
             .copied()

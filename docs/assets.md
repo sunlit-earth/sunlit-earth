@@ -24,7 +24,7 @@ The app selects the first existing texture directory in this order:
 3. `textures/` relative to the current working directory.
 4. `textures/` beside the executable, then in its ancestor directories.
 
-Without Earth textures, the renderer can show a procedural grid for basic pipeline checks. Current startup code filters out files smaller than 64 KiB, including LFS pointers. Older versions attempted to decode those pointers and could delay a headless export until its timeout. Fetch the real LFS objects if an older build reports JPEG XL decode errors. For an intentional run without assets, select an empty directory with `--textures-dir`.
+Without Earth textures, the renderer can show a procedural grid for basic pipeline checks. Without all 84 cube faces the renderer shows the grid and builds no tile packs. A cube face is checked for being a Git LFS pointer, and the Moon and Milky Way files are filtered out when smaller than 64 KiB. Older versions attempted to decode those pointers and could delay a headless export until its timeout. Fetch the real LFS objects if an older build reports JPEG XL decode errors. For an intentional run without assets, select an empty directory with `--textures-dir`.
 
 A debug build logs `resolved texture paths` at startup. Release builds compile info level logging out, so use a debug build when investigating asset discovery.
 
@@ -51,7 +51,7 @@ The icon bake writes `assets/icon/baked/`; the review option produces a contact 
 
 Two standalone Python tools under `tools/` use uv and are separate from the Rust build:
 
-- [texture-pipeline](../tools/texture-pipeline/README.md) prepares imagery, including NASA Blue Marble sources, as JPEG XL assets at different resolutions.
+- [texture-pipeline](../tools/texture-pipeline/README.md) bakes the Earth's cube faces from the monthly Blue Marble maps, the Black Marble night map and an ocean shapefile (`cube`), converts surface maps (`earth`) and prepares the Milky Way panorama (`milky-way`), all as JPEG XL.
 - [cloud-fetch](../tools/cloud-fetch/README.md) fetches and processes cloud imagery from the Matteason composite or NOAA GMGSI.
 
 ## Licenses and attribution

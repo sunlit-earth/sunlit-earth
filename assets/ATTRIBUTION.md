@@ -2,7 +2,7 @@ Sunlit Earth was built with public data, freely licensed imagery and open source
 
 ## Imagery
 
-- Day side: NASA Blue Marble Next Generation, May 2004 topography. Credit [NASA Earth Observatory](https://earthobservatory.nasa.gov/), produced by Reto Stöckli, NASA Goddard Space Flight Center, from Terra MODIS.
+- Day side: NASA Blue Marble Next Generation, the twelve monthly images of 2004, topography variant. Credit [NASA Earth Observatory](https://earthobservatory.nasa.gov/), produced by Reto Stöckli, NASA Goddard Space Flight Center, from Terra MODIS. Antarctica: Landsat Image Mosaic of Antarctica (USGS/NASA).
 - Night side: NASA Black Marble 2016. Credit [NASA Earth Observatory](https://earthobservatory.nasa.gov/) images by Joshua Stevens, using Suomi NPP VIIRS data from Miguel Román, NASA GSFC.
 - Clouds: [clouds.matteason.co.uk](https://clouds.matteason.co.uk/) by Matt Eason. Contains modified EUMETSAT data, per EUMETSAT's [data licensing](https://www.eumetsat.int/eumetsat-data-licensing).
 - Moon: [CGI Moon Kit](https://svs.gsfc.nasa.gov/4720) by NASA's Scientific Visualization Studio.

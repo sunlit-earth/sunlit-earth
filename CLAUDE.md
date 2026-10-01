@@ -80,7 +80,7 @@ cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cac
 cargo xtask bundle --platform <windows|linux|macos> --exe <path> [--out <dir>] [--verify]
 ```
 
-`dist` builds `sunlit-earth` in release mode inside a pristine builder guest from a `git archive` of `HEAD`, then boots the desktop guest of the same target to prove the bundle runs and finds its textures. Four to six minutes per target plus two boots; output under `target/dist/<target>/`. A dirty working tree is refused without `--allow-dirty`.
+`dist` builds `sunlit-earth` in release mode inside a pristine builder guest from a `git archive` of `HEAD`, then boots the desktop guest of the same target to prove the bundle runs and finds its textures. Six to ten minutes per target plus two boots; output under `target/dist/<target>/`. A dirty working tree is refused without `--allow-dirty`.
 
 `bundle` is the second half of that on its own: it wraps a binary somebody else already built in the archive its platform's users open, writes `build-info.json` beside it, and with `--verify` unpacks the archive and renders from it twice to prove the textures are found. No VM and no hypervisor, which is what lets the GitHub release runners call it; `dist` calls the same functions. `--verify` runs the binary, so it needs a host of the platform being bundled. macOS is a platform here and not a `dist` target, because there is no macOS guest to build one in.
 
@@ -148,7 +148,7 @@ docs/                 see the table above
 - Test behavior, not constants: changing a preset or a default must not break a test.
 - Float comparisons use `approx::assert_relative_eq!`. GPU tests assert invariants (monotonicity, bounds, visibility), not exact pixels.
 - Golden images run on the software adapter with per-adapter references under `tests/golden/<adapter>/`, listed in `GENERATED_ADAPTERS`; tolerance is a mean channel difference under 2/255 with at most 1% of pixels off by more than 24. A missing case fails; a companion test keeps every pair of references distinguishable.
-- A test that needs the real assets (the cube faces, the Moon, the Milky Way) checks their size, since LFS pointers exist and are not images, and skips with a printed reason without them. Everything else uses generated fixtures.
+- A test that needs the real assets (the cube faces, the Moon, the Milky Way) checks that they are not LFS pointers (by size for the Moon and the Milky Way, by pointer prefix for the cube faces), and skips with a printed reason without them. Everything else uses generated fixtures.
 - The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three OSes and runs by hand, on the desktop or in a VM. Cases that need a tray, a wallpaper setter, or Win32 gate themselves at runtime and print why they skipped.
 - `the_docs_spell_out_every_flag_dist_takes` and its `bundle` twin in the xtask read the `cargo xtask dist [...]` line in this file and in `docs/vm-setup.md`, and the `cargo xtask bundle ...` line in this file; keep both complete usage lines.
 

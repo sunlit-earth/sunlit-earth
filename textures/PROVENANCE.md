@@ -44,7 +44,7 @@ KB, and quality 90 is 1.63 and 19 at 108 KB.
 No orientation work is done offline. The loader's own `orient` applies the
 horizontal flip and the quarter-width shift that line an equirectangular map up
 with the sphere's UVs, and it applies them to this map exactly as it does to the
-Earth's.
+cloud map.
 
 ## milkyway_2020_4k.jxl
 
@@ -200,4 +200,4 @@ Run on 2026-09-29 on Windows 11, an AMD Ryzen 7 5800X (16 logical cores) with 64
 | mask | 6 | 398,743 |
 | all | 84 | 18,464,893 |
 
-The northern winter months are the largest, as section 17 of `docs/plans/2026-09-29-texture-overhaul-research.md` expected from their snow. The night baked from the 13500 source is 883,886 bytes; the one-month spike in section 19.3 there resampled the 8192 map in this directory to the same faces and got 1,033,595.
+The northern winter months are the largest, as section 17 of `docs/plans/2026-09-29-texture-overhaul-research.md` expected from their snow. The night baked from the 13500 source is 883,886 bytes; the one-month spike in section 19.3 there resampled the 8192 map the flat texture used to be (no longer in this directory) to the same faces and got 1,033,595.

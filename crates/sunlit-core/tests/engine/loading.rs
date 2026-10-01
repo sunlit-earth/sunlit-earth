@@ -95,11 +95,20 @@ fn a_first_run_names_each_pack_it_prepares_and_counts_the_months() {
             .all(|text| text == "Loading Day and Night..."),
         "before the mask: {first:?}"
     );
-    for next in ["Preparing March, 1 of 12", "Preparing Night", ""] {
+    for next in ["Preparing March, 1 of 12", "Preparing Night"] {
         gate.allow(1);
         let seen = statuses_until(&harness, next);
         assert!(before(&seen).is_empty(), "on the way to {next:?}: {seen:?}");
     }
+    // The night pack is built and the build is over, so the line names the
+    // night floor until it is resident, which a software adapter can take a
+    // tick or two to do and a fast one does between two statuses.
+    gate.allow(1);
+    let seen = statuses_until(&harness, "");
+    assert!(
+        before(&seen).is_empty() || before(&seen) == ["Loading Night..."],
+        "on the way to the end of the first frame's packs: {seen:?}"
+    );
 
     harness.advance(&clock, IDLE);
     let seen = statuses_until(&harness, "Preparing April, 2 of 12");

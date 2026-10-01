@@ -5,17 +5,28 @@
 //! waiting. This is the permanent guard against a background producer whose
 //! consumer only runs under some condition.
 //!
+//! The globe is drawn from the cube surface of the Earth fixture, so the
+//! transcoder, the floors, the tile loader and a change of month at the
+//! middle of January all run under the same clock as the clouds and the
+//! exports.
+//!
 //! Nothing here touches the network, the desktop, or the real clock.
+
+#[path = "../src/test_support.rs"]
+mod test_support;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sunlit_core::assets::cloud_source::{CloudImage, CloudSource};
+use sunlit_core::assets::cube_layout::CubeTextures;
+use sunlit_core::assets::tiles;
 use sunlit_core::engine::clock::MockClock;
 use sunlit_core::engine::wallpaper_sink::CountingSink;
 use sunlit_core::engine::{EngineCommand, EngineConfig};
 use sunlit_core::params::SceneParams;
+use sunlit_core::scene::camera::CameraParams;
 
 /// Keeps a single engine (and therefore a single wgpu device) alive at a time,
 /// matching the convention in the other GPU test binaries: per-test device
@@ -73,16 +84,37 @@ const GROWTH_LIMIT: u64 = 8 * 1024 * 1024;
 /// lands on such a step. A leak raises every reading after it, the lowest
 /// included, so the floor of a window still sees it. Seven publications wide.
 const FLOOR_WINDOW: u64 = STEPS / 8;
-/// Allocation allowed during warm-up: the first cloud texture, its mip chain,
-/// and wgpu's allocator pools.
-const WARMUP_LIMIT: u64 = 192 * 1024 * 1024;
+/// Allocation allowed during warm-up, from the first cloud texture to the end
+/// of the warm-up steps: the rest of the year's packs, the floors and tiles
+/// made resident, and wgpu's allocator pools grown to hold them. About twice
+/// the largest measured (`docs/testing.md`).
+const WARMUP_LIMIT: u64 = 128 * 1024 * 1024;
+
+/// The Earth fixture cut as `tests/golden.rs` cuts it.
+const EARTH: tiles::Geometry = tiles::Geometry {
+    face: 256,
+    levels: 2,
+    tile: 32,
+    gutter: 4,
+    floor: 64,
+    mask: 128,
+};
+
+/// Days from the Unix epoch to the start of the simulated week, January 16th,
+/// half a day before January hands over to February at its middle: the
+/// month ahead is read and the month changes inside the warm-up, so both
+/// windows the growth is measured between are February's, and a change of
+/// month, which is a one-off rather than the per-publication growth this test
+/// bounds, cannot land between them.
+const START_DAY: i64 = 15;
 
 /// Steps to run before taking the memory baseline.
 ///
-/// The first cloud texture, its mip chain, and wgpu's allocator pools are a
-/// one-off cost of roughly 85 MiB. Measuring from before that would be
-/// measuring startup, not growth; the leak this test guards against is
-/// per-update, so the interesting window is everything after warm-up.
+/// The rest of the year's packs, the floors and tiles made resident, and
+/// wgpu's allocator pools are a one-off cost (`WARMUP_LIMIT`). Measuring from
+/// before that would be measuring startup, not growth; the leak this test
+/// guards against is per-update, so the interesting window is everything after
+/// warm-up.
 const WARMUP_STEPS: u64 = STEPS / 8;
 
 /// A cloud source that serves a fixed JPEG under an `ETag` the test controls.
@@ -178,13 +210,25 @@ fn wait_until(what: &str, condition: impl Fn() -> bool) {
 fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     let _guard = gpu_lock();
 
+    let dir = test_support::ScratchDir::new("soak");
+    test_support::write_earth_fixture(&dir.join("textures"));
     let cloud = Arc::new(FixtureCloud::new(CLOUD_WIDTH, CLOUD_HEIGHT));
     let sink = Arc::new(CountingSink::new(EXPORT_SIZE.0, EXPORT_SIZE.1));
-    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let clock = Arc::new(MockClock::new(
+        time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(START_DAY),
+    ));
 
+    // Blended, over Africa at the zoom where the preview wants tiles of the
+    // coarser level, so day tiles, night tiles and the mask are all read.
     let mut params = SceneParams {
-        texture_index: 0,
+        texture_index: 3,
         sample_count: 1,
+        camera: CameraParams {
+            longitude: 20.0,
+            latitude: 0.0,
+            zoom: 0.55,
+            ..CameraParams::default()
+        },
         ..SceneParams::default()
     };
     // Live time, so every simulated day really does rotate the Earth and the
@@ -198,7 +242,10 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     config.clock = clock.clone();
     config.cloud = Some(cloud.clone());
     config.cloud_poll_interval = STEP;
-    config.cache_dir = None;
+    config.cache_dir = Some(dir.join("cache"));
+    config.cube_textures = CubeTextures::resolve(&dir.join("textures"));
+    config.tile_geometry = EARTH;
+    config.texture_resolution = 8192;
     config.auto_refresh = Some(STEP);
     config.wallpaper = sink.clone();
 
@@ -254,7 +301,33 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     let elapsed = started.elapsed();
     let exports = sink.count();
     let fetches = cloud.fetches();
+    let report = engine.memory_report().expect("a memory report");
+    let surface = engine
+        .tile_report()
+        .expect("a tile report")
+        .expect("the engine draws from the cube");
     engine.shutdown();
+
+    // The week was drawn from the cube, not the grid, and crossed into
+    // February, whose floor was made resident on the way.
+    for label in ["day_floor", "night_floor", "water_mask", "tile_array"] {
+        assert!(
+            report.expected.iter().any(|texture| texture.label == label),
+            "no {label} at the end of the week:
+{report}"
+        );
+    }
+    assert!(
+        surface.floors_installed >= 2 && !surface.resident.is_empty(),
+        "{surface:#?}"
+    );
+    assert!(
+        surface
+            .named
+            .iter()
+            .all(|id| id.pack != tiles::PackKind::Day(0)),
+        "January's tiles are still named after the hand-over: {surface:#?}"
+    );
 
     let expected_publications = STEPS / STEPS_PER_CLOUD_UPDATE;
     let expected_fetches = expected_publications + 1;
@@ -348,8 +421,8 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
         mib(GROWTH_LIMIT)
     );
 
-    // Warm-up is a one-off (the first cloud texture, its mip chain, and wgpu's
-    // allocator pools), but a gross regression in it should not slip through.
+    // Warm-up is a one-off, but a gross regression in it should not slip
+    // through.
     assert!(
         warmup < WARMUP_LIMIT,
         "warm-up allocated {:.1} MiB (limit {:.0} MiB)",

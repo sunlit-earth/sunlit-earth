@@ -42,14 +42,16 @@ pub use self::macos::snapshot;
 #[cfg(windows)]
 pub use self::windows::snapshot;
 
-/// What a cold-cache launch costs in private bytes before any surface texture
-/// or cloud image is resident: the decodes that build the textures, wgpu, the
-/// driver, and the process itself, none of which shrinks with the setting.
-/// Not the 2488 MiB peak `docs/testing.md` records, which was measured on the
-/// flat path's two 8K decodes before the cube surface existed: that is what
-/// the whole budget, this and the headroom below and the resident textures,
-/// has to clear at every resolution.
-const COLD_START_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// What a launch costs in private bytes before any surface texture or cloud
+/// image is resident: the decodes that build the textures, the transcoder's
+/// first packs, wgpu, the driver, and the process itself, none of which
+/// shrinks with the setting. Measured on the cube surface at 772 MiB on this
+/// machine's GPU without a cloud image, and at 829 MiB on WARP once the
+/// textures the budget counts below are taken off its 1140 MiB peak; rounded
+/// up. Not the peak itself, which is what the whole budget, this and the
+/// headroom and the resident textures, has to clear at every resolution
+/// (`docs/testing.md`).
+const COLD_START_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Slack above a cold start before the budget is crossed.
 ///
@@ -339,11 +341,12 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
-    /// The one cold-cache startup peak anyone has measured: about 2.43 GiB of
-    /// private bytes, at 8192, in a release build. Every resolution is held to
-    /// this figure rather than to a smaller one derived from it; the reasoning
-    /// is in `docs/testing.md`.
-    const MEASURED_COLD_START_PEAK: u64 = 2488 * MIB;
+    /// The highest startup peak measured on the cube surface: 1140 MiB of
+    /// private bytes, at 8192, in a release build on WARP with a cloud image.
+    /// Every resolution is held to this figure rather than to a smaller one
+    /// derived from it; the reasoning and the other measurements are in
+    /// `docs/testing.md`.
+    const MEASURED_COLD_START_PEAK: u64 = 1140 * MIB;
 
     /// Build a snapshot with known values for format and rotation tests.
     fn sample_snapshot() -> MemorySnapshot {

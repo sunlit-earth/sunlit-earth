@@ -1787,6 +1787,39 @@ mod tests {
         assert!(err.contains("b/stowaway"), "{err}");
     }
 
+    /// The cube is 84 files, and a bundle one face short renders a grid: it must
+    /// stop at the source and again at the archive.
+    #[test]
+    fn a_bundle_one_cube_face_short_is_refused_at_the_source_and_at_the_archive() {
+        let dir = scratch("one_face_short");
+        let repo = fabricate(&dir);
+        let exe = repo.join("bin").join("sunlit-earth.exe");
+        let textures = repo.join("textures");
+        let face = "day/200407/py.jxl";
+        assert!(
+            artifacts::cube_texture_files()
+                .iter()
+                .any(|name| name == face)
+        );
+        std::fs::remove_file(textures.join(face)).expect("remove a face");
+
+        let items = layout(Platform::Windows, &sources(&repo, &exe, &textures));
+        let name = bundle_name("0.1.0", Platform::Windows, Arch::X86_64);
+        let err = assemble(&dir, &name, &items).unwrap_err();
+        assert!(err.contains("py.jxl"), "{err}");
+
+        std::fs::write(textures.join(face), vec![b'j'; 4096]).expect("restore the face");
+        let root = assemble(&dir, &name, &items).expect("assembled");
+        let archive = dir.join(archive_name("0.1.0", Platform::Windows, Arch::X86_64));
+        write(Format::Zip, &root, &name, &items, &archive).expect("written");
+        let mut read = read_back(Format::Zip, &archive).expect("read back");
+        read.retain(|entry| !entry.path.ends_with(face));
+        let assembled = walk(&root).expect("walk");
+        let err = verify(&name, &assembled, &read).unwrap_err();
+        assert!(err.contains(face), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// JXL is already compressed, so a zip that deflated it would spend time to
     /// make it slightly larger. Everything else is deflated.
     #[test]

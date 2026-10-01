@@ -192,6 +192,7 @@ pub fn event_forwarder(
             });
         }
         EngineEvent::Status(text) => {
+            crate::ipc::signal(&format!("loading_text {text}"));
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = weak.upgrade() {

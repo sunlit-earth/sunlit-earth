@@ -39,6 +39,42 @@ fn statuses_until(harness: &Harness, last: &str) -> Vec<String> {
     }
 }
 
+/// How long to wait for a status before the mock clock moves on by `IDLE`
+/// again.
+const PATIENCE: Duration = Duration::from_millis(500);
+
+/// Every status the engine sent, in order, until it sent `last`, with the
+/// mock clock moved on by `IDLE` each time `PATIENCE` passes without one.
+///
+/// A frame drawn on the tick that follows a move of the clock closes the pause
+/// gate for another busy span of the mock clock, which a slow adapter does
+/// when a floor lands late and a fast one does not, and no tick would open it
+/// again while the clock stood still.
+fn statuses_until_idle(harness: &Harness, clock: &MockClock, last: &str) -> Vec<String> {
+    let deadline = Instant::now() + TIMEOUT;
+    let mut seen = Vec::new();
+    loop {
+        let wait = (Instant::now() + PATIENCE).min(deadline);
+        match harness.events.recv_deadline(wait) {
+            Ok(EngineEvent::Status(text)) => {
+                let done = text == last;
+                seen.push(text);
+                if done {
+                    return seen;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "no status {last:?} after {seen:?}"
+                );
+                harness.advance(clock, IDLE);
+            }
+        }
+    }
+}
+
 /// The status texts in `seen` that are not `last`, which is at its end.
 fn before(seen: &[String]) -> &[String] {
     &seen[..seen.len() - 1]
@@ -111,7 +147,7 @@ fn a_first_run_names_each_pack_it_prepares_and_counts_the_months() {
     );
 
     harness.advance(&clock, IDLE);
-    let seen = statuses_until(&harness, "Preparing April, 2 of 12");
+    let seen = statuses_until_idle(&harness, &clock, "Preparing April, 2 of 12");
     assert!(before(&seen).is_empty(), "{seen:?}");
 
     gate.open();

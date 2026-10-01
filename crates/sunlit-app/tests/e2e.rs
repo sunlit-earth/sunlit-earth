@@ -520,9 +520,10 @@ fn test_gpu_persistence_after_hide() {
 ///
 /// Decoded cloud frames reach the GPU through a channel drained from
 /// `BeforeRendering`, which stops firing once the window is hidden. The case
-/// points the fetcher at a local stub server, hides the window, publishes 15
-/// updates, and asserts both that private bytes stay bounded and that the
-/// updates still reach the GPU while hidden.
+/// points the fetcher at a local stub server, hides the window, publishes
+/// `WARMUP_UPDATES` updates and then 15 more, and asserts both that private
+/// bytes stay bounded across the 15 and that the updates still reach the GPU
+/// while hidden.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -531,6 +532,13 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     /// Decoded size is 2048 * 1024 * 4 = 8 MiB per frame.
     const FIXTURE_WIDTH: u32 = 2048;
     const FIXTURE_HEIGHT: u32 = 1024;
+    /// Hidden updates before the baseline, which the allocators grow through
+    /// once: glibc raises its mmap threshold to a decoded frame's size when
+    /// the first one is freed, so the next decode lands in an arena and stays
+    /// there, and the GPU allocator's blocks are touched up to two cloud
+    /// textures and a staging buffer. On lavapipe both settle by the third
+    /// update; what the case bounds is the growth after that.
+    const WARMUP_UPDATES: u64 = 4;
     const UPDATES: u64 = 15;
     const GROWTH_LIMIT_BYTES: u64 = 40 * 1024 * 1024;
     /// Long enough for at least one tick of the 5 s drain timer.
@@ -576,15 +584,20 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", SIGNAL_REPLY);
 
+    let publish = |count: u64| {
+        for _ in 0..count {
+            let target = stub.gets.load(Ordering::SeqCst) + 1;
+            stub.version.fetch_add(1, Ordering::SeqCst);
+            wait_for_downloads(&stub, target, DOWNLOAD);
+        }
+    };
+
+    publish(WARMUP_UPDATES);
     std::thread::sleep(SETTLE);
     let baseline = query_memory(&socket_name, &stdout_watcher);
     let stderr_cursor = stderr_watcher.line_count();
 
-    for _ in 0..UPDATES {
-        let target = stub.gets.load(Ordering::SeqCst) + 1;
-        stub.version.fetch_add(1, Ordering::SeqCst);
-        wait_for_downloads(&stub, target, DOWNLOAD);
-    }
+    publish(UPDATES);
 
     std::thread::sleep(SETTLE);
     let end = query_memory(&socket_name, &stdout_watcher);
@@ -610,12 +623,12 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         .count();
 
     println!(
-        "baseline: rss={:.1} MiB private={:.1} MiB",
+        "baseline after {WARMUP_UPDATES} hidden cloud updates: rss={:.1} MiB private={:.1} MiB",
         mib(baseline.rss_bytes),
         mib(baseline.private_bytes)
     );
     println!(
-        "after {UPDATES} hidden cloud updates: rss={:.1} MiB private={:.1} MiB peak_rss={:.1} MiB",
+        "after {UPDATES} more: rss={:.1} MiB private={:.1} MiB peak_rss={:.1} MiB",
         mib(end.rss_bytes),
         mib(end.private_bytes),
         mib(end.peak_rss_bytes)

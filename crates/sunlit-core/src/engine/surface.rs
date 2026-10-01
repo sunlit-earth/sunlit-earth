@@ -3,12 +3,15 @@
 //! busy, and the tile loader that refines the floors.
 //!
 //! The transcoder is the producer and this is its consumer, on the engine
-//! thread: every tick drains the packs that landed and hands the ones the
-//! month in force needs to the renderer, which reads the floors and the mask
-//! out of them and uploads them there and then, and to the tile loader, which
-//! reads the tiles out of them as the frame wants them. The rest of the year
-//! stays on disk until a month needs it.
+//! thread: every tick drains the packs that landed, opens each for the tile
+//! loader, which reads the tiles out of them as the frame wants them, and
+//! hands the ones the frame draws, the mask, the night and the month in
+//! force, to the renderer, which reads their floors out of them and uploads
+//! them there and then. The other months' floors follow one a tick while the
+//! engine is idle, and every floor stays resident, so a date in any month is
+//! drawn from its own floor the moment it names it (plan decision 4).
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,6 +55,17 @@ pub(super) struct SurfaceFeed {
     failures_seen: usize,
     /// The worker has finished, and its status will not change again.
     settled: bool,
+    /// Day packs of other months than the one in force that landed and whose
+    /// floors are not resident yet, in the order they landed, which is the
+    /// nearest month first. Each holds its index and an open file, not
+    /// pixels; the engine thread is the consumer, and makes one floor
+    /// resident a tick while the engine is idle, or one at once when its
+    /// month comes into force.
+    floors: VecDeque<Arc<Pack>>,
+    /// Counts the times the tiles of the month in force or of the night
+    /// could newly be read: the month in force changed, or its pack or the
+    /// night's was opened.
+    renewals: u64,
 }
 
 impl SurfaceFeed {
@@ -96,19 +110,27 @@ impl SurfaceFeed {
             busy_until: now + BUSY_AFTER_A_FRAME,
             failures_seen: 0,
             settled: false,
+            floors: VecDeque::new(),
+            renewals: 0,
         }
     }
 
-    /// Hand every pack that landed since the last call to the renderer and
-    /// the tile loader, every failure the transcoder reported to the
-    /// renderer, and the tiles that were read since to the tile array.
-    /// Returns whether a cube or a tile became resident.
+    /// Open every pack that landed since the last call for the tile loader
+    /// and make the floors the frame draws resident, then, while the engine
+    /// is idle, one floor of another month; hand every failure the
+    /// transcoder reported to the renderer, and the tiles that were read
+    /// since to the tile array. Returns whether what the frame draws changed.
     pub(super) fn drain(&mut self, renderer: &mut Renderer) -> bool {
-        let mut installed = false;
+        let mut drawn = false;
         for kind in self.transcoder.landed() {
-            installed |= self.install(kind, renderer);
+            drawn |= self.land(kind, renderer);
         }
-        installed |= self.tiles.drain(renderer);
+        if !self.paused
+            && let Some(pack) = self.floors.pop_front()
+        {
+            drawn |= make_resident(&pack, renderer);
+        }
+        drawn |= self.tiles.drain(renderer);
         if !self.settled {
             let status = self.transcoder.status();
             for failure in &status.failed[self.failures_seen..] {
@@ -124,7 +146,7 @@ impl SurfaceFeed {
             }
             self.settled = status.is_settled();
         }
-        installed
+        drawn
     }
 
     /// The month in force, January 0.
@@ -132,10 +154,12 @@ impl SurfaceFeed {
         self.month
     }
 
-    /// Make `month` the month in force, when it is not already. The
-    /// transcoder builds it next if it has not yet, and its floor is made
-    /// resident now if its pack is ready. Returns whether a cube became
-    /// resident.
+    /// Make `month` the month in force, when it is not already: its floor is
+    /// drawn and the page table's day half names its tiles from now on. The
+    /// floor is resident already once its pack has landed, or made so now if
+    /// it was still waiting its turn; the transcoder builds the month next if
+    /// it has not yet, and the floor drawn until now stays until it lands.
+    /// Returns whether the month changed.
     pub(super) fn set_month(&mut self, month: usize, renderer: &mut Renderer) -> bool {
         if month == self.month {
             return false;
@@ -146,10 +170,18 @@ impl SurfaceFeed {
             "the month in force changed"
         );
         self.month = month;
-        renderer.set_surface_month(month);
+        self.renewals += 1;
         self.transcoder.set_month(month);
-        self.transcoder.status().is_ready(PackKind::Day(month))
-            && self.install(PackKind::Day(month), renderer)
+        if let Some(at) = self
+            .floors
+            .iter()
+            .position(|pack| pack.kind() == PackKind::Day(month))
+            && let Some(pack) = self.floors.remove(at)
+        {
+            make_resident(&pack, renderer);
+        }
+        renderer.set_surface_month(month);
+        true
     }
 
     /// The engine is drawing or has just drawn at `now`: close the pause gate
@@ -209,10 +241,16 @@ impl SurfaceFeed {
         self.tiles.missing_for(output, renderer)
     }
 
-    /// How many times a pack has been opened for its tiles: a floor made
-    /// resident, or a month whose floor is drawn again.
+    /// How many times a pack has been opened for its tiles.
     pub(super) fn packs_opened(&self) -> u64 {
         self.tiles.packs_opened()
+    }
+
+    /// How many times the tiles of the month in force or of the night could
+    /// newly be read: a change of the month in force, or its pack or the
+    /// night's opened. A publish's tile wait starts over on each.
+    pub(super) fn renewals(&self) -> u64 {
+        self.renewals
     }
 
     /// Whether every tile the frame needs in view at the 1 px threshold is
@@ -230,44 +268,46 @@ impl SurfaceFeed {
         self.tiles.report(renderer)
     }
 
-    /// Make the cube of pack `kind` resident, if the month in force needs it,
-    /// and have the tile loader read its tiles. A floor that is resident
-    /// already, the month's again after a date that went away from it and
-    /// back, only has its pack opened for the tiles if they are not read
-    /// already.
-    fn install(&mut self, kind: PackKind, renderer: &mut Renderer) -> bool {
-        if matches!(kind, PackKind::Day(month) if month != self.month) {
-            return false;
-        }
-        let layer = layer_of(kind);
-        let tiled = kind != PackKind::Mask;
-        let resident = renderer.surface_resident(layer);
-        if resident && (!tiled || self.tiles.holds(kind)) {
-            return false;
-        }
+    /// Open the pack `kind` that landed for the tile loader, and make its
+    /// cube resident if the frame draws it; a day pack of another month waits
+    /// in [`Self::floors`]. Returns whether what the frame draws changed.
+    fn land(&mut self, kind: PackKind, renderer: &mut Renderer) -> bool {
         let path = pack_path(&self.cache_dir, kind);
-        let result = Pack::open(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|pack| {
-                if !resident {
-                    renderer.install_surface(layer, &pack)?;
-                }
-                if tiled {
-                    self.tiles.open(Arc::new(pack));
-                }
-                Ok(())
-            });
-        match result {
-            Ok(()) if resident => false,
-            Ok(()) => {
-                info!(?layer, "a surface cube is resident");
-                true
-            }
+        let pack = match Pack::open(&path) {
+            Ok(pack) => Arc::new(pack),
             Err(e) => {
-                error!(path = %path.display(), error = %e, "a surface cube could not be made resident");
-                renderer.mark_surface_failed(layer);
-                false
+                error!(path = %path.display(), error = %e, "a tile pack could not be opened");
+                renderer.mark_surface_failed(layer_of(kind));
+                return false;
             }
+        };
+        if kind != PackKind::Mask {
+            self.tiles.open(Arc::clone(&pack));
+        }
+        if kind == PackKind::Night || kind == PackKind::Day(self.month) {
+            self.renewals += 1;
+        }
+        if matches!(kind, PackKind::Day(month) if month != self.month) {
+            self.floors.push_back(pack);
+            return false;
+        }
+        make_resident(&pack, renderer)
+    }
+}
+
+/// Make the cube of `pack` resident. Returns whether what the frame draws
+/// changed.
+fn make_resident(pack: &Pack, renderer: &mut Renderer) -> bool {
+    let layer = layer_of(pack.kind());
+    match renderer.install_surface(layer, pack) {
+        Ok(drawn) => {
+            info!(?layer, "a surface cube is resident");
+            drawn
+        }
+        Err(e) => {
+            error!(?layer, error = %e, "a surface cube could not be made resident");
+            renderer.mark_surface_failed(layer);
+            false
         }
     }
 }

@@ -105,6 +105,10 @@ pub struct Request<'a> {
     pub outputs: &'a [Output],
     /// The month in force, January 0, whose pack the day's tiles come from.
     pub month: usize,
+    /// The month across a hand-over that is near, January 0, whose day tiles
+    /// in view are wanted after everything else, so that the hand-over finds
+    /// them resident (`scene::month::month_ahead`).
+    pub ahead: Option<usize>,
     pub surfaces: Surfaces,
     /// The finest level the resolution setting allows, [`finest_level`]; one
     /// at or below the floor's wants no tiles at all.
@@ -130,7 +134,8 @@ pub struct WantedTile {
     /// ordered by it without knowing what else is, so a loader that knows
     /// may rank by the levels actually missing instead.
     pub deficit: u8,
-    /// Wanted for the margin or a drag's lead rather than for what is in view.
+    /// Wanted for the margin, a drag's lead or the month ahead rather than
+    /// for what is in view.
     pub margin: bool,
 }
 
@@ -138,9 +143,10 @@ pub struct WantedTile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
     /// Most wanted first: every tile of a pending export in view, then every
-    /// other tile in view, then the margin; within each, the largest level
-    /// deficit first, then the nearest the middle of the frame. Each tile
-    /// once, whichever outputs want it.
+    /// other tile in view, then the margin, then the month ahead's day tiles
+    /// in view; within each, the largest level deficit first, then the
+    /// nearest the middle of the frame. Each tile once, whichever outputs
+    /// want it.
     pub tiles: Vec<WantedTile>,
     /// The finest level wanted at each cell for what is in view, at the
     /// 1 px threshold even while a drag is in progress, so a resident tile of
@@ -689,7 +695,20 @@ impl Residency {
                     .filter(|(lens, _)| lens.classify(shape).is_some())
                     .map(|(lens, _)| lens.distance_from_middle(shape.center))
                     .fold(f64::INFINITY, f64::min);
-                for pack in drawn(request, shape) {
+                let in_view = mark & IN_VIEW != 0;
+                let (day, night) = drawn(request, shape);
+                let ahead = request
+                    .ahead
+                    .filter(|&month| day && in_view && month != request.month);
+                let packs = [
+                    (day.then_some(PackKind::Day(request.month)), false),
+                    (night.then_some(PackKind::Night), false),
+                    (ahead.map(PackKind::Day), true),
+                ];
+                for (pack, ahead) in packs {
+                    let Some(pack) = pack else {
+                        continue;
+                    };
                     let id = TileId { pack, key };
                     if !(request.stored)(id) {
                         continue;
@@ -698,9 +717,10 @@ impl Residency {
                         tile: WantedTile {
                             id,
                             deficit: key.level - self.floor,
-                            margin: mark & IN_VIEW == 0,
+                            margin: !in_view || ahead,
                         },
-                        export: mark & FOR_EXPORT != 0,
+                        export: mark & FOR_EXPORT != 0 && !ahead,
+                        ahead,
                         distance,
                     });
                 }
@@ -792,10 +812,9 @@ fn mark(levels: &[Tiling], lenses: &[(Lens, bool)], request: &Request<'_>) -> Ve
     marks
 }
 
-/// The packs whose tiles the globe draws at `shape`.
-fn drawn(request: &Request<'_>, shape: &Shape) -> impl Iterator<Item = PackKind> + use<> {
-    let day = PackKind::Day(request.month);
-    let (day_drawn, night_drawn) = match request.surfaces {
+/// Whether the globe draws the day and the night at `shape`.
+fn drawn(request: &Request<'_>, shape: &Shape) -> (bool, bool) {
+    match request.surfaces {
         Surfaces::Day => (true, false),
         Surfaces::Night => (false, true),
         Surfaces::Blend {
@@ -815,18 +834,14 @@ fn drawn(request: &Request<'_>, shape: &Shape) -> impl Iterator<Item = PackKind>
                 .is_some_and(|diffuse| lowest < f64::from(diffuse.ramp));
             (highest > -width, lowest < width || shaded)
         }
-    };
-    [
-        day_drawn.then_some(day),
-        night_drawn.then_some(PackKind::Night),
-    ]
-    .into_iter()
-    .flatten()
+    }
 }
 
 struct Ranked {
     tile: WantedTile,
     export: bool,
+    /// A day tile of the month ahead, which comes after the margin.
+    ahead: bool,
     distance: f64,
 }
 
@@ -836,6 +851,7 @@ impl Ranked {
         a.tile
             .margin
             .cmp(&b.tile.margin)
+            .then(a.ahead.cmp(&b.ahead))
             .then(b.export.cmp(&a.export))
             .then(b.tile.deficit.cmp(&a.tile.deficit))
             .then(a.distance.total_cmp(&b.distance))
@@ -898,6 +914,7 @@ mod tests {
         Request {
             outputs,
             month: 4,
+            ahead: None,
             surfaces: Surfaces::Day,
             finest: finest(),
             drag: None,
@@ -1514,6 +1531,64 @@ mod tests {
         assert!(some.tiles.iter().all(|tile| !ocean.contains(&tile.id.key)));
         assert_eq!(some.tiles.len() + ocean.len(), all.tiles.len());
         assert_eq!(some.cap, all.cap);
+    }
+
+    /// The month ahead wants its day tiles in view after everything the month
+    /// in force wants, the margin included, and moves nothing before them:
+    /// what is in view, its order and the cap stay the month in force's.
+    #[test]
+    fn the_month_ahead_comes_last_with_its_day_tiles_in_view() {
+        let outputs = [uhd(camera(10.0, 5.0, 2.5))];
+        let now = want(&outputs);
+        let ahead = SHIPPED.wanted(&Request {
+            ahead: Some(5),
+            ..request(&outputs, &everything)
+        });
+        let in_view: Vec<TileId> = now.in_view().collect();
+        assert!(
+            now.tiles.len() > in_view.len(),
+            "the premise: a view with a margin"
+        );
+        assert_eq!(ahead.tiles[..now.tiles.len()], now.tiles[..]);
+        assert_eq!(ahead.cap, now.cap);
+        assert_eq!(ahead.in_view().collect::<Vec<_>>(), in_view);
+
+        let extra = &ahead.tiles[now.tiles.len()..];
+        let mut keys: Vec<TileKey> = extra.iter().map(|tile| tile.id.key).collect();
+        keys.sort_unstable();
+        let mut expected: Vec<TileKey> = in_view.iter().map(|id| id.key).collect();
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "every day tile in view, once");
+        assert!(
+            extra
+                .iter()
+                .all(|tile| tile.margin && tile.id.pack == PackKind::Day(5))
+        );
+
+        let unchanged = |ahead: Option<usize>, surfaces, stored: &dyn Fn(TileId) -> bool| {
+            let with = SHIPPED.wanted(&Request {
+                ahead,
+                surfaces,
+                ..request(&outputs, stored)
+            });
+            let without = SHIPPED.wanted(&Request {
+                surfaces,
+                ..request(&outputs, stored)
+            });
+            with == without
+        };
+        assert!(
+            unchanged(Some(4), Surfaces::Day, &everything),
+            "the month in force"
+        );
+        assert!(
+            unchanged(Some(5), Surfaces::Night, &everything),
+            "no day drawn"
+        );
+        assert!(
+            unchanged(Some(5), Surfaces::Day, &|id| id.pack != PackKind::Day(5)),
+            "no pack of the month ahead"
+        );
     }
 
     /// In blend mode the night is wanted where the terminator lets it show and

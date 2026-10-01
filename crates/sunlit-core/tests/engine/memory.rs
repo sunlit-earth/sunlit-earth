@@ -32,13 +32,18 @@ fn the_report_names_the_textures_the_renderer_owns() {
     println!("{report}");
 
     for (label, width) in [
-        ("day_floor", EARTH.floor),
         ("night_floor", EARTH.floor),
         ("water_mask", EARTH.mask),
         ("page_table", EARTH.face / EARTH.tile),
     ] {
         assert_eq!(expected_widths(&report, label), [width], "{label}");
     }
+    // A day floor a month whose pack has landed, every one at the floor's size.
+    let days = expected_widths(&report, "day_floor");
+    assert!(
+        (1..=12).contains(&days.len()) && days.iter().all(|&width| width == EARTH.floor),
+        "day_floor: {days:?}"
+    );
     assert_eq!(
         expected_widths(&report, "tile_array").len(),
         1,
@@ -123,14 +128,29 @@ fn a_switch_down_leaves_no_tile_array_behind() {
         expected_widths(&after, "tile_array").is_empty(),
         "the tile array survived the switch:\n{after}"
     );
-    for label in ["day_floor", "night_floor", "water_mask"] {
+    for label in ["night_floor", "water_mask"] {
         assert_eq!(expected_widths(&after, label).len(), 1, "{label}:\n{after}");
     }
     assert!(
-        after.expected_bytes() + array <= before.expected_bytes(),
+        !expected_widths(&after, "day_floor").is_empty(),
+        "the day floors stay:\n{after}"
+    );
+    assert!(
+        but_the_day_floors(&after) + array <= but_the_day_floors(&before),
         "the computed total should fall by the array's {} MiB",
         mib(array)
     );
+}
+
+/// The computed total without the day floors, which the other months' packs
+/// add to whenever they land.
+pub(crate) fn but_the_day_floors(report: &sunlit_core::memory_report::MemoryReport) -> u64 {
+    report
+        .expected
+        .iter()
+        .filter(|texture| texture.label != "day_floor")
+        .map(sunlit_core::memory_report::ExpectedTexture::bytes)
+        .sum()
 }
 
 /// Pool slack is what the allocator holds but nothing is using, and the report

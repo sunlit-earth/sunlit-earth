@@ -310,12 +310,9 @@ pub(super) fn create_renderer(
             cpu_adapter, layers, "the globe is drawn from the cube surface"
         );
         let mut set = SurfaceSet::new(formats, month);
-        set.tiles = Some(SurfaceTiles::new(
-            &device,
-            tile_geometry,
-            formats.color,
-            layers,
-        ));
+        let mut tiles = SurfaceTiles::new(&device, tile_geometry, formats.color, layers);
+        tiles.set_month(&queue, month);
+        set.tiles = Some(tiles);
         set
     });
     // The cloud overlay, always last because it comes from the fetcher rather

@@ -4111,6 +4111,10 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
     surface_tiles
         .add_pack(&ctx.queue, &pack)
         .expect("a day pack");
+    assert!(
+        surface_tiles.set_month(&ctx.queue, 6),
+        "the day half names July's tiles once July is the month in force"
+    );
     let failed = surface_tiles.upload(&ctx.device, &ctx.queue, uploads);
     assert!(failed.is_empty(), "every tile uploads: {failed:?}");
     let array = surface_tiles

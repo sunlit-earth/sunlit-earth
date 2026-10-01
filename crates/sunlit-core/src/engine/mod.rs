@@ -521,10 +521,18 @@ impl Engine {
 
         // Every tick rather than on the drain's schedule: a pack that landed is
         // one cheap check away, and the first frame of a first run waits on it.
-        if let Some(surface) = &mut self.surface
-            && surface.drain(&mut self.renderer)
-        {
-            self.dirty = true;
+        // A pack opened for its tiles that changes nothing drawn, the month
+        // ahead's, has its tiles asked for without a frame.
+        let mut opened = false;
+        if let Some(surface) = &mut self.surface {
+            let before = surface.packs_opened();
+            if surface.drain(&mut self.renderer) {
+                self.dirty = true;
+            }
+            opened = surface.packs_opened() != before;
+        }
+        if opened && !self.dirty {
+            self.want_now();
         }
 
         if let Some(cloud) = &mut self.cloud {
@@ -636,16 +644,20 @@ impl Engine {
     ///
     /// Outside the digest like the sun direction: the month is not a
     /// parameter anyone sets but a consequence of the date. A floor that
-    /// becomes resident here redraws through the renderer's own flag, and one
-    /// that is not there yet reopens the readiness latch, so clients hear
-    /// `TexturesReady` again when it lands.
+    /// is not resident yet reopens the readiness latch, so clients hear
+    /// `TexturesReady` again when it lands. A change marks the frame dirty
+    /// whichever path saw it first, a draw or a publish, so the next tick
+    /// draws the new month and asks for its tiles; a publish that is owed
+    /// and still waiting returns without drawing, and nothing else would.
     fn sync_month(&mut self) {
         let Some(surface) = &mut self.surface else {
             return;
         };
         let month =
             crate::scene::month::month_in_force(&self.params.datetime, self.clock.now_utc());
-        surface.set_month(month, &mut self.renderer);
+        if surface.set_month(month, &mut self.renderer) {
+            self.dirty = true;
+        }
         if !self.renderer.textures_ready(self.params.texture_index) {
             self.textures_ready = false;
         }
@@ -736,6 +748,7 @@ impl Engine {
         let view = View {
             outputs: &outputs,
             month: surface.month(),
+            ahead: crate::scene::month::month_ahead(&self.params.datetime, self.clock.now_utc()),
             surfaces: surfaces_for(&self.params, sky.sun_direction),
             texture_resolution: self.renderer.texture_resolution(),
             drag: surface.drag(&self.params.camera, self.clock.elapsed()),

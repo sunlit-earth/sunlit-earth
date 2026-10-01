@@ -178,14 +178,14 @@ impl Engine {
 
     /// Whether the wallpaper owed has waited [`TILE_WAIT`] for its tiles by
     /// `now`. The wait starts the first time this asks with the cubes
-    /// resident, and starts over when a pack is opened for its tiles since,
-    /// a new month's floor or the month's again, since those tiles could not
-    /// be read before (plan departure 30).
+    /// resident, and starts over when the tiles it waits for could newly be
+    /// read since: the month in force changed, or its pack or the night's was
+    /// opened (plan departures 30 and 31).
     fn tiles_waited_out(&mut self, now: Duration) -> bool {
         let opened = self
             .surface
             .as_ref()
-            .map_or(0, super::surface::SurfaceFeed::packs_opened);
+            .map_or(0, super::surface::SurfaceFeed::renewals);
         let since = match self.tiles_awaited_since {
             Some((since, at)) if at == opened => since,
             _ => {

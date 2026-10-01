@@ -566,9 +566,10 @@ pub struct SurfaceTiles {
     array: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The day packs and the night pack handed over so far.
     ocean: HashMap<PackKind, OceanCells>,
-    /// The day pack whose tiles the day half names: the month whose floor is
-    /// drawn.
-    day: Option<PackKind>,
+    /// The month in force, whose day pack the day half names once it has
+    /// been handed over, and no other month's; the day half draws the floor
+    /// until then.
+    month: Option<usize>,
     /// The finest level each cell may draw, the wanted set's; the finest
     /// tiled level everywhere until one is set.
     cap: CellLevels,
@@ -620,7 +621,7 @@ impl SurfaceTiles {
             layers: TileLayers::new(capacity.min(MAX_TILE_LAYERS)),
             array: None,
             ocean: HashMap::new(),
-            day: None,
+            month: None,
             cap: CellLevels::finest(&geometry),
             table,
             page,
@@ -663,15 +664,63 @@ impl SurfaceTiles {
         )
     }
 
-    /// The constant ocean colors of the day pack drawn and of the night, RGBA8,
-    /// zero for a surface whose pack has not come.
+    /// The constant ocean colors of the month in force's day pack and of the
+    /// night, RGBA8, zero for a surface whose pack has not come.
     #[must_use]
     pub fn ocean_colors(&self) -> [[u8; 4]; 2] {
         let color = |kind: Option<PackKind>| {
             kind.and_then(|kind| self.ocean.get(&kind))
                 .map_or([0; 4], |cells| cells.color)
         };
-        [color(self.day), color(Some(PackKind::Night))]
+        [color(self.day()), color(Some(PackKind::Night))]
+    }
+
+    /// The day pack the day half names, the month in force's.
+    fn day(&self) -> Option<PackKind> {
+        self.month.map(PackKind::Day)
+    }
+
+    /// The month whose day pack the day half names, once its pack has been
+    /// handed over.
+    #[must_use]
+    pub fn day_month(&self) -> Option<usize> {
+        self.month
+            .filter(|&month| self.ocean.contains_key(&PackKind::Day(month)))
+    }
+
+    /// Make `month`, January 0, the month in force, whose tiles the day half
+    /// names from now on, and no other month's; until its pack has been
+    /// handed over the day half draws the floor. Rewrites the table if that
+    /// changes it, and returns whether it did.
+    pub fn set_month(&mut self, queue: &wgpu::Queue, month: usize) -> bool {
+        let before = self.day_month();
+        self.month = Some(month);
+        if self.day_month() == before {
+            return false;
+        }
+        self.publish(queue);
+        true
+    }
+
+    /// Every tile the table names, in either half, each once.
+    #[must_use]
+    pub fn named(&self) -> Vec<TileId> {
+        let cells = self.table.cells();
+        let mut named = HashSet::new();
+        for face in 0..6_u8 {
+            for row in 0..cells {
+                for col in 0..cells {
+                    for entry in self.table.at(face, row, col).into_iter().flatten() {
+                        if let PageEntry::Tile { layer, .. } = entry
+                            && let Some(id) = self.layers.holder(layer)
+                        {
+                            named.insert(id);
+                        }
+                    }
+                }
+            }
+        }
+        named.into_iter().collect()
     }
 
     /// Whether `pack`'s tiles are cut the way this table and array take them.
@@ -694,10 +743,10 @@ impl SurfaceTiles {
     }
 
     /// Take what a day or night pack says about its tiles without reading
-    /// any, and rewrite the table. A day pack is the month whose floor is
-    /// drawn from now on, so the day half names its tiles, and the other
-    /// months' ocean is let go of.
-    pub fn add_pack(&mut self, queue: &wgpu::Queue, pack: &Pack) -> Result<(), String> {
+    /// any, beside every other month's, and rewrite the table if the pack is
+    /// one it names: the night, or the day pack of the month in force, which
+    /// [`Self::set_month`] names. Returns whether it rewrote the table.
+    pub fn add_pack(&mut self, queue: &wgpu::Queue, pack: &Pack) -> Result<bool, String> {
         self.accepts(pack)?;
         let tiles = pack
             .entries()
@@ -706,11 +755,6 @@ impl SurfaceTiles {
             .map(|entry| entry.key)
             .collect();
         let kind = pack.kind();
-        if matches!(kind, PackKind::Day(_)) {
-            self.ocean
-                .retain(|other, _| !matches!(other, PackKind::Day(_)));
-            self.day = Some(kind);
-        }
         self.ocean.insert(
             kind,
             OceanCells {
@@ -718,8 +762,11 @@ impl SurfaceTiles {
                 tiles,
             },
         );
-        self.publish(queue);
-        Ok(())
+        let named = kind == PackKind::Night || Some(kind) == self.day();
+        if named {
+            self.publish(queue);
+        }
+        Ok(named)
     }
 
     /// Make `tiles` resident and rewrite the table over them.
@@ -854,7 +901,7 @@ impl SurfaceTiles {
                 ocean: &cells.tiles,
             })
         };
-        let surfaces = [self.day.and_then(surface), surface(PackKind::Night)];
+        let surfaces = [self.day().and_then(surface), surface(PackKind::Night)];
         self.table.rewrite(surfaces, &self.layers, &self.cap);
         let cells = self.table.cells();
         queue.write_texture(

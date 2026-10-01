@@ -196,6 +196,11 @@ fn a_camera_move_brings_its_tiles_in_and_evicts_what_it_needs_room_for() {
     let harness = start(&dir, |config| {
         config.params = africa;
         config.tile_layers = Some(LAYERS);
+        // A clock that stands still, so the move is a jump and never a drag
+        // however soon after the first frame it comes.
+        config.clock = std::sync::Arc::new(sunlit_core::engine::clock::MockClock::new(
+            time::OffsetDateTime::UNIX_EPOCH,
+        ));
     });
     harness.wait_for_textures("the floors");
     let before = settled(&harness, "the tiles over Africa", |r| !r.wanted.is_empty());

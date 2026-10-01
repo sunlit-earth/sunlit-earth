@@ -55,13 +55,23 @@ struct Rig {
 /// `SCREEN`'s size, with everything it wants resident or failed. `prepare`
 /// runs on the scratch directory before the engine starts.
 fn rig(name: &str, params: SceneParams, prepare: impl FnOnce(&ScratchDir)) -> Rig {
+    rig_at(name, params, time::OffsetDateTime::UNIX_EPOCH, prepare)
+}
+
+/// The same, with the mock clock starting at `at`.
+fn rig_at(
+    name: &str,
+    params: SceneParams,
+    at: time::OffsetDateTime,
+    prepare: impl FnOnce(&ScratchDir),
+) -> Rig {
     let dir = ScratchDir::new(name);
     test_support::write_earth_fixture(&dir.join("textures"));
     prepare(&dir);
     let sink = Arc::new(RecordingSink::new(vec![screen(
         "only", 0, SCREEN.0, SCREEN.1, true,
     )]));
-    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let clock = Arc::new(MockClock::new(at));
     let gate = TileGate::default();
     let (sink_for_config, clock_for_config, gate_for_config) =
         (Arc::clone(&sink), Arc::clone(&clock), gate.clone());
@@ -359,7 +369,7 @@ fn a_publish_held_for_a_cube_waits_for_its_tiles_no_longer_than_the_tile_wait() 
 }
 
 /// Every pack of the year, built into `dir`'s cache before the engine starts.
-fn build_every_pack(dir: &ScratchDir) {
+pub(crate) fn build_every_pack(dir: &ScratchDir) {
     let textures = sunlit_core::assets::cube_layout::CubeTextures::resolve(&dir.join("textures"));
     let cancel = std::sync::atomic::AtomicBool::new(false);
     for kind in PackKind::all() {
@@ -402,6 +412,59 @@ fn the_tile_wait_starts_over_when_the_month_in_force_changes() {
     assert!(rig.harness.wait_for_publish().is_ok());
     rig.gate.open();
     assert!(rig.harness.wait_for_publish().is_ok());
+}
+
+/// The live clock crossing into the next month while a publish waits for its
+/// tiles asks for the new month's tiles at once, though no draw follows: the
+/// publish is what sees the change, and it returns without drawing while it
+/// waits. The wallpaper then goes out when they land, drawn from them, and is
+/// not made again. The clock starts two seconds before January hands over to
+/// February, so February's tiles in view of the preview are read ahead as
+/// well; the screen's finer ones are not, and those are what it waits for.
+#[test]
+fn a_live_month_change_during_a_tile_wait_asks_for_the_new_months_tiles() {
+    let _gpu = gpu();
+    let before_noon = time::OffsetDateTime::UNIX_EPOCH
+        + time::Duration::seconds(15 * 86_400 + 11 * 3600 + 59 * 60 + 58);
+    let mut params = view();
+    params.datetime.use_custom = false;
+    let rig = rig_at(
+        "engine_ready_live_month",
+        params,
+        before_noon,
+        build_every_pack,
+    );
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    assert!(
+        before.wanted[..before.in_view]
+            .iter()
+            .all(|id| id.pack == PackKind::Day(0)),
+        "the premise: January in force"
+    );
+    ask_with_the_gate_shut(&rig, &before);
+
+    rig.harness.advance(&rig.clock, Duration::from_secs(3));
+    rig.harness.settle();
+    let report = tile_report(&rig.harness);
+    assert!(
+        report.wanted[..report.in_view]
+            .iter()
+            .any(|id| id.pack == PackKind::Day(1) && id.key.level == finest()),
+        "the screen's February tiles are not wanted after the crossing: {report:#?}"
+    );
+    assert!(rig.sink.publications().is_empty());
+
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+    rig.harness.advance(&rig.clock, TILE_WAIT);
+    rig.harness.settle();
+    assert_eq!(
+        rig.sink.publications().len(),
+        1,
+        "it went out without its tiles and was made again"
+    );
 }
 
 /// Every publish waits for its tiles from its own request: a second one, made
@@ -563,6 +626,7 @@ fn the_tiles_of_a_waiting_publish_come_first() {
             export: true,
         }],
         month,
+        ahead: None,
         surfaces: Surfaces::Day,
         finest: finest(),
         drag: None,

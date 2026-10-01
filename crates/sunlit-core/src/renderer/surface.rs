@@ -194,10 +194,14 @@ pub(super) struct SurfaceSet {
     pub formats: SurfaceFormats,
     /// The month in force, January 0.
     pub month: usize,
-    /// The day floor last made resident and its month. It is drawn until the
-    /// floor of the month in force replaces it, which is a truer picture than
-    /// the grid while that one builds.
-    pub day: Option<(usize, ResidentCube)>,
+    /// The day floor of every month whose pack has landed, January first.
+    /// They all stay resident (plan decision 4), so a date in any of them is
+    /// drawn from its own floor the moment it names it.
+    pub days: [Option<ResidentCube>; 12],
+    /// The month whose day floor is drawn: the month in force once its floor
+    /// is resident, and until then the one drawn before, which is a truer
+    /// picture than the grid while the month in force's pack builds.
+    pub drawn: Option<usize>,
     pub night: Option<ResidentCube>,
     pub mask: Option<ResidentCube>,
     failed: Vec<SurfaceLayer>,
@@ -214,7 +218,8 @@ impl SurfaceSet {
         Self {
             formats,
             month,
-            day: None,
+            days: std::array::from_fn(|_| None),
+            drawn: None,
             night: None,
             mask: None,
             failed: Vec::new(),
@@ -225,9 +230,52 @@ impl SurfaceSet {
         }
     }
 
+    /// Make `month` the month in force. Returns whether the day floor drawn
+    /// changed, which it does at once when that month's floor is resident.
+    pub(super) fn set_month(&mut self, month: usize) -> bool {
+        self.month = month;
+        self.draw_the_month_in_force()
+    }
+
+    /// Hold `cube` as the floor of `layer`. Returns whether the day floor
+    /// drawn changed: the month in force's has come, or the first of any.
+    pub(super) fn hold(&mut self, layer: SurfaceLayer, cube: ResidentCube) -> bool {
+        match layer {
+            SurfaceLayer::Day(month) => {
+                self.days[month] = Some(cube);
+                let first = self.drawn.is_none();
+                if first {
+                    self.drawn = Some(month);
+                }
+                self.draw_the_month_in_force() || first
+            }
+            SurfaceLayer::Night => {
+                self.night = Some(cube);
+                false
+            }
+            SurfaceLayer::Mask => {
+                self.mask = Some(cube);
+                false
+            }
+        }
+    }
+
+    fn draw_the_month_in_force(&mut self) -> bool {
+        let changed = self.days[self.month].is_some() && self.drawn != Some(self.month);
+        if changed {
+            self.drawn = Some(self.month);
+        }
+        changed
+    }
+
+    /// The day floor drawn.
+    pub(super) fn drawn_day(&self) -> Option<&ResidentCube> {
+        self.days[self.drawn?].as_ref()
+    }
+
     pub(super) fn state(&self, layer: SurfaceLayer) -> LayerState {
         let resident = match layer {
-            SurfaceLayer::Day(month) => self.day.as_ref().is_some_and(|(m, _)| *m == month),
+            SurfaceLayer::Day(month) => self.days.get(month).is_some_and(Option::is_some),
             SurfaceLayer::Night => self.night.is_some(),
             SurfaceLayer::Mask => self.mask.is_some(),
         };
@@ -282,15 +330,14 @@ impl SurfaceSet {
     /// Every texture held, the cubes, the page table and the tile array, with
     /// the label it carries.
     pub(super) fn resident(&self) -> impl Iterator<Item = (&'static str, &wgpu::Texture)> {
-        let day = self
-            .day
-            .as_ref()
-            .map(|(month, cube)| (SurfaceLayer::Day(*month), cube));
+        let days = self
+            .days
+            .iter()
+            .enumerate()
+            .filter_map(|(month, cube)| Some((SurfaceLayer::Day(month), cube.as_ref()?)));
         let night = self.night.as_ref().map(|cube| (SurfaceLayer::Night, cube));
         let mask = self.mask.as_ref().map(|cube| (SurfaceLayer::Mask, cube));
-        [day, night, mask]
-            .into_iter()
-            .flatten()
+        days.chain([night, mask].into_iter().flatten())
             .map(|(layer, cube)| (layer.label(), &cube.texture))
             .chain(self.tiles.iter().flat_map(SurfaceTiles::textures))
     }

@@ -445,6 +445,8 @@ fn lowering_the_resolution_releases_the_tile_array() {
         };
     });
     harness.wait_for_textures("at 8192");
+    // Every month's floor first, so none lands between the two reports.
+    crate::months::wait_for_every_floor(&harness, None);
     harness.export(3840, 2160);
     let loaded = settled(&harness, "at 8192", |r| !r.resident.is_empty());
     let wide = harness.engine.memory_report().expect("a report");
@@ -485,14 +487,15 @@ fn lowering_the_resolution_releases_the_tile_array() {
         "the array survived the switch:\n{narrow}"
     );
     assert!(
-        narrow.expected_bytes() + array <= wide.expected_bytes(),
+        crate::memory::but_the_day_floors(&narrow) + array
+            <= crate::memory::but_the_day_floors(&wide),
         "the computed total should fall by the array's {:.1} MiB",
         mib(array)
     );
-    assert_eq!(
-        expected_widths(&narrow, "day_floor"),
-        [tiles::GEOMETRY.floor],
-        "the floors stay"
+    let days = expected_widths(&narrow, "day_floor");
+    assert!(
+        !days.is_empty() && days.iter().all(|&width| width == tiles::GEOMETRY.floor),
+        "the floors stay: {days:?}"
     );
 
     let (Ok(wide_measured), Ok(narrow_measured)) = (

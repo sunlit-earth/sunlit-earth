@@ -70,11 +70,19 @@ pub(super) trait TileTarget {
     fn evict(&mut self, tiles: &[TileId]);
     fn set_cap(&mut self, cap: CellLevels);
     fn purge(&mut self);
+    /// The tiles the page table names.
+    fn named(&self) -> Vec<TileId> {
+        Vec::new()
+    }
 }
 
 impl TileTarget for Renderer {
     fn layers(&self) -> Option<&TileLayers> {
         self.tile_layers()
+    }
+
+    fn named(&self) -> Vec<TileId> {
+        self.named_tiles()
     }
 
     fn upload(&mut self, tiles: Vec<TileUpload>) -> Vec<(TileId, String)> {
@@ -102,6 +110,9 @@ pub(super) struct View<'a> {
     pub outputs: &'a [Output],
     /// The month in force, January 0.
     pub month: usize,
+    /// The month across a hand-over that is near, whose day tiles in view
+    /// are read after everything else (`scene::month::month_ahead`).
+    pub ahead: Option<usize>,
     /// `None` for the grid, which draws no tile.
     pub surfaces: Option<Surfaces>,
     /// The resolution setting, which caps the finest level.
@@ -210,6 +221,9 @@ pub struct TileReport {
     pub beyond: usize,
     pub resident: Vec<TileId>,
     pub failed: Vec<TileId>,
+    /// The tiles the page table names, in either half, which are what the
+    /// preview is drawn from.
+    pub named: Vec<TileId>,
     /// Results the engine has taken from the workers.
     pub reads: u64,
     /// How many times the tile array was purged.
@@ -488,6 +502,7 @@ struct TickSpend {
 struct Inputs {
     outputs: Vec<Output>,
     month: usize,
+    ahead: Option<usize>,
     surfaces: Option<Surfaces>,
     finest: u8,
     drag: Option<Drag>,
@@ -561,18 +576,14 @@ impl TileLoader {
         }
     }
 
-    /// Read `kind`'s tiles from `pack` from now on: a pack that landed, or a
-    /// month whose floor is drawn again. A day pack closes every other month's,
-    /// whose tiles the page table no longer names. Tiles that failed in the
-    /// pack's previous opening are tried again.
+    /// Read `kind`'s tiles from `pack` from now on: a pack that landed. Every
+    /// pack stays open, so the month ahead's tiles can be read before its
+    /// hand-over and any month's the moment the date names it. Tiles that
+    /// failed in the pack's previous opening are tried again.
     pub(super) fn open(&mut self, pack: Arc<Pack>) {
         let kind = pack.kind();
         self.generations += 1;
         let generation = self.generations;
-        if matches!(kind, PackKind::Day(_)) {
-            self.packs
-                .retain(|other, _| !matches!(other, PackKind::Day(_)) || *other == kind);
-        }
         self.failed.retain(|id| id.pack != kind);
         self.packs.insert(kind, OpenPack { pack, generation });
         self.shared.lock().packs = self
@@ -582,11 +593,6 @@ impl TileLoader {
             .collect();
         self.inputs = None;
         debug!(?kind, generation, "the tile loader opened a pack");
-    }
-
-    /// Whether `kind`'s tiles are read from an open pack.
-    pub(super) fn holds(&self, kind: PackKind) -> bool {
-        self.packs.contains_key(&kind)
     }
 
     /// How many times a pack has been opened for its tiles.
@@ -602,6 +608,7 @@ impl TileLoader {
         let inputs = Inputs {
             outputs: view.outputs.to_vec(),
             month: view.month,
+            ahead: view.ahead,
             surfaces: view.surfaces,
             finest: finest_allowed(&geometry, view.texture_resolution),
             drag: view.drag,
@@ -620,6 +627,7 @@ impl TileLoader {
                 self.residency.wanted(&Request {
                     outputs: &inputs.outputs,
                     month: inputs.month,
+                    ahead: inputs.ahead,
                     surfaces,
                     finest: inputs.finest,
                     drag: inputs.drag,
@@ -690,6 +698,7 @@ impl TileLoader {
         let own = self.residency.wanted(&Request {
             outputs: std::slice::from_ref(output),
             month: inputs.month,
+            ahead: None,
             surfaces,
             finest: inputs.finest,
             drag: None,
@@ -950,6 +959,8 @@ impl TileLoader {
         resident.sort_by_key(|id| (pack_order(id.pack), id.key));
         let mut failed: Vec<TileId> = self.failed.iter().copied().collect();
         failed.sort_by_key(|id| (pack_order(id.pack), id.key));
+        let mut named = target.named();
+        named.sort_by_key(|id| (pack_order(id.pack), id.key));
         TileReport {
             capacity: layers.map_or(0, TileLayers::capacity),
             wanted: self.taken.clone(),
@@ -957,6 +968,7 @@ impl TileLoader {
             beyond: self.beyond,
             resident,
             failed,
+            named,
             reads: self.reads,
             epoch: self.epoch,
             dragging: self

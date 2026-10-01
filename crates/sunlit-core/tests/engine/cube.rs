@@ -109,10 +109,17 @@ fn the_first_frame_packs_make_the_textures_ready() {
         ("water_mask", tiles::FIXTURE.mask),
     ] {
         let found = rows(&report, label);
-        assert_eq!(found.len(), 1, "{label} is resident once:\n{report}");
-        assert_eq!(
-            (found[0].width, found[0].layers),
-            (width, 6),
+        // The other months' day floors join March's as their packs land.
+        let resident = if label == "day_floor" { 1..=12 } else { 1..=1 };
+        assert!(
+            resident.contains(&found.len()),
+            "{label} is resident {} times:\n{report}",
+            found.len()
+        );
+        assert!(
+            found
+                .iter()
+                .all(|texture| (texture.width, texture.layers) == (width, 6)),
             "{label} is a cube of the fixture's size"
         );
     }
@@ -221,7 +228,7 @@ fn a_publish_at_startup_waits_for_the_first_frame_packs() {
                     "the wallpaper went out before the packs landed"
                 );
                 let report = harness.engine.memory_report().expect("a report");
-                assert_eq!(rows(&report, "day_floor").len(), 1, "{report}");
+                assert!(!rows(&report, "day_floor").is_empty(), "{report}");
                 assert_eq!(sink.publications().len(), 1);
                 return;
             }

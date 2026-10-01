@@ -368,58 +368,70 @@ impl Renderer {
             .is_some_and(|surface| surface.readiness(mode).1)
     }
 
-    /// Make `month`, January 0, the one the surface is ready for. Its floor
-    /// is what readiness asks for from now on, and the floor already resident
-    /// is drawn until that one is handed over.
+    /// Make `month`, January 0, the month in force: its floor is what
+    /// readiness asks for from now on, and the page table's day half names its
+    /// tiles and no other month's. Its floor is drawn at once when it is
+    /// resident, and the floor drawn until now stays until it is.
     pub(crate) fn set_surface_month(&mut self, month: usize) {
-        if let Some(surface) = &mut self.surface {
-            surface.month = month;
+        let Some(surface) = &mut self.surface else {
+            return;
+        };
+        let floor = surface.set_month(month);
+        let table = surface
+            .tiles
+            .as_mut()
+            .is_some_and(|tiles| tiles.set_month(&self.queue, month));
+        if floor {
+            self.rebuild_surface_groups();
+        }
+        if floor || table {
+            self.texture_dirty = true;
         }
     }
 
-    /// Whether `layer` is resident.
-    pub(crate) fn surface_resident(&self, layer: SurfaceLayer) -> bool {
-        self.surface
-            .as_ref()
-            .is_some_and(|surface| surface.state(layer) == surface::LayerState::Resident)
-    }
-
-    /// Make `layer` resident from its pack, replacing the day floor of another
-    /// month, and redraw on the next frame. A layer already resident is left
-    /// as it is.
+    /// Make `layer` resident from its pack, beside the floors of the other
+    /// months, and redraw on the next frame if what the frame draws changed.
+    /// A layer already resident is left as it is. Returns whether the frame
+    /// draws differently: the night or the mask, the floor of the month in
+    /// force, or the first day floor of all.
     pub(crate) fn install_surface(
         &mut self,
         layer: SurfaceLayer,
         pack: &Pack,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let Some(surface) = self.surface.as_mut() else {
             return Err("the globe is not drawn from the cube surface".to_owned());
         };
         if surface.state(layer) == surface::LayerState::Resident {
-            return Ok(());
+            return Ok(false);
         }
-        let tiled = layer != SurfaceLayer::Mask;
-        if tiled && let Some(tiles) = &surface.tiles {
+        let has_tiles = layer != SurfaceLayer::Mask;
+        if has_tiles && let Some(tiles) = &surface.tiles {
             tiles.accepts(pack)?;
         }
         let texture =
             surface::cube_from_pack(&self.device, &self.queue, layer, pack, surface.formats)?;
-        let cube = ResidentCube::new(texture);
-        match layer {
-            SurfaceLayer::Day(month) => surface.day = Some((month, cube)),
-            SurfaceLayer::Night => surface.night = Some(cube),
-            SurfaceLayer::Mask => surface.mask = Some(cube),
-        }
-        if tiled && let Some(tiles) = &mut surface.tiles {
-            tiles.add_pack(&self.queue, pack)?;
-        }
+        let floor = surface.hold(layer, ResidentCube::new(texture));
+        let table = match &mut surface.tiles {
+            Some(tiles) if has_tiles => tiles.add_pack(&self.queue, pack)?,
+            _ => false,
+        };
+        // The cube's levels are staged until a submit; this one carries them
+        // now rather than holding them until the next frame, which an idle
+        // engine may not draw for minutes.
+        self.queue.submit(std::iter::empty());
         let _ = self.device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: None,
         });
-        self.rebuild_surface_groups();
-        self.texture_dirty = true;
-        Ok(())
+        let drawn = floor || !matches!(layer, SurfaceLayer::Day(_));
+        if drawn {
+            self.rebuild_surface_groups();
+        }
+        if drawn || table {
+            self.texture_dirty = true;
+        }
+        Ok(drawn || table)
     }
 
     /// Record that `layer`'s pack failed, so nothing waits for it.
@@ -491,6 +503,15 @@ impl Renderer {
             .map(SurfaceTiles::layers)
     }
 
+    /// The tiles the page table names in either half, each once.
+    pub(crate) fn named_tiles(&self) -> Vec<TileId> {
+        self.surface
+            .as_ref()
+            .and_then(|surface| surface.tiles.as_ref())
+            .map(SurfaceTiles::named)
+            .unwrap_or_default()
+    }
+
     /// What the frame's uniforms need of the tiles: the ocean colors of the
     /// packs the page table draws from, and a tile's sizes.
     fn tile_uniforms(&self) -> render_pass::TileUniforms {
@@ -524,7 +545,7 @@ impl Renderer {
                 ]
             },
         );
-        let day = surface.day.as_ref().map(|(_, cube)| &cube.view);
+        let day = surface.drawn_day().map(|cube| &cube.view);
         let night = surface.night.as_ref().map(|cube| &cube.view);
         let mask = surface.mask.as_ref().map_or(dummy, |cube| &cube.view);
         let group = |cubes, label| self.cube_bind_group(cubes, tiles, label);

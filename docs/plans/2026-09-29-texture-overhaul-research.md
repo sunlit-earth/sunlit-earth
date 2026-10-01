@@ -874,3 +874,41 @@ The time for all twelve on the Radeon is the two seconds of the busy span and th
 On a GPU the twelve floors and the night's are decision 4's 26 MiB, the counter is a little above the computed total as it is everywhere (section 24), and the floors are not process memory. On WARP the counter follows the computed total to within 0.7 MiB, but the private bytes rose by 256.5 MiB in one step, at the third floor of the queue, and by nothing at the other ten installs. The memory report's allocator section says why: wgpu's default `MemoryHints::Performance` has the D3D12 allocator take device memory in blocks of 128 to 256 MiB, and on a CPU adapter those are committed process memory; at the first frame 109.4 MiB was allocated in 256 MiB reserved, three blocks, and with the twelve floors 198.1 MiB in 512 MiB, four. The buffers stayed at 1.5 MiB, so no staging outlived its install (`install_surface` submits its upload and waits for it), and ten seconds and three frames later the private bytes were 882.3 MiB, so nothing was waiting for a later submit either. So a CPU adapter keeps the month in force's floor and the month ahead's (plan departure 35): with that the private bytes stayed at 626.4 MiB through a change of month, the allocations at 109.4 MiB in the first 256 MiB, and an export whose date named another month took 265 ms against 63 ms for one in the same month, the difference being that month's floor made resident in the frame that named it. A smaller block size (`MemoryHints::MemoryUsage`, 8 to 64 MiB) would shrink such steps for every texture on a CPU adapter; it was not measured.
 
 The month ahead (plan departure 34) is read within a day of a hand-over. The live clock moves at a second a second, and the engine draws at least every `SKY_INTERVAL`, two minutes, while the date is live, so the month ahead joins the set no later than two minutes into the day before its hand-over, and its tiles in view take a frame on a GPU and about a second on WARP to be read (sections 24 and 25); the custom date moves only when a slider does, a day a step of the day slider and less along the hour slider. Near a hand-over the set holds up to twice the day's tiles in view, 1,078 at the worst 4K frame on a GPU (section 23), and past the 900 layers what is left is the month ahead's, which comes last.
+
+## 27. Step 6: memory on the cube surface
+
+Measured on 2026-10-01 on the machine of section 19.3 and in the two e2e guests [M].
+
+**The memory hint on a CPU adapter** (plan departure 38). A real engine over the shipped packs (`t6/hints-bench` in the run directory, a release build with debug assertions), 1920 x 1088 preview at the 8192 setting in blend mode, the hint switched by a throwaway edit of `wgpu_init.rs`, two runs each, each figure the two runs' range:
+
+| WARP, private bytes | `Performance` (wgpu's default) | `MemoryUsage` |
+|---|---|---|
+| First frame | 634 to 637 MiB (256 MiB reserved, 3 blocks) | 606 to 608 MiB (200 MiB reserved, 6 blocks) |
+| Idle, the CPU adapter's two floors | 634 to 636 MiB | 578 to 580 MiB |
+| After a change of month | 650 to 652 MiB | 603 to 604 MiB |
+| Idle, every month's floor | 890 to 892 MiB (512 MiB reserved, 4 blocks) | 642 MiB (264 MiB reserved, 7 blocks) |
+| Preview frame, median of 15 | 59.2 to 60.6 ms | 59.1 to 59.9 ms |
+| 1920 x 1088 export, median of 7 | 59.7 to 60.0 ms | 59.8 to 61.6 ms |
+
+The allocations themselves are the same either way (109.4 MiB at the first frame, 198.1 MiB with the twelve floors); the hint moves only what the allocator holds around them, which on a CPU adapter is committed process memory. So a CPU adapter's device asks for `MemoryUsage`, and a GPU, whose device memory is not the process's, keeps the default.
+
+**The release app** (`t6/measure.ps1`): the release binary at dd94d90, `--mode window --texture-resolution 8192`, its config, cache and metrics in the run directory, the private bytes sampled every 100 ms from outside and `PeakPagefileUsage` read before it quits. The sandbox has no network, so the cloud image came from a copy of an 8192 x 4096 cloud cache entry placed in the empty cache directory, which the app posts at startup as it would after a download; "cold" is a cache directory with no packs, so the app builds all fourteen, "warm" the same directory again:
+
+| Run | Peak private | When | Year built | Settled private |
+|---|---|---|---|---|
+| RX 6800 XT (Vulkan), cold, no cloud image | 772 MiB | 1.6 s | 66.9 s | 501 MiB |
+| RX 6800 XT, cold | 1097 MiB | 1.4 s | 64.7 s | 727 MiB |
+| RX 6800 XT, warm | 1032 MiB | 1.2 s | | 724 MiB |
+| WARP, cold | 1096 MiB | 1.6 s | 64.3 s | 630 MiB |
+| WARP, warm | 1140 MiB | 1.8 s | | 674 MiB |
+
+The peak comes in the first two seconds whether or not anything is built: it is the startup's decodes, the cloud image's 8192 x 4096 among them, about 325 MiB of the GPU's peak. The first frame's packs build while the startup's decodes settle, and with the cloud image reached 1021 to 1062 MiB around 6 to 7 s, under the peak; the rest of the year then runs at 530 to 689 MiB on the GPU without the cloud image, 740 to 921 with it, and 661 to 823 on WARP, its decoded faces freed with each pack, and the footprint drops by about 130 MiB when the last pack is written. Against the flat path's 2488 MiB cold start, measured the same way, the cube surface's is 1140 MiB at the most, and `memory.rs` takes that as `MEASURED_COLD_START_PEAK`. `COLD_START_BYTES`, what a launch costs before any surface texture or cloud image is resident, is 1 GiB: 772 MiB on the GPU without the cloud image, and on WARP 1140 MiB less the 311 MiB of textures the budget counts for 8192, 829 MiB, rounded up. With the headroom of 512 MiB the budget is 1591 MiB at 2048, 1719 at 4096 and 1847 at 8192, clearing the peak by 451 MiB at the narrow end and staying 433 MiB under twice it at the wide one (testing.md).
+
+**The guests**, through a throwaway e2e case that ran the debug app the suite runs, with no cloud image, at the 8192 setting and the window's own 576 x 576 preview, first on an empty cache until the year was built and 30 s more, then twice each warm with every month's floor and with the CPU adapter's two (`EngineConfig::every_floor` set from an environment variable in a throwaway build):
+
+| Guest | Cold: peak private, year built, settled | Warm, two floors | Warm, every floor |
+|---|---|---|---|
+| Windows 11, WARP | 428 MiB, 257 s, 245 MiB | 257, 257 MiB | 384, 387 MiB |
+| Debian 13, lavapipe | 533 MiB, 236 s, 374 MiB | 314, 315 MiB | 427, 428 MiB |
+
+With the hint the twelve floors cost 128 MiB in the Windows guest and 113 MiB in the Linux one, their allocators' reserves going from 140 to 268 MiB and from 111 to 239 MiB, against the 62 MiB measured here, where the reserve at the first frame had room; the CPU adapter keeps its two floors (plan departure 35). The e2e suite's render case, an 800 x 800 render from an empty cache that builds the first frame's packs, peaked at 504 MB of RSS in the Linux guest and ended at 492 MB, against 2088 and 444 on the flat path (testing.md).

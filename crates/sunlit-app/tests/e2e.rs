@@ -95,16 +95,17 @@ fn test_binary_exists() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_render_and_exit() {
-    /// A cold-cache 800x800 render, surface texture decode included, on the
-    /// software adapter of a guest.
+    /// A cold-cache 800x800 render, the first frame's tile packs built
+    /// included, on the software adapter of a guest.
     const RENDER: Duration = Duration::from_mins(1);
 
     let temp_dir = TempDirGuard::new();
     let output_path = temp_dir.path().join("render.png");
     let config_path = fixture("e2e_config.toml");
-    // A cache directory of its own, so this case pays the texture decode rather
-    // than inheriting a warm cache from whichever case ran first. The memory
-    // profile asserted on below is the profile of a run that decodes.
+    // A cache directory of its own, so this case builds the first frame's tile
+    // packs rather than inheriting a warm cache from whichever case ran first.
+    // The memory profile asserted on below is the profile of a run that builds
+    // them.
     let cache_dir = temp_dir.path().join("cache");
 
     // The render subcommand is the one start with no socket to answer on, so it
@@ -206,15 +207,20 @@ fn test_render_and_exit() {
     }
 
     let peak = mem.iter().map(|e| e.peak_rss_mb).fold(0.0f64, f64::max);
+    let exit = mem.iter().rev().find(|e| e.context == "before exit");
+    println!(
+        "render: peak RSS {peak:.0} MB, RSS at exit {} MB",
+        exit.map_or_else(|| "unknown".to_owned(), |e| format!("{:.0}", e.rss_mb))
+    );
     assert!(
-        peak < 3000.0,
-        "peak RSS too high: {peak:.0} MB (expected < 3000 MB)"
+        peak < 800.0,
+        "peak RSS too high: {peak:.0} MB (expected < 800 MB)"
     );
 
-    if let Some(entry) = mem.iter().rev().find(|e| e.context == "before exit") {
+    if let Some(entry) = exit {
         assert!(
-            entry.rss_mb < 1000.0,
-            "exit memory too high: {:.0} MB (expected < 1000 MB)",
+            entry.rss_mb < 800.0,
+            "exit memory too high: {:.0} MB (expected < 800 MB)",
             entry.rss_mb
         );
         // Only where there was something to settle. `peak_rss_mb` is this

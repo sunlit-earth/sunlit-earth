@@ -74,25 +74,43 @@ impl Engine {
     ///
     /// Held back too while a tile the wallpaper's renders want is on its way,
     /// since those cells would draw the floor, but for [`TILE_WAIT`] at the
-    /// most: after that it goes out with what is resident, says so in the
-    /// log, and is made again once the tiles are resident. The renders join
-    /// the wanted set at its front from the moment they are planned.
+    /// most, counted from when the cubes are resident: after that it goes out
+    /// with what is resident, says so in the log, and is made again once the
+    /// tiles are resident. The renders join the wanted set at its front from
+    /// the moment they are planned, while a cube is still on its way too.
     ///
     /// One request is remembered, not a queue of them: two wallpaper updates
     /// asked for during one reload are the same wallpaper.
     pub(super) fn publish_wallpaper(&mut self) {
+        self.publish(false);
+    }
+
+    /// Publish the wallpaper owed or asked for when the engine stops, with
+    /// what is resident: there is no tick left to wait for tiles in. A cube
+    /// still on its way holds it back as ever, since the globe would be the
+    /// grid.
+    pub(super) fn publish_wallpaper_at_exit(&mut self) {
+        self.publish(true);
+    }
+
+    fn publish(&mut self, exiting: bool) {
         // The month is judged before the textures are: a publish can arrive
         // in a tick with nothing dirty, after the date crossed into the next
         // month, and would otherwise find the old month's floor ready.
         self.sync_month();
+        let now = self.clock.elapsed();
+        let cubes_pending = self.renderer.textures_pending(self.params.texture_index);
+        if cubes_pending {
+            self.tiles_awaited_since = None;
+        }
 
-        // A debt that already stands has had its support answer, and the only
-        // thing left that can change is whether the textures have landed. `tick`
-        // comes back here every 50 ms until it is paid, and on Linux
-        // `check_supported` walks `PATH` with a stat per directory.
+        // A debt that already stands has had its support answer and its plan,
+        // and the only thing left that can change is whether what it waits
+        // for has landed. `tick` comes back here every 50 ms until it is
+        // paid, and on Linux `check_supported` walks `PATH` with a stat per
+        // directory.
         if self.wallpaper_owed
-            && (self.renderer.textures_pending(self.params.texture_index)
-                || (self.tiles_pending() && !self.tiles_waited_out()))
+            && (cubes_pending || (!exiting && self.shots_pending() && !self.tiles_waited_out(now)))
         {
             return;
         }
@@ -107,14 +125,6 @@ impl Engine {
             return;
         }
 
-        if self.renderer.textures_pending(self.params.texture_index) {
-            if !self.wallpaper_owed {
-                info!("wallpaper update deferred until the textures have loaded");
-            }
-            self.wallpaper_owed = true;
-            return;
-        }
-
         let plan = match self.plan_wallpaper() {
             Ok(plan) => plan,
             Err(e) => {
@@ -123,13 +133,24 @@ impl Engine {
             }
         };
         self.wallpaper_shots.clone_from(&plan.shots);
+        if cubes_pending {
+            if !self.wallpaper_owed {
+                info!("wallpaper update deferred until the textures have loaded");
+            }
+            self.wallpaper_owed = true;
+            self.want_now();
+            return;
+        }
         // Draws, and with it computes the wanted set with the plan's renders.
         self.prepare_export();
-        let missing = self.tiles_pending();
-        if missing {
-            let now = self.clock.elapsed();
-            let since = *self.tiles_awaited_since.get_or_insert(now);
-            if now.saturating_sub(since) < TILE_WAIT {
+        let missing = self.shots_pending();
+        if missing && exiting {
+            warn!(
+                "the tiles the wallpaper shows are not all resident as the engine stops; it \
+                 goes out with what is resident in their place"
+            );
+        } else if missing {
+            if !self.tiles_waited_out(now) {
                 if !self.wallpaper_owed {
                     info!("wallpaper update deferred until the tiles it shows are resident");
                 }
@@ -155,10 +176,51 @@ impl Engine {
         }
     }
 
-    /// Whether the wallpaper owed has waited [`TILE_WAIT`] for its tiles.
-    fn tiles_waited_out(&self) -> bool {
-        self.tiles_awaited_since
-            .is_some_and(|since| self.clock.elapsed().saturating_sub(since) >= TILE_WAIT)
+    /// Whether the wallpaper owed has waited [`TILE_WAIT`] for its tiles by
+    /// `now`. The wait starts the first time this asks with the cubes
+    /// resident, and starts over when a pack is opened for its tiles since,
+    /// a new month's floor or the month's again, since those tiles could not
+    /// be read before (plan departure 30).
+    fn tiles_waited_out(&mut self, now: Duration) -> bool {
+        let opened = self
+            .surface
+            .as_ref()
+            .map_or(0, super::surface::SurfaceFeed::packs_opened);
+        let since = match self.tiles_awaited_since {
+            Some((since, at)) if at == opened => since,
+            _ => {
+                self.tiles_awaited_since = Some((now, opened));
+                now
+            }
+        };
+        now.saturating_sub(since) >= TILE_WAIT
+    }
+
+    /// Whether a tile one of the wallpaper's renders wants in view is on its
+    /// way, or the wanted set in force was computed without them.
+    pub(super) fn shots_pending(&self) -> bool {
+        let Some(surface) = &self.surface else {
+            return false;
+        };
+        self.wallpaper_shots.iter().any(|shot| {
+            let framed = shot.framing.applied_to(&self.params);
+            let output = tile_output(&framed, shot.width, shot.height, true);
+            surface
+                .missing_for(&output, &self.renderer)
+                .is_none_or(|missing| missing > 0)
+        })
+    }
+
+    /// Whether a tile `export`'s render wants in view is on its way, or the
+    /// wanted set in force was computed without it.
+    fn export_pending(&self, export: &WaitingExport) -> bool {
+        let Some(surface) = &self.surface else {
+            return false;
+        };
+        let output = tile_output(&self.params, export.width, export.height, true);
+        surface
+            .missing_for(&output, &self.renderer)
+            .is_none_or(|missing| missing > 0)
     }
 
     /// Report a finished publish attempt and settle the debt for it, and for
@@ -402,7 +464,7 @@ impl Engine {
         self.settle_exports();
     }
 
-    /// Answer every waiting export whose tiles are resident, or that has
+    /// Answer every waiting export whose own tiles are resident, or that has
     /// waited [`TILE_WAIT`] for them.
     pub(super) fn settle_exports(&mut self) {
         if self.exports.is_empty() {
@@ -411,13 +473,19 @@ impl Engine {
         // Draws, and with it computes the wanted set with every waiting
         // export's output.
         self.prepare_export();
-        let pending = self.tiles_pending();
         let now = self.clock.elapsed();
-        let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.exports)
+        let exports: Vec<_> = std::mem::take(&mut self.exports)
             .into_iter()
-            .partition(|export| !pending || now.saturating_sub(export.since) >= TILE_WAIT);
-        self.exports = waiting;
-        for export in due {
+            .map(|export| {
+                let pending = self.export_pending(&export);
+                (export, pending)
+            })
+            .collect();
+        for (export, pending) in exports {
+            if pending && now.saturating_sub(export.since) < TILE_WAIT {
+                self.exports.push(export);
+                continue;
+            }
             if pending {
                 warn!(
                     width = export.width,

@@ -46,13 +46,16 @@ use crate::thread_priority;
 
 /// Bytes of tiles the engine hands the queue per tick, and at least one tile:
 /// about 160 BC7 tiles, 1.7 ms through this machine's GPU, or 40 RGBA8 ones,
-/// about 96 ms through WARP (research section 24).
+/// about 96 ms through WARP (research section 24). Every drain of a tick
+/// shares it: the tick's own, and those of the exports and the publishes
+/// made in it.
 const UPLOAD_BUDGET: usize = 4 << 20;
 
-/// How long a drain may wait for the workers to hand back more while its
-/// budget is not spent and a tile is still being read. The channel holds a
-/// few tiles, so a drain that took only what was queued would stop far short
-/// of the budget; the workers refill it within microseconds a tile.
+/// How long the drains of a tick may wait for the workers, between them, to
+/// hand back more while the budget is not spent and a tile is still being
+/// read. The channel holds a few tiles, so a drain that took only what was
+/// queued would stop far short of the budget; the workers refill it within
+/// microseconds a tile.
 const DRAIN_WAIT: Duration = Duration::from_millis(4);
 
 /// Results in flight per worker: one being handed over while the next is read.
@@ -464,6 +467,19 @@ pub(super) struct TileLoader {
     /// published again.
     republish: bool,
     reads: u64,
+    /// [`UPLOAD_BUDGET`], which the tests of this module lower.
+    budget: usize,
+    /// What the drains of the tick in progress have spent between them.
+    tick: TickSpend,
+}
+
+/// What the drains of one tick have spent of its budget and its wait.
+#[derive(Debug, Default)]
+struct TickSpend {
+    /// Bytes handed to the queue.
+    bytes: usize,
+    /// Until when a drain may wait for the workers, set by the tick's first.
+    deadline: Option<Instant>,
 }
 
 /// The inputs of one computation, compared whole to decide whether the next
@@ -540,6 +556,8 @@ impl TileLoader {
             failed: HashSet::new(),
             republish: false,
             reads: 0,
+            budget: UPLOAD_BUDGET,
+            tick: TickSpend::default(),
         }
     }
 
@@ -569,6 +587,11 @@ impl TileLoader {
     /// Whether `kind`'s tiles are read from an open pack.
     pub(super) fn holds(&self, kind: PackKind) -> bool {
         self.packs.contains_key(&kind)
+    }
+
+    /// How many times a pack has been opened for its tiles.
+    pub(super) fn packs_opened(&self) -> u64 {
+        self.generations
     }
 
     /// Compute the wanted set for `view` if anything it depends on changed
@@ -639,7 +662,7 @@ impl TileLoader {
 
     /// How many tiles of the set in force the frame needs in view that are
     /// neither resident nor failed: tiles on their way, or about to be.
-    pub(super) fn missing(&self, target: &impl TileTarget) -> usize {
+    fn missing(&self, target: &impl TileTarget) -> usize {
         let layers = target.layers();
         self.taken[..self.in_view]
             .iter()
@@ -648,6 +671,41 @@ impl TileLoader {
                     && layers.is_none_or(|layers| layers.layer_of(**id).is_none())
             })
             .count()
+    }
+
+    /// How many tiles `output` alone needs in view that the set in force took
+    /// and that are neither resident nor failed: those an export of it waits
+    /// for. A tile the set left for want of layers never lands and does not
+    /// count (plan departure 22). `None` when the set in force was not
+    /// computed for `output`, which only a draw can answer.
+    pub(super) fn missing_for(&self, output: &Output, target: &impl TileTarget) -> Option<usize> {
+        let inputs = self
+            .inputs
+            .as_ref()
+            .filter(|inputs| inputs.outputs.contains(output))?;
+        let Some(surfaces) = inputs.surfaces else {
+            return Some(0);
+        };
+        let stored = |id: TileId| self.packs.get(&id.pack).is_some_and(|open| open.stores(id));
+        let own = self.residency.wanted(&Request {
+            outputs: std::slice::from_ref(output),
+            month: inputs.month,
+            surfaces,
+            finest: inputs.finest,
+            drag: None,
+            anisotropy: self.anisotropy,
+            stored: &stored,
+        });
+        let layers = target.layers();
+        let missing = own
+            .in_view()
+            .filter(|id| {
+                self.taken_set.contains(id)
+                    && !self.failed.contains(id)
+                    && layers.is_none_or(|layers| layers.layer_of(*id).is_none())
+            })
+            .count();
+        Some(missing)
     }
 
     /// Whether the set in force is the one at the 1 px threshold and every
@@ -725,16 +783,22 @@ impl TileLoader {
         self.republish = false;
     }
 
-    /// Take results under the byte budget and upload them, evicting where a
-    /// layer is needed. Returns whether a tile was uploaded or failed, either
-    /// of which can complete the set.
+    /// Take results under what is left of the tick's byte budget and upload
+    /// them, evicting where a layer is needed. Returns whether a tile was
+    /// uploaded or failed, either of which can complete the set.
     ///
     /// What is queued is taken at once, and while a worker is still reading,
-    /// the drain waits for it, [`DRAIN_WAIT`] at the most, until the budget
-    /// is spent. Every result is uploaded before the drain returns, so no
-    /// tile's texels outlive it.
+    /// the drain waits for it until the budget is spent, at the most until
+    /// [`DRAIN_WAIT`] after the tick's first drain began. Every result is
+    /// uploaded before the drain returns, so no tile's texels outlive it.
     pub(super) fn drain(&mut self, target: &mut impl TileTarget) -> bool {
         self.drain_within(target, DRAIN_WAIT)
+    }
+
+    /// The tick in progress is over: the next one's drains have the whole
+    /// budget and the whole wait again.
+    pub(super) fn end_tick(&mut self) {
+        self.tick = TickSpend::default();
     }
 
     fn drain_within(&mut self, target: &mut impl TileTarget, wait: Duration) -> bool {
@@ -742,10 +806,13 @@ impl TileLoader {
             return false;
         };
         self.poked.store(false, Ordering::Release);
-        let deadline = Instant::now() + wait;
+        let deadline = *self
+            .tick
+            .deadline
+            .get_or_insert_with(|| Instant::now() + wait);
         let failures = self.failed.len();
-        let (mut spent, mut received, mut uploads) = (0, 0_u64, Vec::new());
-        while spent < UPLOAD_BUDGET {
+        let (mut received, mut uploads) = (0_u64, Vec::new());
+        while self.tick.bytes < self.budget {
             let loaded = match results.try_recv() {
                 Ok(loaded) => loaded,
                 Err(_) if self.shared.lock().reading() => match results.recv_deadline(deadline) {
@@ -759,7 +826,7 @@ impl TileLoader {
             match self.admit(&loaded, target.layers()) {
                 Admit::Upload => {
                     let texels = loaded.texels.expect("admitted only when read");
-                    spent += texels.len();
+                    self.tick.bytes += texels.len();
                     uploads.push(TileUpload {
                         id: loaded.id,
                         texels,
@@ -1110,6 +1177,12 @@ mod tests {
         });
     }
 
+    /// One tick's drain.
+    fn tick(loader: &mut TileLoader, stand: &mut Stand) {
+        loader.end_tick();
+        loader.drain(stand);
+    }
+
     fn drain_until(
         loader: &mut TileLoader,
         stand: &mut Stand,
@@ -1117,9 +1190,81 @@ mod tests {
         done: impl Fn(&Stand) -> bool,
     ) {
         wait_for(what, || {
-            loader.drain(stand);
+            tick(loader, stand);
             done(stand)
         });
+    }
+
+    #[test]
+    fn the_drains_of_one_tick_share_its_byte_budget() {
+        let dir = ScratchDir::new("tile_loader_tick_budget");
+        let pack = day_pack(&dir);
+        let tiles = stored(&pack);
+        let bytes = pack
+            .read(pack.find(tiles[0].key).expect("an entry"))
+            .expect("a blob")
+            .len();
+        assert!(tiles.len() > 6, "the fixture stores {} tiles", tiles.len());
+        let mut loader = loader(1, &pack);
+        loader.budget = bytes * 2 + bytes / 2;
+        let mut stand = Stand::new(64);
+        loader.apply(&wanted(&tiles), &mut stand);
+        wait_until_blocked(&loader);
+
+        assert!(loader.drain_within(&mut stand, Duration::from_secs(20)));
+        assert_eq!(stand.uploaded.len(), 3, "the budget and one tile past it");
+        assert!(
+            !loader.drain(&mut stand),
+            "a second drain of the tick took more"
+        );
+        assert_eq!(stand.uploaded.len(), 3);
+        loader.end_tick();
+        assert!(loader.drain_within(&mut stand, Duration::from_secs(20)));
+        assert_eq!(
+            stand.uploaded.len(),
+            6,
+            "the next tick has the whole budget"
+        );
+    }
+
+    #[test]
+    fn the_drains_of_one_tick_share_its_wait() {
+        let dir = ScratchDir::new("tile_loader_tick_wait");
+        let pack = day_pack(&dir);
+        let tiles = stored(&pack);
+        let gate = TileGate::default();
+        gate.shut();
+        let mut loader = TileLoader::start(
+            FIXTURE,
+            &LoaderConfig {
+                decode: false,
+                anisotropy: 8,
+                workers: 1,
+                gate: gate.clone(),
+            },
+            Arc::new(|| {}),
+        );
+        loader.open(Arc::clone(&pack));
+        let mut stand = Stand::new(64);
+        loader.apply(&wanted(&tiles), &mut stand);
+        wait_for("a tile claimed at the gate", || claimed(&loader) == 1);
+
+        let wait = Duration::from_millis(300);
+        let started = Instant::now();
+        assert!(!loader.drain_within(&mut stand, wait));
+        assert!(started.elapsed() >= wait, "the first drain did not wait");
+        let again = Instant::now();
+        assert!(!loader.drain_within(&mut stand, wait));
+        assert!(
+            again.elapsed() < wait / 2,
+            "a second drain of the tick waited {:?} more",
+            again.elapsed()
+        );
+        loader.end_tick();
+        let next = Instant::now();
+        assert!(!loader.drain_within(&mut stand, wait));
+        assert!(next.elapsed() >= wait, "the next tick's drain did not wait");
+        gate.open();
     }
 
     #[test]
@@ -1274,7 +1419,7 @@ mod tests {
             tiles[1..].iter().all(|&id| stand.holds(id))
         });
         wait_for("the failure recorded", || {
-            loader.drain(&mut stand);
+            tick(&mut loader, &mut stand);
             loader.failed.contains(&broken)
         });
         assert!(!stand.holds(broken));
@@ -1291,7 +1436,7 @@ mod tests {
             loader.shared.lock().jobs.is_empty(),
             "nothing is read again"
         );
-        loader.drain(&mut stand);
+        tick(&mut loader, &mut stand);
         assert_eq!(loader.reads, reads);
 
         loader.open(Arc::clone(&pack));
@@ -1301,7 +1446,7 @@ mod tests {
         );
         loader.apply(&wanted(&tiles), &mut stand);
         wait_for("the second failure", || {
-            loader.drain(&mut stand);
+            tick(&mut loader, &mut stand);
             loader.failed.contains(&broken)
         });
         assert_eq!(loader.reads, reads + 1);
@@ -1323,7 +1468,7 @@ mod tests {
             resident(s, a)
         });
         loader.apply(&wanted(&a[2..]), &mut stand);
-        loader.drain(&mut stand);
+        tick(&mut loader, &mut stand);
         assert!(
             stand.evicted.is_empty(),
             "nothing is evicted while no layer is needed"

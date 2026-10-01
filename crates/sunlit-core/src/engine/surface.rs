@@ -184,9 +184,11 @@ impl SurfaceFeed {
     }
 
     /// A tick's work ended at `now`, the frame it drew and read back
-    /// included, which is what a drag's pause counts from.
-    pub(super) fn drawn(&mut self, now: Duration) {
+    /// included, which is what a drag's pause counts from; the next tick's
+    /// drains have the whole upload budget again.
+    pub(super) fn end_tick(&mut self, now: Duration) {
         self.drag.drawn(now);
+        self.tiles.end_tick();
     }
 
     /// End a drag the camera, at `camera`, has rested from by `now`. Returns
@@ -201,9 +203,16 @@ impl SurfaceFeed {
         self.tiles.cap_for(output)
     }
 
-    /// Whether a tile the frame needs in view is on its way.
-    pub(super) fn tiles_pending(&self, renderer: &Renderer) -> bool {
-        self.tiles.missing(renderer) > 0
+    /// How many tiles `output` alone needs in view that are on their way;
+    /// `None` when the set in force was not computed for it.
+    pub(super) fn missing_for(&self, output: &Output, renderer: &Renderer) -> Option<usize> {
+        self.tiles.missing_for(output, renderer)
+    }
+
+    /// How many times a pack has been opened for its tiles: a floor made
+    /// resident, or a month whose floor is drawn again.
+    pub(super) fn packs_opened(&self) -> u64 {
+        self.tiles.packs_opened()
     }
 
     /// Whether every tile the frame needs in view at the 1 px threshold is

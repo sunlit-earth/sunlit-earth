@@ -10,7 +10,6 @@ use sunlit_core::assets::texture_loader::DecodedImage;
 use sunlit_core::assets::tiles::{self, PackKind};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::engine::EngineConfig;
-use sunlit_core::engine::EngineEvent;
 use sunlit_core::params::SceneParams;
 
 use crate::groups::{SURFACE_RESOLUTION, surface};
@@ -277,16 +276,17 @@ fn a_switch_while_the_first_load_is_running_still_converges() {
 ///
 /// The switch purges the tiles, and "change the resolution, then click Set as
 /// Wallpaper" is a natural sequence, so without the hold-back the floors alone
-/// are what lands on the desktop. Asserted on the order of the engine's own
-/// events, which is the only place the distinction shows: a publish from the
-/// floors would be reported before the textures were ready rather than after.
+/// are what lands on the desktop. The publish waits for the tiles its screen
+/// wants at the new setting, so it is the picture a second publish makes once
+/// every tile has long been resident, and one publish goes out, not a
+/// fallback and then the same wallpaper again.
 #[test]
 fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
     let gpu = gpu();
     let group = surface(&gpu);
     group
         .sink
-        .set_monitors(vec![screen("only", 0, 64, 32, true)]);
+        .set_monitors(vec![screen("only", 0, 1920, 1080, true)]);
     group.settle_at(&blend_params());
     settled(group, "the widest setting's tiles", |r| {
         !r.wanted.is_empty()
@@ -301,33 +301,30 @@ fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
     // already emptied the tile array when the publish is asked for.
     group.set_texture_resolution(4096);
     group.engine.send(EngineCommand::RenderWallpaperNow);
-
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let mut ready_first = None;
-    while let Ok(event) = group.events.recv_deadline(deadline) {
-        match event {
-            EngineEvent::TexturesReady => {
-                ready_first.get_or_insert(true);
-            }
-            EngineEvent::WallpaperSet(result) => {
-                assert!(result.is_ok(), "the publish should have succeeded");
-                assert_eq!(
-                    ready_first,
-                    Some(true),
-                    "the wallpaper was published before the tiles were loaded, \
-                     which means it was published from the floors alone"
-                );
-                assert_eq!(
-                    group.sink.publications().len(),
-                    1,
-                    "exactly one frame should be published"
-                );
-                return;
-            }
-            _ => {}
-        }
-    }
-    panic!("no wallpaper result within {TIMEOUT:?}");
+    assert!(
+        group.wait_for_publish().is_ok(),
+        "the publish should have succeeded"
+    );
+    settled(group, "the new setting's tiles", |_| true);
+    group.settle();
+    assert_eq!(
+        group.sink.publications().len(),
+        1,
+        "exactly one frame should be published"
+    );
+    assert!(group.publish().is_ok());
+    let publications = group.sink.publications();
+    let pixels = |index: usize| {
+        &publications[index].frames[0]
+            .as_ref()
+            .expect("the one screen is painted")
+            .pixels
+    };
+    assert!(
+        pixels(0) == pixels(1),
+        "the wallpaper asked for during the reload is not the one its tiles make, \
+         so it was published from the floors alone"
+    );
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -428,7 +425,7 @@ fn lowering_the_resolution_releases_the_tile_array() {
     });
     harness.wait_for_textures("at 8192");
     harness.export(3840, 2160);
-    let loaded = settled(&harness, "at 8192", |r| !r.wanted.is_empty());
+    let loaded = settled(&harness, "at 8192", |r| !r.resident.is_empty());
     let wide = harness.engine.memory_report().expect("a report");
     let wide_private = sunlit_core::memory::snapshot().map(|s| s.private_bytes);
     println!(

@@ -211,7 +211,9 @@ fn a_publish_waits_for_the_tiles_its_screen_wants_and_goes_out_when_they_land() 
 
 /// A publish whose tiles do not all land within `TILE_WAIT` of the injected
 /// clock goes out with what is resident, and is made again, from every tile,
-/// when the rest land; not before.
+/// when the rest land; not before, however long they take. The preview drawn
+/// as they land keeps its own cap, not the one the screen's render held the
+/// page table to.
 #[test]
 fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_tiles_land() {
     let _gpu = gpu();
@@ -219,6 +221,12 @@ fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_ti
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
+    let scene = SceneParams {
+        star_intensity: 0.3,
+        ..view()
+    };
+    rig.harness.settle();
+    let (preview, _, _) = rig.harness.frame_after_change(&scene);
     ask_with_the_gate_shut(&rig, &before);
 
     rig.harness.advance(
@@ -234,6 +242,8 @@ fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_ti
     assert!(rig.harness.wait_for_publish().is_ok());
     rig.harness.advance(&rig.clock, TICK);
     rig.harness.settle();
+    rig.harness.advance(&rig.clock, TILE_WAIT);
+    rig.harness.settle();
     assert_eq!(
         rig.sink.publications().len(),
         1,
@@ -244,8 +254,29 @@ fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_ti
         "the screen's tiles left the set with the first publish"
     );
 
+    while rig.harness.events.try_recv().is_ok() {}
     rig.gate.open();
-    assert!(rig.harness.wait_for_publish().is_ok());
+    let deadline = Instant::now() + TIMEOUT;
+    let mut frames = 0;
+    loop {
+        match rig.harness.events.recv_deadline(deadline) {
+            Ok(EngineEvent::PreviewFrame { rgba, .. }) => {
+                frames += 1;
+                assert!(
+                    rgba == preview,
+                    "a preview frame drawn after the screen's render reads the screen's tiles \
+                     past its own cap"
+                );
+            }
+            Ok(EngineEvent::WallpaperSet(result)) => {
+                assert!(result.is_ok(), "{result:?}");
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => panic!("not made again within {TIMEOUT:?} of the gate opening: {e}"),
+        }
+    }
+    assert!(frames > 0, "the tiles that landed drew no preview frame");
     let (fallback, again) = (published(&rig, 0), published(&rig, 1));
     assert!(
         fallback != again,
@@ -258,19 +289,234 @@ fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_ti
     );
 }
 
+/// Move the custom date into another month, and hand back that month.
+fn to_another_month(rig: &Rig) -> usize {
+    let mut other = view();
+    other.datetime.custom_day_of_year = 260;
+    let month = sunlit_core::scene::month::month_in_force(&other.datetime, rig.clock.now_utc());
+    assert_ne!(
+        month,
+        sunlit_core::scene::month::month_in_force(&view().datetime, rig.clock.now_utc()),
+        "the premise: another month"
+    );
+    rig.harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(other)));
+    month
+}
+
+/// The report once the screen's tiles of `month` are in the set, which is
+/// once its floor is resident and its pack open.
+fn screen_wanted_in(rig: &Rig, month: usize) -> TileReport {
+    let report = report_when(
+        &rig.harness,
+        "the new month's screen tiles are wanted",
+        |r| {
+            r.wanted[..r.in_view]
+                .iter()
+                .any(|id| id.pack == PackKind::Day(month) && id.key.level == finest())
+        },
+    );
+    assert!(missing(&report) > 0, "the premise: the gate holds them");
+    report
+}
+
+/// A publish asked for while a cube is on its way plans at once, so its
+/// screen's tiles join the set the moment the cube is resident, and waits
+/// for them `TILE_WAIT` from then at the most. The other month's pack is
+/// still to be built when the date moves to it: the transcoder leaves the
+/// rest of the year until the engine has been idle for a while on the mock
+/// clock, which does not move until the case moves it.
+#[test]
+fn a_publish_held_for_a_cube_waits_for_its_tiles_no_longer_than_the_tile_wait() {
+    let _gpu = gpu();
+    let rig = rig("engine_ready_cube_first", view(), |_| {});
+    settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    rig.gate.shut();
+    let month = to_another_month(&rig);
+    rig.harness.engine.send(EngineCommand::RenderWallpaperNow);
+    screen_wanted_in(&rig, month);
+
+    rig.harness.advance(
+        &rig.clock,
+        TILE_WAIT.saturating_sub(Duration::from_millis(1)),
+    );
+    rig.harness.settle();
+    assert!(
+        rig.sink.publications().is_empty(),
+        "the wallpaper went out before the tile wait was over"
+    );
+    rig.harness.advance(&rig.clock, Duration::from_millis(1));
+    assert!(
+        rig.harness.wait_for_publish().is_ok(),
+        "no publish once the tile wait was over"
+    );
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+}
+
+/// Every pack of the year, built into `dir`'s cache before the engine starts.
+fn build_every_pack(dir: &ScratchDir) {
+    let textures = sunlit_core::assets::cube_layout::CubeTextures::resolve(&dir.join("textures"));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    for kind in PackKind::all() {
+        tiles::ensure_pack(&dir.join("cache"), kind, &textures, &EARTH, &cancel)
+            .expect("build the pack");
+    }
+}
+
+/// The tile wait counts from when the cubes are resident, so a month that
+/// changes while a publish waits starts it over once the new month's floor
+/// is in: none of that month's tiles could be read before. Every pack is
+/// built beforehand, so the new floor is resident the moment the date moves
+/// and no cube is ever on its way; the pack opened for its tiles is what
+/// starts the wait over.
+#[test]
+fn the_tile_wait_starts_over_when_the_month_in_force_changes() {
+    let _gpu = gpu();
+    let rig = rig("engine_ready_new_month", view(), build_every_pack);
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    ask_with_the_gate_shut(&rig, &before);
+    rig.harness
+        .advance(&rig.clock, TILE_WAIT.saturating_sub(Duration::from_secs(1)));
+    rig.harness.settle();
+    assert!(rig.sink.publications().is_empty());
+
+    let month = to_another_month(&rig);
+    screen_wanted_in(&rig, month);
+    rig.harness.advance(
+        &rig.clock,
+        TILE_WAIT.saturating_sub(Duration::from_millis(1)),
+    );
+    rig.harness.settle();
+    assert!(
+        rig.sink.publications().is_empty(),
+        "the wallpaper went out before the wait from the new month's floor was over"
+    );
+    rig.harness.advance(&rig.clock, Duration::from_millis(1));
+    assert!(rig.harness.wait_for_publish().is_ok());
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+}
+
+/// Every publish waits for its tiles from its own request: a second one, made
+/// for a new view after the first went out and the clock moved on past
+/// `TILE_WAIT`, waits for the tiles it wants as the first did.
+#[test]
+fn a_second_publish_waits_for_its_tiles_as_the_first_did() {
+    let _gpu = gpu();
+    let rig = rig("engine_ready_second", view(), |_| {});
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    ask_with_the_gate_shut(&rig, &before);
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+    rig.harness.advance(&rig.clock, TILE_WAIT * 2);
+    rig.harness.settle();
+
+    rig.harness.settle_at(&day_over(-100.0, 0.0, 0.55));
+    let moved = settled(&rig.harness, "the preview's tiles over the new view", |r| {
+        !r.wanted.is_empty() && r.wanted != before.wanted
+    });
+    ask_with_the_gate_shut(&rig, &moved);
+    rig.harness.advance(
+        &rig.clock,
+        TILE_WAIT.saturating_sub(Duration::from_millis(1)),
+    );
+    rig.harness.settle();
+    assert_eq!(
+        rig.sink.publications().len(),
+        1,
+        "the second publish went out before its tiles or its tile wait were done"
+    );
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+}
+
+/// An export waits for its own tiles and not for the rest of the set: one
+/// whose tiles are resident is answered at once while a publish waits for
+/// the tiles of its screen.
+#[test]
+fn an_export_waits_for_its_own_tiles_and_not_for_a_publishs() {
+    let _gpu = gpu();
+    let rig = rig("engine_ready_own_tiles", view(), |_| {});
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    rig.harness.settle();
+    let (_, width, height) = rig.harness.frame_after_change(&SceneParams {
+        star_intensity: 0.3,
+        ..view()
+    });
+    ask_with_the_gate_shut(&rig, &before);
+
+    let engine = &rig.harness.engine;
+    let answered = std::thread::scope(|scope| {
+        let (done, answer) = crossbeam_channel::bounded(1);
+        scope.spawn(move || {
+            let _ = done.send(engine.export_pixels(width, height));
+        });
+        let answered = answer.recv_timeout(Duration::from_secs(10));
+        if answered.is_err() {
+            rig.harness.advance(&rig.clock, TILE_WAIT);
+            let _ = answer.recv_timeout(TIMEOUT);
+        }
+        answered
+    });
+    assert!(
+        answered.is_ok_and(|pixels| pixels.is_ok()),
+        "an export at the preview's size, whose tiles are resident, waited for the screen's"
+    );
+    assert!(rig.sink.publications().is_empty());
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+}
+
+/// A publish asked for as the engine stops goes out with what is resident,
+/// as an export waiting then is answered: there is no tick left to wait in.
+#[test]
+fn a_publish_asked_for_as_the_engine_stops_goes_out_with_what_is_resident() {
+    let _gpu = gpu();
+    let rig = rig("engine_ready_stop", view(), |_| {});
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    assert!(
+        before.resident.iter().all(|id| id.key.level < finest()),
+        "the premise: none of the screen's finer tiles is resident"
+    );
+    rig.gate.shut();
+    let Rig {
+        dir: _dir,
+        harness,
+        sink,
+        ..
+    } = rig;
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    harness.engine.shutdown();
+    let mut results = Vec::new();
+    while let Ok(event) = harness.events.try_recv() {
+        if let EngineEvent::WallpaperSet(result) = event {
+            results.push(result);
+        }
+    }
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert!(results[0].is_ok(), "{results:?}");
+    assert_eq!(sink.publications().len(), 1);
+}
+
 /// A tile that fails its read counts as resident: the textures are ready and
 /// a publish goes out without the clock moving, drawn from the floor there.
 #[test]
 fn failed_tiles_hold_neither_readiness_nor_a_publish() {
     let _gpu = gpu();
     let rig = rig("engine_ready_failed", view(), |dir| {
-        let textures =
-            sunlit_core::assets::cube_layout::CubeTextures::resolve(&dir.join("textures"));
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-        for kind in PackKind::all() {
-            tiles::ensure_pack(&dir.join("cache"), kind, &textures, &EARTH, &cancel)
-                .expect("build the pack");
-        }
+        build_every_pack(dir);
         damage_the_day_tiles(&dir.join("cache"));
     });
     assert!(rig.harness.publish().is_ok());

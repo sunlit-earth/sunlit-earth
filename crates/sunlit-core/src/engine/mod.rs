@@ -114,9 +114,11 @@ struct Engine {
     /// The renders the wallpaper owed, or to be made again, is made of, whose
     /// tiles join the wanted set until it is made from them.
     wallpaper_shots: Vec<publish::Shot>,
-    /// When the wallpaper owed began to wait for its tiles alone, the floors
-    /// being resident, which is what [`TILE_WAIT`] counts from.
-    tiles_awaited_since: Option<Duration>,
+    /// When the wallpaper owed began to wait for its tiles alone, the cubes
+    /// being resident, which is what [`TILE_WAIT`] counts from, and how many
+    /// packs had been opened for their tiles then: one opened since starts
+    /// the count over.
+    tiles_awaited_since: Option<(Duration, u64)>,
     /// A wallpaper went out after [`TILE_WAIT`] with tiles missing, and is
     /// made again when they are resident.
     reexport: bool,
@@ -441,11 +443,12 @@ impl Engine {
                 self.drain.next = Duration::ZERO;
             }
             EngineCommand::Shutdown => {
-                // A publish asked for in the same drain batch as the shutdown
-                // is still someone's request, and there is no tick left to do
-                // it in.
-                if std::mem::take(&mut self.publish_asked) {
-                    self.publish_wallpaper();
+                // A publish asked for in the same drain batch as the shutdown,
+                // or one still waiting for its tiles, is still someone's
+                // request, and there is no tick left to do it in or to wait
+                // in.
+                if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
+                    self.publish_wallpaper_at_exit();
                 }
                 // A caller waiting on an export is answered with what is
                 // resident rather than with a closed channel.
@@ -591,7 +594,10 @@ impl Engine {
         // Wallpaper", or the tray and IPC arriving together, are one wallpaper.
         if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
             self.publish_wallpaper();
-        } else if self.reexport && !self.textures_pending() {
+        } else if self.reexport
+            && !self.renderer.textures_pending(self.params.texture_index)
+            && !self.shots_pending()
+        {
             info!("the tiles a wallpaper went out without are resident; making it again");
             self.publish_wallpaper();
         }
@@ -602,7 +608,7 @@ impl Engine {
         // its readback included, which on a software adapter is most of it.
         if let Some(surface) = &mut self.surface {
             surface.relax(now);
-            surface.drawn(self.clock.elapsed());
+            surface.end_tick(self.clock.elapsed());
         }
     }
 
@@ -654,18 +660,6 @@ impl Engine {
                 .surface
                 .as_ref()
                 .is_none_or(|surface| surface.tiles_complete(&self.renderer))
-    }
-
-    /// Whether something the frame wants is on its way: a cube the mode
-    /// needs, or a tile it wants in view.
-    fn textures_pending(&self) -> bool {
-        self.renderer.textures_pending(self.params.texture_index) || self.tiles_pending()
-    }
-
-    fn tiles_pending(&self) -> bool {
-        self.surface
-            .as_ref()
-            .is_some_and(|surface| surface.tiles_pending(&self.renderer))
     }
 
     /// The engine is about to draw, or has just drawn: the transcoder's pause
@@ -747,6 +741,14 @@ impl Engine {
             drag: surface.drag(&self.params.camera, self.clock.elapsed()),
         };
         surface.want_tiles(&view, &mut self.renderer);
+    }
+
+    /// Bring the wanted set up to date with the outputs as they stand,
+    /// without drawing: for renders planned while a cube is still on its
+    /// way, whose tiles are read ahead of it.
+    fn want_now(&mut self) {
+        let sky = self.sky_state();
+        self.want_tiles(&sky);
     }
 
     /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that

@@ -202,94 +202,8 @@ pub fn write_panorama_landmark_fixture(
     path
 }
 
-/// Width of the day and night surface fixtures.
-///
-/// Wide enough that a case can put a camera close to one of the night map's
-/// landmarks without reading a single texel across the window.
-pub const SURFACE_FIXTURE_WIDTH: u32 = 1024;
-
-/// The day map's one colour. Flat on purpose: every case that loads these is
-/// about the cloud layer over the surface, and a lit side with structure of its
-/// own would compete with it in a reference.
-const DAY_FIXTURE_COLOR: [u8; 3] = [170, 175, 180];
-
-/// The night map's unlit base: about 0.13 of display white, and blue, which is
-/// what `BlackMarble_2016.jxl` reads over unlit land. A night map is not a black
-/// image with lights on it, and a fixture that was one would make the ordering
-/// between a night cloud and the ground under it true for free.
-const NIGHT_FIXTURE_BASE: [u8; 3] = [34, 32, 60];
-
-/// Where the one city on the night map sits, as longitude and latitude in
-/// degrees. Inside the cloud fixture's equatorial band, so a deck covers it.
-pub const NIGHT_FIXTURE_CITY: (f32, f32) = (150.0, 0.0);
-/// Angular radius of the city's saturated core and of the cluster around it.
-const NIGHT_FIXTURE_CORE_DEGREES: f32 = 9.0;
-const NIGHT_FIXTURE_CLUSTER_DEGREES: f32 = 18.0;
-const NIGHT_FIXTURE_CORE: [u8; 3] = [255, 250, 235];
-const NIGHT_FIXTURE_CLUSTER: [u8; 3] = [150, 140, 120];
-
-/// One day and night map pair, in the order the slots take them.
-pub struct SurfaceFixtures {
-    pub day: PathBuf,
-    pub night: PathBuf,
-}
-
-impl SurfaceFixtures {
-    /// The two paths as `texture_paths` wants them.
-    pub fn paths(&self) -> Vec<Option<PathBuf>> {
-        vec![Some(self.day.clone()), Some(self.night.clone())]
-    }
-}
-
-/// Write a day map and a night map into `dir`, and return their paths.
-///
-/// The night map is the interesting one: an unlit base bright enough to be
-/// measured against, and one city with a saturated core and a dimmer cluster
-/// around it, so a case has both a dark ground and a ground at display white to
-/// put a cloud deck over.
-pub fn write_surface_fixtures(dir: &Path) -> SurfaceFixtures {
-    let width = SURFACE_FIXTURE_WIDTH;
-    let height = width / 2;
-    let day = image::RgbaImage::from_pixel(width, height, rgba(DAY_FIXTURE_COLOR));
-    let mut night = image::RgbaImage::from_pixel(width, height, rgba(NIGHT_FIXTURE_BASE));
-    let (city_longitude, city_latitude) = NIGHT_FIXTURE_CITY;
-    #[allow(clippy::cast_precision_loss)]
-    for (x, y, pixel) in night.enumerate_pixels_mut() {
-        let longitude = (x as f32 + 0.5) / width as f32 * 360.0 - 180.0;
-        let latitude = 90.0 - (y as f32 + 0.5) / height as f32 * 180.0;
-        let distance = great_circle_degrees(longitude, latitude, city_longitude, city_latitude);
-        if distance <= NIGHT_FIXTURE_CORE_DEGREES {
-            *pixel = rgba(NIGHT_FIXTURE_CORE);
-        } else if distance <= NIGHT_FIXTURE_CLUSTER_DEGREES {
-            *pixel = rgba(NIGHT_FIXTURE_CLUSTER);
-        }
-    }
-    std::fs::create_dir_all(dir).expect("create the fixture directory");
-    let paths = SurfaceFixtures {
-        day: dir.join("day-fixture.png"),
-        night: dir.join("night-city-fixture.png"),
-    };
-    day.save(&paths.day).expect("write the day fixture");
-    night.save(&paths.night).expect("write the night fixture");
-    paths
-}
-
 fn rgba(color: [u8; 3]) -> image::Rgba<u8> {
     image::Rgba([color[0], color[1], color[2], 255])
-}
-
-/// Great-circle distance in degrees, so a mark stays round near the poles
-/// instead of smearing across them.
-fn great_circle_degrees(
-    longitude: f32,
-    latitude: f32,
-    mark_longitude: f32,
-    mark_latitude: f32,
-) -> f32 {
-    let (lat0, lat1) = (latitude.to_radians(), mark_latitude.to_radians());
-    let delta = (longitude - mark_longitude).to_radians();
-    let cosine = lat0.sin() * lat1.sin() + lat0.cos() * lat1.cos() * delta.cos();
-    cosine.clamp(-1.0, 1.0).acos().to_degrees()
 }
 
 /// Width of the cloud fixture. The overlay is sampled as one channel and its
@@ -310,7 +224,8 @@ pub const CLOUD_FIXTURE_BAND_EDGE: f32 = CLOUD_FIXTURE_BAND_DEGREES / 2.0;
 /// terminator shows one band ramping from its night value to white along its
 /// own length. The clear gaps keep the surface visible in the same frame, which
 /// is where the ordering between a night cloud and the ground under it can be
-/// seen. And a band is centered on the equator, where the night map's city is.
+/// seen. And a band is centered on the equator, under the frame center of a
+/// camera at latitude 0.
 ///
 /// Latitude alone, so the fixture says nothing about the horizontal convention
 /// the cloud decode applies: what a band is depends on neither the flip nor the

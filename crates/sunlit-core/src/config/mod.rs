@@ -78,20 +78,21 @@ impl Default for QualityTier {
 /// not a setting.
 pub(crate) const SUN_FLARE_MAX: f32 = 1.0;
 
-/// The surface texture widths the user can choose between, widest first.
+/// The resolution setting's values, widest first.
 ///
-/// The two local assets are 8192 wide; the other two entries are exact halvings
-/// of it, which is what lets the loader reach them with the box filter it
-/// already uses for mip levels. This array is also the combo box model, so the
-/// order here is the order on screen.
+/// Each is the width of the map the finest surface tile level matches: 8192 the
+/// shipped 2048 px faces, 4096 their 1024 level, 2048 the 512 px floors alone.
+/// The Milky Way is capped at the same width and the cloud variant follows it.
+/// Each entry is an exact halving of the one before, which is what lets the
+/// panorama's loader reach it with the box filter it already uses for mip
+/// levels. This array is also the combo box model, so the order here is the
+/// order on screen.
 pub const TEXTURE_RESOLUTIONS: [u32; 3] = [8192, 4096, 2048];
 
 /// The width a config without a `texture_resolution` key lands on.
 ///
-/// Half of what the assets hold. The full 8192 costs about 400 MiB of GPU
-/// memory across the two textures and their mip chains for detail that is
-/// invisible at any sane zoom, so the default is the middle entry and the
-/// widest is opt-in.
+/// The middle entry, so the widest is opt-in: at 8192 the cloud overlay alone
+/// holds 171 MiB with its mip chain, against 43 MiB at 4096.
 pub const DEFAULT_TEXTURE_RESOLUTION: u32 = 4096;
 
 /// Replace a texture resolution that is not one of [`TEXTURE_RESOLUTIONS`] with
@@ -199,9 +200,9 @@ pub struct AppConfig {
 
     // Rendering
     pub texture_index: i32,
-    /// Width the two local surface textures are loaded at, one of
-    /// [`TEXTURE_RESOLUTIONS`]. Not part of `SceneParams`: it decides which
-    /// pixels to load, not what to draw.
+    /// The resolution setting, one of [`TEXTURE_RESOLUTIONS`]: how fine a
+    /// surface tile may be, the Milky Way's cap and the cloud variant. Not part
+    /// of `SceneParams`: it decides which pixels to load, not what to draw.
     pub texture_resolution: u32,
     pub sample_count: u32,
     /// How much work the renderer and the asset pipeline are allowed to do.

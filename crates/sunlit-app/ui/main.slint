@@ -443,7 +443,7 @@ export component MainWindow inherits Window {
 
                                 SettingCombo {
                                     label: "Resolution";
-                                    hint: "Width the surface maps are loaded at. Lower costs less memory and takes effect without a restart.";
+                                    hint: "How fine the surface gets: 8192 loads the finest tiles, 4096 the next level, 2048 the base cube alone. Lower costs less memory and takes effect without a restart.";
                                     model: texture-resolution-options;
                                     current-index <=> root.texture-resolution-index;
                                     selected => { root.texture-resolution-changed(); }

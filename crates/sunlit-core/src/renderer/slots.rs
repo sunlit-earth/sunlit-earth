@@ -1,18 +1,13 @@
-//! Where each texture sits, and which slot a texture mode draws the globe from.
+//! Where each flat texture sits, and the texture modes the globe is drawn in.
 //!
-//! [`SlotLayout`] is where that order is decided. The cube surface is not in
-//! it: the floors and the mask are one unit beside the slots
-//! (`renderer::surface`), and while they are in use the day and night slots
-//! keep their places with no file behind them.
+//! [`SlotLayout`] is where the order of the flat textures is decided. The
+//! globe's surface is not in it: the floors, the mask and the tiles are one
+//! unit beside the slots (`renderer::surface`).
 
-/// Texture slot index for the day texture (JXL).
-pub(super) const DAY_SLOT: usize = 1;
-/// Texture slot index for the night texture (JXL).
-pub(super) const NIGHT_SLOT: usize = 2;
 /// Texture slot index for the Moon's surface (JXL).
-const MOON_SLOT: usize = 3;
+const MOON_SLOT: usize = 1;
 /// Texture slot index for the Milky Way panorama (JXL).
-const MILKY_WAY_SLOT: usize = 4;
+const MILKY_WAY_SLOT: usize = 2;
 
 /// Display names of the texture modes, in combo box order. The index into this
 /// array is `SceneParams::texture_index`.
@@ -20,9 +15,8 @@ pub const TEXTURE_LABELS: [&str; 4] = ["Grid", "Day", "Night", "Day/Night Blend"
 
 /// The texture mode a combo box index names.
 ///
-/// A mode is not a slot. The first three modes each draw the globe from one
-/// file-backed slot, `Blend` binds two of them together and has no slot of its
-/// own, and the cloud overlay has a slot but no mode.
+/// A mode is not a slot: the grid is drawn from slot 0, the other three from
+/// the cube surface, and the overlays have slots but no mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TextureMode {
     Grid,
@@ -37,7 +31,7 @@ impl TextureMode {
     ///
     /// A `texture_index` is a persisted integer that nothing repairs on load,
     /// so a hand-edited config can name a mode that does not exist. The grid
-    /// is the answer because it is the one slot that is always loaded.
+    /// is the answer because it is the one texture that is always loaded.
     pub(super) fn from_index(index: i32) -> Self {
         match index {
             1 => Self::Day,
@@ -61,10 +55,11 @@ impl TextureMode {
 /// Where each texture sits in `texture_slots`.
 ///
 /// Slot 0 is the procedural grid, always loaded; then one slot per file-backed
-/// path, in the order the paths arrive; then the cloud overlay, which comes
-/// from the fetcher rather than from a file and is therefore last. Deriving the
-/// cloud slot from the number of paths rather than naming a constant is what
-/// lets a file-backed texture be added without moving it.
+/// path, in the order the paths arrive, the Moon and the Milky Way; then the
+/// cloud overlay, which comes from the fetcher rather than from a file and is
+/// therefore last. Deriving the cloud slot from the number of paths rather than
+/// naming a constant is what lets a file-backed texture be added without moving
+/// it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotLayout {
     file_backed: usize,
@@ -95,19 +90,6 @@ impl SlotLayout {
         self.overlay(MILKY_WAY_SLOT)
     }
 
-    /// Whether `slot` holds one of the globe's own maps.
-    ///
-    /// This is the question `Renderer::textures_ready` answers, from the other
-    /// side: the globe is what readiness is about, and the overlays are excluded
-    /// from it, so a configuration whose only file is an overlay's has nothing to
-    /// wait for. Slot 0 is the procedural grid, which needs no file at all.
-    pub fn is_globe(self, slot: usize) -> bool {
-        slot > 0
-            && [TextureMode::Day, TextureMode::Night]
-                .into_iter()
-                .any(|mode| self.globe(mode) == slot)
-    }
-
     /// An overlay's own file-backed slot, when this layout reaches that far.
     ///
     /// A configuration with fewer file-backed paths than production's is a
@@ -115,22 +97,6 @@ impl SlotLayout {
     /// than anything to repair.
     fn overlay(self, slot: usize) -> Option<usize> {
         (self.file_backed >= slot).then_some(slot)
-    }
-
-    /// The slot the globe is drawn from in `mode`.
-    ///
-    /// `Blend` reports the day slot, which is both the fallback it renders from
-    /// until the composite bind group exists and the first of the two slots its
-    /// readiness depends on. Clamped to a slot this layout has a file for, so a
-    /// configuration with fewer paths than production's cannot reach past its
-    /// own file-backed range into the cloud slot.
-    pub(super) fn globe(self, mode: TextureMode) -> usize {
-        let slot = match mode {
-            TextureMode::Grid => 0,
-            TextureMode::Day | TextureMode::Blend => DAY_SLOT,
-            TextureMode::Night => NIGHT_SLOT,
-        };
-        slot.min(self.file_backed)
     }
 }
 
@@ -141,13 +107,7 @@ impl SlotLayout {
 /// The allocator report the memory report is built from names allocations by
 /// their GPU label, so a row that reads `day_texture` is worth more than one
 /// that reads `texture_slot_1`.
-pub(super) const SLOT_LABELS: [&str; 5] = [
-    "grid_texture",
-    "day_texture",
-    "night_texture",
-    "moon_texture",
-    "milky_way_texture",
-];
+pub(super) const SLOT_LABELS: [&str; 3] = ["grid_texture", "moon_texture", "milky_way_texture"];
 
 #[cfg(test)]
 mod tests {
@@ -192,40 +152,24 @@ mod tests {
         }
     }
 
-    /// Production's layout: the grid, the day and night surfaces, the Moon, the
-    /// Milky Way, and the cloud overlay last.
+    /// Production's layout: the grid, the Moon, the Milky Way, and the cloud
+    /// overlay last.
     #[test]
     fn the_production_layout_puts_the_clouds_after_the_overlays() {
-        let layout = SlotLayout::new(4);
-        assert_eq!(layout.count(), 6);
-        assert_eq!(layout.clouds(), 5);
+        let layout = SlotLayout::new(2);
+        assert_eq!(layout.count(), 4);
+        assert_eq!(layout.clouds(), 3);
         assert_eq!(layout.moon(), Some(MOON_SLOT));
         assert_eq!(layout.milky_way(), Some(MILKY_WAY_SLOT));
-        assert_eq!(layout.globe(TextureMode::Grid), 0);
-        assert_eq!(layout.globe(TextureMode::Day), DAY_SLOT);
-        assert_eq!(layout.globe(TextureMode::Night), NIGHT_SLOT);
-        assert_eq!(layout.globe(TextureMode::Blend), DAY_SLOT);
-        for slot in 0..layout.count() {
-            assert_eq!(
-                layout.is_globe(slot),
-                slot == DAY_SLOT || slot == NIGHT_SLOT,
-                "slot {slot}"
-            );
-        }
     }
 
-    /// The cloud overlay is always the last slot, whatever comes before it, the
-    /// mailbox has one slot per texture, and a layout too short for an overlay
-    /// reports no slot for it rather than one that belongs to something else.
+    /// A layout too short for an overlay reports no slot for it rather than
+    /// one that belongs to something else.
     #[test]
     fn a_layout_without_an_overlay_says_so() {
-        assert_eq!(SlotLayout::new(3).milky_way(), None);
-        assert!(
-            !SlotLayout::new(1).is_globe(NIGHT_SLOT),
-            "a layout with one path has no night map, and clamping is not a second globe slot"
-        );
-        assert_eq!(SlotLayout::new(3).moon(), Some(MOON_SLOT));
-        assert_eq!(SlotLayout::new(2).moon(), None);
+        assert_eq!(SlotLayout::new(1).milky_way(), None);
+        assert_eq!(SlotLayout::new(1).moon(), Some(MOON_SLOT));
+        assert_eq!(SlotLayout::new(0).moon(), None);
         for file_backed in 0..7 {
             let layout = SlotLayout::new(file_backed);
             for slot in [layout.moon(), layout.milky_way()].into_iter().flatten() {
@@ -243,26 +187,6 @@ mod tests {
             let layout = SlotLayout::new(file_backed);
             assert_eq!(layout.count(), file_backed + 2, "{file_backed} paths");
             assert_eq!(layout.clouds(), layout.count() - 1, "{file_backed} paths");
-        }
-    }
-
-    /// No mode ever indexes past the file-backed slots.
-    #[test]
-    fn no_mode_reaches_the_cloud_slot() {
-        for file_backed in 0..6 {
-            let layout = SlotLayout::new(file_backed);
-            for (index, mode) in MODES {
-                let slot = layout.globe(mode);
-                assert!(
-                    slot < layout.clouds(),
-                    "{file_backed} paths, index {index}: slot {slot} is the cloud slot {}",
-                    layout.clouds()
-                );
-                assert!(
-                    slot <= file_backed,
-                    "{file_backed} paths, index {index}: slot {slot} has no file behind it"
-                );
-            }
         }
     }
 }

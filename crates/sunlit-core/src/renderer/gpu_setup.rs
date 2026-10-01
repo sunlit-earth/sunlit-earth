@@ -5,7 +5,7 @@ use crate::assets::stars;
 use crate::geometry::grid_texture;
 use crate::geometry::sphere::{self, Vertex};
 
-use super::slots::{SLOT_LABELS, SlotLayout};
+use super::slots::SLOT_LABELS;
 use super::surface::{self, SurfaceFormats, SurfaceSet};
 use super::textures::{Bindings, TextureSlot, create_bind_group};
 use super::tiles::{CPU_TILE_LAYER_BUDGET, SurfaceTiles, TILE_LAYER_BUDGET};
@@ -118,7 +118,6 @@ pub(super) fn create_renderer(
         height,
         texture_paths,
         texture_resolution,
-        texture_cache_dir,
         mailbox: texture_mailbox,
         notify,
         cube_month,
@@ -285,24 +284,19 @@ pub(super) fn create_renderer(
     );
 
     // Build texture slots: slot 0 = Grid (always loaded), slots 1+ = lazy from
-    // paths, except that the day and night slots stay empty while the cube
-    // surface stands in for them.
-    let layout = SlotLayout::new(texture_paths.len());
+    // paths.
     let mut texture_slots = vec![TextureSlot {
         bind_group: Some(grid_bind_group),
         texture: Some(grid_tex),
         source_path: None,
         loading: false,
     }];
-    for (index, path) in texture_paths.iter().enumerate() {
-        let replaced = cube_month.is_some() && layout.is_globe(index + 1);
-        texture_slots.push(TextureSlot {
-            bind_group: None,
-            texture: None,
-            source_path: path.clone().filter(|_| !replaced),
-            loading: false,
-        });
-    }
+    texture_slots.extend(texture_paths.into_iter().map(|source_path| TextureSlot {
+        bind_group: None,
+        texture: None,
+        source_path,
+        loading: false,
+    }));
     let surface = cube_month.map(|month| {
         let block_compression = device
             .features()
@@ -373,8 +367,6 @@ pub(super) fn create_renderer(
         surface,
         texture_resolution,
         texture_generation: 0,
-        texture_cache_dir,
-        last_rendered_index: 0,
         depth_texture,
         render_texture,
         msaa_texture_view,
@@ -396,9 +388,6 @@ pub(super) fn create_renderer(
         dummy_cube_view,
         dummy_tile_view,
         dummy_page_view,
-        composite_bind_group: None,
-        day_texture_view: None,
-        night_texture_view: None,
         cloud_bind_group: None,
         cloud_texture_view: None,
     }

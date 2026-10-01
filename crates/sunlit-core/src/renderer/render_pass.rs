@@ -14,13 +14,11 @@ use super::uniforms::Uniforms;
 
 /// The per-frame values that are not part of `SceneParams`: astronomy derived
 /// from the clock, whether the resolved bind group carries both a day and a
-/// night texture, whether the globe reads it through the cube, and what the
-/// cube's tiles need beyond their bindings.
+/// night texture, and what the cube's tiles need beyond their bindings.
 #[derive(Clone)]
 pub(super) struct FrameInputs {
     pub sky: SkyState,
     pub use_blend: bool,
-    pub cube: bool,
     /// The cube drawn alone is the night floor, so the night half of the page
     /// table refines it.
     pub night_alone: bool,
@@ -162,7 +160,7 @@ pub(super) fn write_uniforms<'a>(
             FLAG_DIFFUSE
         } else {
             0
-        } | if inputs.cube { FLAG_CUBE } else { 0 }
+        } | FLAG_CUBE
             | if inputs.night_alone {
                 FLAG_NIGHT_ALONE
             } else {

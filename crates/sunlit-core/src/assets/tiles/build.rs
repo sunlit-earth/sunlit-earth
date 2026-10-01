@@ -94,9 +94,9 @@ const CURRENT: Versions = Versions {
     preset: codec::PRESET.1,
 };
 
-/// What a source file looked like: size and modification time, as the texture
-/// downscales are stamped. Hashing 84 files on every start would cost more
-/// than it could catch, since they only change when an install replaces them.
+/// What a source file looked like: size and modification time. Hashing 84
+/// files on every start would cost more than it could catch, since they only
+/// change when an install replaces them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     bytes: u64,

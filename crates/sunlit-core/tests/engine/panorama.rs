@@ -7,7 +7,7 @@ use sunlit_core::assets::stars;
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::SceneParams;
 
-use crate::groups::{FIXTURES, FRAME, LANDMARK, LANDMARK_RADIUS_DEGREES, landmark_sky, sky};
+use crate::groups::{FRAME, LANDMARK, LANDMARK_RADIUS_DEGREES, landmark_sky, sky};
 use crate::harness::{Gpu, Harness, TIMEOUT, gpu};
 use crate::moon::{camera_for, sky_for};
 use crate::support;
@@ -561,7 +561,6 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
 /// the two cases that need it skip rather than fail.
 struct RealSky {
     harness: Harness,
-    cache: std::path::PathBuf,
 }
 
 impl std::ops::Deref for RealSky {
@@ -573,27 +572,21 @@ impl std::ops::Deref for RealSky {
 
 /// The width the real sky loads at, and the one the cap case reaches up to.
 ///
-/// The narrow end is the default because the halving is what the cache holds:
-/// the engine writes it once at startup and the case that reads it back costs
-/// nothing, where starting wide would mean decoding the 4096 source three more
-/// times.
+/// The narrow end is the default, where the setting halves the panorama, so
+/// the cap case reaches up from the one load that differs from the source.
 const REAL_SKY_WIDTH: u32 = 2048;
 const REAL_SKY_CAP: u32 = 8192;
 
 static REAL_SKY: LazyLock<Option<RealSky>> = LazyLock::new(|| {
     let path = real_asset("milkyway_2020_4k.jxl").ok()?;
-    let dir = FIXTURES.join("real_sky");
-    std::fs::create_dir_all(&dir).expect("create the real sky cache directory");
-    let cache = dir.clone();
     let harness = Harness::start(move |config| {
         config.preview_size = FRAME;
         config.params = panorama_params();
-        config.texture_paths = vec![None, None, None, Some(path)];
-        config.cache_dir = Some(dir);
+        config.texture_paths = vec![None, Some(path)];
         config.texture_resolution = REAL_SKY_WIDTH;
     });
     harness.wait_for_slot_texture("milky_way_texture");
-    Some(RealSky { harness, cache })
+    Some(RealSky { harness })
 });
 
 /// The shipped panorama's engine, or `None` with a printed reason.
@@ -863,15 +856,13 @@ fn no_bright_star_is_baked_into_the_real_panorama() {
     );
 }
 
-/// The panorama follows the texture resolution cap, and the halving cache is
-/// what serves the narrow end.
+/// The panorama follows the resolution setting as a cap.
 ///
 /// Its source is 4096 wide, which is between the widest and the narrowest of
 /// the three widths the config offers, so it is the one texture where the
 /// setting is a cap in both directions: 8192 loads it as it is and 2048 halves
 /// it. That halving is what keeps the layer's 42.7 MiB from being the price of
-/// choosing the low setting, so it is worth knowing the file is written and
-/// read rather than assuming it.
+/// choosing the low setting.
 ///
 /// Skips with a printed reason where `textures/**` is still Git LFS pointers.
 #[test]
@@ -881,23 +872,12 @@ fn the_panorama_follows_the_texture_resolution_cap() {
         return;
     };
 
-    // The engine loads at the narrow end, and the cache directory is this run's
-    // own, so the file being there is the halving having been written.
     let narrow = wait_for_panorama_width(group, REAL_SKY_WIDTH);
     println!(
         "at the {REAL_SKY_WIDTH} setting the panorama loads at {}x{}",
         narrow.0, narrow.1
     );
     assert_eq!(narrow, (2048, 1024));
-    let cached = group
-        .cache
-        .join("texture_cache")
-        .join("milkyway_2020_4k.2048.png");
-    assert!(
-        cached.exists(),
-        "the halving was not written to {}",
-        cached.display()
-    );
 
     let wide = wait_for_panorama_width_after(group, REAL_SKY_CAP, 4096);
     println!(
@@ -910,9 +890,7 @@ fn the_panorama_follows_the_texture_resolution_cap() {
         "the widest setting is a cap, and the file is 4096 wide"
     );
 
-    // Back down, which is the load that reads what the first one wrote rather
-    // than halving the source again. The width alone cannot show that; the file
-    // having to be there for it to succeed can.
+    // Back down, which halves the source again.
     assert_eq!(
         wait_for_panorama_width_after(group, REAL_SKY_WIDTH, REAL_SKY_WIDTH),
         narrow

@@ -23,7 +23,6 @@ use sunlit_core::scene::camera::CameraParams;
 use crate::groups::FRAME;
 use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, test_params};
 use crate::sinks::{RecordingSink, screen};
-use crate::support;
 use crate::test_support::{self, ScratchDir};
 use crate::tiles::settled;
 
@@ -44,18 +43,11 @@ impl CubeFixture {
         self.dir.join("cache")
     }
 
-    /// Point an engine at the fixture, and at no flat surface.
+    /// Point an engine at the fixture.
     fn configure(&self, config: &mut EngineConfig) {
         config.cube_textures = CubeTextures::resolve(&self.dir.join("textures"));
         config.tile_geometry = tiles::FIXTURE;
         config.cache_dir = Some(self.cache());
-    }
-
-    /// Also name flat day and night maps, which the cube must make redundant.
-    fn configure_with_flat_maps(&self, config: &mut EngineConfig) {
-        self.configure(config);
-        config.texture_paths = support::write_surface_fixtures(&self.dir.join("flat")).paths();
-        config.texture_resolution = support::SURFACE_FIXTURE_WIDTH;
     }
 
     fn pack_exists(&self, kind: PackKind) -> bool {
@@ -93,16 +85,16 @@ fn rows<'a>(
 }
 
 /// The packs the first frame needs are built, their cubes made resident, and
-/// the engine says the textures are ready, with flat maps named beside the
-/// cube faces and never decoded. The page table is resident beside the cubes,
-/// and the tile array is not: the resolution setting is the flat fixture's
-/// width, which allows no tile.
+/// the engine says the textures are ready. The page table is resident beside
+/// the cubes, and the tile array is not: the narrowest resolution setting
+/// allows no tile.
 #[test]
 fn the_first_frame_packs_make_the_textures_ready() {
     let _gpu = gpu();
     let fixture = CubeFixture::new("engine_cube_ready");
     let harness = Harness::start(|config| {
-        fixture.configure_with_flat_maps(config);
+        fixture.configure(config);
+        config.texture_resolution = 2048;
         config.params = blend_on(MARCH_10);
     });
     harness.wait_for_textures("the first-frame packs");
@@ -124,10 +116,6 @@ fn the_first_frame_packs_make_the_textures_ready() {
             "{label} is a cube of the fixture's size"
         );
     }
-    assert!(
-        rows(&report, "day_texture").is_empty() && rows(&report, "night_texture").is_empty(),
-        "the flat maps are not loaded beside the cube:\n{report}"
-    );
     let pages = rows(&report, "page_table");
     assert_eq!(pages.len(), 1, "one page table:\n{report}");
     let cells = tiles::FIXTURE.face / tiles::FIXTURE.tile;
@@ -139,8 +127,8 @@ fn the_first_frame_packs_make_the_textures_ready() {
     let tiles = settled(&harness, "the loader", |_| true);
     assert!(
         tiles.wanted.is_empty() && rows(&report, "tile_array").is_empty(),
-        "the flat fixture's width as the resolution setting allows no tile, so the \
-         array is never created:\n{report}"
+        "the narrowest resolution setting allows no tile, so the array is never \
+         created:\n{report}"
     );
     assert!(has_lit_pixels(&harness.export(FRAME.0, FRAME.1)));
 }
@@ -467,9 +455,8 @@ fn night_mode_reads_the_night_half_of_the_page_table() {
 }
 
 /// A pack that cannot be built is not waited for: the textures never become
-/// ready, and a wallpaper goes out from what there is instead of being held.
-/// Flat maps named beside the cube are not a fallback either: they are never
-/// decoded, so the grid is what there is.
+/// ready, and a wallpaper goes out from what there is, the grid, instead of
+/// being held.
 #[test]
 fn a_pack_that_fails_does_not_hold_a_publish() {
     let _gpu = gpu();
@@ -481,7 +468,7 @@ fn a_pack_that_fails_does_not_hold_a_publish() {
     let sink = Arc::new(RecordingSink::new(vec![screen("only", 0, 64, 32, true)]));
     let sink_for_config = Arc::clone(&sink);
     let harness = Harness::start(|config| {
-        fixture.configure_with_flat_maps(config);
+        fixture.configure(config);
         config.wallpaper = sink_for_config;
         config.params = blend_on(MARCH_10);
     });
@@ -497,16 +484,6 @@ fn a_pack_that_fails_does_not_hold_a_publish() {
             .all(|label| rows(&report, label).is_empty()),
         "nothing can be resident from packs that were never built:\n{report}"
     );
-
-    // A decode that had been started would land well inside this window.
-    let window = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < window {
-        let report = harness.engine.memory_report().expect("a report");
-        assert!(
-            rows(&report, "day_texture").is_empty() && rows(&report, "night_texture").is_empty(),
-            "the flat maps were decoded beside a cube surface:\n{report}"
-        );
-    }
 }
 
 /// Dropping the engine while its packs build stops the transcoder and returns,

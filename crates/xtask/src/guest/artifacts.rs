@@ -39,17 +39,13 @@ pub struct HostArtifacts {
     pub textures: Option<PathBuf>,
 }
 
-/// The texture files the app resolves, and therefore the ones the guest needs.
+/// The flat texture files the app resolves, the Moon and the Milky Way, and
+/// therefore the ones the guest needs beside the cube.
 ///
-/// `resolve_texture_paths` in the app names these four, and nothing else
-/// connects the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
-/// reads that function and asserts all of them are still spelled this way.
-pub const TEXTURE_FILES: [&str; 4] = [
-    "world.topo.200405.jxl",
-    "BlackMarble_2016.jxl",
-    "lroc_color_poles_1k.jxl",
-    "milkyway_2020_4k.jxl",
-];
+/// `resolve_textures` in the app names these two, and nothing else connects
+/// the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
+/// reads that function and asserts both are still spelled this way.
+pub const TEXTURE_FILES: [&str; 2] = ["lroc_color_poles_1k.jxl", "milkyway_2020_4k.jxl"];
 
 /// What an empty texture file is: not a pointer, which has a few hundred bytes
 /// to say what it stands for, but a copy that stopped before it wrote anything.
@@ -69,10 +65,9 @@ const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 /// files of a couple of hundred bytes, which are there as far as anything that
 /// only asks whether the file exists is concerned. Staging those would be worse
 /// than staging nothing: the app would fail to decode them, and a failed decode
-/// leaves the slot in the state `Renderer::textures_ready` never reports ready
-/// (the open roadmap item), so a guest would wait for an event that cannot
-/// arrive. Size is what tells the two apart, since the smallest of the three real
-/// assets is over 250 KiB.
+/// leaves the slot without a texture for the rest of the run. Size is what
+/// tells the two apart, since the smaller of the two real assets is over
+/// 250 KiB.
 pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(), String> {
     for (name, size) in TEXTURE_FILES.iter().zip(sizes) {
         match size {
@@ -101,7 +96,8 @@ pub fn cube_texture_files() -> Vec<String> {
     cube_names::all_files()
 }
 
-/// Everything a bundle carries under `textures/`: the flat maps and the cube.
+/// Everything a bundle carries under `textures/`: the two flat maps and the
+/// cube.
 pub fn bundle_texture_files() -> Vec<String> {
     TEXTURE_FILES
         .iter()
@@ -139,18 +135,6 @@ pub fn cube_verdict(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The textures directory for a release bundle, which carries the cube files as
-/// well as the flat maps.
-///
-/// Staging for the e2e suite keeps asking [`textures_present`]: it copies the
-/// whole directory, and the app takes the cube when every face is there and
-/// draws from the flat maps when not, so a host with only the flat maps still
-/// gets a valid run.
-pub fn release_textures_present(repo: &Path) -> Result<PathBuf, String> {
-    let dir = textures_present(repo)?;
-    cube_verdict(&dir).map(|()| dir)
-}
-
 /// The repository's textures directory, if it is worth copying in.
 ///
 /// Reports what it decided either way, because the render case samples the
@@ -168,17 +152,21 @@ pub fn host_textures(repo: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The same question without the commentary, for a caller with its own to make.
+/// The same question without the commentary, for a caller with its own to make:
+/// the two flat maps and every cube face.
 ///
-/// `dist` asks it about the release bundle rather than about staging, and what
-/// it has to say when the answer is no is decision 33's sentence rather than
-/// this one's.
+/// `dist` and `bundle` ask it about the release bundle rather than about
+/// staging, and what they have to say when the answer is no is decision 33's
+/// sentence rather than this one's. The globe is drawn from the cube, so a
+/// directory without every face is one the render case would see the
+/// procedural grid in.
 pub fn textures_present(repo: &Path) -> Result<PathBuf, String> {
     let dir = repo.join("textures");
     // An array rather than a vector, so the sizes and the names cannot get
     // out of step with each other.
     let sizes = TEXTURE_FILES.map(|name| std::fs::metadata(dir.join(name)).ok().map(|m| m.len()));
-    textures_verdict(sizes).map(|()| dir)
+    textures_verdict(sizes)?;
+    cube_verdict(&dir).map(|()| dir)
 }
 
 /// The `cargo` invocation that builds the suite without running it.
@@ -1220,28 +1208,26 @@ mod tests {
 
     #[test]
     fn a_git_lfs_pointer_is_not_mistaken_for_a_texture() {
-        // All real: the sizes of the four assets in this repository.
-        let real = [
-            Some(2_574_413),
-            Some(1_382_310),
-            Some(285_458),
-            Some(9_874_855),
-        ];
+        // All real: the sizes of the two flat assets in this repository.
+        let real = [Some(285_458), Some(501_115)];
         assert_eq!(textures_verdict(real), Ok(()));
 
         // A pointer file is a few hundred bytes and is otherwise a file like
-        // any other, so existence is not the question to ask.
+        // any other, so existence is not the question to ask. The Moon's
+        // 285 KB clears the floor by a wide margin.
         let mut pointer = real;
         pointer[0] = Some(130);
         let err = textures_verdict(pointer).unwrap_err();
-        assert!(err.contains("world.topo.200405.jxl"), "{err}");
+        assert!(err.contains("lroc_color_poles_1k.jxl"), "{err}");
         assert!(err.contains("git lfs pull"), "{err}");
 
-        // Missing is reported as missing rather than as a pointer.
+        // Missing is reported as missing rather than as a pointer. The
+        // panorama is not sampled by the render case, but a guest without it
+        // draws an empty sky.
         let mut absent = real;
         absent[1] = None;
         let err = textures_verdict(absent).unwrap_err();
-        assert!(err.contains("BlackMarble_2016.jxl"), "{err}");
+        assert!(err.contains("milkyway_2020_4k.jxl"), "{err}");
         assert!(!err.contains("pointer"), "{err}");
 
         // And empty as empty: no pointer is, and fetching from LFS would not
@@ -1249,24 +1235,8 @@ mod tests {
         let mut empty = real;
         empty[1] = Some(0);
         let err = textures_verdict(empty).unwrap_err();
-        assert!(err.contains("BlackMarble_2016.jxl is empty"), "{err}");
+        assert!(err.contains("milkyway_2020_4k.jxl is empty"), "{err}");
         assert!(!err.contains("git lfs pull"), "{err}");
-
-        // The Moon is held to the same floor as the rest, which its 285 KB
-        // clears by a wide margin.
-        let mut moon = real;
-        moon[2] = Some(130);
-        let err = textures_verdict(moon).unwrap_err();
-        assert!(err.contains("lroc_color_poles_1k.jxl"), "{err}");
-        assert!(err.contains("git lfs pull"), "{err}");
-
-        // And so is the panorama, which the render case does not sample but
-        // which a guest without it draws an empty sky for.
-        let mut panorama = real;
-        panorama[3] = Some(130);
-        let err = textures_verdict(panorama).unwrap_err();
-        assert!(err.contains("milkyway_2020_4k.jxl"), "{err}");
-        assert!(err.contains("git lfs pull"), "{err}");
     }
 
     /// The app decides which files it loads; the xtask decides which files the
@@ -1314,7 +1284,7 @@ mod tests {
         assert_eq!(files[6 * 11 + 5], "day/200412/nz.jxl");
         assert_eq!(files[6 * 12 + 2], "night/py.jxl");
         assert_eq!(files[83], "mask/nz.jxl");
-        assert_eq!(bundle_texture_files().len(), 88);
+        assert_eq!(bundle_texture_files().len(), 86);
     }
 
     fn cube_dir(name: &str) -> PathBuf {

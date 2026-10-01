@@ -130,8 +130,7 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     // this target's own. It is there for the orientation case, which is about
     // it, and for the cloud cases: the layer is shaded against the sun, so
     // pinning it wants a mode that is, and blend mode is the only one. Every
-    // other case renders the grid, which reads none of it, so the day and
-    // night slots stay empty.
+    // other case renders the grid, which reads none of it.
     let tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let textures = tmp.join("golden-earth");
     test_support::write_earth_fixture(&textures);
@@ -146,8 +145,6 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     // tile its own view wants and draws under its own cap, so what the cases
     // before it left resident does not reach its picture.
     config.texture_paths = vec![
-        None,
-        None,
         Some(support::write_moon_fixture(tmp)),
         Some(support::write_panorama_bands_fixture(tmp)),
     ];

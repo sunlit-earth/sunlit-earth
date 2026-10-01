@@ -62,21 +62,18 @@ pub(crate) struct RendererConfig {
     pub sample_count: u32,
     pub width: u32,
     pub height: u32,
-    /// One entry per file-backed texture slot, in slot order after the grid.
+    /// One entry per file-backed texture slot, in slot order after the grid:
+    /// the Moon, then the Milky Way.
     pub texture_paths: Vec<Option<PathBuf>>,
     /// Width the file-backed textures are loaded at, as a cap: a source
     /// narrower than this is loaded as it is.
     pub texture_resolution: u32,
-    /// Where downscaled copies of the file-backed textures are kept. `None`
-    /// re-derives them on every run.
-    pub texture_cache_dir: Option<PathBuf>,
     /// Shared with the cloud fetcher and the background decode threads.
     pub mailbox: TextureMailbox,
     /// Invoked from decode threads once a result has been parked.
     pub notify: NotifyFn,
     /// The month in force, January 0, when the globe is drawn from the cube
-    /// surface the engine hands over pack by pack; `None` draws it from the
-    /// flat maps in the day and night slots.
+    /// surface the engine hands over pack by pack; `None` draws the grid.
     pub cube_month: Option<usize>,
     /// Whether the adapter is a CPU, which gets the surfaces decoded and
     /// sampled without anisotropy.
@@ -99,8 +96,8 @@ pub(crate) struct Renderer {
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
-    /// What the flat textures are read through: the day and night maps, the
-    /// Moon, the Milky Way and the clouds.
+    /// What the flat textures are read through: the Moon, the Milky Way and
+    /// the clouds.
     sampler: wgpu::Sampler,
     /// What every cube the globe draws from is read through.
     surface_sampler: wgpu::Sampler,
@@ -113,11 +110,6 @@ pub(crate) struct Renderer {
     /// so a decode that was already running when the width changed is
     /// recognizable as something nobody asked for any more.
     texture_generation: u64,
-    /// Where downscaled copies of the file-backed textures are kept.
-    texture_cache_dir: Option<PathBuf>,
-    /// Index of the most recently successfully rendered texture slot.
-    /// Used as fallback when the requested slot is not loaded or fails.
-    last_rendered_index: usize,
     depth_texture: wgpu::TextureView,
     render_texture: wgpu::Texture,
     msaa_texture_view: Option<wgpu::TextureView>,
@@ -159,15 +151,6 @@ pub(crate) struct Renderer {
     /// surface's: one black layer, and one cell per face that draws the floor.
     dummy_tile_view: wgpu::TextureView,
     dummy_page_view: wgpu::TextureView,
-    /// Bind group containing both day and night textures, used in blend mode.
-    /// Created once both day and night texture slots have loaded.
-    composite_bind_group: Option<wgpu::BindGroup>,
-    /// Stored texture view for the day texture, needed to build the composite
-    /// bind group when both become available.
-    day_texture_view: Option<wgpu::TextureView>,
-    /// Stored texture view for the night texture, needed to build the composite
-    /// bind group when both become available.
-    night_texture_view: Option<wgpu::TextureView>,
     /// Bind group for the cloud texture (populated after async load completes).
     cloud_bind_group: Option<wgpu::BindGroup>,
     /// Stored texture view for the cloud texture, used to rebuild the bind group.
@@ -203,10 +186,10 @@ impl Renderer {
     /// Load the file-backed textures at a different width.
     ///
     /// Returns whether anything changed. When it did, the textures in memory
-    /// are freed before the reload is spawned, so going down actually lowers
-    /// the process's footprint rather than adding to it; the caller is expected
-    /// to mark itself dirty, since the next frame falls back to the procedural
-    /// grid until the new textures arrive.
+    /// are freed before the reload is spawned, so going down lowers the
+    /// process's footprint rather than adding to it; the caller is expected to
+    /// mark itself dirty, and to purge the tiles the new width no longer
+    /// allows, which are the engine's to decide.
     ///
     /// Any width is accepted and acts as a cap. Which widths a user may choose
     /// between is a question for the config and the combo box, not for the
@@ -361,55 +344,29 @@ impl Renderer {
         texture_routing::loading_text(self, TextureMode::from_index(texture_index))
     }
 
-    /// Whether every texture the current mode needs has finished loading.
-    /// The clouds, the Moon and the Milky Way are excluded: they are overlays,
-    /// not requirements. With the cube surface in use, what a mode needs is
-    /// its cubes: the floor of the month in force, the night floor, the mask.
+    /// Whether every texture the current mode needs is resident: its cubes,
+    /// the floor of the month in force, the night floor, the mask. The clouds,
+    /// the Moon and the Milky Way are excluded: they are overlays, not
+    /// requirements. Without the cube surface only the grid is ever ready.
     pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
-        let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
-        if let Some(surface) = &self.surface {
-            return surface.readiness(mode).0;
-        }
-        if mode == TextureMode::Blend {
-            self.slot_loaded(layout.globe(TextureMode::Day))
-                && self.slot_loaded(layout.globe(TextureMode::Night))
-                && self.composite_bind_group.is_some()
-        } else {
-            self.slot_loaded(layout.globe(mode))
-        }
+        self.surface
+            .as_ref()
+            .map_or(mode == TextureMode::Grid, |surface| {
+                surface.readiness(mode).0
+            })
     }
 
-    fn slot_loaded(&self, slot: usize) -> bool {
-        let slot = &self.texture_slots[slot];
-        slot.bind_group.is_some() && !slot.loading
-    }
-
-    /// Whether a texture the current mode needs is still on its way.
+    /// Whether a cube the current mode needs is still on its way.
     ///
-    /// True from the moment a resolution switch purges a slot until its reload
-    /// lands, and from startup until the first load does. Deliberately not the
-    /// negation of `textures_ready`: a slot with no file behind it, and one
-    /// whose decode failed and had its path cleared, are both terminal states
-    /// where nothing further is coming, so there is nothing to wait for. A cube
-    /// whose pack failed is the same.
+    /// Deliberately not the negation of `textures_ready`: a cube whose pack
+    /// failed is a terminal state where nothing further is coming, so there is
+    /// nothing to wait for, and without the cube surface nothing ever is.
     pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
-        let layout = self.layout();
         let mode = TextureMode::from_index(texture_index);
-        if let Some(surface) = &self.surface {
-            return surface.readiness(mode).1;
-        }
-        if mode == TextureMode::Blend {
-            self.slot_pending(layout.globe(TextureMode::Day))
-                || self.slot_pending(layout.globe(TextureMode::Night))
-        } else {
-            self.slot_pending(layout.globe(mode))
-        }
-    }
-
-    fn slot_pending(&self, slot: usize) -> bool {
-        let slot = &self.texture_slots[slot];
-        slot.source_path.is_some() && slot.bind_group.is_none()
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| surface.readiness(mode).1)
     }
 
     /// Make `month`, January 0, the one the surface is ready for. Its floor
@@ -583,13 +540,8 @@ impl Renderer {
         surface.blend_group = blend_group;
     }
 
-    /// A bind group of one flat texture, or of the day and night maps.
-    fn flat_bind_group(
-        &self,
-        texture: &wgpu::TextureView,
-        night: &wgpu::TextureView,
-        label: &str,
-    ) -> wgpu::BindGroup {
+    /// A bind group of one flat texture.
+    fn flat_bind_group(&self, texture: &wgpu::TextureView, label: &str) -> wgpu::BindGroup {
         let dummy = &self.dummy_cube_view;
         create_bind_group(
             &self.device,
@@ -598,7 +550,7 @@ impl Renderer {
             &Bindings {
                 texture,
                 sampler: &self.sampler,
-                night,
+                night: &self.dummy_texture_view,
                 cubes: [dummy, dummy, dummy],
                 tiles: [&self.dummy_tile_view, &self.dummy_page_view],
             },
@@ -632,8 +584,7 @@ impl Renderer {
     /// The bind group a resolution names, if it still exists.
     fn bind_group_for(&self, resolved: &ResolvedTexture) -> Option<&wgpu::BindGroup> {
         match resolved {
-            ResolvedTexture::Composite => self.composite_bind_group.as_ref(),
-            ResolvedTexture::Slot(idx) => self.texture_slots[*idx].bind_group.as_ref(),
+            ResolvedTexture::Grid => self.texture_slots[0].bind_group.as_ref(),
             ResolvedTexture::Surface(group) => self.surface.as_ref()?.group(*group),
         }
     }
@@ -652,8 +603,9 @@ impl Renderer {
 
     /// Draw a frame into the preview texture, unless nothing changed.
     ///
-    /// Kicks off background texture loads for the selected mode whether or not
-    /// the frame is skipped, so a mode switch starts loading immediately.
+    /// Kicks off background loads for the overlays that are wanted whether or
+    /// not the frame is skipped, so switching one on starts loading it
+    /// immediately.
     pub(crate) fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
         if params.sample_count != self.sample_count {
             debug!(
@@ -671,8 +623,6 @@ impl Renderer {
 
         // An overlay's texture is loaded when the overlay is wanted and not
         // before, which is what keeps a switched-off one from costing a decode.
-        // Like the globe's loads, this happens whether or not the frame is
-        // skipped.
         for slot in [
             (params.moon_brightness > 0.0).then(|| self.layout().moon()),
             (params.milky_way_intensity > 0.0).then(|| self.layout().milky_way()),
@@ -689,7 +639,6 @@ impl Renderer {
         self.last_inputs = Some(render_pass::FrameInputs {
             sky: sky.clone(),
             use_blend,
-            cube: resolved.draws_from_a_cube(),
             night_alone: resolved.draws_the_night_alone(),
             tiles: self.tile_uniforms(),
         });

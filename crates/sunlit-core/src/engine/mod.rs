@@ -212,6 +212,9 @@ impl Engine {
         let slots = SlotLayout::new(texture_paths.len());
         let mailbox = checked_mailbox(mailbox, slots, texture_paths.len());
         let gpu = open_gpu(force_software, ready)?;
+        if let Some(dir) = &cache_dir {
+            crate::assets::texture_loader::remove_retired_downscales(dir);
+        }
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to
@@ -265,7 +268,6 @@ impl Engine {
                 height,
                 texture_paths,
                 texture_resolution,
-                texture_cache_dir: cache_dir.clone(),
                 mailbox: mailbox.clone(),
                 notify: Arc::clone(&notify),
                 cube_month: surface.as_ref().map(|_| month),

@@ -1,73 +1,98 @@
-//! Switching the texture resolution, and what the mailbox does about it.
+//! Switching the resolution setting, and what the mailbox does about the
+//! overlay decodes it outruns.
 
-use std::path::Path;
 use std::time::Duration;
 
+use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::mailbox::DecodedTextureMessage;
 use sunlit_core::assets::mailbox::TextureMailbox;
 use sunlit_core::assets::texture_loader::DecodedImage;
+use sunlit_core::assets::tiles::{self, PackKind};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::engine::EngineConfig;
 use sunlit_core::engine::EngineEvent;
 use sunlit_core::params::SceneParams;
 
-use crate::groups::{FRAME, SURFACE_WIDTH, surface};
+use crate::groups::{SURFACE_RESOLUTION, surface};
 use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, test_params};
 use crate::memory::expected_widths;
 use crate::sinks::screen;
 use crate::test_support::ScratchDir;
+use crate::tiles::settled;
 
-/// Two small texture files and a cache directory to go with them.
+/// A panorama file for the cases that have an engine of their own.
 ///
-/// For the cases that have an engine of their own: the shared surface group
-/// reads `support::write_surface_fixtures` instead. Small and bright rather
-/// than realistic, and deletable, which is what the mailbox cases need.
-struct TextureFixtures {
+/// Small and bright rather than realistic: the Milky Way is the one slot the
+/// resolution setting still reloads, and these cases are about that reload.
+struct PanoramaFixture {
     dir: ScratchDir,
 }
 
-impl TextureFixtures {
-    /// Fixtures at a chosen width. Not one of the widths the combo box offers,
-    /// because the renderer takes any width as a cap and the three on offer are
-    /// the config's business.
+impl PanoramaFixture {
+    /// A panorama at a chosen width. Not one of the widths the combo box
+    /// offers, because the renderer takes any width as a cap and the three on
+    /// offer are the config's business.
     fn with_width(name: &str, width: u32) -> Self {
         let dir = ScratchDir::new(name);
-        for file in ["day.png", "night.png"] {
-            let mut img = image::RgbaImage::new(width, width / 2);
-            for (x, y, px) in img.enumerate_pixels_mut() {
-                // Bright throughout, so a lit globe is lit whichever texture
-                // and blend the mode picks.
-                #[allow(clippy::cast_possible_truncation)]
-                let v = 160 + ((x + y) % 96) as u8;
-                *px = image::Rgba([v, v, v, 255]);
-            }
-            img.save(dir.join(file)).expect("write a fixture texture");
+        let mut img = image::RgbaImage::new(width, width / 2);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = 160 + ((x + y) % 96) as u8;
+            *px = image::Rgba([v, v, v, 255]);
         }
+        img.save(dir.join("panorama.png"))
+            .expect("write the panorama fixture");
         Self { dir }
     }
 
-    fn path(&self) -> &Path {
-        self.dir.path()
-    }
-
-    /// Delete the files, so that a slot backed by one becomes terminal on its
-    /// next load: the decode fails, and a failed decode clears the slot's path.
-    fn remove_files(&self) {
-        for file in ["day.png", "night.png"] {
-            std::fs::remove_file(self.dir.join(file)).expect("remove a fixture texture");
-        }
-    }
-
+    /// The paths as `texture_paths` wants them: no Moon, and the panorama.
     fn paths(&self) -> Vec<Option<std::path::PathBuf>> {
-        vec![
-            Some(self.dir.join("day.png")),
-            Some(self.dir.join("night.png")),
-        ]
+        vec![None, Some(self.dir.join("panorama.png"))]
+    }
+
+    /// An engine of its own at `width`, with the panorama wanted and the
+    /// injected mailbox, if any.
+    fn start(&self, width: u32, mailbox: Option<TextureMailbox>) -> Harness {
+        let paths = self.paths();
+        Harness::start(move |config| {
+            config.texture_paths = paths;
+            config.texture_resolution = width;
+            config.mailbox = mailbox;
+            config.params = panorama_wanted();
+        })
     }
 }
 
-/// The day and night maps blended, which is the mode that needs both
-/// file-backed slots and the composite bind group built from them.
+/// The grid, with the Milky Way switched on, since an overlay's texture is
+/// loaded when it is wanted and not before.
+fn panorama_wanted() -> SceneParams {
+    SceneParams {
+        milky_way_intensity: 1.0,
+        ..test_params()
+    }
+}
+
+/// The Milky Way's slot in production's layout: the grid, the Moon, then it.
+const MILKY_WAY_SLOT: usize = 2;
+
+/// Block until the Milky Way's texture is `width` wide in the memory report.
+fn wait_for_panorama_width(harness: &Harness, width: u32, what: &str) {
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let report = harness.engine.memory_report().expect("a report");
+        if expected_widths(&report, "milky_way_texture") == [width] {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: the panorama did not reach {width} within {TIMEOUT:?}:\n{report}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The day and night surfaces blended, the mode that wants every cube and
+/// both halves of the page table.
 pub(crate) fn blend_params() -> SceneParams {
     SceneParams {
         texture_index: 3,
@@ -75,81 +100,51 @@ pub(crate) fn blend_params() -> SceneParams {
     }
 }
 
-#[test]
-fn a_resolution_switch_reloads_the_textures_in_both_directions() {
-    let gpu = gpu();
-    let harness = surface(&gpu);
-    let rgba = harness.picture(&blend_params(), FRAME);
-    assert!(
-        has_lit_pixels(&rgba),
-        "the globe should be visible at first"
-    );
-
-    // Down: the textures in memory are destroyed and the halved ones loaded.
-    harness.set_texture_resolution(SURFACE_WIDTH / 4);
-    harness.wait_for_textures("after switching down");
-    let (rgba, _, _) = harness.next_frame();
-    assert!(
-        has_lit_pixels(&rgba),
-        "a frame after the switch must come from the new textures, not from nothing"
-    );
-
-    // Up again: the same path in reverse, which is the one that would break if
-    // the purge left a destroyed texture behind in a bind group.
-    harness.set_texture_resolution(SURFACE_WIDTH);
-    harness.wait_for_textures("after switching back up");
-    let (rgba, _, _) = harness.next_frame();
-    assert!(has_lit_pixels(&rgba));
-}
-
-/// The switch is idempotent, so a client that re-sends the current width (the
-/// reset and load-defaults callbacks both do) costs nothing.
+/// The switch is idempotent, so a client that re-sends the current setting
+/// (the reset and load-defaults callbacks both do) costs nothing.
 #[test]
 fn a_switch_to_the_current_resolution_does_nothing() {
     let gpu = gpu();
     let harness = surface(&gpu);
     harness.settle_at(&blend_params());
+    settled(harness, "the tiles", |_| true);
+    harness.settle();
 
-    harness.set_texture_resolution(SURFACE_WIDTH);
+    harness.set_texture_resolution(SURFACE_RESOLUTION);
     assert!(
         harness.drained_frame(Duration::from_millis(500)).is_none(),
-        "a switch to the width already in force must not re-render"
+        "a switch to the setting already in force must not re-render"
     );
 }
 
-/// Three purges with no reload in between, ending on the last width.
-///
-/// The run loop drains every queued command before it ticks, and a reload is
-/// only spawned from inside `render`, so all three purges here happen before
-/// the first spawn and no decode is ever in flight during them. That makes this
-/// a test of the purge being repeatable and of the last command winning, not of
-/// the stale-arrival ordering; `a_stale_decode_must_not_replace_the_texture_that_superseded_it`
-/// is that one.
+/// Three switches in a row end on the last one: the tiles of every one are
+/// purged, and what the last allows, no tile at all, is what is in force.
 #[test]
 fn switches_in_quick_succession_end_on_the_last_one() {
     let gpu = gpu();
     let harness = surface(&gpu);
     harness.settle_at(&blend_params());
+    let before = settled(harness, "the widest setting's tiles", |r| {
+        !r.wanted.is_empty()
+    });
 
-    for width in [SURFACE_WIDTH / 2, SURFACE_WIDTH, SURFACE_WIDTH / 4] {
+    for width in [4096, SURFACE_RESOLUTION, 2048] {
         harness.set_texture_resolution(width);
     }
 
-    harness.wait_for_textures("after three switches in a row");
-    let (rgba, _, _) = harness.next_frame();
+    let after = settled(harness, "after three switches in a row", |r| {
+        r.epoch == before.epoch + 3
+    });
     assert!(
-        has_lit_pixels(&rgba),
-        "the last switch must be the one that is showing"
+        after.wanted.is_empty() && after.resident.is_empty(),
+        "the last switch, which allows no tile, must be the one in force: {after:#?}"
     );
+    let rgba = harness.export(256, 128);
+    assert!(has_lit_pixels(&rgba), "the floors still draw the globe");
 }
 
 /// One decoded texture for a slot, as a background loader would post it.
-pub(crate) fn decoded(
-    slot_index: usize,
-    width: u32,
-    generation: u64,
-    value: u8,
-) -> DecodedTextureMessage {
+fn decoded(slot_index: usize, width: u32, generation: u64, value: u8) -> DecodedTextureMessage {
     let height = width / 2;
     DecodedTextureMessage {
         slot_index,
@@ -172,62 +167,38 @@ pub(crate) fn decoded(
 /// waiting can arrange, so both posts are made directly into the injected
 /// mailbox.
 ///
-/// The slot is made terminal first, by deleting the file behind it, so that
-/// nothing the engine does can supply a texture afterwards. `TexturesReady` can
-/// then only fire if the fresh post survived, which is what makes this test fail
-/// when the guard is removed. An engine of its own for the mailbox, which is
-/// read once when the engine is built.
+/// The Milky Way is switched off before the switch, so the purge is followed
+/// by no reload and nothing the engine does can supply a texture afterwards:
+/// the slot can only hold the new width if the fresh post survived, which is
+/// what makes this fail when the guard is removed. An engine of its own for the
+/// mailbox, which is read once when the engine is built.
 #[test]
 fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
     const WIDE: u32 = 256;
-    const DAY_SLOT: usize = 1;
 
     let _gpu = gpu();
-    let fixtures = TextureFixtures::with_width("engine_resolution_stale", WIDE);
-    let mailbox = TextureMailbox::new(fixtures.paths().len() + 2);
-    let injected = mailbox.clone();
-    let harness = Harness::start(|config| {
-        config.texture_paths = fixtures.paths();
-        config.texture_resolution = WIDE;
-        config.cache_dir = Some(fixtures.path().to_path_buf());
-        config.mailbox = Some(injected);
-        config.params = SceneParams {
-            // The day texture alone, and no atmosphere: then every lit pixel
-            // comes from the texture under test and nothing else can stand in
-            // for it.
-            texture_index: 1,
-            atmo_enabled: false,
-            ..test_params()
-        };
-    });
-    harness.wait_for_textures("at startup");
-    let (rgba, _, _) = harness.next_frame();
+    let fixture = PanoramaFixture::with_width("engine_resolution_stale", WIDE);
+    let mailbox = TextureMailbox::new(fixture.paths().len() + 2);
+    let harness = fixture.start(WIDE, Some(mailbox.clone()));
+    wait_for_panorama_width(&harness, WIDE, "at startup");
+
+    harness.settle_at(&test_params());
+    harness.set_texture_resolution(WIDE / 2);
+    harness.settle();
+    let report = harness.engine.memory_report().expect("a report");
     assert!(
-        has_lit_pixels(&rgba),
-        "the globe should be visible at first"
+        expected_widths(&report, "milky_way_texture").is_empty(),
+        "the switch purges the panorama:\n{report}"
     );
 
-    // Take the file away, then switch. The reload finds nothing to decode and
-    // clears the slot's path, which is terminal: from here the only textures
-    // this slot can ever get are the ones posted below.
-    fixtures.remove_files();
-    harness.set_texture_resolution(WIDE / 2);
-    harness.wait_for_status(|text| !text.is_empty(), "the reload should start");
-    harness.wait_for_status(str::is_empty, "the reload should fail and stop loading");
-
-    // The reload's replacement, parked first, and then the superseded decode of
-    // the old width arriving late. Nothing pokes the engine in between, so the
-    // drain that follows sees whatever the mailbox kept.
-    mailbox.post(decoded(DAY_SLOT, WIDE / 2, 1, 255));
-    mailbox.post(decoded(DAY_SLOT, WIDE, 0, 0));
+    // The replacement, parked first, and then the superseded decode of the old
+    // width arriving late. Nothing pokes the engine in between, so the drain
+    // that follows sees whatever the mailbox kept.
+    mailbox.post(decoded(MILKY_WAY_SLOT, WIDE / 2, 1, 255));
+    mailbox.post(decoded(MILKY_WAY_SLOT, WIDE, 0, 0));
     harness.engine.send(EngineCommand::Poke);
 
-    harness.wait_for_textures("after the stale arrival");
-    let (rgba, _, _) = harness.next_frame();
-    assert!(
-        has_lit_pixels(&rgba),
-        "the surviving texture is the white one, so the globe must be lit"
-    );
+    wait_for_panorama_width(&harness, WIDE / 2, "after the stale arrival");
 }
 
 /// A mailbox that disagrees with the engine's slot count fails at startup.
@@ -242,8 +213,8 @@ fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
 #[test]
 fn a_mailbox_that_does_not_match_the_slot_count_is_refused() {
     let mut config = EngineConfig::headless((64, 64));
-    // Three file-backed paths need five slots: the grid, all three of them,
-    // the clouds.
+    // Two file-backed paths need four slots: the grid, both of them, the
+    // clouds.
     config.mailbox = Some(TextureMailbox::new(3));
     let Err(error) = sunlit_core::engine::start(config) else {
         panic!("a mailbox with the wrong slot count must not produce a handle");
@@ -259,33 +230,21 @@ fn a_mailbox_that_does_not_match_the_slot_count_is_refused() {
 /// Separate from the ordering above because it asserts the other half: not that
 /// the fresh post survives, but that the stale one is never applied. A discarded
 /// message dirties nothing, so no frame follows it; were it applied, the frame it
-/// dirtied would show the black globe it carries.
+/// dirtied would show the black panorama it carries.
 #[test]
 fn a_stale_arrival_produces_no_frame_at_all() {
     const WIDE: u32 = 256;
-    const DAY_SLOT: usize = 1;
 
     let _gpu = gpu();
-    let fixtures = TextureFixtures::with_width("engine_resolution_stale_alone", WIDE);
-    let mailbox = TextureMailbox::new(fixtures.paths().len() + 2);
-    let injected = mailbox.clone();
-    let harness = Harness::start(|config| {
-        config.texture_paths = fixtures.paths();
-        config.texture_resolution = WIDE;
-        config.cache_dir = Some(fixtures.path().to_path_buf());
-        config.mailbox = Some(injected);
-        config.params = SceneParams {
-            texture_index: 1,
-            atmo_enabled: false,
-            ..test_params()
-        };
-    });
-    harness.wait_for_textures("at startup");
+    let fixture = PanoramaFixture::with_width("engine_resolution_stale_alone", WIDE);
+    let mailbox = TextureMailbox::new(fixture.paths().len() + 2);
+    let harness = fixture.start(WIDE, Some(mailbox.clone()));
+    wait_for_panorama_width(&harness, WIDE, "at startup");
     harness.set_texture_resolution(WIDE / 2);
-    harness.wait_for_textures("after the switch");
+    wait_for_panorama_width(&harness, WIDE / 2, "after the switch");
     harness.drained_frame(Duration::from_millis(300));
 
-    mailbox.post(decoded(DAY_SLOT, WIDE, 0, 0));
+    mailbox.post(decoded(MILKY_WAY_SLOT, WIDE, 0, 0));
     harness.engine.send(EngineCommand::Poke);
     assert!(
         harness.drained_frame(Duration::from_millis(500)).is_none(),
@@ -295,43 +254,32 @@ fn a_stale_arrival_produces_no_frame_at_all() {
 
 /// A resolution change while the first load is still running converges.
 ///
-/// The purge here happens with a decode genuinely in flight, which the
-/// quick-succession case above cannot reach. The in-flight decode's post is
-/// discarded when it arrives; what must still happen is the reload, and the only
-/// evidence that it did is the slot becoming ready at all. An engine of its own,
+/// The first frame is the render that spawns the panorama's decode, and a
+/// panorama this wide takes that decode well past the switch sent right after
+/// it, so the purge happens with a decode in flight. Its post is discarded when
+/// it arrives; what must still happen is the reload, and the only evidence that
+/// it did is the slot reaching the new width at all. An engine of its own,
 /// because the load it interrupts is the one the engine starts with.
 #[test]
 fn a_switch_while_the_first_load_is_running_still_converges() {
-    const WIDE: u32 = 1024;
+    const WIDE: u32 = 2048;
 
     let _gpu = gpu();
-    let fixtures = TextureFixtures::with_width("engine_resolution_midload", WIDE);
-    let harness = Harness::start(|config| {
-        config.texture_paths = fixtures.paths();
-        config.texture_resolution = WIDE;
-        config.cache_dir = Some(fixtures.path().to_path_buf());
-        config.params = SceneParams {
-            texture_index: 1,
-            atmo_enabled: false,
-            ..test_params()
-        };
-    });
-    harness.wait_for_status(|text| !text.is_empty(), "the first load should start");
+    let fixture = PanoramaFixture::with_width("engine_resolution_midload", WIDE);
+    let harness = fixture.start(WIDE, None);
+    harness.next_frame();
     harness.set_texture_resolution(WIDE / 4);
 
-    harness.wait_for_textures("after a switch mid-load");
-    let (rgba, _, _) = harness.next_frame();
-    assert!(has_lit_pixels(&rgba));
+    wait_for_panorama_width(&harness, WIDE / 4, "after a switch mid-load");
 }
 
 /// A wallpaper update asked for during a reload waits for the reload.
 ///
-/// The purge leaves the renderer on the procedural grid until the new textures
-/// arrive, and "change the resolution, then click Set as Wallpaper" is a natural
-/// sequence, so without the hold-back the grid is what lands on the desktop.
-/// Asserted on the order of the engine's own events, which is the only place the
-/// distinction shows: a publish from the grid would be reported before the
-/// textures were ready rather than after.
+/// The switch purges the tiles, and "change the resolution, then click Set as
+/// Wallpaper" is a natural sequence, so without the hold-back the floors alone
+/// are what lands on the desktop. Asserted on the order of the engine's own
+/// events, which is the only place the distinction shows: a publish from the
+/// floors would be reported before the textures were ready rather than after.
 #[test]
 fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
     let gpu = gpu();
@@ -340,14 +288,18 @@ fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
         .sink
         .set_monitors(vec![screen("only", 0, 64, 32, true)]);
     group.settle_at(&blend_params());
+    settled(group, "the widest setting's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    group.settle();
     assert!(
         group.sink.publications().is_empty(),
         "nothing has asked for a wallpaper yet"
     );
 
     // Both commands are handled before the engine ticks, so the purge has
-    // already emptied the slots when the publish is asked for.
-    group.set_texture_resolution(SURFACE_WIDTH / 4);
+    // already emptied the tile array when the publish is asked for.
+    group.set_texture_resolution(4096);
     group.engine.send(EngineCommand::RenderWallpaperNow);
 
     let deadline = std::time::Instant::now() + TIMEOUT;
@@ -362,8 +314,8 @@ fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
                 assert_eq!(
                     ready_first,
                     Some(true),
-                    "the wallpaper was published before the textures were loaded, \
-                     which means it was published from the procedural grid"
+                    "the wallpaper was published before the tiles were loaded, \
+                     which means it was published from the floors alone"
                 );
                 assert_eq!(
                     group.sink.publications().len(),
@@ -376,19 +328,6 @@ fn a_wallpaper_update_during_a_reload_waits_for_the_textures() {
         }
     }
     panic!("no wallpaper result within {TIMEOUT:?}");
-}
-
-/// Whether `memory::snapshot` has an implementation for this platform.
-///
-/// Mirrors the cfg on `memory::snapshot` itself, and the same helper in the
-/// soak test. It is the difference between "this platform cannot answer" and
-/// "this platform failed to answer", and only the first of those may skip.
-fn memory_counters_supported() -> bool {
-    cfg!(any(windows, target_os = "linux", target_os = "macos"))
-}
-
-fn private_bytes() -> Option<u64> {
-    sunlit_core::memory::snapshot().map(|s| s.private_bytes)
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -419,48 +358,44 @@ pub(crate) fn real_asset(name: &str) -> Result<std::path::PathBuf, String> {
     }
 }
 
-/// The repository's real surface and Moon assets, if this checkout has them.
-fn real_textures() -> Result<Vec<Option<std::path::PathBuf>>, String> {
-    [
-        "world.topo.200405.jxl",
-        "BlackMarble_2016.jxl",
-        "lroc_color_poles_1k.jxl",
-    ]
-    .into_iter()
-    .map(|name| real_asset(name).map(Some))
-    .collect()
+/// The repository's cube faces, if this checkout has every one of them.
+fn real_cube() -> Result<CubeTextures, String> {
+    let dir = sunlit_core::assets::texture_loader::resolve_textures_dir(None)
+        .ok_or_else(|| "there is no textures directory".to_owned())?;
+    let cube = CubeTextures::resolve(&dir);
+    if cube.is_complete() {
+        Ok(cube)
+    } else {
+        Err(format!(
+            "{} of the {} cube faces are there, the rest are Git LFS pointers or missing",
+            cube.found(),
+            CubeTextures::total()
+        ))
+    }
 }
 
 /// Going down a resolution has to give the memory back, which is the whole
-/// point of the setting.
+/// point of the setting: on the real faces, at the widest setting, the tile
+/// array holds the layers a 4K export at the zoom of the CPU adapter's peak
+/// made resident, and at the narrowest it is gone, from the renderer's own
+/// table and from wgpu's count of the texture memory it holds.
 ///
-/// The widest and the narrowest of the offered widths, on the real assets: at
-/// 8192 the two textures and their mip chains are about 341 MiB of pixels, at
-/// 2048 about 21 MiB, and the purge is what decides whether the difference
-/// comes back. A margin well below the expected drop, because what is being
-/// asserted is that the old textures were released, not how promptly an
-/// allocator returns pages to the OS.
+/// Process memory is not what this asserts on: WARP keeps the pages of a
+/// destroyed texture for the next one, and five rounds of making 455 layers
+/// resident and purging them leave the private bytes within 10 MiB of where
+/// they started (`docs/testing.md`). The figure is printed for the record.
 ///
-/// Only the software adapter is measured here (the headless config forces it),
-/// which is what puts the textures in process memory in the first place; on a
-/// discrete GPU they would live in VRAM, where this counter cannot see them.
-///
-/// An engine of its own, and the slowest case in the file: the two 8K sources
-/// are decoded once each, which is about six seconds apiece, and no shared
-/// engine may carry them because every case that shares it would pay for them.
+/// An engine of its own, over a cache that outlives the run: every pack of the
+/// year is built before the engine starts, which takes about a minute the first
+/// time and a positional read of each index after it, so no build runs in the
+/// background while the engine sits idle between the two reports.
 #[test]
-pub(crate) fn lowering_the_resolution_lowers_the_process_footprint() {
-    /// Drop the measurement must show, out of roughly 320 MiB expected.
-    const MIN_DROP: u64 = 128 * 1024 * 1024;
+fn lowering_the_resolution_releases_the_tile_array() {
     const WIDE: u32 = 8192;
     const NARROW: u32 = 2048;
 
-    if !memory_counters_supported() {
-        println!("skipped: no memory counters on this platform");
-        return;
-    }
-    let paths = match real_textures() {
-        Ok(paths) => paths,
+    let cube = match real_cube() {
+        Ok(cube) => cube,
         Err(why) => {
             println!("skipped: {why}; `git lfs pull` fetches the assets");
             return;
@@ -468,70 +403,96 @@ pub(crate) fn lowering_the_resolution_lowers_the_process_footprint() {
     };
 
     let _gpu = gpu();
-    // Not a scratch directory: this is the downscale cache, and what it holds
-    // is two halved copies of the 8K assets that cost about six seconds each to
-    // build. It is keyed on the source's size and modification time, so a run
-    // that finds it warm is reading exactly what it would have written.
     let cache = crate::test_support::scratch_root().join("engine_resolution_memory_cache");
-    std::fs::create_dir_all(&cache).expect("create the downscale cache");
-
-    // Build the narrow copies before measuring anything. Otherwise the switch
-    // decodes both 8K sources one last time to make them, and those two 128 MiB
-    // buffers are freed but possibly still held by the allocator when the second
-    // snapshot is taken, which would hide the very thing being measured.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
     sunlit_core::assets::texture_loader::register_jxl_hook();
-    for path in paths.iter().flatten() {
-        sunlit_core::assets::texture_cache::load_at_resolution(path, NARROW, Some(&cache))
-            .expect("build the narrow copy");
+    for kind in PackKind::all() {
+        tiles::ensure_pack(&cache, kind, &cube, &tiles::GEOMETRY, &cancel)
+            .unwrap_or_else(|e| panic!("build the {kind:?} pack: {e:?}"));
     }
 
     let harness = Harness::start(|config| {
-        config.texture_paths = paths.clone();
-        config.texture_resolution = WIDE;
+        config.cube_textures = cube.clone();
         config.cache_dir = Some(cache.clone());
-        config.params = blend_params();
+        config.texture_resolution = WIDE;
+        // Asia at nine radii through the narrowest lens, where a CPU
+        // adapter's 4K frame wants the most tiles (research section 24).
+        config.params = SceneParams {
+            texture_index: 3,
+            camera: sunlit_core::scene::camera::CameraParams {
+                fov_deg: 10.0,
+                ..crate::tiles::day_over(100.0, 30.0, 0.45).camera
+            },
+            ..test_params()
+        };
     });
     harness.wait_for_textures("at 8192");
-    harness.next_frame();
-    harness.drained_frame(Duration::from_millis(500));
-    let wide = private_bytes().expect("this platform reports memory counters");
-    let wide_report = harness.engine.memory_report().expect("a report");
-    println!("at {WIDE}:\n{wide_report}");
+    harness.export(3840, 2160);
+    let loaded = settled(&harness, "at 8192", |r| !r.wanted.is_empty());
+    let wide = harness.engine.memory_report().expect("a report");
+    let wide_private = sunlit_core::memory::snapshot().map(|s| s.private_bytes);
+    println!(
+        "at {WIDE}, {} tiles resident:\n{wide}",
+        loaded.resident.len()
+    );
 
     harness
         .engine
         .send(EngineCommand::SetTextureResolution(NARROW));
-    harness.wait_for_textures("at 2048");
-    let (rgba, _, _) = harness.next_frame();
-    assert!(has_lit_pixels(&rgba), "the narrow textures should render");
-    harness.drained_frame(Duration::from_millis(500));
-    let narrow = private_bytes().expect("this platform reports memory counters");
-    let narrow_report = harness.engine.memory_report().expect("a report");
-    println!("at {NARROW}:\n{narrow_report}");
+    settled(&harness, "at 2048", |r| {
+        r.epoch > loaded.epoch && r.wanted.is_empty()
+    });
+    let rgba = harness.export(256, 128);
+    assert!(has_lit_pixels(&rgba), "the floors should render");
+    let narrow = harness.engine.memory_report().expect("a report");
+    let narrow_private = sunlit_core::memory::snapshot().map(|s| s.private_bytes);
+    println!("at {NARROW}:\n{narrow}");
+    if let (Some(wide), Some(narrow)) = (wide_private, narrow_private) {
+        println!(
+            "private bytes: {:.1} MiB at {WIDE}, {:.1} MiB at {NARROW}",
+            mib(wide),
+            mib(narrow)
+        );
+    }
 
-    println!(
-        "private bytes: {:.1} MiB at {WIDE}, {:.1} MiB at {NARROW}, {:.1} MiB returned",
-        mib(wide),
-        mib(narrow),
-        mib(wide.saturating_sub(narrow)),
+    let array: u64 = wide
+        .expected
+        .iter()
+        .filter(|texture| texture.label == "tile_array")
+        .map(sunlit_core::memory_report::ExpectedTexture::bytes)
+        .sum();
+    assert!(array > 0, "the array is resident at {WIDE}:\n{wide}");
+    assert!(
+        expected_widths(&narrow, "tile_array").is_empty(),
+        "the array survived the switch:\n{narrow}"
     );
     assert!(
-        wide.saturating_sub(narrow) >= MIN_DROP,
-        "switching from {WIDE} to {NARROW} returned {:.1} MiB, expected at least {:.1} MiB",
-        mib(wide.saturating_sub(narrow)),
-        mib(MIN_DROP),
+        narrow.expected_bytes() + array <= wide.expected_bytes(),
+        "the computed total should fall by the array's {:.1} MiB",
+        mib(array)
+    );
+    assert_eq!(
+        expected_widths(&narrow, "day_floor"),
+        [tiles::GEOMETRY.floor],
+        "the floors stay"
     );
 
-    // The report has to agree with the measurement, on the real widths rather
-    // than on the small fixtures the other resolution tests use.
-    assert_eq!(expected_widths(&wide_report, "day_texture"), [WIDE]);
-    assert_eq!(expected_widths(&narrow_report, "day_texture"), [NARROW]);
-    assert_eq!(expected_widths(&narrow_report, "night_texture"), [NARROW]);
+    let (Ok(wide_measured), Ok(narrow_measured)) = (
+        u64::try_from(wide.counters.texture_bytes),
+        u64::try_from(narrow.counters.texture_bytes),
+    ) else {
+        panic!("wgpu reported negative texture memory");
+    };
+    if wide_measured == 0 {
+        println!("skipping the counter check: this backend maintains no texture counter");
+        return;
+    }
     assert!(
-        !narrow_report
-            .expected
-            .iter()
-            .any(|texture| texture.width == WIDE),
-        "the report still lists a texture at {WIDE}:\n{narrow_report}"
+        narrow_measured + array / 2 <= wide_measured,
+        "wgpu holds {:.1} MiB of textures at {NARROW} against {:.1} MiB at {WIDE}, so the \
+         array's {:.1} MiB was not released",
+        mib(narrow_measured),
+        mib(wide_measured),
+        mib(array)
     );
 }

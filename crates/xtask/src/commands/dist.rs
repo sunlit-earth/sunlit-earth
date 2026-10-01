@@ -1378,7 +1378,7 @@ fn assemble_bundle(
     scratch: &Path,
     info: &mut BuildInfo,
 ) -> Result<Option<Bundled>, String> {
-    let textures = match artifacts::release_textures_present(repo) {
+    let textures = match artifacts::textures_present(repo) {
         Ok(dir) => dir,
         Err(why) => {
             println!("  no bundle: {why}");

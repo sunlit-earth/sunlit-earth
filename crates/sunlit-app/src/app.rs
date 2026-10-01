@@ -542,7 +542,7 @@ fn install_tray_and_geometry(
 ///
 /// After the engine, whose event callback owns the other end of
 /// `first_refresh`. Without the wait the first publish of a run would be the
-/// procedural grid, since the engine is ready long before an 8K decode is.
+/// procedural grid, since the engine is ready long before the surface is.
 fn start_startup_refresh_timer(
     link: &EngineLink,
     first_refresh: Option<crossbeam_channel::Receiver<()>>,

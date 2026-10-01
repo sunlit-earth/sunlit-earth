@@ -1,8 +1,9 @@
 //! The memory report.
 
-use crate::groups::{FRAME, SURFACE_WIDTH, plain, surface};
+use crate::groups::{FRAME, plain, surface};
 use crate::harness::{gpu, test_params};
 use crate::textures::{blend_params, mib};
+use crate::tiles::{EARTH, settled};
 
 /// The width of every texture the report says the renderer owns under `label`.
 pub(crate) fn expected_widths(
@@ -22,6 +23,7 @@ fn the_report_names_the_textures_the_renderer_owns() {
     let gpu = gpu();
     let harness = surface(&gpu);
     harness.settle_at(&blend_params());
+    settled(harness, "the view's tiles", |r| !r.wanted.is_empty());
 
     let report = harness
         .engine
@@ -29,8 +31,19 @@ fn the_report_names_the_textures_the_renderer_owns() {
         .expect("the engine should answer with a report");
     println!("{report}");
 
-    assert_eq!(expected_widths(&report, "day_texture"), [SURFACE_WIDTH]);
-    assert_eq!(expected_widths(&report, "night_texture"), [SURFACE_WIDTH]);
+    for (label, width) in [
+        ("day_floor", EARTH.floor),
+        ("night_floor", EARTH.floor),
+        ("water_mask", EARTH.mask),
+        ("page_table", EARTH.face / EARTH.tile),
+    ] {
+        assert_eq!(expected_widths(&report, label), [width], "{label}");
+    }
+    assert_eq!(
+        expected_widths(&report, "tile_array").len(),
+        1,
+        "the widest setting allows tiles, and the view wants some"
+    );
     assert_eq!(
         expected_widths(&report, "grid_texture").len(),
         1,
@@ -79,45 +92,44 @@ fn the_measured_and_computed_texture_totals_agree() {
     );
 }
 
-/// After a switch down, nothing of the old width is left in the report and the
-/// computed total has fallen.
-///
-/// The widths are the fixtures' rather than the 8192 and 2048 a user picks
-/// between, for the reason every other resolution test uses small fixtures: the
-/// property is about the purge and the reload, and real 8K assets would make
-/// this a minute long. `lowering_the_resolution_lowers_the_process_footprint`
-/// is the one that measures the real pair, where they are present.
+/// A switch to the narrowest setting, which allows no tile, frees the tile
+/// array, and the computed total falls by at least what it held; the floors
+/// and the mask stay.
 #[test]
-fn a_switch_down_leaves_no_texture_at_the_old_width() {
-    const NARROW: u32 = SURFACE_WIDTH / 8;
-
+fn a_switch_down_leaves_no_tile_array_behind() {
     let gpu = gpu();
     let harness = surface(&gpu);
     harness.settle_at(&blend_params());
+    settled(harness, "the widest setting's tiles", |r| {
+        !r.wanted.is_empty()
+    });
 
     let before = harness.engine.memory_report().expect("a report");
-    assert_eq!(expected_widths(&before, "day_texture"), [SURFACE_WIDTH]);
+    let array: u64 = before
+        .expected
+        .iter()
+        .filter(|texture| texture.label == "tile_array")
+        .map(sunlit_core::memory_report::ExpectedTexture::bytes)
+        .sum();
+    assert!(array > 0, "the array is resident at first:\n{before}");
 
-    harness.set_texture_resolution(NARROW);
-    harness.wait_for_textures("after switching down");
+    harness.set_texture_resolution(2048);
+    settled(harness, "no tile allowed", |r| r.wanted.is_empty());
     harness.settle();
 
     let after = harness.engine.memory_report().expect("a report");
     println!("{after}");
-    assert_eq!(expected_widths(&after, "day_texture"), [NARROW]);
-    assert_eq!(expected_widths(&after, "night_texture"), [NARROW]);
     assert!(
-        !after
-            .expected
-            .iter()
-            .any(|texture| texture.label.ends_with("_texture")
-                && texture.width == SURFACE_WIDTH
-                && texture.mip_levels > 1),
-        "a texture at the old width survived the switch:\n{after}"
+        expected_widths(&after, "tile_array").is_empty(),
+        "the tile array survived the switch:\n{after}"
     );
+    for label in ["day_floor", "night_floor", "water_mask"] {
+        assert_eq!(expected_widths(&after, label).len(), 1, "{label}:\n{after}");
+    }
     assert!(
-        after.expected_bytes() < before.expected_bytes(),
-        "the computed total should fall with the width"
+        after.expected_bytes() + array <= before.expected_bytes(),
+        "the computed total should fall by the array's {} MiB",
+        mib(array)
     );
 }
 

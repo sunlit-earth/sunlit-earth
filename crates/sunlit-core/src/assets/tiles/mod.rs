@@ -164,7 +164,7 @@ impl PackKind {
 }
 
 /// Where the pack of `kind` lives under the app's cache directory, the one
-/// the cloud cache and the texture downscales use.
+/// the cloud cache uses.
 #[must_use]
 pub fn pack_path(cache_dir: &Path, kind: PackKind) -> PathBuf {
     cache_dir.join(CACHE_SUBDIR).join(kind.file_name())

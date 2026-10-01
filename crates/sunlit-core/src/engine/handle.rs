@@ -28,7 +28,8 @@ use crate::params::SceneParams;
 pub struct EngineConfig {
     /// Force the CPU adapter.
     pub force_software: bool,
-    /// One entry per file-backed texture slot, in slot order after the grid.
+    /// One entry per file-backed texture slot, in slot order after the grid:
+    /// the Moon, then the Milky Way.
     pub texture_paths: Vec<Option<PathBuf>>,
     /// Initial preview size; quantized by the engine.
     pub preview_size: (u32, u32),
@@ -38,19 +39,20 @@ pub struct EngineConfig {
     pub params: SceneParams,
     /// Caps the preview size and the MSAA sample count.
     pub quality: QualityTier,
-    /// Width the file-backed surface textures are loaded at, and the cloud
-    /// image variant that goes with it. Independent of the quality tier, which
-    /// governs how much work a frame is allowed to be rather than how much
-    /// texture memory the app holds.
+    /// The resolution setting: the equirectangular width whose detail the
+    /// finest tile level may reach (8192 the 2048 level, 4096 the 1024 level,
+    /// 2048 the floors alone), the width the Milky Way is capped at, and the
+    /// cloud image variant. Independent of the quality tier, which governs how
+    /// much work a frame is allowed to be rather than how much texture memory
+    /// the app holds.
     pub texture_resolution: u32,
     pub clock: Arc<dyn Clock>,
     /// `None` disables cloud fetching entirely (the `SUNLIT_EARTH_NO_CLOUDS`
     /// case, and the default for tests that do not care about clouds).
     pub cloud: Option<Arc<dyn CloudSource>>,
     pub cloud_poll_interval: Duration,
-    /// The app's data directory, holding the cloud image cache, the
-    /// downscaled copies of the surface textures and the tile packs. `None`
-    /// disables all three, and with them the cube surface.
+    /// The app's data directory, holding the cloud image cache and the tile
+    /// packs. `None` disables both, and with them the cube surface.
     pub cache_dir: Option<PathBuf>,
     /// Unattended wallpaper refresh interval; `None` disables it.
     pub auto_refresh: Option<Duration>,
@@ -64,8 +66,8 @@ pub struct EngineConfig {
     pub on_event: Arc<dyn Fn(EngineEvent) + Send + Sync>,
     /// Write periodic memory samples to the metrics CSV.
     pub record_metrics: bool,
-    /// The mailbox decoded textures are parked in, with one slot per texture
-    /// (`texture_paths.len() + 2`). `None` builds one.
+    /// The mailbox decoded textures are parked in, with one slot per flat
+    /// texture (`texture_paths.len() + 2`). `None` builds one.
     ///
     /// Injectable for the same reason the clock and the cloud source are: a
     /// caller holding the same mailbox the engine drains can produce an arrival
@@ -73,8 +75,7 @@ pub struct EngineConfig {
     pub mailbox: Option<TextureMailbox>,
     /// The cube faces the textures directory holds. With every one of them
     /// there and a cache directory to build the tile packs in, the globe is
-    /// drawn from the cube surface, and the day and night paths above are not
-    /// read; otherwise from those paths, and without them the grid.
+    /// drawn from the cube surface; otherwise it is the grid.
     pub cube_textures: CubeTextures,
     /// The sizes the tile packs are cut to: `tiles::GEOMETRY` for the shipped
     /// faces, `tiles::FIXTURE` for the test bake's.
@@ -99,9 +100,9 @@ impl EngineConfig {
     pub fn headless(preview_size: (u32, u32)) -> Self {
         Self {
             force_software: true,
-            // Four file-backed slots (day, night, moon, Milky Way) so the slot
+            // Two file-backed slots (the Moon, the Milky Way) so the slot
             // layout matches production even when no texture files are present.
-            texture_paths: vec![None, None, None, None],
+            texture_paths: vec![None, None],
             preview_size,
             preview_enabled: true,
             params: SceneParams::default(),

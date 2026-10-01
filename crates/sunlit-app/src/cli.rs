@@ -23,9 +23,10 @@ pub(crate) struct Cli {
     #[arg(long, value_enum)]
     pub(crate) quality: Option<Quality>,
 
-    /// Surface texture width, overriding the saved config [possible values: 8192, 4096, 2048]
+    /// Surface detail, overriding the saved config [possible values: 8192, 4096, 2048]
     ///
-    /// Lower widths are downscaled from the 8K sources once and cached.
+    /// The map width the finest surface tiles match: 8192 loads both tile
+    /// levels, 4096 the coarser one, 2048 the base cube alone.
     #[arg(long, value_enum)]
     pub(crate) texture_resolution: Option<TextureResolution>,
 

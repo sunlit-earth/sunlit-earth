@@ -1009,7 +1009,7 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     println!("binary: {platform} {arch}");
     // Not the skip `dist` falls back to: that run has a loose binary to publish
     // instead, and this command has nothing else to produce.
-    let textures = artifacts::release_textures_present(&repo).map_err(|why| {
+    let textures = artifacts::textures_present(&repo).map_err(|why| {
         format!(
             "{why}\nwithout its textures a bundle would render the procedural grid \
              under a name that promises a release."
@@ -1791,7 +1791,7 @@ mod tests {
     /// make it slightly larger. Everything else is deflated.
     #[test]
     fn the_already_compressed_entries_are_stored_and_the_rest_deflated() {
-        assert!(stored("textures/world.topo.200405.jxl"));
+        assert!(stored("textures/day/200405/pz.jxl"));
         assert!(!stored("sunlit-earth.exe"));
         assert!(!stored("LICENSE"));
         assert!(!stored(

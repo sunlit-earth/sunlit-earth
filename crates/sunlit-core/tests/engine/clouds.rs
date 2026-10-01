@@ -12,8 +12,8 @@ use crate::support;
 const CLOUD_CASE_SIZE: (u32, u32) = (256, 128);
 
 /// Half-width of that window, in pixels. The frame's center is the point the
-/// camera sits over, and the night map's city is thirty degrees away from it,
-/// which is well outside this at every zoom that fills the frame.
+/// camera sits over, and at the cases' zoom this is about three degrees of
+/// the globe either way.
 const CLOUD_WINDOW: u32 = 6;
 
 /// Mean channel value over a square window at the center of an exported frame.
@@ -32,8 +32,8 @@ fn center_window_mean(pixels: &[u8], size: (u32, u32)) -> f64 {
     total as f64 / count as f64
 }
 
-/// Parameters the cloud cases share: the fixture surface, the camera over the
-/// point the case is about, and nothing else in the window.
+/// Parameters the cloud cases share: the Earth fixture's surface, the camera
+/// over the point the case is about, and nothing else in the window.
 ///
 /// The atmosphere, the stars and the Sun are all off so that the window holds
 /// the globe and the layer over it and nothing else, and `hour` is what moves
@@ -66,17 +66,37 @@ fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> ScenePara
 const NIGHT_HOUR: f32 = 12.0;
 const DAY_HOUR: f32 = 0.0;
 
+/// The Congo basin, unlit land on the equator with no city within the window.
+const UNLIT_LAND: f32 = 20.0;
+
+/// The hour at which the frame center of a camera at `longitude` is as deep
+/// into the night as the globe goes.
+fn midnight_at(longitude: f32) -> f32 {
+    (NIGHT_HOUR + (180.0 - longitude) / 15.0).rem_euclid(24.0)
+}
+
+/// The night side's ground lifted to near display white by its gamma, so a
+/// case has a bright ground under a night deck: the Earth fixture's night is
+/// dark wherever the equatorial band lies.
+fn with_a_lit_night_ground(params: SceneParams) -> SceneParams {
+    SceneParams {
+        night_gamma: 16.0,
+        ..params
+    }
+}
+
 /// A cloud on the night side has to be brighter than the ground it covers.
 ///
-/// The fixture's unlit base is what `BlackMarble_2016.jxl` reads over unlit
-/// land, which is 42.0 in the units this prints. The deck reads its own value
-/// almost exactly, because the fixture's cloud is 255 or nothing and the night
-/// opacity covers the ground completely at any density of one.
+/// The camera is over unlit land, which the night map reads at about 40 in the
+/// units this prints rather than black, so the ordering is not true for free.
+/// The deck reads its own value almost exactly, because the fixture's cloud is
+/// 255 or nothing and the night opacity covers the ground completely at any
+/// density of one.
 #[test]
 fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let params = cloud_case_params(3, 180.0, NIGHT_HOUR);
+    let params = cloud_case_params(3, UNLIT_LAND, midnight_at(UNLIT_LAND));
 
     let covered = harness.picture(&params, CLOUD_CASE_SIZE);
     let bare = harness.picture(
@@ -138,11 +158,11 @@ fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
 /// Either opacity at zero switches off its own hemisphere and not the layer.
 ///
 /// The banded fixture is 255 or nothing, so the deck over the frame center has a
-/// density of one, and the night map's city is under it: the ground reads near
-/// display white and the deck reads `cloud_night`, so which of the two the frame
-/// holds is one number. At a night opacity of zero the night side has to show
-/// the ground even though the day slider is up, and with only the night slider
-/// up the layer still has to draw, which is what `draws_clouds` is for.
+/// density of one, and the ground under it is lit: it reads near display white
+/// and the deck reads `cloud_night`, so which of the two the frame holds is one
+/// number. At a night opacity of zero the night side has to show the ground
+/// even though the day slider is up, and with only the night slider up the
+/// layer still has to draw, which is what `draws_clouds` is for.
 ///
 /// A density of one at a night opacity of zero is also `pow(0, 0)` before
 /// `fs_cloud` holds the base off zero, so this is the shape that reaches it.
@@ -150,7 +170,7 @@ fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
 fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let base = cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR);
+    let base = with_a_lit_night_ground(cloud_case_params(3, 180.0, NIGHT_HOUR));
     let read = |day: f32, night: f32| {
         let pixels = harness.picture(
             &SceneParams {
@@ -181,10 +201,10 @@ fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
 /// The night opacity covers the ground at the top of its range, and lets it
 /// through below.
 ///
-/// The camera sits over the night map's city with the deck at one mid density
-/// over all of it: the ground under the deck is display white and the deck
-/// itself is `cloud_night`, so what the blend does with the two is visible in
-/// one number.
+/// The camera sits over a lit night ground with the deck at one mid density
+/// over all of it: the ground under the deck is near display white and the
+/// deck itself is `cloud_night`, so what the blend does with the two is visible
+/// in one number.
 ///
 /// The three readings also have to be ordered, or a mapping that covered the
 /// ground by ignoring the slider would pass the first assertion alone.
@@ -192,7 +212,7 @@ fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
 fn the_night_opacity_reaches_full_cover() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let base = cloud_case_params(3, support::NIGHT_FIXTURE_CITY.0, NIGHT_HOUR);
+    let base = with_a_lit_night_ground(cloud_case_params(3, 180.0, NIGHT_HOUR));
 
     // The banded map is 255 or nothing, so any nonzero night opacity covers the
     // ground completely and there is no covering left to measure. This is the

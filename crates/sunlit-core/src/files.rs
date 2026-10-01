@@ -1,8 +1,8 @@
 //! Writing a file without leaving a half-written one behind.
 //!
 //! The file a reader can come back to is written under a temporary name and
-//! then put in place: the config, the cloud cache sidecar, a cached texture
-//! downscale, a tile pack and a wallpaper frame. What differs between them is
+//! then put in place: the config, the cloud cache sidecar, a tile pack and a
+//! wallpaper frame. What differs between them is
 //! the format and the temporary suffix. The rest is here, so a process killed
 //! mid-write leaves the previous file rather than a truncated one, and so there
 //! is one answer to what a temporary name looks like.
@@ -27,7 +27,7 @@ use tracing::warn;
 /// file mid-write.
 ///
 /// `suffix` is the caller's, because a sweep that removes the leftovers looks
-/// for it: the texture cache uses `~`, the wallpaper directory `.tmp`.
+/// for it: the tile packs use `~`, the wallpaper directory `.tmp`.
 pub(crate) fn unfinished(path: &Path, suffix: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -146,8 +146,21 @@ mod tests {
     use super::*;
     use crate::test_support::ScratchDir;
 
-    /// `texture_cache` owns the case for the shape of the name; this is the
-    /// half of it the suffix parameter added.
+    #[test]
+    fn each_unfinished_name_is_the_writers_own() {
+        let target = Path::new("C:/data/tiles/day-01.pack");
+        let first = unfinished(target, "~");
+        let second = unfinished(target, "~");
+
+        assert_ne!(first, second);
+        for name in [&first, &second] {
+            let name = name.to_string_lossy();
+            assert!(name.starts_with(&*target.to_string_lossy()));
+            assert!(name.ends_with('~'), "{name}");
+            assert!(name.contains(&std::process::id().to_string()), "{name}");
+        }
+    }
+
     #[test]
     fn a_suffix_is_the_end_of_the_name_the_sweep_looks_for() {
         let name = unfinished(Path::new("/wallpapers/screen-0.png"), ".tmp");

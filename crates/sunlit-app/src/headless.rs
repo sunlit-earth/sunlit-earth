@@ -14,7 +14,7 @@ use sunlit_core::params::SceneParams;
 
 use crate::cli::Cli;
 use crate::displays;
-use crate::startup::{engine_config, have_globe_texture};
+use crate::startup::engine_config;
 
 /// How long the render subcommand waits for textures before exporting anyway.
 const RENDER_TEXTURE_TIMEOUT: Duration = Duration::from_mins(2);
@@ -117,9 +117,9 @@ pub(crate) fn run_render(
         }
     });
 
-    // The cube surface is a globe texture too, and on a first run the wait
-    // below is what holds the render back until its first packs are built.
-    let have_globe = engine_config.takes_cube() || have_globe_texture(&engine_config.texture_paths);
+    // The cube surface is the globe's only texture, and on a first run the
+    // wait below is what holds the render back until its first packs are built.
+    let have_globe = engine_config.takes_cube();
 
     let engine = match engine::start(engine_config) {
         Ok(engine) => engine,

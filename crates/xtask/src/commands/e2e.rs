@@ -24,7 +24,7 @@ pub enum Where {
     Host,
     /// The Windows guest: the whole suite.
     Windows,
-    /// The Linux guest: the windowed-mode subset.
+    /// The Linux guest: the whole suite, minus the cases its session cannot exercise.
     Linux,
 }
 

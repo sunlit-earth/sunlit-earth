@@ -434,6 +434,14 @@ impl Renderer {
         Ok(drawn || table)
     }
 
+    /// How many day floors were made resident since the surface was set up,
+    /// counting each time one was made resident again.
+    pub(crate) fn floors_installed(&self) -> u64 {
+        self.surface
+            .as_ref()
+            .map_or(0, |surface| surface.floors_installed)
+    }
+
     /// Whether the day floor of `month` is resident.
     pub(crate) fn day_floor_resident(&self, month: usize) -> bool {
         self.surface.as_ref().is_some_and(|surface| {

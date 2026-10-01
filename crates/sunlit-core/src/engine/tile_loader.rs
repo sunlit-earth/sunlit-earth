@@ -74,6 +74,10 @@ pub(super) trait TileTarget {
     fn named(&self) -> Vec<TileId> {
         Vec::new()
     }
+    /// How many day floors were made resident.
+    fn floors_installed(&self) -> u64 {
+        0
+    }
 }
 
 impl TileTarget for Renderer {
@@ -83,6 +87,10 @@ impl TileTarget for Renderer {
 
     fn named(&self) -> Vec<TileId> {
         self.named_tiles()
+    }
+
+    fn floors_installed(&self) -> u64 {
+        Renderer::floors_installed(self)
     }
 
     fn upload(&mut self, tiles: Vec<TileUpload>) -> Vec<(TileId, String)> {
@@ -231,6 +239,9 @@ pub struct TileReport {
     /// Whether the set was computed for a drag in progress, at the drag's
     /// threshold rather than 1 px.
     pub dragging: bool,
+    /// How many day floors were made resident, one let go of and made
+    /// resident again counting twice.
+    pub floors_installed: u64,
 }
 
 /// A pack tiles are read from, and when it was opened.
@@ -979,6 +990,7 @@ impl TileLoader {
                 .inputs
                 .as_ref()
                 .is_some_and(|inputs| inputs.drag.is_some()),
+            floors_installed: target.floors_installed(),
         }
     }
 }

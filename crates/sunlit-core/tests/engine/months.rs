@@ -154,10 +154,18 @@ fn unlit_day(at: time::OffsetDateTime) -> SceneParams {
 /// July's.
 fn fixture_floors(
     name: &str,
-    every_floor: bool,
+    every_floor: Option<bool>,
     params: SceneParams,
     clock: &Arc<MockClock>,
 ) -> (ScratchDir, Harness) {
+    let (dir, textures) = fixture_cache(name);
+    let harness = fixture_engine(&dir, textures, every_floor, params, clock);
+    harness.wait_for_textures("the first floors");
+    (dir, harness)
+}
+
+/// The fixture bake under `name`, every pack built.
+fn fixture_cache(name: &str) -> (ScratchDir, CubeTextures) {
     let dir = ScratchDir::new(name);
     test_support::write_cube_fixture(&dir.join("textures"));
     let textures = CubeTextures::resolve(&dir.join("textures"));
@@ -172,18 +180,27 @@ fn fixture_floors(
         )
         .expect("build the pack");
     }
+    (dir, textures)
+}
+
+/// An engine over the cache `fixture_cache` built, started and not waited on.
+fn fixture_engine(
+    dir: &ScratchDir,
+    textures: CubeTextures,
+    every_floor: Option<bool>,
+    params: SceneParams,
+    clock: &Arc<MockClock>,
+) -> Harness {
     let clock_for_config = Arc::clone(clock);
-    let harness = Harness::start(|config| {
-        config.every_floor = Some(every_floor);
+    Harness::start(|config| {
+        config.every_floor = every_floor;
         config.cube_textures = textures;
         config.tile_geometry = tiles::FIXTURE;
         config.cache_dir = Some(dir.join("cache"));
         config.texture_resolution = 2048;
         config.clock = clock_for_config;
         config.params = params;
-    });
-    harness.wait_for_textures("the first floors");
-    (dir, harness)
+    })
 }
 
 /// The day floors resident once the engine has been idle for as many ticks
@@ -211,7 +228,7 @@ fn every_months_floor_stays_resident_and_the_date_draws_its_own_at_once() {
     let june = hand_over(2026, 6) + time::Duration::hours(12);
     let [june_14, june_15, june_16] =
         [2, 1, 0].map(|days| unlit_day(june - time::Duration::days(days)));
-    let (_dir, harness) = fixture_floors("engine_months_floors", true, march, &clock);
+    let (_dir, harness) = fixture_floors("engine_months_floors", Some(true), march, &clock);
     wait_for_every_floor(&harness, Some(&clock));
 
     let frame = crate::groups::FRAME;
@@ -240,7 +257,7 @@ fn a_cpu_adapter_keeps_the_month_in_forces_floor_and_the_month_aheads() {
     let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
     let june = hand_over(2026, 6) + time::Duration::hours(12);
     let june_10 = unlit_day(june - time::Duration::days(6));
-    let (_dir, harness) = fixture_floors("engine_months_cpu_floors", false, june_10, &clock);
+    let (_dir, harness) = fixture_floors("engine_months_cpu_floors", Some(false), june_10, &clock);
     assert_eq!(floors_when_idle(&harness, &clock), 1, "June's alone");
 
     let frame = crate::groups::FRAME;
@@ -271,6 +288,147 @@ fn a_cpu_adapter_keeps_the_month_in_forces_floor_and_the_month_aheads() {
         "March is not drawn from its own floor, which was never resident before"
     );
     assert_eq!(floors_when_idle(&harness, &clock), 1, "March's alone");
+}
+
+/// How many times a day floor was made resident, one let go of and made
+/// resident again counting twice.
+fn floors_installed(harness: &Harness) -> u64 {
+    tile_report(harness).floors_installed
+}
+
+/// A date in June, ten days before July's hand-over.
+fn june_10() -> SceneParams {
+    unlit_day(hand_over(2026, 6) + time::Duration::hours(12) - time::Duration::days(6))
+}
+
+/// A CPU adapter makes the month in force's floor resident once and no other,
+/// however long the engine is idle: a floor it lets go of is never made
+/// resident first, which would cost a floor's upload on every tick.
+#[test]
+fn a_cpu_adapter_makes_no_floor_resident_that_it_lets_go_of_again() {
+    let _gpu = gpu();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (_dir, harness) =
+        fixture_floors("engine_months_cpu_installs", Some(false), june_10(), &clock);
+    assert_eq!(
+        floors_installed(&harness),
+        1,
+        "every pack landed and only June's floor was made resident"
+    );
+    assert_eq!(floors_when_idle(&harness, &clock), 1);
+    assert_eq!(
+        floors_installed(&harness),
+        1,
+        "a floor was made resident and let go of again while the engine was idle"
+    );
+}
+
+/// With every floor kept, the floors of the months not in force are made
+/// resident while the engine is idle and not before: the first frame waits for
+/// the month in force's alone, and a busy engine uploads nothing else. Each is
+/// made resident once.
+#[test]
+fn the_other_floors_wait_for_the_engine_to_be_idle() {
+    let _gpu = gpu();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (_dir, harness) = fixture_floors("engine_months_busy", Some(true), june_10(), &clock);
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        let _ = harness.engine.memory_report();
+    }
+    assert_eq!(day_floors(&harness), 1, "June's alone while busy");
+    assert_eq!(floors_installed(&harness), 1);
+
+    wait_for_every_floor(&harness, Some(&clock));
+    assert_eq!(floors_when_idle(&harness, &clock), 12);
+    assert_eq!(floors_installed(&harness), 12, "a floor was made twice");
+}
+
+/// Without a setting, the engine keeps every floor on a GPU and the month in
+/// force's alone on a CPU adapter, which the harness's software adapter is.
+#[test]
+fn the_floors_kept_follow_the_adapter_unless_the_config_says_otherwise() {
+    let _gpu = gpu();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (_dir, harness) = fixture_floors("engine_months_default", None, june_10(), &clock);
+    let adapter = harness.engine.memory_report().expect("a report").adapter;
+    if !["warp", "lavapipe"].contains(&adapter.as_str()) {
+        eprintln!("skipped: {adapter} is not a software adapter");
+        return;
+    }
+    assert_eq!(floors_when_idle(&harness, &clock), 1, "June's alone");
+}
+
+/// A floor made resident while the engine is idle changes nothing drawn, so
+/// no frame is drawn for it and the pause gate the frame would close stays
+/// open for the next.
+#[test]
+fn a_floor_made_resident_while_idle_draws_no_frame() {
+    let _gpu = gpu();
+    let dir = ScratchDir::new("engine_months_no_frame");
+    test_support::write_earth_fixture(&dir.join("textures"));
+    build_every_pack(&dir);
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let clock_for_config = Arc::clone(&clock);
+    let harness = start(&dir, |config| {
+        config.every_floor = Some(true);
+        config.clock = clock_for_config;
+        config.params = view();
+    });
+    harness.wait_for_textures("the floors and the preview's tiles");
+    let _ = settled(&harness, "the preview's tiles", |r| !r.named.is_empty());
+    harness.settle();
+
+    wait_for_every_floor(&harness, Some(&clock));
+    let _ = harness.engine.memory_report();
+    assert_eq!(
+        harness.drained_frame(Duration::ZERO),
+        None,
+        "a frame was drawn while floors were made resident"
+    );
+}
+
+/// The first floor to be resident is drawn, the month in force's or not: with
+/// the month in force's pack unreadable, the picture is the floor of the first
+/// month that comes up, which is a truer one than the grid.
+#[test]
+fn the_first_floor_is_drawn_when_the_month_in_forces_cannot_be() {
+    let _gpu = gpu();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (dir, textures) = fixture_cache("engine_months_first_floor");
+    let june = tiles::pack_path(&dir.join("cache"), PackKind::Day(5));
+    let pack = tiles::Pack::open(&june).expect("a built pack");
+    let mut bytes = std::fs::read(&june).expect("read the pack");
+    for entry in pack.entries() {
+        if entry.whole_face {
+            bytes[usize::try_from(entry.offset).expect("an offset")] ^= 0xFF;
+        }
+    }
+    drop(pack);
+    std::fs::write(&june, bytes).expect("write the damaged pack");
+    let params = june_10();
+    let harness = fixture_engine(&dir, textures, Some(true), params, &clock);
+
+    let deadline = Instant::now() + TIMEOUT;
+    while day_floors(&harness) < 11 {
+        assert!(Instant::now() < deadline, "{} floors", day_floors(&harness));
+        harness.advance(&clock, IDLE);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let frame = crate::groups::FRAME;
+    let day = harness.picture(&params, frame);
+    let grid = harness.picture(
+        &SceneParams {
+            texture_index: 0,
+            ..params
+        },
+        frame,
+    );
+    let (faces, _) = difference(&day, &grid, 0);
+    assert!(
+        faces > 0.5,
+        "the grid is drawn though a floor is resident: {faces:.3}"
+    );
 }
 
 /// A sweep of the custom date across the year, an hour either side of every

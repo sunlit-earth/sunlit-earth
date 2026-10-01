@@ -208,6 +208,9 @@ pub(super) struct SurfaceSet {
     /// The tile array and the page table, which the renderer creates beside
     /// the set on its device.
     pub tiles: Option<SurfaceTiles>,
+    /// How many times a day floor was made resident, one that was let go of
+    /// and made resident again counting twice.
+    pub floors_installed: u64,
     pub day_group: Option<wgpu::BindGroup>,
     pub night_group: Option<wgpu::BindGroup>,
     pub blend_group: Option<wgpu::BindGroup>,
@@ -224,6 +227,7 @@ impl SurfaceSet {
             mask: None,
             failed: Vec::new(),
             tiles: None,
+            floors_installed: 0,
             day_group: None,
             night_group: None,
             blend_group: None,
@@ -243,6 +247,7 @@ impl SurfaceSet {
         match layer {
             SurfaceLayer::Day(month) => {
                 self.days[month] = Some(cube);
+                self.floors_installed += 1;
                 let first = self.drawn.is_none();
                 if first {
                     self.drawn = Some(month);

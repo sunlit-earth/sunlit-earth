@@ -43,14 +43,14 @@ impl Where {
 /// Above the suite's own budget, which is what makes a stuck case report the
 /// signal it was waiting for rather than the job reporting that it ran out of
 /// time. Adding up every wait in `tests/e2e.rs` at its full budget comes to
-/// about 67 minutes on Linux and 45 on Windows, against a real Windows guest
-/// run of 97 seconds: the sum is an upper bound no run approaches, and the
+/// about 82 minutes on Linux and 60 on Windows, against a real Windows guest
+/// run of 519 seconds: the sum is an upper bound no run approaches, and the
 /// margin over it is deliberate, because the cost of a timeout that is too
 /// short is a false failure and the cost of one too long is waiting.
 pub fn job_timeout(target: Target) -> Duration {
     match target {
-        Target::Windows => Duration::from_mins(60),
-        Target::Linux => Duration::from_mins(75),
+        Target::Windows => Duration::from_mins(75),
+        Target::Linux => Duration::from_mins(90),
     }
 }
 

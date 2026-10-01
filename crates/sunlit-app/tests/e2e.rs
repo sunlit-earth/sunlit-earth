@@ -725,7 +725,7 @@ fn test_memory_report() {
 fn test_a_fresh_install_builds_its_packs_once() {
     /// Twelve months, the night and the mask, on a software adapter at below
     /// normal priority while the first frames draw.
-    const FIRST_RUN: Duration = Duration::from_mins(20);
+    const FIRST_RUN: Duration = Duration::from_mins(15);
     /// Long enough for a second start to have begun a build, if it were going
     /// to.
     const SECOND_RUN: Duration = Duration::from_secs(20);

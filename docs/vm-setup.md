@@ -161,6 +161,8 @@ Only the first screen is the console that `screendump` takes with no arguments. 
 
 `cargo xtask vm up <target>` boots a guest and copies the current binaries in without running anything. `cargo xtask vm view <target>` opens its desktop, and `cargo xtask vm ssh <target>` opens a shell in it. To look at the aftermath of a test run instead, use `cargo xtask e2e --target <target> --keep` and then the same two commands.
 
+The suite has no case filter. To run one case, boot the guest with `vm up linux` and run the staged harness over `vm ssh` with the job's environment: source `/var/lib/sunlit-e2e/session.env` with `set -a`, export `SUNLIT_EARTH_BIN=/var/lib/sunlit-e2e/bin/sunlit-earth`, `SUNLIT_EARTH_E2E_FIXTURES=/var/lib/sunlit-e2e/fixtures` and `SUNLIT_EARTH_TEXTURES=/var/lib/sunlit-e2e/textures`, then run `/var/lib/sunlit-e2e/bin/e2e-<hash> --ignored --test-threads=1 --nocapture <case name>`. The harness file's name is the one `ls /var/lib/sunlit-e2e/bin` shows. The same works for a baseline from another commit: `vm up` from a worktree of that commit stages that commit's binaries.
+
 `vm down` is the stop, and an idle guest is worth stopping: it holds 4 GiB of this machine's memory while a Linux guest is up and 6 GiB while a Windows one is. What there is no way to do is save or pause a guest, and nothing in one is worth saving, so ending it and discarding it are the same act: the teardown frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
 
 A builder guest is the one exception, because what is in one is worth keeping: a cargo build directory and a crate registry.

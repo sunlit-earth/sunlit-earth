@@ -108,16 +108,19 @@ closer to WARP than lavapipe does. That was the flat path, where every adapter s
 
 `COLD_START_BYTES` is 1 GiB, what a launch costs before any surface texture or cloud image is resident: 772 MiB on the GPU without the cloud image, and on WARP the 1140 MiB peak less the 311 MiB of textures the budget counts for 8192, 829 MiB, rounded up; `BUDGET_HEADROOM_BYTES` stays 512 MiB. The two bounding tests clear the peak from both sides, and by these margins: 2048's budget of 1591 MiB clears it by 451 MiB where 8192's of 1847 MiB clears it by 707, and 8192's stays 433 MiB under twice it, so a cold-start figure set too low fails at the narrow end first. The narrow end is the binding case rather than a restatement of the wide one: it gets the smallest resident allowance and has the same startup to pay for.
 
-**The e2e suite's harness is `tests/common/`.** `tests/e2e.rs` is the seventeen cases, sixteen of them off Windows; the harness under them is one
+**The e2e suite's harness is `tests/common/`.** `tests/e2e.rs` is the eighteen cases, some of which skip themselves where the session lacks what they need; the harness under them is one
 module per layer: `process.rs` starts and watches the binary, `pixels.rs` says what a frame should look like,
 `cloud_stub.rs` is the loopback cloud server, and `desktop_linux.rs` asks a Linux desktop what it did with the
 wallpaper.
 
 **The e2e render case's thresholds and its budget.** `test_render_and_exit` gives itself an empty cache directory so that it builds the first frame's packs instead of inheriting a warm cache from whichever case ran first. Measured on 2026-10-01, the same 800x800 render peaked at 504 MB of RSS in the Linux guest (lavapipe, debug build) and ended at 492 MB, and in the Windows guest (WARP) at 334 MB and 161 MB. Both limits are 800 MB: one and a half times the largest figure, rounded up to a hundred, the ratio the old peak limit had to what was measured on the flat path (3000 against 2088 MB). Its one-minute budget comes from 2026-09-01 on the development host, debug build, empty cache: 5.9 s on the GPU and 8.0 s on the software adapter, against 2.5 s warm. A guest is a software rasterizer on a slower CPU and has never been timed, which is what the margin is for.
 
-**The e2e suite's own budget**, defined as every wait consuming its full timeout and then succeeding, is about 67
-minutes on Linux and 45 on Windows, dominated by the two cases that publish a wallpaper five and six times. A real
-Windows guest run is about 97 seconds. `xtask`'s `job_timeout` sits above the budget rather than near the real runtime,
+**The fresh-install case.** `test_a_fresh_install_builds_its_packs_once` starts the app with an empty cache directory, waits for all fourteen packs (the twelve months, the night and the mask) to appear under `tile_cache/`, and reads the loading line from the `SIGNAL:loading_text <text>` lines the app prints whenever the engine's status changes, which is the text the settings window shows. It asserts that the line named the oceans, the night and the months in order, then quits, starts a second time on the same cache and asserts that the second start names nothing to prepare, rewrites no pack and leaves no stray file in the directory. It skips, saying so, when the cube faces are not all present or are LFS pointers. Measured on 2026-10-01 with the debug binary, every pack landed 259 s after the start in the Linux guest (lavapipe, four cores) and 297 s in the Windows guest (WARP), so the case waits up to 15 minutes. The line on the way was `Preparing Oceans`, `Preparing October, 1 of 12`, `Preparing Night`, then the other eleven months in rank order, with an empty line between some of the packs.
+
+**The e2e suite's own budget**, defined as every wait consuming its full timeout and then succeeding, is about 82
+minutes on Linux and 60 on Windows, dominated by the two cases that publish a wallpaper five and six times and the
+fresh-install case's 15 minutes. A real
+Windows guest run is about 519 seconds, 297 of them that case. `xtask`'s `job_timeout` sits above the budget rather than near the real runtime,
 so that a stuck case reports the signal it was waiting for instead of the job reporting that it ran out of time.
 
 **Why three golden cases compare a window, and why two turn a parameter up.** The suite's tolerance is a mean channel

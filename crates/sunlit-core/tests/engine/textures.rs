@@ -445,8 +445,6 @@ fn lowering_the_resolution_releases_the_tile_array() {
         };
     });
     harness.wait_for_textures("at 8192");
-    // Every month's floor first, so none lands between the two reports.
-    crate::months::wait_for_every_floor(&harness, None);
     harness.export(3840, 2160);
     let loaded = settled(&harness, "at 8192", |r| !r.resident.is_empty());
     let wide = harness.engine.memory_report().expect("a report");

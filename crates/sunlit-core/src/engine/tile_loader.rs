@@ -733,11 +733,15 @@ impl TileLoader {
     fn apply(&mut self, wanted: &Wanted, target: &mut impl TileTarget) {
         self.computations += 1;
         let capacity = target.layers().map_or(0, TileLayers::capacity) as usize;
+        let month = self.inputs.as_ref().map(|inputs| inputs.month);
         let (mut taken, mut layers, mut in_view, mut beyond) = (Vec::new(), 0, 0, 0);
         for tile in &wanted.tiles {
             let failed = self.failed.contains(&tile.id);
             if !failed && layers == capacity {
-                beyond += 1;
+                // The month ahead's tiles come last, and nothing is drawn from
+                // them before their month comes into force.
+                let ahead = matches!(tile.id.pack, PackKind::Day(m) if month.is_some_and(|month| m != month));
+                beyond += usize::from(!ahead);
                 continue;
             }
             layers += usize::from(!failed);
@@ -1525,6 +1529,39 @@ mod tests {
         });
         assert_eq!(stand.layers.free(), 0);
         assert!(stand.evicted.is_empty());
+    }
+
+    /// The month ahead's tiles left for want of layers are not the frame's:
+    /// only the month in force's count as left.
+    #[test]
+    fn the_month_aheads_tiles_left_for_want_of_layers_are_not_counted() {
+        let dir = ScratchDir::new("tile_loader_ahead");
+        let pack = day_pack(&dir);
+        let tiles = stored(&pack);
+        let mut loader = loader(1, &pack);
+        let mut stand = Stand::new(2);
+        loader.inputs = Some(Inputs {
+            outputs: Vec::new(),
+            month: 0,
+            ahead: Some(1),
+            surfaces: Some(Surfaces::Day),
+            finest: Geometry::level_of(FIXTURE.face),
+            drag: None,
+        });
+        let mut set = wanted(&tiles[..3]);
+        set.tiles.extend(tiles[..2].iter().map(|id| WantedTile {
+            id: TileId {
+                pack: PackKind::Day(1),
+                key: id.key,
+            },
+            deficit: 1,
+            margin: true,
+        }));
+        loader.apply(&set, &mut stand);
+
+        let report = loader.report(&stand);
+        assert_eq!(report.wanted, tiles[..2]);
+        assert_eq!(report.beyond, 1, "one of the month in force's, none ahead");
     }
 
     #[test]

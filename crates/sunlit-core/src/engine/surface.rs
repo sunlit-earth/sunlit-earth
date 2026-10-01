@@ -7,16 +7,17 @@
 //! loader, which reads the tiles out of them as the frame wants them, and
 //! hands the ones the frame draws, the mask, the night and the month in
 //! force, to the renderer, which reads their floors out of them and uploads
-//! them there and then. The other months' floors follow one a tick while the
-//! engine is idle, and every floor stays resident, so a date in any month is
-//! drawn from its own floor the moment it names it (plan decision 4).
+//! them there and then. On a GPU the other months' floors follow one a tick
+//! while the engine is idle and every floor stays resident, so a date in any
+//! month is drawn from its own floor the moment it names it (plan decision 4);
+//! a CPU adapter keeps the month in force's and the month ahead's, and makes
+//! another month's resident when it comes into force (plan departure 35).
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::assets::cube_layout::CubeTextures;
 use crate::assets::tiles::{
@@ -55,13 +56,19 @@ pub(super) struct SurfaceFeed {
     failures_seen: usize,
     /// The worker has finished, and its status will not change again.
     settled: bool,
-    /// Day packs of other months than the one in force that landed and whose
-    /// floors are not resident yet, in the order they landed, which is the
-    /// nearest month first. Each holds its index and an open file, not
-    /// pixels; the engine thread is the consumer, and makes one floor
-    /// resident a tick while the engine is idle, or one at once when its
-    /// month comes into force.
-    floors: VecDeque<Arc<Pack>>,
+    /// The month across a hand-over that is near, January 0.
+    ahead: Option<usize>,
+    /// Whether every month's day floor is kept resident, or only the month
+    /// in force's and the month ahead's (plan departure 35).
+    every_floor: bool,
+    /// Every day pack that landed, January first, each its index and an open
+    /// file, not pixels, for making its floor resident again; a pack whose
+    /// floor could not be made resident is let go of.
+    days: [Option<Arc<Pack>>; 12],
+    /// The months whose packs landed, in the order they did, which is the
+    /// nearest month first: the order the floors the engine keeps are made
+    /// resident in, one a tick while it is idle.
+    landed: Vec<usize>,
     /// Counts the times the tiles of the month in force or of the night
     /// could newly be read: the month in force changed, or its pack or the
     /// night's was opened.
@@ -110,26 +117,41 @@ impl SurfaceFeed {
             busy_until: now + BUSY_AFTER_A_FRAME,
             failures_seen: 0,
             settled: false,
-            floors: VecDeque::new(),
+            ahead: None,
+            every_floor: true,
+            days: std::array::from_fn(|_| None),
+            landed: Vec::new(),
             renewals: 0,
         }
     }
 
+    /// Keep every month's day floor resident, or only the month in force's
+    /// and the month ahead's.
+    pub(super) fn keep_every_floor(&mut self, every: bool) {
+        self.every_floor = every;
+    }
+
     /// Open every pack that landed since the last call for the tile loader
     /// and make the floors the frame draws resident, then, while the engine
-    /// is idle, one floor of another month; hand every failure the
-    /// transcoder reported to the renderer, and the tiles that were read
-    /// since to the tile array. Returns whether what the frame draws changed.
+    /// is idle, one floor of another month it keeps; let go of the floors it
+    /// does not keep, hand every failure the transcoder reported to the
+    /// renderer, and the tiles that were read since to the tile array.
+    /// Returns whether what the frame draws changed.
     pub(super) fn drain(&mut self, renderer: &mut Renderer) -> bool {
         let mut drawn = false;
         for kind in self.transcoder.landed() {
             drawn |= self.land(kind, renderer);
         }
         if !self.paused
-            && let Some(pack) = self.floors.pop_front()
+            && let Some(month) = self
+                .landed
+                .iter()
+                .copied()
+                .find(|&month| self.keeps(month) && !renderer.day_floor_resident(month))
         {
-            drawn |= make_resident(&pack, renderer);
+            drawn |= self.make_floor_resident(month, renderer);
         }
+        self.let_go(renderer);
         drawn |= self.tiles.drain(renderer);
         if !self.settled {
             let status = self.transcoder.status();
@@ -154,14 +176,27 @@ impl SurfaceFeed {
         self.month
     }
 
-    /// Make `month` the month in force, when it is not already: its floor is
-    /// drawn and the page table's day half names its tiles from now on. The
-    /// floor is resident already once its pack has landed, or made so now if
-    /// it was still waiting its turn; the transcoder builds the month next if
-    /// it has not yet, and the floor drawn until now stays until it lands.
+    /// The month across a hand-over that is near.
+    pub(super) fn ahead(&self) -> Option<usize> {
+        self.ahead
+    }
+
+    /// Make `month` the month in force, when it is not already, and `ahead`
+    /// the month read ahead. The month in force's floor is drawn and the page
+    /// table's day half names its tiles from now on: the floor is resident
+    /// already once its pack has landed, or made so now if it was waiting its
+    /// turn or had been let go of; the transcoder builds the month next if it
+    /// has not yet, and the floor drawn until now stays until it lands.
     /// Returns whether the month changed.
-    pub(super) fn set_month(&mut self, month: usize, renderer: &mut Renderer) -> bool {
+    pub(super) fn set_month(
+        &mut self,
+        month: usize,
+        ahead: Option<usize>,
+        renderer: &mut Renderer,
+    ) -> bool {
+        self.ahead = ahead;
         if month == self.month {
+            self.let_go(renderer);
             return false;
         }
         info!(
@@ -172,16 +207,30 @@ impl SurfaceFeed {
         self.month = month;
         self.renewals += 1;
         self.transcoder.set_month(month);
-        if let Some(at) = self
-            .floors
-            .iter()
-            .position(|pack| pack.kind() == PackKind::Day(month))
-            && let Some(pack) = self.floors.remove(at)
-        {
-            make_resident(&pack, renderer);
+        if !renderer.day_floor_resident(month) {
+            self.make_floor_resident(month, renderer);
         }
         renderer.set_surface_month(month);
+        self.let_go(renderer);
         true
+    }
+
+    /// Whether the floor of `month` is one the engine keeps resident.
+    fn keeps(&self, month: usize) -> bool {
+        self.every_floor || month == self.month || self.ahead == Some(month)
+    }
+
+    /// Let go of the day floors the engine does not keep, other than the one
+    /// drawn, which the renderer keeps until the month in force's replaces it.
+    fn let_go(&self, renderer: &mut Renderer) {
+        if self.every_floor {
+            return;
+        }
+        for month in 0..12 {
+            if !self.keeps(month) && renderer.release_day_floor(month) {
+                debug!(month = month + 1, "a day floor was let go of");
+            }
+        }
     }
 
     /// The engine is drawing or has just drawn at `now`: close the pause gate
@@ -269,8 +318,8 @@ impl SurfaceFeed {
     }
 
     /// Open the pack `kind` that landed for the tile loader, and make its
-    /// cube resident if the frame draws it; a day pack of another month waits
-    /// in [`Self::floors`]. Returns whether what the frame draws changed.
+    /// cube resident if the frame draws it; the floor of another month waits
+    /// its turn. Returns whether what the frame draws changed.
     fn land(&mut self, kind: PackKind, renderer: &mut Renderer) -> bool {
         let path = pack_path(&self.cache_dir, kind);
         let pack = match Pack::open(&path) {
@@ -287,27 +336,46 @@ impl SurfaceFeed {
         if kind == PackKind::Night || kind == PackKind::Day(self.month) {
             self.renewals += 1;
         }
-        if matches!(kind, PackKind::Day(month) if month != self.month) {
-            self.floors.push_back(pack);
-            return false;
+        match kind {
+            PackKind::Day(month) => {
+                self.days[month] = Some(pack);
+                self.landed.retain(|&m| m != month);
+                self.landed.push(month);
+                month == self.month && self.make_floor_resident(month, renderer)
+            }
+            PackKind::Night | PackKind::Mask => make_resident(&pack, renderer).unwrap_or(false),
         }
-        make_resident(&pack, renderer)
+    }
+
+    /// Make the day floor of `month` resident from its pack, if that has
+    /// landed. Returns whether what the frame draws changed. A pack whose
+    /// floor cannot be made resident is let go of, and not tried again.
+    fn make_floor_resident(&mut self, month: usize, renderer: &mut Renderer) -> bool {
+        let Some(pack) = &self.days[month] else {
+            return false;
+        };
+        let drawn = make_resident(pack, renderer);
+        if drawn.is_none() {
+            self.days[month] = None;
+            self.landed.retain(|&m| m != month);
+        }
+        drawn.unwrap_or(false)
     }
 }
 
 /// Make the cube of `pack` resident. Returns whether what the frame draws
-/// changed.
-fn make_resident(pack: &Pack, renderer: &mut Renderer) -> bool {
+/// changed, or `None` when it could not be made resident.
+fn make_resident(pack: &Pack, renderer: &mut Renderer) -> Option<bool> {
     let layer = layer_of(pack.kind());
     match renderer.install_surface(layer, pack) {
         Ok(drawn) => {
             info!(?layer, "a surface cube is resident");
-            drawn
+            Some(drawn)
         }
         Err(e) => {
             error!(?layer, error = %e, "a surface cube could not be made resident");
             renderer.mark_surface_failed(layer);
-            false
+            None
         }
     }
 }

@@ -129,17 +129,36 @@ fn assert_month(report: &TileReport, month: usize, ahead: Option<usize>, at: &st
     );
 }
 
-/// Every month's floor stays resident once its pack has landed, and the date
-/// draws its own month's floor at once, with no pack built or landed in
-/// between and no floor let go of. The fixture bake draws January to June
-/// from January's faces and July to December from July's, and with nothing
-/// the Sun moves in the picture a day within June changes nothing, while a
-/// day across its hand-over changes the floor; going back to March draws
-/// March's picture again.
-#[test]
-fn every_months_floor_stays_resident_and_the_date_draws_its_own_at_once() {
-    let _gpu = gpu();
-    let dir = ScratchDir::new("engine_months_floors");
+/// The day surface on the custom date `at` with nothing the Sun moves drawn
+/// over it or into it, so a picture changes with the floor alone.
+fn unlit_day(at: time::OffsetDateTime) -> SceneParams {
+    on(
+        &SceneParams {
+            texture_index: 1,
+            diffuse_shading: false,
+            spec_intensity: 0.0,
+            atmo_enabled: false,
+            star_intensity: 0.0,
+            sun_glow: 0.0,
+            sun_rays: 0.0,
+            sun_size: 0.0,
+            ..test_params()
+        },
+        at,
+    )
+}
+
+/// An engine over the fixture bake, every pack built before it starts, at the
+/// resolution that allows no tile, so a picture is the floors' alone. The
+/// bake draws January to June from January's faces and July to December from
+/// July's.
+fn fixture_floors(
+    name: &str,
+    every_floor: bool,
+    params: SceneParams,
+    clock: &Arc<MockClock>,
+) -> (ScratchDir, Harness) {
+    let dir = ScratchDir::new(name);
     test_support::write_cube_fixture(&dir.join("textures"));
     let textures = CubeTextures::resolve(&dir.join("textures"));
     let cancel = std::sync::atomic::AtomicBool::new(false);
@@ -153,38 +172,46 @@ fn every_months_floor_stays_resident_and_the_date_draws_its_own_at_once() {
         )
         .expect("build the pack");
     }
-    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let clock_for_config = Arc::clone(&clock);
-    // The day surface with nothing the Sun moves drawn over it or into it.
-    let day = |at: time::OffsetDateTime| {
-        on(
-            &SceneParams {
-                texture_index: 1,
-                diffuse_shading: false,
-                spec_intensity: 0.0,
-                atmo_enabled: false,
-                star_intensity: 0.0,
-                sun_glow: 0.0,
-                sun_rays: 0.0,
-                sun_size: 0.0,
-                ..test_params()
-            },
-            at,
-        )
-    };
-    let march = day(hand_over(2026, 3) - time::Duration::days(6));
-    // June hands over to July at midnight into the 16th.
-    let june = hand_over(2026, 6) + time::Duration::hours(12);
-    let [june_14, june_15, june_16] = [2, 1, 0].map(|days| day(june - time::Duration::days(days)));
+    let clock_for_config = Arc::clone(clock);
     let harness = Harness::start(|config| {
-        config.cube_textures = textures.clone();
+        config.every_floor = Some(every_floor);
+        config.cube_textures = textures;
         config.tile_geometry = tiles::FIXTURE;
         config.cache_dir = Some(dir.join("cache"));
         config.texture_resolution = 2048;
         config.clock = clock_for_config;
-        config.params = march;
+        config.params = params;
     });
-    harness.wait_for_textures("March");
+    harness.wait_for_textures("the first floors");
+    (dir, harness)
+}
+
+/// The day floors resident once the engine has been idle for as many ticks
+/// as it would take to make every month's resident.
+fn floors_when_idle(harness: &Harness, clock: &MockClock) -> usize {
+    for _ in 0..15 {
+        harness.advance(clock, IDLE);
+        harness.settle();
+    }
+    day_floors(harness)
+}
+
+/// Every month's floor stays resident once its pack has landed, and the date
+/// draws its own month's floor at once, with no pack built or landed in
+/// between and no floor let go of. With nothing the Sun moves in the picture,
+/// a day within June changes nothing, while a day across its hand-over
+/// changes the floor from January's faces to July's; going back to March
+/// draws March's picture again.
+#[test]
+fn every_months_floor_stays_resident_and_the_date_draws_its_own_at_once() {
+    let _gpu = gpu();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let march = unlit_day(hand_over(2026, 3) - time::Duration::days(6));
+    // June hands over to July at midnight into the 16th.
+    let june = hand_over(2026, 6) + time::Duration::hours(12);
+    let [june_14, june_15, june_16] =
+        [2, 1, 0].map(|days| unlit_day(june - time::Duration::days(days)));
+    let (_dir, harness) = fixture_floors("engine_months_floors", true, march, &clock);
     wait_for_every_floor(&harness, Some(&clock));
 
     let frame = crate::groups::FRAME;
@@ -200,6 +227,50 @@ fn every_months_floor_stays_resident_and_the_date_draws_its_own_at_once() {
     );
     assert_eq!(again, first, "March is drawn from its own floor again");
     assert_eq!(day_floors(&harness), 12, "a floor was let go of");
+}
+
+/// A CPU adapter keeps the month in force's floor and, within a day of a
+/// hand-over, the month ahead's, and lets go of the rest however long the
+/// engine is idle (plan departure 35). A month whose floor was let go of, or
+/// never made resident, is drawn from its own floor in the frame that names
+/// it all the same.
+#[test]
+fn a_cpu_adapter_keeps_the_month_in_forces_floor_and_the_month_aheads() {
+    let _gpu = gpu();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let june = hand_over(2026, 6) + time::Duration::hours(12);
+    let june_10 = unlit_day(june - time::Duration::days(6));
+    let (_dir, harness) = fixture_floors("engine_months_cpu_floors", false, june_10, &clock);
+    assert_eq!(floors_when_idle(&harness, &clock), 1, "June's alone");
+
+    let frame = crate::groups::FRAME;
+    let june_15 = harness.picture(&unlit_day(june - time::Duration::days(1)), frame);
+    assert_eq!(
+        floors_when_idle(&harness, &clock),
+        2,
+        "June's and July's ahead"
+    );
+    let july_16 = harness.picture(&unlit_day(june), frame);
+    let (faces, _) = difference(&june_15, &july_16, 0);
+    assert!(
+        faces > 0.5,
+        "July is not drawn from its own floor: {faces:.3}"
+    );
+    assert_eq!(
+        floors_when_idle(&harness, &clock),
+        2,
+        "July's and June's behind"
+    );
+
+    let march = harness.picture(
+        &unlit_day(hand_over(2026, 3) - time::Duration::days(6)),
+        frame,
+    );
+    assert!(
+        march == june_15,
+        "March is not drawn from its own floor, which was never resident before"
+    );
+    assert_eq!(floors_when_idle(&harness, &clock), 1, "March's alone");
 }
 
 /// A sweep of the custom date across the year, an hour either side of every
@@ -221,6 +292,7 @@ fn a_sweep_of_the_custom_date_across_the_year_shows_each_month_its_own_tiles() {
     let clock_for_config = Arc::clone(&clock);
     let first = hand_over(2026, 1) - time::Duration::hours(1);
     let harness = start(&dir, |config| {
+        config.every_floor = Some(true);
         config.clock = clock_for_config;
         config.params = on(&view(), first);
     });
@@ -317,6 +389,7 @@ fn the_live_clock_reads_the_next_month_ahead_and_crosses_without_a_wait() {
     let mut params = view();
     params.datetime.use_custom = false;
     let harness = start(&dir, |config| {
+        config.every_floor = Some(true);
         config.clock = clock_for_config;
         config.tile_gate = gate_for_config;
         config.wallpaper = sink_for_config;

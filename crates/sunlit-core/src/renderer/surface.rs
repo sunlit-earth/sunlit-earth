@@ -260,6 +260,18 @@ impl SurfaceSet {
         }
     }
 
+    /// Let go of the day floor of `month`, unless it is the month in force's
+    /// or the one drawn. Returns whether it was resident and is let go of.
+    pub(super) fn release_day(&mut self, month: usize) -> bool {
+        if month == self.month || self.drawn == Some(month) {
+            return false;
+        }
+        self.days[month]
+            .take()
+            .map(|cube| cube.texture.destroy())
+            .is_some()
+    }
+
     fn draw_the_month_in_force(&mut self) -> bool {
         let changed = self.days[self.month].is_some() && self.drawn != Some(self.month);
         if changed {

@@ -76,17 +76,18 @@ fn resident_texture_bytes(texture_resolution: u32) -> u64 {
 }
 
 /// Bytes the cube surface costs at `texture_resolution` on a CPU adapter,
-/// whose textures are process memory: the day floor of the month in force and
-/// the night floor decoded to RGBA8 with their mip chains, the water mask in
-/// BC4 with its, and, at a setting that allows a tile at all, the tile array
-/// of `CPU_TILE_LAYER_BUDGET` RGBA8 layers, each a tile with its gutters and
-/// one mip. The setting moves only the array, since it caps the finest level
-/// and not how many layers hold it.
+/// whose textures are process memory: the day floors it keeps, the month in
+/// force's and the month ahead's near a hand-over, and the night floor,
+/// decoded to RGBA8 with their mip chains, the water mask in BC4 with its,
+/// and, at a setting that allows a tile at all, the tile array of
+/// `CPU_TILE_LAYER_BUDGET` RGBA8 layers, each a tile with its gutters and one
+/// mip. The setting moves only the array, since it caps the finest level and
+/// not how many layers hold it.
 fn surface_texture_bytes(texture_resolution: u32) -> u64 {
     use crate::assets::tiles::{GEOMETRY, Geometry};
 
     let square = |side: u32| u64::from(side) * u64::from(side);
-    let floors = 2 * 6 * square(GEOMETRY.floor) * 4 * 4 / 3;
+    let floors = 3 * 6 * square(GEOMETRY.floor) * 4 * 4 / 3;
     let mask = 6 * square(GEOMETRY.mask) / 2 * 4 / 3;
     let tiled = crate::renderer::residency::finest_level(texture_resolution)
         > Geometry::level_of(GEOMETRY.floor);
@@ -562,7 +563,9 @@ mod tests {
                 .map(|(w, h)| f64::from(w) * f64::from(h) * bytes_per_pixel)
                 .sum()
         };
-        let floors = 2.0 * 6.0 * chain(GEOMETRY.floor, GEOMETRY.floor, 4.0);
+        // The month in force's and the month ahead's day floors, and the
+        // night's.
+        let floors = 3.0 * 6.0 * chain(GEOMETRY.floor, GEOMETRY.floor, 4.0);
         let mask = 6.0 * chain(GEOMETRY.mask, GEOMETRY.mask, 0.5);
         let layer = GEOMETRY.tile + 2 * GEOMETRY.gutter;
         let array = f64::from(crate::renderer::tiles::CPU_TILE_LAYER_BUDGET)

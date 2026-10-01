@@ -769,6 +769,17 @@ impl SurfaceTiles {
         Ok(named)
     }
 
+    /// Let go of what `kind`'s pack said about its tiles, for a floor that is
+    /// let go of. The table never names a pack other than the month in force's
+    /// and the night's, so nothing it draws changes.
+    pub fn forget_pack(&mut self, kind: PackKind) {
+        debug_assert!(
+            kind != PackKind::Night && Some(kind) != self.day(),
+            "{kind:?} is a pack the table names"
+        );
+        self.ocean.remove(&kind);
+    }
+
     /// Make `tiles` resident and rewrite the table over them.
     ///
     /// A tile whose texels do not have the layout of the geometry's layers in

@@ -30,7 +30,7 @@ use tracing::debug;
 
 use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::mailbox::TextureMailbox;
-use crate::assets::tiles::{Geometry, Pack};
+use crate::assets::tiles::{Geometry, Pack, PackKind};
 use crate::memory_report::{ExpectedTexture, MemoryReport};
 use crate::params::SceneParams;
 use crate::scene::sky::{PlanetKind, SkyState};
@@ -432,6 +432,29 @@ impl Renderer {
             self.texture_dirty = true;
         }
         Ok(drawn || table)
+    }
+
+    /// Whether the day floor of `month` is resident.
+    pub(crate) fn day_floor_resident(&self, month: usize) -> bool {
+        self.surface.as_ref().is_some_and(|surface| {
+            surface.state(SurfaceLayer::Day(month)) == surface::LayerState::Resident
+        })
+    }
+
+    /// Let go of the day floor of `month` and of what its pack said about its
+    /// tiles, unless it is the month in force's or the floor drawn, neither of
+    /// which the frame can do without. Returns whether it was let go of.
+    pub(crate) fn release_day_floor(&mut self, month: usize) -> bool {
+        let Some(surface) = &mut self.surface else {
+            return false;
+        };
+        if !surface.release_day(month) {
+            return false;
+        }
+        if let Some(tiles) = &mut surface.tiles {
+            tiles.forget_pack(PackKind::Day(month));
+        }
+        true
     }
 
     /// Record that `layer`'s pack failed, so nothing waits for it.

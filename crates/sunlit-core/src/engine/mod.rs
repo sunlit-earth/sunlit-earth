@@ -209,6 +209,7 @@ impl Engine {
             tile_geometry,
             tile_layers,
             tile_gate,
+            every_floor,
         } = config;
 
         let slots = SlotLayout::new(texture_paths.len());
@@ -237,7 +238,7 @@ impl Engine {
                 .contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
             cpu_adapter,
         );
-        let surface = start_surface(
+        let mut surface = start_surface(
             cube_textures,
             tile_geometry,
             cache_dir.as_ref(),
@@ -251,6 +252,9 @@ impl Engine {
                 gate: tile_gate,
             },
         );
+        if let Some(surface) = &mut surface {
+            surface.keep_every_floor(every_floor.unwrap_or(!cpu_adapter));
+        }
 
         let requested_sample_count = params.sample_count;
         params.sample_count = resolve_and_warn(
@@ -653,9 +657,10 @@ impl Engine {
         let Some(surface) = &mut self.surface else {
             return;
         };
-        let month =
-            crate::scene::month::month_in_force(&self.params.datetime, self.clock.now_utc());
-        if surface.set_month(month, &mut self.renderer) {
+        let (date, now) = (&self.params.datetime, self.clock.now_utc());
+        let month = crate::scene::month::month_in_force(date, now);
+        let ahead = crate::scene::month::month_ahead(date, now);
+        if surface.set_month(month, ahead, &mut self.renderer) {
             self.dirty = true;
         }
         if !self.renderer.textures_ready(self.params.texture_index) {
@@ -748,7 +753,7 @@ impl Engine {
         let view = View {
             outputs: &outputs,
             month: surface.month(),
-            ahead: crate::scene::month::month_ahead(&self.params.datetime, self.clock.now_utc()),
+            ahead: surface.ahead(),
             surfaces: surfaces_for(&self.params, sky.sun_direction),
             texture_resolution: self.renderer.texture_resolution(),
             drag: surface.drag(&self.params.camera, self.clock.elapsed()),

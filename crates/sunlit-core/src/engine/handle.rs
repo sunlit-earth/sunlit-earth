@@ -88,6 +88,12 @@ pub struct EngineConfig {
     /// Holds the tile loader's reads while shut; open, and never shut, in the
     /// app.
     pub tile_gate: super::TileGate,
+    /// Whether every month's day floor stays resident. `None` takes the
+    /// adapter's way, as the app does: every month on a GPU, and on a CPU
+    /// adapter the month in force's and the month ahead's alone, the others
+    /// made resident when their month comes into force. The tests, which run
+    /// on a software adapter, set it to cover a GPU's way.
+    pub every_floor: Option<bool>,
 }
 
 impl EngineConfig {
@@ -124,6 +130,7 @@ impl EngineConfig {
             tile_geometry: GEOMETRY,
             tile_layers: None,
             tile_gate: super::TileGate::default(),
+            every_floor: None,
         }
     }
 

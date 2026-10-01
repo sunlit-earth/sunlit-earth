@@ -110,17 +110,6 @@ galactic center, the two Magellanic Clouds, Carina, Crux, Cygnus and Cassiopeia
 are all bright, and crops at the two galactic poles are the darkest of the set,
 which the mirrored reading of the same layout gets backwards.
 
-## world.topo.200405.jxl, world.topo.200405.original.jxl, BlackMarble_2016.jxl
-
-The Earth's day and night surfaces, 8192 wide, from NASA's Blue Marble Next
-Generation (May 2004 topography) and Black Marble (2016) imagery. These predate
-this file and their exact download URLs and preparation steps were not recorded
-at the time; the About window's credit lines are what ships with them. The
-`.original` file is the day map before whatever adjustment produced the one the
-app loads, and nothing reads it.
-
-The night map is NASA's `BlackMarble_2016_3km.jpg`, the source of the night cube below, brought down to 8192 wide: a fresh Lanczos downscale of that file differs from the decoded `BlackMarble_2016.jxl` by a mean of 0.87 of 255, with a signed mean of -0.07, which is the lossy encode's noise.
-
 ## day/2004MM/, night/, mask/: the cube faces
 
 The Earth's surface as an equi-angular cube: twelve monthly day sets under `day/200401/` to `day/200412/`, one night set under `night/` and one water mask under `mask/`, six faces each, 84 files. Every face is 2048 x 2048 and named `px`, `nx`, `py`, `ny`, `pz` or `nz` for the cube's +X, -X, +Y, -Y, +Z and -Z, the layer order of a cube texture. The frame is the app's world frame, +Y north, +Z longitude 0 and +X longitude 90 E, with the faces laid out by the OpenGL and Direct3D cube map table, so Africa is upright on `pz` and the Arctic Ocean is centered on `py`. The texel grid is the tangent warp of pi/4. `tools/texture-pipeline/README.md` gives the geometry in full, and `src/texture_pipeline/cube.py` there holds the table.
@@ -131,7 +120,7 @@ The Earth's surface as an equi-angular cube: twelve monthly day sets under `day/
 
 ### What a mask texel means
 
-A mask texel is the share of its footprint that is open water: 255 is open ocean, 0 is land, and the values in between are coastline. Ice the detector finds on the ocean side of the shapefile's coastline counts as land and is 0. One mask serves all twelve months. The day faces were flattened toward the ocean fill color (10, 30, 60) in proportion to the same mask, so where a mask texel is 255 the day texel was that fill to within one level before the lossy encode; decoded, it carries the codec's noise, and anything that wants a flat ocean writes (10, 30, 60) itself where the mask is 255. This replaces the old day map's alpha, which held `255 - mask / 2` (land 255, open water 128): nothing in the cube set has an alpha channel.
+A mask texel is the share of its footprint that is open water: 255 is open ocean, 0 is land, and the values in between are coastline. Ice the detector finds on the ocean side of the shapefile's coastline counts as land and is 0. One mask serves all twelve months. The day faces were flattened toward the ocean fill color (10, 30, 60) in proportion to the same mask, so where a mask texel is 255 the day texel was that fill to within one level before the lossy encode; decoded, it carries the codec's noise, and anything that wants a flat ocean writes (10, 30, 60) itself where the mask is 255. Nothing in the cube set has an alpha channel.
 
 Natural Earth's ocean layer holds Null Island, a hole of about a kilometer at 0 N 0 E, which comes out as four texels of 245 at the center of `pz`.
 

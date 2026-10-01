@@ -95,7 +95,7 @@ Windows, XFCE, and KDE Plasma support applying images to individual monitors. GN
 
 ## App data and environment overrides
 
-By default, `config.toml`, the cloud cache, downscaled textures in `texture_cache/`, generated wallpaper directories, and memory metrics CSV files live under the platform's local app data directory:
+By default, `config.toml`, the cloud cache, generated wallpaper directories, and memory metrics CSV files live under the platform's local app data directory:
 
 - Windows uses `%LOCALAPPDATA%\SunlitEarth`.
 - Linux uses `~/.local/share/SunlitEarth`.

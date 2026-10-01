@@ -11,8 +11,7 @@ git lfs pull
 
 The app uses these files:
 
-- `world.topo.200405.jxl` supplies the Earth daytime surface at 8K.
-- `BlackMarble_2016.jxl` supplies the Earth night lights at 8K.
+- `day/2004MM/`, `night/` and `mask/` supply the Earth's surface as 84 cube faces, 2048 pixels on a side: twelve monthly day sets, the night lights and the water mask.
 - `lroc_color_poles_1k.jxl` supplies the Moon's surface.
 - `milkyway_2020_4k.jxl` supplies the Milky Way panorama.
 
@@ -31,9 +30,9 @@ A debug build logs `resolved texture paths` at startup. Release builds compile i
 
 ## Resolution and caching
 
-Advanced → Rendering selects a maximum texture width of 8192, 4096, or 2048. The default is 4096, including configurations saved before this setting existed. Selecting another width in the UI persists it. A source narrower than the selected width is not enlarged.
+Advanced → Rendering selects a maximum texture width of 8192, 4096, or 2048. For the Earth it caps the finest tile level: 8192 keeps both tile levels, 4096 the coarser one, and 2048 the floors alone. The default is 4096, including configurations saved before this setting existed. Selecting another width in the UI persists it. A source narrower than the selected width is not enlarged.
 
-Downscaled Earth textures are cached under `texture_cache/` in the cache directory. Halving each dimension reduces texture pixel storage to about a quarter of the original size and makes subsequent loads faster. The cache is disposable and can be regenerated. See [architecture.md](architecture.md#texture-resolution) for validation, measurements, and loading behavior.
+Nothing is cached on disk for a downscale. The Milky Way panorama is halved in memory on each load at 2048, and earlier versions' `texture_cache/` directory is deleted from the cache directory at startup. The tile packs the Earth is drawn from are built from the cube faces on first use and cached; see [architecture.md](architecture.md#texture-resolution) for validation, measurements, and loading behavior.
 
 Cloud imagery downloads at runtime from [Matteason](https://clouds.matteason.co.uk) and is cached. The same resolution setting selects the cloud image size, reducing download size and texture memory at lower resolutions. Existing clouds remain visible while the new size downloads or when connectivity is unavailable. Setting `SUNLIT_EARTH_NO_CLOUDS` disables cloud fetching entirely. `SUNLIT_EARTH_CLOUD_URL` overrides the selected provider URL. All location and polling overrides are listed in [architecture.md](architecture.md#environment-knobs).
 

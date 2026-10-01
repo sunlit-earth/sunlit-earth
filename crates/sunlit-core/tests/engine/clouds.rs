@@ -87,8 +87,9 @@ fn with_a_lit_night_ground(params: SceneParams) -> SceneParams {
 
 /// A cloud on the night side has to be brighter than the ground it covers.
 ///
-/// The camera is over unlit land, which the night map reads at about 40 in the
-/// units this prints rather than black, so the ordering is not true for free.
+/// The camera is over unlit land, which a night gamma of 1.5 lifts to about 36
+/// in the units this prints rather than black, so the ordering is not true for
+/// free.
 /// The deck reads its own value almost exactly, because the fixture's cloud is
 /// 255 or nothing and the night opacity covers the ground completely at any
 /// density of one.
@@ -96,7 +97,10 @@ fn with_a_lit_night_ground(params: SceneParams) -> SceneParams {
 fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let params = cloud_case_params(3, UNLIT_LAND, midnight_at(UNLIT_LAND));
+    let params = SceneParams {
+        night_gamma: 1.5,
+        ..cloud_case_params(3, UNLIT_LAND, midnight_at(UNLIT_LAND))
+    };
 
     let covered = harness.picture(&params, CLOUD_CASE_SIZE);
     let bare = harness.picture(

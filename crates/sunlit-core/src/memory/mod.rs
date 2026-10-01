@@ -45,7 +45,8 @@ pub use self::windows::snapshot;
 /// What a cold-cache launch costs in private bytes before any surface texture
 /// or cloud image is resident: the decodes that build the textures, wgpu, the
 /// driver, and the process itself, none of which shrinks with the setting.
-/// Rounded up from the 1.93 GiB `docs/testing.md` records.
+/// Rounded up from the 2488 MiB `docs/testing.md` records, which was measured
+/// on the flat path's two 8K decodes before the cube surface existed.
 const COLD_START_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Slack above a cold start before the budget is crossed.
@@ -105,7 +106,7 @@ fn surface_texture_bytes(texture_resolution: u32) -> u64 {
 /// Its source is 4096 wide, which is wider than the narrowest cap the setting
 /// offers and no wider than the other two, so the setting moves this term at
 /// the narrow end and not at the wide one: 42.7 MiB with its mip chain at 8192
-/// and 4096, 10.7 MiB at 2048 where the halving cache serves the downscale.
+/// and 4096, 10.7 MiB at 2048, where the loader halves the panorama in memory.
 /// `PANORAMA_WIDTH` is what stops the term growing above the source's own
 /// width, which is the same clause `halvings_to` applies to the pixels.
 fn milky_way_texture_bytes(texture_resolution: u32) -> u64 {
@@ -545,17 +546,39 @@ mod tests {
         }
     }
 
+    /// The figures are summed level by level from the texture sizes, where the
+    /// function takes four thirds of the base level, so a term it drops or
+    /// miscounts moves the total by far more than the difference between the
+    /// two ways of counting a mip chain.
     #[test]
+    #[allow(clippy::cast_precision_loss)]
     fn the_resident_half_is_the_textures_the_renderer_keeps() {
-        let clouds = |width: u64| width * (width / 2) * 4 * 4 / 3;
+        use crate::assets::tiles::GEOMETRY;
+
+        let chain = |width: u32, height: u32, bytes_per_pixel: f64| -> f64 {
+            (0..32)
+                .map(|level| (width >> level, height >> level))
+                .take_while(|&(w, h)| w > 0 && h > 0)
+                .map(|(w, h)| f64::from(w) * f64::from(h) * bytes_per_pixel)
+                .sum()
+        };
+        let floors = 2.0 * 6.0 * chain(GEOMETRY.floor, GEOMETRY.floor, 4.0);
+        let mask = 6.0 * chain(GEOMETRY.mask, GEOMETRY.mask, 0.5);
+        let layer = GEOMETRY.tile + 2 * GEOMETRY.gutter;
+        let array = f64::from(crate::renderer::tiles::CPU_TILE_LAYER_BUDGET)
+            * (f64::from(layer * layer) + f64::from(layer / 2 * (layer / 2)))
+            * 4.0;
         for width in TEXTURE_RESOLUTIONS {
-            assert_eq!(
-                resident_texture_bytes(width),
-                surface_texture_bytes(width)
-                    + clouds(u64::from(width))
-                    + MOON_TEXTURE_BYTES
-                    + milky_way_texture_bytes(width),
-                "at {width}"
+            let expected = floors
+                + mask
+                + if width >= 4096 { array } else { 0.0 }
+                + chain(width, width / 2, 4.0)
+                + MOON_TEXTURE_BYTES as f64
+                + chain(width.min(4096), width.min(4096) / 2, 4.0);
+            approx::assert_relative_eq!(
+                resident_texture_bytes(width) as f64,
+                expected,
+                max_relative = 1e-3
             );
         }
     }

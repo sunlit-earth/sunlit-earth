@@ -272,6 +272,27 @@ fn a_switch_while_the_first_load_is_running_still_converges() {
     wait_for_panorama_width(&harness, WIDE / 4, "after a switch mid-load");
 }
 
+/// The halved copies earlier versions kept under the cache directory are
+/// removed when an engine starts, and nothing else under it is.
+#[test]
+fn the_engine_removes_the_retired_downscales_at_startup() {
+    let _gpu = gpu();
+    let dir = ScratchDir::new("engine_retired_downscales");
+    let cache = dir.join("cache");
+    let retired = cache.join("texture_cache");
+    std::fs::create_dir_all(&retired).expect("create the retired directory");
+    std::fs::write(retired.join("day_4096.png"), b"a halved copy").expect("write a copy");
+    let kept = cache.join("tile_cache");
+    std::fs::create_dir_all(&kept).expect("create the tile cache");
+    std::fs::write(kept.join("pack.bin"), b"a pack").expect("write a pack");
+
+    let harness = Harness::start(move |config| config.cache_dir = Some(cache));
+    let _ = harness.engine.memory_report();
+
+    assert!(!retired.exists(), "the retired directory is still there");
+    assert!(kept.join("pack.bin").exists(), "the tile cache was touched");
+}
+
 /// A wallpaper update asked for during a reload waits for the reload.
 ///
 /// The switch purges the tiles, and "change the resolution, then click Set as

@@ -1341,4 +1341,35 @@ size 9
         assert!(!err.contains("pointer rather"), "{err}");
         assert!(!err.contains("git lfs pull"), "{err}");
     }
+
+    fn repo_with_textures(name: &str) -> PathBuf {
+        let repo = std::env::temp_dir().join(format!("sunlit_xtask_repo_{name}"));
+        let _ = std::fs::remove_dir_all(&repo);
+        let textures = repo.join("textures");
+        std::fs::create_dir_all(&textures).expect("mkdir");
+        for name in TEXTURE_FILES {
+            let size = usize::try_from(TEXTURE_MIN_BYTES).expect("a size") + 1;
+            std::fs::write(textures.join(name), vec![0_u8; size]).expect("write");
+        }
+        for file in cube_texture_files() {
+            let path = textures.join(&file);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(path, b"jxl stand-in").expect("write");
+        }
+        repo
+    }
+
+    #[test]
+    fn the_textures_are_present_when_the_flat_maps_and_every_face_are() {
+        let repo = repo_with_textures("present");
+        assert_eq!(textures_present(&repo), Ok(repo.join("textures")));
+    }
+
+    #[test]
+    fn the_textures_are_not_present_without_a_cube_face() {
+        let repo = repo_with_textures("no_face");
+        std::fs::remove_file(repo.join("textures/day/200406/ny.jxl")).expect("remove");
+        let err = textures_present(&repo).unwrap_err();
+        assert!(err.contains("day/200406/ny.jxl"), "{err}");
+    }
 }

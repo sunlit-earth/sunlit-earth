@@ -23,6 +23,7 @@ use sunlit_core::renderer::tiles::TileId;
 use crate::harness::{Harness, TIMEOUT, gpu};
 use crate::sinks::{RecordingSink, screen};
 use crate::test_support::{self, ScratchDir};
+use crate::textures::blend_params;
 use crate::tiles::{EARTH, damage_the_day_tiles, day_over, settled, start, tile_report};
 
 /// The screen every publish here is made for.
@@ -679,4 +680,38 @@ fn a_drag_converges_to_the_one_pixel_set_within_half_a_second_of_stopping() {
     if !ready {
         rig.harness.wait_for_textures("readiness after the drag");
     }
+}
+
+/// With no cube to draw, which is a checkout without its LFS objects or an
+/// engine with no cache directory, Blend mode has nothing to wait for: a
+/// publish goes out at once and the textures are never reported ready. A
+/// pending cube that never comes would otherwise hold every publish forever.
+#[test]
+fn without_a_cube_a_publish_in_blend_mode_goes_out_and_no_textures_are_ready() {
+    let _gpu = gpu();
+    let sink = Arc::new(RecordingSink::new(vec![screen(
+        "only", 0, SCREEN.0, SCREEN.1, true,
+    )]));
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(move |config| {
+        config.params = blend_params();
+        config.wallpaper = sink_for_config;
+    });
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    let mut ready = false;
+    let deadline = Instant::now() + TIMEOUT;
+    let published = loop {
+        match harness.events.recv_deadline(deadline) {
+            Ok(EngineEvent::WallpaperSet(result)) => break result,
+            Ok(EngineEvent::TexturesReady) => ready = true,
+            Ok(_) => {}
+            Err(e) => panic!("no publish within {TIMEOUT:?}: {e}"),
+        }
+    };
+    assert!(published.is_ok(), "the publish should have gone out");
+    assert_eq!(sink.publications().len(), 1, "exactly one publish");
+    let _ = harness.engine.memory_report();
+    ready |= std::iter::from_fn(|| harness.events.try_recv().ok())
+        .any(|event| matches!(event, EngineEvent::TexturesReady));
+    assert!(!ready, "nothing is ready without a cube in Blend mode");
 }

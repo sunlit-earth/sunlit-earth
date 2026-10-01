@@ -45,8 +45,10 @@ pub use self::windows::snapshot;
 /// What a cold-cache launch costs in private bytes before any surface texture
 /// or cloud image is resident: the decodes that build the textures, wgpu, the
 /// driver, and the process itself, none of which shrinks with the setting.
-/// Rounded up from the 2488 MiB `docs/testing.md` records, which was measured
-/// on the flat path's two 8K decodes before the cube surface existed.
+/// Not the 2488 MiB peak `docs/testing.md` records, which was measured on the
+/// flat path's two 8K decodes before the cube surface existed: that is what
+/// the whole budget, this and the headroom below and the resident textures,
+/// has to clear at every resolution.
 const COLD_START_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Slack above a cold start before the budget is crossed.

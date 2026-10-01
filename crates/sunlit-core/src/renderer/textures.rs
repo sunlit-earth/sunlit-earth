@@ -246,20 +246,17 @@ pub(super) fn create_mipmapped_texture(
 
 /// What one bind group of the shared layout holds besides the uniforms.
 ///
-/// A group that reads one flat texture, the day or night map, the Moon, the
-/// Milky Way or the clouds, has the dummy 1x1 texture as `night` and the dummy
-/// cube in all three cube places; blend mode over the flat maps has the real
-/// night map. A group that draws the globe from a cube, the grid's or the
-/// surface's, has the dummies in both flat places and the surface sampler.
-/// Every group but the surface's has the dummy tile array and the dummy page
-/// table, which draws the floor everywhere.
+/// A group that reads one flat texture, the Moon, the Milky Way or the
+/// clouds, has the dummy cube in all three cube places. A group that draws the
+/// globe from a cube, the grid's or the surface's, has the dummy 1x1 texture as
+/// its flat texture and the surface sampler. Every group but the surface's has
+/// the dummy tile array and the dummy page table, which draws the floor
+/// everywhere.
 pub(super) struct Bindings<'a> {
     /// Binding 1.
     pub texture: &'a wgpu::TextureView,
     /// Binding 2.
     pub sampler: &'a wgpu::Sampler,
-    /// Binding 3.
-    pub night: &'a wgpu::TextureView,
     /// Bindings 4 to 6: the day or grid cube, the night cube and the mask.
     pub cubes: [&'a wgpu::TextureView; 3],
     /// Bindings 7 and 8: the tile array and the page table.
@@ -292,10 +289,6 @@ pub(super) fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(bindings.sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: view(bindings.night),
             },
             wgpu::BindGroupEntry {
                 binding: 4,

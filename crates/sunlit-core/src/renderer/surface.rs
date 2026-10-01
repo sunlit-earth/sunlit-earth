@@ -5,8 +5,6 @@
 //! The set is one unit beside the texture slots rather than three of them: it
 //! arrives from packs the transcoder builds, not from a decode thread and the
 //! mailbox, and the engine hands each pack over on its own thread as it lands.
-//! While the set is in use the day and night slots have no file behind them,
-//! so the flat maps are never decoded for the globe.
 
 use crate::assets::texture_loader;
 use crate::assets::tiles::{BlockFormat, Entry, Pack, PackKind, decode_bc4, decode_bc7};
@@ -258,7 +256,7 @@ impl SurfaceSet {
     /// nothing it can draw is resident.
     ///
     /// Blend falls back to the day floor alone until the night floor is there
-    /// too, as the flat maps do.
+    /// too.
     pub(super) fn route(&self, mode: TextureMode) -> Option<(SurfaceGroup, bool)> {
         match mode {
             TextureMode::Grid => None,
@@ -514,7 +512,7 @@ mod tests {
     }
 
     /// Nothing of the surface is sRGB: the shader works on the stored values,
-    /// as it does for the flat maps.
+    /// as it does for every flat texture.
     #[test]
     fn no_surface_format_is_srgb() {
         for block_compression in [false, true] {

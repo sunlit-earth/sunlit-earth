@@ -192,7 +192,6 @@ pub(super) fn create_renderer(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            texture_entry(3, wgpu::TextureViewDimension::D2),
             texture_entry(4, wgpu::TextureViewDimension::Cube),
             texture_entry(5, wgpu::TextureViewDimension::Cube),
             texture_entry(6, wgpu::TextureViewDimension::Cube),
@@ -210,9 +209,8 @@ pub(super) fn create_renderer(
         ],
     });
 
-    // 1x1 black placeholders: the flat one at binding 3 for every bind group
-    // that reads one flat texture and at 1 and 3 for every group that draws
-    // from a cube, the cube one wherever a group has no cube to put.
+    // 1x1 black placeholders: the flat one at binding 1 for every group that
+    // draws from a cube, the cube one wherever a group has no cube to put.
     let dummy_cube =
         surface::mipmapped_cube(&device, &queue, "dummy_cube", 1, |_| vec![0, 0, 0, 255]);
     let dummy_cube_view = dummy_cube.create_view(&wgpu::TextureViewDescriptor {
@@ -276,7 +274,6 @@ pub(super) fn create_renderer(
         &Bindings {
             texture: &dummy_texture_view,
             sampler: &surface_sampler,
-            night: &dummy_texture_view,
             cubes: [&grid_tex_view, &dummy_cube_view, &dummy_cube_view],
             tiles: [&dummy_tile_view, &dummy_page_view],
         },

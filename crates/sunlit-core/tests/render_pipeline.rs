@@ -134,16 +134,6 @@ fn create_render_context() -> RenderContext {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
             cube_entry(4),
             cube_entry(5),
             cube_entry(6),
@@ -431,7 +421,7 @@ fn create_solid_cube(
 /// A bind group of the production layout, with no tiles.
 fn test_bind_group(
     ctx: &RenderContext,
-    flat: [&wgpu::TextureView; 2],
+    flat: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     cubes: [&wgpu::TextureView; 3],
 ) -> wgpu::BindGroup {
@@ -443,7 +433,7 @@ fn test_bind_group(
 /// table `tiles`.
 fn bind_group_with(
     ctx: &RenderContext,
-    flat: [&wgpu::TextureView; 2],
+    flat: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     cubes: [&wgpu::TextureView; 3],
     tiles: [&wgpu::TextureView; 2],
@@ -459,15 +449,11 @@ fn bind_group_with(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: view(flat[0]),
+                resource: view(flat),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: view(flat[1]),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
@@ -493,27 +479,35 @@ fn bind_group_with(
     })
 }
 
-/// Render a frame from the flat maps and return the RGBA8 pixel data.
+/// Render a frame from a solid day color and a solid night color and return
+/// the RGBA8 pixel data.
+///
+/// The day color's alpha is the water: 255 is land and 128 open water, as the
+/// shader reads a water cube of 254, so a case states a surface in one color
+/// apiece.
 fn render_frame(
     ctx: &RenderContext,
     uniforms: &Uniforms,
-    day_texture: &wgpu::TextureView,
-    night_texture: &wgpu::TextureView,
+    day: [u8; 4],
+    night: [u8; 4],
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    let dummy = &ctx.dummy_cube;
-    let bind_group = test_bind_group(
+    let water = u8::try_from((255 - u16::from(day[3])) * 2).unwrap_or(u8::MAX);
+    let day_cube = create_solid_cube(&ctx.device, &ctx.queue, [[day[0], day[1], day[2], 255]; 6]);
+    let night_cube = create_solid_cube(&ctx.device, &ctx.queue, [night; 6]);
+    let water_cube = create_solid_cube(&ctx.device, &ctx.queue, [[water, 0, 0, 255]; 6]);
+    render_cube_frame(
         ctx,
-        [day_texture, night_texture],
-        &ctx.sampler,
-        [dummy, dummy, dummy],
-    );
-    render_with(ctx, uniforms, &bind_group, width, height)
+        uniforms,
+        [&day_cube, &night_cube, &water_cube],
+        width,
+        height,
+    )
 }
 
 /// Render a frame from the day, night and water cubes through the surface
-/// sampler, with the cube bit set, and return the RGBA8 pixel data.
+/// sampler and return the RGBA8 pixel data.
 fn render_cube_frame(
     ctx: &RenderContext,
     uniforms: &Uniforms,
@@ -522,16 +516,9 @@ fn render_cube_frame(
     height: u32,
 ) -> Vec<u8> {
     let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
-    let bind_group = test_bind_group(ctx, [&flat, &flat], &ctx.surface_sampler, cubes);
-    let uniforms = Uniforms {
-        flags: uniforms.flags | FLAG_CUBE,
-        ..*uniforms
-    };
-    render_with(ctx, &uniforms, &bind_group, width, height)
+    let bind_group = test_bind_group(ctx, &flat, &ctx.surface_sampler, cubes);
+    render_with(ctx, uniforms, &bind_group, width, height)
 }
-
-/// Bit 1 of `Uniforms::flags`: the surface comes from the cubes.
-const FLAG_CUBE: u32 = 2;
 
 /// Render the globe with `bind_group` and return the RGBA8 pixel data.
 fn render_with(
@@ -766,12 +753,12 @@ fn sphere_renders_visible_pixels() {
     let ctx = render_ctx();
     let size = 128;
 
-    let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let white = [255, 255, 255, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms = default_test_uniforms(size);
 
-    let pixels = render_frame(&ctx, &uniforms, &white, &black, size, size);
+    let pixels = render_frame(&ctx, &uniforms, white, black, size, size);
     let visible = count_non_clear_pixels(&pixels);
 
     assert!(
@@ -785,8 +772,8 @@ fn day_side_brighter_than_night_side() {
     let ctx = render_ctx();
     let size = 128;
 
-    let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-    let dark_gray = create_solid_texture(&ctx.device, &ctx.queue, [30, 30, 30, 255]);
+    let white = [255, 255, 255, 255];
+    let dark_gray = [30, 30, 30, 255];
 
     let uniforms = Uniforms {
         terminator_width: 0.15,
@@ -794,7 +781,7 @@ fn day_side_brighter_than_night_side() {
         ..default_test_uniforms(size)
     };
 
-    let pixels = render_frame(&ctx, &uniforms, &white, &dark_gray, size, size);
+    let pixels = render_frame(&ctx, &uniforms, white, dark_gray, size, size);
 
     // The sphere faces the camera (along +Z). Sun is also along +Z.
     // Center of the image should be brightly lit.
@@ -818,21 +805,21 @@ fn single_texture_mode_ignores_the_night_side() {
     let ctx = render_ctx();
     let size = 128;
 
-    let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
-    let green = create_solid_texture(&ctx.device, &ctx.queue, [0, 255, 0, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let red = [255, 0, 0, 255];
+    let green = [0, 255, 0, 255];
+    let black = [0, 0, 0, 255];
 
     // A negative terminator width is single-texture mode, where the fragment
     // shader returns before it reaches the night binding.
     let uniforms = default_test_uniforms(size);
-    let pixels_green_night = render_frame(&ctx, &uniforms, &red, &green, size, size);
+    let pixels_green_night = render_frame(&ctx, &uniforms, red, green, size, size);
 
     let extreme = Uniforms {
         night_gamma: 0.3,
         night_saturation: 0.0,
         ..uniforms
     };
-    let pixels_black_night = render_frame(&ctx, &extreme, &red, &black, size, size);
+    let pixels_black_night = render_frame(&ctx, &extreme, red, black, size, size);
 
     assert_eq!(
         pixels_green_night, pixels_black_night,
@@ -1664,8 +1651,8 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
     let size = 128;
 
     // All-water texture (alpha=128): RGB can be ocean-like
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     // Both gates are zero here, so neither the glint's exponent nor the
     // diffuse shift's Fresnel exponent may reach the frame.
@@ -1679,8 +1666,8 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
         fresnel_exp: 1.0,
         ..closed
     };
-    let pixels_closed = render_frame(&ctx, &closed, &water, &night, size, size);
-    let pixels_varied = render_frame(&ctx, &varied, &water, &night, size, size);
+    let pixels_closed = render_frame(&ctx, &closed, water, night, size, size);
+    let pixels_varied = render_frame(&ctx, &varied, water, night, size, size);
     assert_eq!(
         pixels_closed, pixels_varied,
         "spec_intensity and fresnel_mix at zero should skip both blocks, \
@@ -1694,7 +1681,7 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
         fresnel_mix: 0.5,
         ..varied
     };
-    let pixels_open = render_frame(&ctx, &open, &water, &night, size, size);
+    let pixels_open = render_frame(&ctx, &open, water, night, size, size);
     assert_ne!(
         pixels_closed, pixels_open,
         "opening both gates should change the frame"
@@ -1706,8 +1693,8 @@ fn fresnel_specular_brighter_at_grazing() {
     let ctx = render_ctx();
     let size = 128;
 
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     // The brightest pixel the glint adds, which is the highlight itself: the
     // two cameras see different amounts of the night side, so an average over
@@ -1725,8 +1712,8 @@ fn fresnel_specular_brighter_at_grazing() {
             spec_intensity: 0.1,
             ..dark
         };
-        let pixels_dark = render_frame(&ctx, &dark, &water, &night, size, size);
-        let pixels_lit = render_frame(&ctx, &lit, &water, &night, size, size);
+        let pixels_dark = render_frame(&ctx, &dark, water, night, size, size);
+        let pixels_lit = render_frame(&ctx, &lit, water, night, size, size);
         let luminance = |px: &[u8]| {
             0.2126 * f64::from(px[0]) + 0.7152 * f64::from(px[1]) + 0.0722 * f64::from(px[2])
         };
@@ -1765,15 +1752,15 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
     let ctx = render_ctx();
     let size = 128;
 
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     let uniforms_no_shift = Uniforms {
         terminator_width: 0.15,
         flags: 1,
         ..default_test_uniforms(size)
     };
-    let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, &water, &night, size, size);
+    let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, water, night, size, size);
     let lum_no_shift = avg_luminance_non_clear(&pixels_no_shift);
 
     // With Fresnel diffuse shift (the sky color is brighter than the ocean)
@@ -1781,7 +1768,7 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
         fresnel_mix: 0.5,
         ..uniforms_no_shift
     };
-    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &water, &night, size, size);
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, water, night, size, size);
     let lum_with_shift = avg_luminance_non_clear(&pixels_with_shift);
 
     // The diffuse color shift mixes toward a brighter sky color,
@@ -1799,8 +1786,8 @@ fn fresnel_diffuse_shift_absent_on_land() {
     let size = 128;
 
     // All-land texture (alpha=255)
-    let land = create_solid_texture(&ctx.device, &ctx.queue, [50, 120, 50, 255]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 255]);
+    let land = [50, 120, 50, 255];
+    let night = [5, 5, 10, 255];
 
     // Without Fresnel diffuse shift
     let uniforms_base = Uniforms {
@@ -1808,14 +1795,14 @@ fn fresnel_diffuse_shift_absent_on_land() {
         flags: 1,
         ..default_test_uniforms(size)
     };
-    let pixels_base = render_frame(&ctx, &uniforms_base, &land, &night, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, land, night, size, size);
 
     // With Fresnel diffuse shift — should have no effect on land
     let uniforms_with_shift = Uniforms {
         fresnel_mix: 0.5,
         ..uniforms_base
     };
-    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &land, &night, size, size);
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, land, night, size, size);
 
     // Pixel-for-pixel comparison: land should be completely unaffected
     assert_eq!(
@@ -1829,8 +1816,8 @@ fn fresnel_diffuse_shift_absent_at_night() {
     let ctx = render_ctx();
     let size = 128;
 
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     // Sun pointing away from camera (night side faces camera)
     let uniforms_base = Uniforms {
@@ -1839,7 +1826,7 @@ fn fresnel_diffuse_shift_absent_at_night() {
         flags: 1,
         ..default_test_uniforms(size)
     };
-    let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, water, night, size, size);
 
     // With Fresnel diffuse shift — should have no effect on night side
     // because sky_color * result.blend = sky_color * 0 = 0
@@ -1847,7 +1834,7 @@ fn fresnel_diffuse_shift_absent_at_night() {
         fresnel_mix: 0.5,
         ..uniforms_base
     };
-    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &water, &night, size, size);
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, water, night, size, size);
 
     // Night side: result.blend is 0, so sky_color * 0 = black.
     // The mix should be toward black which shouldn't change the dark night pixels.
@@ -1927,7 +1914,6 @@ fn cloud_pipeline_renders_with_alpha() {
         });
 
     let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-    let dummy = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
     let uniforms = Uniforms {
         terminator_width: 0.15,
@@ -1941,7 +1927,7 @@ fn cloud_pipeline_renders_with_alpha() {
     let dummy_cube = &ctx.dummy_cube;
     let bind_group = test_bind_group(
         &ctx,
-        [&cloud_tex, &dummy],
+        &cloud_tex,
         &ctx.sampler,
         [dummy_cube, dummy_cube, dummy_cube],
     );
@@ -2032,25 +2018,25 @@ fn gamma_moves_midtones_in_both_directions() {
     let ctx = render_ctx();
     let size = 128;
 
-    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let mid_gray = [128, 128, 128, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms_base = default_test_uniforms(size);
-    let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, mid_gray, black, size, size);
     let lum_base = avg_luminance_non_clear(&pixels_base);
 
     let uniforms_bright = Uniforms {
         day_gamma: 2.0,
         ..uniforms_base
     };
-    let pixels_bright = render_frame(&ctx, &uniforms_bright, &mid_gray, &black, size, size);
+    let pixels_bright = render_frame(&ctx, &uniforms_bright, mid_gray, black, size, size);
     let lum_bright = avg_luminance_non_clear(&pixels_bright);
 
     let uniforms_dark = Uniforms {
         day_gamma: 0.5,
         ..uniforms_base
     };
-    let pixels_dark = render_frame(&ctx, &uniforms_dark, &mid_gray, &black, size, size);
+    let pixels_dark = render_frame(&ctx, &uniforms_dark, mid_gray, black, size, size);
     let lum_dark = avg_luminance_non_clear(&pixels_dark);
 
     assert!(
@@ -2068,13 +2054,13 @@ fn consecutive_renders_are_identical() {
     let ctx = render_ctx();
     let size = 128;
 
-    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let colorful = [200, 100, 50, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms = default_test_uniforms(size);
 
-    let pixels_a = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
-    let pixels_b = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
+    let pixels_a = render_frame(&ctx, &uniforms, colorful, black, size, size);
+    let pixels_b = render_frame(&ctx, &uniforms, colorful, black, size, size);
 
     assert_eq!(
         pixels_a, pixels_b,
@@ -2092,15 +2078,15 @@ fn saturation_zero_produces_greyscale() {
     let ctx = render_ctx();
     let size = 128;
 
-    let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let red = [255, 0, 0, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms = Uniforms {
         day_saturation: 0.0,
         ..default_test_uniforms(size)
     };
 
-    let pixels = render_frame(&ctx, &uniforms, &red, &black, size, size);
+    let pixels = render_frame(&ctx, &uniforms, red, black, size, size);
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
@@ -2134,17 +2120,17 @@ fn saturation_above_one_increases_chroma() {
     let ctx = render_ctx();
     let size = 128;
 
-    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let colorful = [200, 100, 50, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms_base = default_test_uniforms(size);
-    let pixels_base = render_frame(&ctx, &uniforms_base, &colorful, &black, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, colorful, black, size, size);
 
     let uniforms_saturated = Uniforms {
         day_saturation: 2.0,
         ..uniforms_base
     };
-    let pixels_saturated = render_frame(&ctx, &uniforms_saturated, &colorful, &black, size, size);
+    let pixels_saturated = render_frame(&ctx, &uniforms_saturated, colorful, black, size, size);
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
@@ -2196,8 +2182,8 @@ fn day_and_night_corrections_independent() {
 
     // Use mid-tones so gamma correction produces a visible difference
     // (pure white and pure black are fixed points of pow)
-    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
-    let dark_gray = create_solid_texture(&ctx.device, &ctx.queue, [64, 64, 64, 255]);
+    let mid_gray = [128, 128, 128, 255];
+    let dark_gray = [64, 64, 64, 255];
 
     let uniforms_day_bright = Uniforms {
         terminator_width: 0.15,
@@ -2205,14 +2191,8 @@ fn day_and_night_corrections_independent() {
         day_gamma: 2.0,
         ..default_test_uniforms(size)
     };
-    let pixels_day_bright = render_frame(
-        &ctx,
-        &uniforms_day_bright,
-        &mid_gray,
-        &dark_gray,
-        size,
-        size,
-    );
+    let pixels_day_bright =
+        render_frame(&ctx, &uniforms_day_bright, mid_gray, dark_gray, size, size);
 
     let uniforms_night_bright = Uniforms {
         day_gamma: 1.0,
@@ -2222,8 +2202,8 @@ fn day_and_night_corrections_independent() {
     let pixels_night_bright = render_frame(
         &ctx,
         &uniforms_night_bright,
-        &mid_gray,
-        &dark_gray,
+        mid_gray,
+        dark_gray,
         size,
         size,
     );
@@ -3138,7 +3118,6 @@ const FLAG_NIGHT_ALONE: u32 = 4;
 )]
 fn with_tiles(base: &Uniforms, geometry: &Geometry) -> Uniforms {
     Uniforms {
-        flags: base.flags | FLAG_CUBE,
         tile_texels: geometry.tile as f32,
         tile_gutter: geometry.gutter as f32,
         ..*base
@@ -3377,7 +3356,7 @@ fn the_floor_and_the_two_tile_levels_meet_without_a_seam() {
     let dummy = &ctx.dummy_cube;
     let bind_group = bind_group_with(
         &ctx,
-        [&flat, &flat],
+        &flat,
         &ctx.surface_sampler,
         [&floor, dummy, dummy],
         [&tiles, &pages],
@@ -3453,7 +3432,7 @@ fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
     let dummy = &ctx.dummy_cube;
     let bind_group = bind_group_with(
         &ctx,
-        [&flat, &flat],
+        &flat,
         &ctx.surface_sampler,
         [&floor, dummy, dummy],
         [&ctx.dummy_tiles[0], &pages],
@@ -3595,7 +3574,7 @@ fn a_minified_tile_is_read_at_the_level_of_detail_its_footprint_asks_for() {
         .create_sampler(&sunlit_core::renderer::surface_sampler_descriptor(true));
     let bind_group = bind_group_with(
         &ctx,
-        [&flat, &flat],
+        &flat,
         &isotropic,
         [dummy, dummy, dummy],
         [&tiles, &pages],
@@ -3792,7 +3771,7 @@ fn blend_mode_reads_each_half_of_the_page_table_for_its_own_surface() {
     let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
     let bind_group = bind_group_with(
         &ctx,
-        [&flat, &flat],
+        &flat,
         &ctx.surface_sampler,
         [&day_floor, &night_floor, &ctx.dummy_cube],
         [&ctx.dummy_tiles[0], &pages],
@@ -4173,7 +4152,7 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
     let draw = |cube: &wgpu::TextureView, tiles: [&wgpu::TextureView; 2]| {
         let group = bind_group_with(
             &ctx,
-            [&flat, &flat],
+            &flat,
             &ctx.surface_sampler,
             [cube, dummy, dummy],
             tiles,

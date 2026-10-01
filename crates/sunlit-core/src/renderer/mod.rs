@@ -141,9 +141,8 @@ pub(crate) struct Renderer {
     /// Called from decode threads after posting to the mailbox, so a client
     /// that only renders on demand knows there is work waiting.
     notify: NotifyFn,
-    /// 1x1 black texture standing in at binding 3 for every bind group that
-    /// reads one flat texture, and at 1 and 3 for every group that draws the
-    /// globe from a cube.
+    /// 1x1 black texture standing in at binding 1 for every group that draws
+    /// the globe from a cube.
     dummy_texture_view: wgpu::TextureView,
     /// 1x1 black cube standing in wherever a bind group has no cube to put.
     dummy_cube_view: wgpu::TextureView,
@@ -550,7 +549,6 @@ impl Renderer {
             &Bindings {
                 texture,
                 sampler: &self.sampler,
-                night: &self.dummy_texture_view,
                 cubes: [dummy, dummy, dummy],
                 tiles: [&self.dummy_tile_view, &self.dummy_page_view],
             },
@@ -573,7 +571,6 @@ impl Renderer {
             &Bindings {
                 texture: &self.dummy_texture_view,
                 sampler: &self.surface_sampler,
-                night: &self.dummy_texture_view,
                 cubes,
                 tiles,
             },

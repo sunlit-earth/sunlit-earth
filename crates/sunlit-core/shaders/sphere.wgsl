@@ -2,7 +2,7 @@ struct Uniforms {
     mvp: mat4x4<f32>,              // 64 bytes, offset 0
     sun_dir: vec3<f32>,            // 12 bytes, offset 64
     terminator_width: f32,         // 4 bytes, offset 76
-    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 1: cube surface)
+    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 2: night alone)
     diffuse_floor: f32,            // 4 bytes, offset 84
     diffuse_ramp: f32,             // 4 bytes, offset 88
     _pad: f32,                     // 4 bytes, offset 92
@@ -82,9 +82,6 @@ var sphere_texture: texture_2d<f32>;
 
 @group(0) @binding(2)
 var sphere_sampler: sampler;
-
-@group(0) @binding(3)
-var night_texture: texture_2d<f32>;
 
 // The globe's surface on the equi-angular cube: the day floor or the grid, the
 // night floor, and the water mask, 255 over open water. Read through
@@ -363,11 +360,6 @@ fn schlick_fresnel(n_dot_v: f32, exponent: f32) -> f32 {
     return f0 + (1.0 - f0) * pow(1.0 - n_dot_v, exponent);
 }
 
-/// Bit 1 of `uniforms.flags`: the surface is read from the cubes at bindings 4
-/// to 6 through the warped direction rather than from the flat maps at 1 and 3
-/// through the mesh's coordinates.
-const FLAG_CUBE_SURFACE: u32 = 2u;
-
 const FOUR_OVER_PI: f32 = 1.2732395447351628;
 
 /// The warped direction of the equi-angular cube for a unit normal: the
@@ -478,43 +470,32 @@ fn refined(entry: u32, base: vec3<f32>, ocean: u32, at: FacePoint) -> vec3<f32> 
 /// after them, and a tile is read with explicit gradients from a 2D array.
 fn globe_surface(in: VertexOutput) -> Surface {
     let single = uniforms.terminator_width < 0.0;
-    if (uniforms.flags & FLAG_CUBE_SURFACE) != 0u {
-        let w = equi_angular(normalize(in.world_normal));
-        let w_dx = dpdx(w);
-        let w_dy = dpdy(w);
-        let day_floor = textureSample(day_cube, sphere_sampler, w).rgb;
-        var night_floor = vec3<f32>(0.0);
-        var water = 0.0;
-        if !single {
-            night_floor = textureSample(night_cube, sphere_sampler, w).rgb;
-            water = textureSample(water_cube, sphere_sampler, w).r;
-        }
-
-        let at = face_point(w, w_dx, w_dy);
-        let cells = textureDimensions(page_table).x;
-        let cell = min(vec2<u32>(at.uv * f32(cells)), vec2<u32>(cells - 1u));
-        let entry = textureLoad(page_table, cell, at.face, 0).x;
-        if single {
-            let night_alone = (uniforms.flags & FLAG_NIGHT_ALONE) != 0u;
-            let half = select(entry & 0xFFFFu, entry >> 16u, night_alone);
-            let ocean = select(uniforms.day_ocean, uniforms.night_ocean, night_alone);
-            return Surface(refined(half, day_floor, ocean, at), vec3<f32>(0.0), 0.0);
-        }
-        return Surface(
-            refined(entry & 0xFFFFu, day_floor, uniforms.day_ocean, at),
-            refined(entry >> 16u, night_floor, uniforms.night_ocean, at),
-            water
-        );
+    let w = equi_angular(normalize(in.world_normal));
+    let w_dx = dpdx(w);
+    let w_dy = dpdy(w);
+    let day_floor = textureSample(day_cube, sphere_sampler, w).rgb;
+    var night_floor = vec3<f32>(0.0);
+    var water = 0.0;
+    if !single {
+        night_floor = textureSample(night_cube, sphere_sampler, w).rgb;
+        water = textureSample(water_cube, sphere_sampler, w).r;
     }
 
-    let day = textureSample(sphere_texture, sphere_sampler, in.uv);
+    let at = face_point(w, w_dx, w_dy);
+    let cells = textureDimensions(page_table).x;
+    let cell = min(vec2<u32>(at.uv * f32(cells)), vec2<u32>(cells - 1u));
+    let entry = textureLoad(page_table, cell, at.face, 0).x;
     if single {
-        return Surface(day.rgb, vec3<f32>(0.0), 0.0);
+        let night_alone = (uniforms.flags & FLAG_NIGHT_ALONE) != 0u;
+        let half = select(entry & 0xFFFFu, entry >> 16u, night_alone);
+        let ocean = select(uniforms.day_ocean, uniforms.night_ocean, night_alone);
+        return Surface(refined(half, day_floor, ocean, at), vec3<f32>(0.0), 0.0);
     }
-    let night = textureSample(night_texture, sphere_sampler, in.uv).rgb;
-    // The flat day map carries the water mask in its alpha: land 255, open
-    // water 128.
-    return Surface(day.rgb, night, saturate((1.0 - day.a) * 2.0));
+    return Surface(
+        refined(entry & 0xFFFFu, day_floor, uniforms.day_ocean, at),
+        refined(entry >> 16u, night_floor, uniforms.night_ocean, at),
+        water
+    );
 }
 
 @fragment

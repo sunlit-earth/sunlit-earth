@@ -36,10 +36,6 @@ pub(super) struct TileUniforms {
 
 /// Bit 0 of `Uniforms::flags`: diffuse shading.
 const FLAG_DIFFUSE: u32 = 1;
-/// Bit 1 of `Uniforms::flags`: the globe's surface is read from the cubes at
-/// bindings 4 to 6 through the warped direction, not from the flat maps at 1
-/// and 3 through the mesh's coordinates.
-const FLAG_CUBE: u32 = 2;
 /// Bit 2 of `Uniforms::flags`: the cube drawn alone is the night floor.
 const FLAG_NIGHT_ALONE: u32 = 4;
 
@@ -160,12 +156,11 @@ pub(super) fn write_uniforms<'a>(
             FLAG_DIFFUSE
         } else {
             0
-        } | FLAG_CUBE
-            | if inputs.night_alone {
-                FLAG_NIGHT_ALONE
-            } else {
-                0
-            },
+        } | if inputs.night_alone {
+            FLAG_NIGHT_ALONE
+        } else {
+            0
+        },
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,

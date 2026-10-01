@@ -3,7 +3,8 @@
 //! Twelve months of day faces under `day/2004MM/`, and one set each for the
 //! night and the water mask, six faces apiece in cube layer order. A file that
 //! is missing, or is a Git LFS pointer standing in for one, resolves to `None`
-//! and leaves its place in the set, the way the flat maps behave.
+//! and leaves its place in the set, the way the Moon's and the Milky Way's
+//! paths behave.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -69,7 +70,8 @@ fn resolve_set(dir: &Path) -> FaceSet {
 /// Whether `path` is a file that holds something other than a Git LFS pointer.
 ///
 /// Size cannot tell them apart here, since a lossless mask face can be smaller
-/// than the threshold that separates the flat maps from a pointer.
+/// than the threshold that separates the Moon and the Milky Way from a
+/// pointer.
 fn is_asset(path: &Path) -> bool {
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;

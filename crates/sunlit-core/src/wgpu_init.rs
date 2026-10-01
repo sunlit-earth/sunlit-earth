@@ -131,6 +131,7 @@ pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
         label: Some("sunlit-earth"),
         required_features: features,
         required_limits,
+        memory_hints: memory_hints(info.device_type),
         ..Default::default()
     }))
     .map_err(|e| format!("the graphics adapter \"{adapter_info}\" refused a device: {e}"))?;
@@ -197,6 +198,21 @@ pub(crate) fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
     // ("vulkan", "metal", "dx12", "gl"), while `Debug` carries no stability
     // guarantee at all, and a directory name is a thing this repository commits.
     backend.to_str().to_owned()
+}
+
+/// How the backend's allocator takes device memory on `device_type`.
+///
+/// On a CPU adapter device memory is the process's own committed memory, and
+/// wgpu's default has the D3D12 allocator take it in blocks of 128 to 256 MiB,
+/// so one texture can commit a quarter of a GiB at once. The smaller blocks of
+/// `MemoryUsage` cost WARP no frame time that could be measured and take 28 to
+/// 248 MiB less (research section 27). A GPU keeps the default.
+fn memory_hints(device_type: wgpu::DeviceType) -> wgpu::MemoryHints {
+    if device_type == wgpu::DeviceType::Cpu {
+        wgpu::MemoryHints::MemoryUsage
+    } else {
+        wgpu::MemoryHints::Performance
+    }
 }
 
 /// Rank a GPU device type for adapter selection priority.
@@ -347,6 +363,18 @@ mod tests {
             adapter_type_rank(wgpu::DeviceType::DiscreteGpu)
                 < adapter_type_rank(wgpu::DeviceType::Cpu)
         );
+    }
+
+    #[test]
+    fn only_a_cpu_adapter_trades_allocation_speed_for_memory() {
+        use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu, Other, VirtualGpu};
+        assert!(matches!(memory_hints(Cpu), wgpu::MemoryHints::MemoryUsage));
+        for gpu in [DiscreteGpu, IntegratedGpu, VirtualGpu, Other] {
+            assert!(
+                matches!(memory_hints(gpu), wgpu::MemoryHints::Performance),
+                "{gpu:?}"
+            );
+        }
     }
 
     #[test]

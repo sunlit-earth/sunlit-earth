@@ -40,16 +40,6 @@ impl TextureMode {
             _ => Self::Grid,
         }
     }
-
-    /// The combo box's own name for this mode, for the loading indicator.
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Grid => TEXTURE_LABELS[0],
-            Self::Day => TEXTURE_LABELS[1],
-            Self::Night => TEXTURE_LABELS[2],
-            Self::Blend => TEXTURE_LABELS[3],
-        }
-    }
 }
 
 /// Where each texture sits in `texture_slots`.
@@ -140,15 +130,6 @@ mod tests {
                 TextureMode::Grid,
                 "index {index}"
             );
-        }
-    }
-
-    #[test]
-    fn every_mode_has_a_label() {
-        for (index, mode) in MODES {
-            #[expect(clippy::cast_sign_loss, reason = "the table's own indices")]
-            let expected = TEXTURE_LABELS[index as usize];
-            assert_eq!(mode.label(), expected, "index {index}");
         }
     }
 

@@ -337,10 +337,10 @@ impl Renderer {
         self.texture_slots[slot].bind_group.as_ref()
     }
 
-    /// The loading indicator text for the current texture selection, empty when
-    /// nothing is loading.
-    pub(crate) fn loading_text(&self, texture_index: i32) -> String {
-        texture_routing::loading_text(self, TextureMode::from_index(texture_index))
+    /// Whether a cube the current mode needs is on its way, the day side's and
+    /// the night side's.
+    pub(crate) fn cubes_waiting(&self, texture_index: i32) -> (bool, bool) {
+        texture_routing::cubes_waiting(self, TextureMode::from_index(texture_index))
     }
 
     /// Whether every texture the current mode needs is resident: its cubes,

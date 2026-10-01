@@ -9,6 +9,7 @@
 pub mod clock;
 mod cloud_worker;
 mod handle;
+mod loading;
 mod protocol;
 mod publish;
 mod schedule;
@@ -23,6 +24,7 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use tracing::{debug, info, warn};
 
 use crate::assets::mailbox::TextureMailbox;
+use crate::assets::tiles::TranscoderConfig;
 use crate::config::QualityTier;
 use crate::params::SceneParams;
 use crate::renderer::residency::{Output, surfaces_for};
@@ -36,6 +38,7 @@ use clock::Clock;
 use cloud_worker::{CloudWorker, spawn_cloud_worker};
 use handle::AdapterReport;
 pub use handle::{EngineConfig, EngineHandle, start};
+pub use loading::TILES_NAMED_AFTER;
 pub use protocol::{EngineCommand, EngineEvent};
 use schedule::Schedule;
 use surface::SurfaceFeed;
@@ -209,6 +212,7 @@ impl Engine {
             tile_geometry,
             tile_layers,
             tile_gate,
+            build_gate,
             every_floor,
         } = config;
 
@@ -239,10 +243,12 @@ impl Engine {
             cpu_adapter,
         );
         let mut surface = start_surface(
-            cube_textures,
-            tile_geometry,
             cache_dir.as_ref(),
-            month,
+            TranscoderConfig {
+                geometry: tile_geometry,
+                gate: build_gate,
+                ..TranscoderConfig::new(std::path::PathBuf::new(), cube_textures, month)
+            },
             now,
             &notify,
             &LoaderConfig {
@@ -622,6 +628,7 @@ impl Engine {
             surface.relax(now);
             surface.end_tick(self.clock.elapsed());
         }
+        self.note_status();
     }
 
     /// Replace the requested MSAA count with one [`resolve_and_warn`] allows,
@@ -714,11 +721,7 @@ impl Engine {
     /// a drag, a month or a resolution switch each reopen it, and clients hear
     /// it again when what they want is there.
     fn note_readiness(&mut self) {
-        let status = self.renderer.loading_text(self.params.texture_index);
-        if status != self.last_status {
-            self.last_status.clone_from(&status);
-            self.emit(EngineEvent::Status(status));
-        }
+        self.note_status();
         let ready = self.textures_ready();
         if ready && !self.textures_ready {
             debug!("textures ready");
@@ -726,6 +729,29 @@ impl Engine {
             self.emit(EngineEvent::TexturesReady);
         }
         self.textures_ready = ready;
+    }
+
+    /// Tell clients what the loading line says now, when it changed: the pack
+    /// the transcoder is preparing, and otherwise the surfaces the frame
+    /// waits for, a cube the mode needs or, once they have been on their way
+    /// for a moment, the tiles in view.
+    ///
+    /// After every draw and at the end of every tick, since the transcoder
+    /// prepares the rest of the year while nothing is drawn.
+    fn note_status(&mut self) {
+        let (mut day, mut night) = self.renderer.cubes_waiting(self.params.texture_index);
+        let mut preparing = None;
+        if let Some(surface) = &mut self.surface {
+            preparing = surface.preparing();
+            let tiles = surface.tiles_waiting(&self.renderer, self.clock.elapsed());
+            day |= tiles.0;
+            night |= tiles.1;
+        }
+        let status = loading::text(preparing, day, night);
+        if status != self.last_status {
+            self.last_status.clone_from(&status);
+            self.emit(EngineEvent::Status(status));
+        }
     }
 
     /// Ask the tile loader for the tiles the preview wants under `sky`, and
@@ -894,15 +920,13 @@ fn tile_output(framed: &SceneParams, width: u32, height: u32, export: bool) -> O
 /// Start feeding the cube surface, when every face is there and there is a
 /// cache directory to build its packs in.
 fn start_surface(
-    textures: crate::assets::cube_layout::CubeTextures,
-    geometry: crate::assets::tiles::Geometry,
     cache_dir: Option<&std::path::PathBuf>,
-    month: usize,
+    mut transcoder: TranscoderConfig,
     now: Duration,
     wake: &crate::assets::cloud_fetcher::NotifyFn,
     tiles: &LoaderConfig,
 ) -> Option<SurfaceFeed> {
-    if !textures.is_complete() {
+    if !transcoder.textures.is_complete() {
         return None;
     }
     let Some(dir) = cache_dir else {
@@ -911,15 +935,8 @@ fn start_surface(
         );
         return None;
     };
-    Some(SurfaceFeed::start(
-        dir.clone(),
-        textures,
-        geometry,
-        month,
-        now,
-        Arc::clone(wake),
-        tiles,
-    ))
+    transcoder.cache_dir.clone_from(dir);
+    Some(SurfaceFeed::start(transcoder, now, Arc::clone(wake), tiles))
 }
 
 /// Open the GPU and tell `start` what was opened, or why nothing was.

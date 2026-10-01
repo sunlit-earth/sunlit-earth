@@ -19,15 +19,15 @@ use std::time::Duration;
 
 use tracing::{debug, error, info, warn};
 
-use crate::assets::cube_layout::CubeTextures;
 use crate::assets::tiles::{
-    Geometry, Pack, PackKind, Phase, TranscodeNotify, Transcoder, TranscoderConfig, pack_path,
+    Pack, PackKind, Phase, TranscodeNotify, Transcoder, TranscoderConfig, pack_path,
 };
 use crate::renderer::residency::{Drag, Output};
 use crate::renderer::tiles::CellLevels;
 use crate::renderer::{Renderer, SurfaceLayer};
 use crate::scene::camera::CameraParams;
 
+use super::loading::{Preparing, TILES_NAMED_AFTER};
 use super::tile_loader::{DragWatch, LoaderConfig, TileLoader, TileReport, View};
 
 /// How long after its last frame the engine counts as busy, which is how long
@@ -73,10 +73,14 @@ pub(super) struct SurfaceFeed {
     /// could newly be read: the month in force changed, or its pack or the
     /// night's was opened.
     renewals: u64,
+    /// Since when, on the injected clock, tiles in view have been on their
+    /// way without a break.
+    tiles_missing_since: Option<Duration>,
 }
 
 impl SurfaceFeed {
-    /// Start the transcoder over `textures`, with `month` in force.
+    /// Start the transcoder `config` describes, its notify callback replaced
+    /// by `wake`.
     ///
     /// The engine is busy until [`BUSY_AFTER_A_FRAME`] after `now`, since its
     /// first frames are on their way.
@@ -86,17 +90,13 @@ impl SurfaceFeed {
     /// return at once and never panic; the engine's is a send on its own
     /// unbounded command channel.
     pub(super) fn start(
-        cache_dir: PathBuf,
-        textures: CubeTextures,
-        geometry: Geometry,
-        month: usize,
+        mut config: TranscoderConfig,
         now: Duration,
         wake: Arc<dyn Fn() + Send + Sync>,
         tiles: &LoaderConfig,
     ) -> Self {
-        let tiles = TileLoader::start(geometry, tiles, Arc::clone(&wake));
-        let mut config = TranscoderConfig::new(cache_dir.clone(), textures, month);
-        config.geometry = geometry;
+        let tiles = TileLoader::start(config.geometry, tiles, Arc::clone(&wake));
+        let (cache_dir, month) = (config.cache_dir.clone(), config.month);
         let notify: TranscodeNotify = Arc::new(move |_| wake());
         config.notify = notify;
         info!(
@@ -122,6 +122,7 @@ impl SurfaceFeed {
             days: std::array::from_fn(|_| None),
             landed: Vec::new(),
             renewals: 0,
+            tiles_missing_since: None,
         }
     }
 
@@ -317,6 +318,30 @@ impl SurfaceFeed {
         self.tiles.report(renderer)
     }
 
+    /// The pack the transcoder is building, while it has one to build.
+    pub(super) fn preparing(&self) -> Option<Preparing> {
+        if self.settled {
+            return None;
+        }
+        Preparing::of(&self.transcoder.status())
+    }
+
+    /// Whether tiles in view of the day surface and of the night's are on
+    /// their way at `now`, once some have been for [`TILES_NAMED_AFTER`]
+    /// without a break.
+    pub(super) fn tiles_waiting(&mut self, renderer: &Renderer, now: Duration) -> (bool, bool) {
+        let (day, night) = self.tiles.missing_by_surface(renderer);
+        if day + night == 0 {
+            self.tiles_missing_since = None;
+            return (false, false);
+        }
+        let since = *self.tiles_missing_since.get_or_insert(now);
+        if now.saturating_sub(since) < TILES_NAMED_AFTER {
+            return (false, false);
+        }
+        (day > 0, night > 0)
+    }
+
     /// Open the pack `kind` that landed for the tile loader, and make its
     /// cube resident if the frame draws it; the floor of another month waits
     /// its turn. Returns whether what the frame draws changed.
@@ -392,6 +417,7 @@ fn layer_of(kind: PackKind) -> SurfaceLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::cube_layout::CubeTextures;
     use crate::assets::tiles::FIXTURE;
     use crate::test_support::{ScratchDir, write_cube_fixture};
 
@@ -402,10 +428,10 @@ mod tests {
         write_cube_fixture(&dir.join("textures"));
         let textures = CubeTextures::resolve(&dir.join("textures"));
         let feed = SurfaceFeed::start(
-            dir.join("cache"),
-            textures,
-            FIXTURE,
-            0,
+            TranscoderConfig {
+                geometry: FIXTURE,
+                ..TranscoderConfig::new(dir.join("cache"), textures, 0)
+            },
             Duration::ZERO,
             Arc::new(|| {}),
             &LoaderConfig {

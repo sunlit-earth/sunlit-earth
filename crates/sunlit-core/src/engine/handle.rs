@@ -88,6 +88,9 @@ pub struct EngineConfig {
     /// Holds the tile loader's reads while shut; open, and never shut, in the
     /// app.
     pub tile_gate: super::TileGate,
+    /// Holds the transcoder at the start of each pack it builds; open, and
+    /// never held, in the app.
+    pub build_gate: crate::assets::tiles::BuildGate,
     /// Whether every month's day floor stays resident. `None` takes the
     /// adapter's way, as the app does: every month on a GPU, and on a CPU
     /// adapter the month in force's and the month ahead's alone, the others
@@ -130,6 +133,7 @@ impl EngineConfig {
             tile_geometry: GEOMETRY,
             tile_layers: None,
             tile_gate: super::TileGate::default(),
+            build_gate: crate::assets::tiles::BuildGate::default(),
             every_floor: None,
         }
     }

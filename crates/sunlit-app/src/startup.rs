@@ -113,6 +113,7 @@ pub(crate) fn engine_config(
         tile_geometry: tiles::GEOMETRY,
         tile_layers: None,
         tile_gate: TileGate::default(),
+        build_gate: tiles::BuildGate::default(),
         every_floor: None,
         preview_size,
         preview_enabled,

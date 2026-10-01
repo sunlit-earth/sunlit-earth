@@ -30,35 +30,23 @@ pub(super) fn resolve_textures(res: &Renderer, mode: TextureMode) -> (ResolvedTe
         })
 }
 
-/// The loading indicator text for the current texture selection.
+/// Whether a cube the frame needs for `mode` is on its way, the day side's
+/// and the night side's.
 ///
 /// The day side counts the mask too in blend mode, the one mode that reads
 /// it. Without a cube surface nothing is on its way.
-pub(super) fn loading_text(res: &Renderer, mode: TextureMode) -> String {
+pub(super) fn cubes_waiting(res: &Renderer, mode: TextureMode) -> (bool, bool) {
     let Some(surface) = &res.surface else {
-        return String::new();
+        return (false, false);
     };
     let waiting = |layer| surface.state(layer) == LayerState::Waiting;
-    let day_loading = waiting(SurfaceLayer::Day(surface.month))
+    let day = waiting(SurfaceLayer::Day(surface.month))
         || (mode == TextureMode::Blend && waiting(SurfaceLayer::Mask));
-    let night_loading = waiting(SurfaceLayer::Night);
-
-    let loading = match mode {
-        TextureMode::Grid => false,
-        TextureMode::Day => day_loading,
-        TextureMode::Night => night_loading,
-        TextureMode::Blend => {
-            return match (day_loading, night_loading) {
-                (true, true) => "Loading Day and Night...".to_owned(),
-                (true, false) => "Loading Day...".to_owned(),
-                (false, true) => "Loading Night...".to_owned(),
-                (false, false) => String::new(),
-            };
-        }
-    };
-    if loading {
-        format!("Loading {}...", mode.label())
-    } else {
-        String::new()
+    let night = waiting(SurfaceLayer::Night);
+    match mode {
+        TextureMode::Grid => (false, false),
+        TextureMode::Day => (day, false),
+        TextureMode::Night => (false, night),
+        TextureMode::Blend => (day, night),
     }
 }

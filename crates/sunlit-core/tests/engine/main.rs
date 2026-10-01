@@ -32,6 +32,7 @@ mod display_plan;
 mod groups;
 mod harness;
 mod lifecycle;
+mod loading;
 mod memory;
 mod months;
 mod moon;

@@ -127,6 +127,70 @@ pub fn default_threads() -> usize {
     cores.saturating_sub(2).clamp(1, 4)
 }
 
+/// Holds the transcoder at the start of each build, with the pack named in
+/// its status, until the gate lets that build through.
+///
+/// Open unless someone holds it, and the app never does: an engine test holds
+/// it to see each pack of a first run named while it builds, which a fixture
+/// pack built in milliseconds would not leave time for. A build that waits
+/// gives way to whatever would cancel it once it runs.
+#[derive(Clone, Default)]
+pub struct BuildGate(Arc<(Mutex<Option<usize>>, Condvar)>);
+
+impl BuildGate {
+    /// Hold every build that has not started.
+    pub fn hold(&self) {
+        *self.lock() = Some(0);
+    }
+
+    /// Let `builds` more builds through a held gate.
+    pub fn allow(&self, builds: usize) {
+        let mut permits = self.lock();
+        if let Some(left) = permits.as_mut() {
+            *left += builds;
+        }
+        drop(permits);
+        self.0.1.notify_all();
+    }
+
+    /// Let every build through.
+    pub fn open(&self) {
+        *self.lock() = None;
+        self.0.1.notify_all();
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Option<usize>> {
+        self.0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Wait until a build may start. Returns `false` when `cancelled` says
+    /// the build is to give way first.
+    fn pass(&self, cancelled: impl Fn() -> bool) -> bool {
+        let mut permits = self.lock();
+        loop {
+            match permits.as_mut() {
+                None => return true,
+                Some(left) if *left > 0 => {
+                    *left -= 1;
+                    return true;
+                }
+                Some(_) if cancelled() => return false,
+                Some(_) => {
+                    permits = self
+                        .0
+                        .1
+                        .wait_timeout(permits, Duration::from_millis(10))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
+                }
+            }
+        }
+    }
+}
+
 /// What a [`Transcoder`] builds from, and where.
 pub struct TranscoderConfig {
     /// The app's cache directory; the packs go under its `tile_cache`.
@@ -138,10 +202,12 @@ pub struct TranscoderConfig {
     /// The size of the pool the packs are built on.
     pub threads: usize,
     pub notify: TranscodeNotify,
+    pub gate: BuildGate,
 }
 
 impl TranscoderConfig {
-    /// The shipped geometry, [`default_threads`] and nobody to notify.
+    /// The shipped geometry, [`default_threads`], nobody to notify and an
+    /// open gate.
     #[must_use]
     pub fn new(cache_dir: PathBuf, textures: CubeTextures, month: usize) -> Self {
         Self {
@@ -151,6 +217,7 @@ impl TranscoderConfig {
             month,
             threads: default_threads(),
             notify: Arc::new(|_| {}),
+            gate: BuildGate::default(),
         }
     }
 }
@@ -540,6 +607,9 @@ impl Worker {
             ..
         } = &self.config;
         let cancel = &self.shared.cancel;
+        if !self.config.gate.pass(|| cancel.load(Ordering::Relaxed)) {
+            return Err(BuildError::Cancelled);
+        }
         let run = || pool.install(|| ensure_pack(cache_dir, kind, textures, geometry, cancel));
         panic::catch_unwind(AssertUnwindSafe(run)).unwrap_or_else(|payload| {
             Err(BuildError::Failed(format!(
@@ -1109,6 +1179,55 @@ mod tests {
                 assert_eq!(pack.key(), key, "{name}");
             }
         }
+    }
+
+    /// A held gate keeps each build named in the status and unstarted until
+    /// it lets that build through, and a drop at a held gate ends the worker.
+    #[test]
+    fn a_held_build_gate_names_each_build_and_lets_through_what_it_is_told() {
+        let setup = Setup::new("build_gate");
+        let gate = BuildGate::default();
+        gate.hold();
+        let probe = Probe::new();
+        let transcoder = Transcoder::start(TranscoderConfig {
+            geometry: FIXTURE,
+            threads: 2,
+            notify: probe.notify(),
+            gate: gate.clone(),
+            ..TranscoderConfig::new(setup.cache(), setup.textures.clone(), 4)
+        });
+        let held = |kind| {
+            let status = transcoder
+                .wait_until(WAIT, |s| s.phase == Phase::Building(kind))
+                .unwrap_or_else(|| panic!("{kind:?} was never named"));
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(transcoder.status(), status, "{kind:?} stays held");
+            assert!(!pack_path(&setup.cache(), kind).exists(), "{kind:?}");
+        };
+        held(Mask);
+        gate.allow(1);
+        held(Day(4));
+        assert_eq!(transcoder.status().ready, [Mask]);
+        gate.allow(2);
+        held(Day(5));
+        assert_eq!(transcoder.status().ready, [Mask, Day(4), Night]);
+
+        let dropped = Instant::now();
+        drop(transcoder);
+        assert!(dropped.elapsed() < Duration::from_secs(5), "{dropped:?}");
+        assert!(!pack_path(&setup.cache(), Day(5)).exists());
+
+        let transcoder = Transcoder::start(TranscoderConfig {
+            geometry: FIXTURE,
+            threads: 2,
+            gate: gate.clone(),
+            ..TranscoderConfig::new(setup.cache(), setup.textures.clone(), 4)
+        });
+        gate.open();
+        let done = transcoder
+            .wait_until(WAIT, TranscodeStatus::is_settled)
+            .expect("an open gate lets the rest through");
+        assert_eq!((done.phase, done.ready.len()), (Phase::Done, PACKS));
     }
 
     #[test]

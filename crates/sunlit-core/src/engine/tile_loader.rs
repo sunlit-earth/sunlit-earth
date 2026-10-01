@@ -682,6 +682,13 @@ impl TileLoader {
     /// How many tiles of the set in force the frame needs in view that are
     /// neither resident nor failed: tiles on their way, or about to be.
     fn missing(&self, target: &impl TileTarget) -> usize {
+        let (day, night) = self.missing_by_surface(target);
+        day + night
+    }
+
+    /// The tiles the set in force took in view that are neither resident nor
+    /// failed, the day surface's and the night's.
+    pub(super) fn missing_by_surface(&self, target: &impl TileTarget) -> (usize, usize) {
         let layers = target.layers();
         self.taken[..self.in_view]
             .iter()
@@ -689,7 +696,10 @@ impl TileLoader {
                 !self.failed.contains(id)
                     && layers.is_none_or(|layers| layers.layer_of(**id).is_none())
             })
-            .count()
+            .fold((0, 0), |(day, night), id| match id.pack {
+                PackKind::Night => (day, night + 1),
+                _ => (day + 1, night),
+            })
     }
 
     /// How many tiles `output` alone needs in view that the set in force took

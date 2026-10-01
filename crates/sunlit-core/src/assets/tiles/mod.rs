@@ -36,8 +36,8 @@ pub use codec::{
 };
 pub use pack::{Entry, Pack, PackError, TileKey};
 pub use transcoder::{
-    PACKS, PackFailure, Phase, TranscodeNotify, TranscodeStatus, Transcoder, TranscoderConfig,
-    default_threads,
+    BuildGate, PACKS, PackFailure, Phase, TranscodeNotify, TranscodeStatus, Transcoder,
+    TranscoderConfig, default_threads,
 };
 
 use super::cube_layout::{MONTHS, YEAR};

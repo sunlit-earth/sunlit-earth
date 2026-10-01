@@ -105,7 +105,7 @@ impl SlotLayout {
 /// wherever the layout puts it.
 ///
 /// The allocator report the memory report is built from names allocations by
-/// their GPU label, so a row that reads `day_texture` is worth more than one
+/// their GPU label, so a row that reads `moon_texture` is worth more than one
 /// that reads `texture_slot_1`.
 pub(super) const SLOT_LABELS: [&str; 3] = ["grid_texture", "moon_texture", "milky_way_texture"];
 

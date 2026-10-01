@@ -52,8 +52,8 @@ uniform_block! {
     mvp: [f32; 16] as mat4x4,
     sun_dir: [f32; 3] as vec3,
     terminator_width: f32 as f32,
-    /// Bit 0 is diffuse shading; bit 1 says the globe's surface is read from
-    /// the cubes through the warped direction.
+    /// Bit 0 is diffuse shading; bit 2 says the cube drawn alone is the night
+    /// floor.
     flags: u32 as u32,
     diffuse_floor: f32 as f32,
     diffuse_ramp: f32 as f32,

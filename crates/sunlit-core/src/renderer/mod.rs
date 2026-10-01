@@ -187,8 +187,8 @@ impl Renderer {
     /// Returns whether anything changed. When it did, the textures in memory
     /// are freed before the reload is spawned, so going down lowers the
     /// process's footprint rather than adding to it; the caller is expected to
-    /// mark itself dirty, and to purge the tiles the new width no longer
-    /// allows, which are the engine's to decide.
+    /// mark itself dirty, and to purge the tiles, which every switch
+    /// empties and which are the engine's to decide.
     ///
     /// Any width is accepted and acts as a cap. Which widths a user may choose
     /// between is a question for the config and the combo box, not for the

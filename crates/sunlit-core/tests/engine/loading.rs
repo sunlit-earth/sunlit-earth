@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::tiles::{self, BuildGate};
 use sunlit_core::engine::clock::MockClock;
-use sunlit_core::engine::{EngineEvent, TILES_NAMED_AFTER, TileGate};
+use sunlit_core::engine::{EngineCommand, EngineEvent, TILES_NAMED_AFTER, TileGate};
 use sunlit_core::params::SceneParams;
 
 use crate::harness::{Harness, TIMEOUT, gpu, test_params};
@@ -164,27 +164,64 @@ fn a_warm_start_prepares_nothing_and_names_the_tiles_after_a_moment() {
         "a floor on its way is named, the tiles not yet: {early:?}"
     );
 
+    named_after_a_moment(&harness, &clock);
+    reads.open();
+    landed(&harness);
+
+    // The moment counts again from the next tiles on their way, not from the
+    // first ones.
+    reads.shut();
+    let before_the_move = tile_report(&harness).reads;
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(day_over(
+            110.0, 30.0, 0.55,
+        ))));
+    let deadline = Instant::now() + TIMEOUT;
+    while missing(&tile_report(&harness)) == 0 {
+        assert!(Instant::now() < deadline, "the move wanted no new tile");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(tile_report(&harness).reads, before_the_move);
+    named_after_a_moment(&harness, &clock);
+    reads.open();
+    landed(&harness);
+}
+
+/// The tiles of `report`'s set in view that are neither resident nor failed.
+fn missing(report: &sunlit_core::engine::TileReport) -> usize {
+    report.wanted[..report.in_view]
+        .iter()
+        .filter(|id| !report.resident.contains(id) && !report.failed.contains(id))
+        .count()
+}
+
+/// Tiles in view are on their way with the reads shut: the line says
+/// nothing a millisecond short of `TILES_NAMED_AFTER` on the mock clock, and
+/// names the day once the moment has passed.
+fn named_after_a_moment(harness: &Harness, clock: &MockClock) {
     harness.advance(
-        &clock,
+        clock,
         TILES_NAMED_AFTER.saturating_sub(Duration::from_millis(1)),
     );
-    let short = statuses_so_far(&harness);
+    let short = statuses_so_far(harness);
     assert!(
         short.is_empty(),
         "named before the moment ran out: {short:?}"
     );
-    harness.advance(&clock, Duration::from_millis(1));
-    let waiting = statuses_until(&harness, "Loading Day...");
+    harness.advance(clock, Duration::from_millis(1));
+    let waiting = statuses_until(harness, "Loading Day...");
     assert!(before(&waiting).is_empty(), "{waiting:?}");
+}
 
-    reads.open();
-    let landed = statuses_until(&harness, "");
-    assert!(before(&landed).is_empty(), "{landed:?}");
-    let report = tile_report(&harness);
-    assert!(
-        report.wanted[..report.in_view]
-            .iter()
-            .all(|id| report.resident.contains(id) || report.failed.contains(id)),
+/// With the reads open, the line goes blank once every tile in view is there.
+fn landed(harness: &Harness) {
+    let seen = statuses_until(harness, "");
+    assert!(before(&seen).is_empty(), "{seen:?}");
+    let report = tile_report(harness);
+    assert_eq!(
+        missing(&report),
+        0,
         "the line went blank before the tiles were there: {report:#?}"
     );
 }

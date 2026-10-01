@@ -344,6 +344,23 @@ fn the_other_floors_wait_for_the_engine_to_be_idle() {
     assert_eq!(floors_installed(&harness), 12, "a floor was made twice");
 }
 
+/// A floor made resident while the engine is idle is uploaded then, and not
+/// held as a staging buffer until a frame that may be minutes away.
+#[test]
+fn a_floor_made_resident_while_idle_is_uploaded_at_once() {
+    let _gpu = gpu();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (_dir, harness) = fixture_floors("engine_months_upload", Some(true), june_10(), &clock);
+    let buffers = |harness: &Harness| harness.engine.memory_report().expect("a report").counters;
+    let before = buffers(&harness).buffer_bytes;
+    wait_for_every_floor(&harness, Some(&clock));
+    let after = buffers(&harness).buffer_bytes;
+    assert!(
+        after <= before + 1024 * 1024,
+        "{before} bytes of buffers before the other floors were made resident, {after} after"
+    );
+}
+
 /// Without a setting, the engine keeps every floor on a GPU and the month in
 /// force's alone on a CPU adapter, which the harness's software adapter is.
 #[test]

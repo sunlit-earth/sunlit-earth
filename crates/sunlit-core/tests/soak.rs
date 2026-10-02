@@ -49,7 +49,7 @@ const STEP: Duration = Duration::from_hours(1);
 ///
 /// What the assertion needs is enough cloud updates behind it for a per-update
 /// leak to be unmissable, and 56 of them at one decoded frame each would be
-/// 450 MiB against `GROWTH_LIMIT`'s 8.
+/// 450 MiB against `TOTAL_GROWTH_LIMIT`'s 32.
 const STEPS: u64 = 7 * 24;
 /// The upstream cloud service publishes every three hours.
 const STEPS_PER_CLOUD_UPDATE: u64 = 3;
@@ -69,12 +69,23 @@ const EXPORT_SIZE: (u32, u32) = (160, 96);
 /// How long to wait for the engine to catch up with one simulated step.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Growth allowed after warm-up: one decoded 2048x1024 frame.
+/// Growth allowed from the floor after warm-up to the floor at the end: four
+/// decoded 2048x1024 frames.
 ///
-/// Sized with `STEPS` and `FLOOR_WINDOW` so the sensitivity per update is
-/// fixed: at least 35 publications lie between the last step of the baseline
-/// window and the first step of the end window, against 8 MiB.
-const GROWTH_LIMIT: u64 = 8 * 1024 * 1024;
+/// A cap and not the test: lavapipe's allocator and device memory rise in
+/// one-off steps of 8 to 12 MiB that land anywhere in the week, and 13.5 MiB
+/// has been measured. A leak of one frame per simulated day adds about 42 MiB
+/// over these windows and one frame per publication adds hundreds.
+const TOTAL_GROWTH_LIMIT: u64 = 32 * 1024 * 1024;
+/// Growth between two consecutive floors that counts as a rise.
+///
+/// A one-off step is a single rise followed by a plateau; a leak is a rise
+/// between every pair of floors. A quarter of a decoded frame, far above the
+/// jitter of the floors (under 2 MiB on Windows, under 0.5 on macOS), and a
+/// leak of one frame per simulated day rises by about 7 MiB per floor.
+const RISE: u64 = 2 * 1024 * 1024;
+/// Consecutive rises, ending at the last floor, that fail the test.
+const STEADY_RISES: usize = 3;
 /// Steps each memory floor is the minimum over.
 ///
 /// One reading is not a level. On `macos-latest` the footprint sits flat and
@@ -203,6 +214,58 @@ fn wait_until(what: &str, condition: impl Fn() -> bool) {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Judges the floors of the windows after warm-up, oldest first.
+///
+/// What it must tell apart is a one-off step, which an allocator or a software
+/// adapter's device memory makes anywhere in the week and then holds flat, from
+/// a leak, which keeps rising: a step is at most one rise, and a leak rises
+/// across every one of the last `STEADY_RISES` pairs of floors. The total is
+/// capped as well, for a leak too slow to rise by `RISE` per window.
+fn check_growth(floors: &[u64]) -> Result<(), String> {
+    let growth = floors[floors.len() - 1].saturating_sub(floors[0]);
+    if growth >= TOTAL_GROWTH_LIMIT {
+        return Err(format!(
+            "private bytes grew by {:.1} MiB (limit {:.0} MiB, four decoded frames)",
+            mib(growth),
+            mib(TOTAL_GROWTH_LIMIT)
+        ));
+    }
+    let tail = &floors[floors.len() - 1 - STEADY_RISES..];
+    if tail.windows(2).all(|pair| pair[1] > pair[0] + RISE) {
+        return Err(format!(
+            "private bytes rose by more than {:.0} MiB across each of the last {STEADY_RISES} \
+             floors ({:.1} to {:.1} MiB)",
+            mib(RISE),
+            mib(tail[0]),
+            mib(tail[STEADY_RISES])
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn steps_that_plateau_are_not_growth() {
+    const TENTH: u64 = 1024 * 1024 / 10;
+    let lavapipe_ci = [2349, 2287, 2367, 2368, 2485, 2485, 2485];
+    let metal_ci = [563, 567, 567, 567, 567, 567, 567];
+    let warp_ci = [3368, 3353, 3382, 3371, 3373, 3348, 3350];
+    for trace in [lavapipe_ci, metal_ci, warp_ci] {
+        let floors: Vec<u64> = trace.iter().map(|tenths| tenths * TENTH).collect();
+        assert_eq!(check_growth(&floors), Ok(()), "{trace:?}");
+    }
+}
+
+#[test]
+fn a_frame_parked_per_simulated_day_is_growth() {
+    const MIB: u64 = 1024 * 1024;
+    let per_window = 8 * MIB * FLOOR_WINDOW / 24;
+    let floors: Vec<u64> = (0..7).map(|i| 56 * MIB + i * per_window).collect();
+    assert!(check_growth(&floors).is_err(), "{floors:?}");
+    let per_publication = 8 * MIB * FLOOR_WINDOW / STEPS_PER_CLOUD_UPDATE;
+    let floors: Vec<u64> = (0..7).map(|i| 56 * MIB + i * per_publication).collect();
+    assert!(check_growth(&floors).is_err(), "{floors:?}");
 }
 
 #[test]
@@ -385,26 +448,27 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
             .into_iter()
             .min()
     };
-    let baseline = floor(WARMUP_STEPS);
-    let end = floor(STEPS - FLOOR_WINDOW);
+    let floors: Option<Vec<u64>> = (WARMUP_STEPS..STEPS).step_by(window).map(floor).collect();
 
-    let (startup, baseline, end) = match (startup, baseline, end) {
-        (Some(startup), Some(baseline), Some(end)) => (startup, baseline, end),
-        // Three independent reads feed this. On a platform `memory::snapshot`
+    let (startup, floors) = match (startup, floors) {
+        (Some(startup), Some(floors)) => (startup, floors),
+        // Independent reads feed this. On a platform `memory::snapshot`
         // implements, a missing sample is a broken counter and not a reason to
         // stop testing: it fails here, the way the software-adapter test fails
         // when the adapter it queried for should have been there.
-        (startup, baseline, end) => {
+        (startup, floors) => {
             assert!(
                 !memory_counters_supported(),
                 "memory counters are implemented on this platform but a sample was \
-                 missing (startup {startup:?}, baseline {baseline:?}, end {end:?}); \
+                 missing (startup {startup:?}, floors {floors:?}); \
                  the growth assertion must not be skipped here"
             );
             eprintln!("no memory counters on this platform, skipping the growth assertion");
             return;
         }
     };
+    let baseline = floors[0];
+    let end = floors[floors.len() - 1];
     let warmup = baseline.saturating_sub(startup);
     let growth = end.saturating_sub(baseline);
     let soaked_days = (STEPS - WARMUP_STEPS) / 24;
@@ -418,13 +482,9 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
         mib(growth),
     );
 
-    assert!(
-        growth < GROWTH_LIMIT,
-        "private bytes grew by {:.1} MiB over the {soaked_days} simulated days after \
-         warm-up (limit {:.0} MiB, two decoded frames)",
-        mib(growth),
-        mib(GROWTH_LIMIT)
-    );
+    if let Err(verdict) = check_growth(&floors) {
+        panic!("{verdict} over the {soaked_days} simulated days after warm-up");
+    }
 
     // Warm-up is a one-off, but a gross regression in it should not slip
     // through.

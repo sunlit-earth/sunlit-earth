@@ -1514,3 +1514,31 @@ fn test_the_monospace_family_resolves_on_this_platform() {
          a resolved monospace family from an unresolved one"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The loading line
+// ---------------------------------------------------------------------------
+
+/// The line over the preview shows what the engine last said is loading, and
+/// is gone from the tree while it says nothing.
+#[test]
+fn test_the_loading_line_shows_the_engines_status_and_only_while_there_is_one() {
+    let window = create_window();
+    let line = |window: &MainWindow| -> Vec<String> {
+        ElementHandle::find_by_element_id(window, "MainWindow::loading-label")
+            .filter_map(|label| label.accessible_label())
+            .map(|text| text.to_string())
+            .collect()
+    };
+    assert!(line(&window).is_empty(), "nothing is said at first");
+
+    for status in ["Preparing March, 4 of 12", "Loading Day and Night...", ""] {
+        window.set_loading_text(status.into());
+        let shown = line(&window);
+        if status.is_empty() {
+            assert!(shown.is_empty(), "{shown:?}");
+        } else {
+            assert_eq!(shown, [status]);
+        }
+    }
+}

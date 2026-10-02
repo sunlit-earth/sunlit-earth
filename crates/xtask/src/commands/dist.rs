@@ -1566,7 +1566,7 @@ fn plan_cache(
 /// was made from.
 ///
 /// Temp-then-rename under a name carrying the process id, the discipline
-/// `assets::texture_cache` already uses, so an interrupted pull cannot leave a
+/// the core's `files::unfinished` already uses, so an interrupted pull cannot leave a
 /// truncated archive for the next build to read. The sidecar goes last and its
 /// old copy goes first, so an interruption anywhere leaves an archive with no
 /// sidecar, which the next run reads as no cache at all.

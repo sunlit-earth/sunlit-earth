@@ -88,6 +88,10 @@ pub(crate) struct WgpuContext {
     /// Every requested count is resolved against this list before it can reach
     /// a render target; see `renderer::resolve_sample_count`.
     pub supported_sample_counts: Vec<u32>,
+    /// What kind of adapter it is. A CPU adapter gets its surfaces decoded to
+    /// plain texels and sampled without anisotropy; `docs/rendering.md` says
+    /// why.
+    pub device_type: wgpu::DeviceType,
 }
 
 /// Initialize wgpu manually: create instance, select adapter, request device.
@@ -111,20 +115,23 @@ pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
     let adapter_key = adapter_key(&info.name, info.backend);
     info!(adapter = %adapter_info, key = %adapter_key, "selected GPU adapter");
 
-    // Try to request adapter-specific format features for broader MSAA support.
-    // Fall back to no extra features if unsupported.
-    let desired_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
-    let features = if adapter.features().contains(desired_features) {
-        desired_features
-    } else {
-        wgpu::Features::empty()
-    };
+    // Adapter-specific format features for broader MSAA support, and block
+    // compression for the surfaces, each where the adapter has it.
+    let desired_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        | wgpu::Features::TEXTURE_COMPRESSION_BC;
+    let features = adapter.features() & desired_features;
 
+    // The resolution limits, and as many layers as the adapter has for the
+    // surface's tile array.
+    let required_limits = wgpu::Limits {
+        max_texture_array_layers: adapter.limits().max_texture_array_layers,
+        ..wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
+    };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("sunlit-earth"),
         required_features: features,
-        required_limits:
-            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+        required_limits,
+        memory_hints: memory_hints(info.device_type),
         ..Default::default()
     }))
     .map_err(|e| format!("the graphics adapter \"{adapter_info}\" refused a device: {e}"))?;
@@ -140,6 +147,7 @@ pub(crate) fn init(force_software: bool) -> Result<WgpuContext, String> {
         adapter_info,
         adapter_key,
         supported_sample_counts,
+        device_type: info.device_type,
     })
 }
 
@@ -190,6 +198,21 @@ pub(crate) fn adapter_key(name: &str, backend: wgpu::Backend) -> String {
     // ("vulkan", "metal", "dx12", "gl"), while `Debug` carries no stability
     // guarantee at all, and a directory name is a thing this repository commits.
     backend.to_str().to_owned()
+}
+
+/// How the backend's allocator takes device memory on `device_type`.
+///
+/// On a CPU adapter device memory is the process's own committed memory, and
+/// wgpu's default has the D3D12 allocator take it in blocks of 128 to 256 MiB,
+/// so one texture can commit a quarter of a GiB at once. The smaller blocks of
+/// `MemoryUsage` cost WARP no frame time that could be measured and take 28 to
+/// 248 MiB less (research section 27). A GPU keeps the default.
+fn memory_hints(device_type: wgpu::DeviceType) -> wgpu::MemoryHints {
+    if device_type == wgpu::DeviceType::Cpu {
+        wgpu::MemoryHints::MemoryUsage
+    } else {
+        wgpu::MemoryHints::Performance
+    }
 }
 
 /// Rank a GPU device type for adapter selection priority.
@@ -340,6 +363,18 @@ mod tests {
             adapter_type_rank(wgpu::DeviceType::DiscreteGpu)
                 < adapter_type_rank(wgpu::DeviceType::Cpu)
         );
+    }
+
+    #[test]
+    fn only_a_cpu_adapter_trades_allocation_speed_for_memory() {
+        use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu, Other, VirtualGpu};
+        assert!(matches!(memory_hints(Cpu), wgpu::MemoryHints::MemoryUsage));
+        for gpu in [DiscreteGpu, IntegratedGpu, VirtualGpu, Other] {
+            assert!(
+                matches!(memory_hints(gpu), wgpu::MemoryHints::Performance),
+                "{gpu:?}"
+            );
+        }
     }
 
     #[test]

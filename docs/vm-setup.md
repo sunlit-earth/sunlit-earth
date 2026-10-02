@@ -63,7 +63,7 @@ What goes into a guest is the app, the test harness, the fixtures, and the `text
 | Hypervisor | Hyper-V | QEMU | none |
 | Guest OS | Windows 11 Enterprise evaluation | Debian 13, four desktops, sway and i3 | whatever you are on |
 | Host it runs from | Windows, or Linux with the `windows-builder` image | Windows or Linux | any |
-| Cases | all 11 | 16 of 17 (the 17th is Windows only), those a session's tray or desktop cannot exercise skipping and saying why: on 2026-09-23 all 16 passed in each of the eight sessions, and in sway with the owned `swaybg` forced; GNOME with the portal forced passed 15, its layout-change republish refused while the permission dialog was still unanswered; Cinnamon passed 15 on an earlier boot whose shell had crashed, before the desktop-window probe learned to read the root's children | 10 of 11 |
+| Cases | all 18 on Windows, 17 elsewhere (the session-end case is Windows only), minus the wallpaper cases, which stay opt-in | 15 of 18 (the setter-line, layout-change and plasmashell cases need Linux, `xrandr` or Plasma) | 17 (the 18th is Windows only), those a session's tray or desktop cannot exercise skipping and saying why: on 2026-09-23, with 16 cases then, all passed in each of the eight sessions, and in sway with the owned `swaybg` forced; GNOME with the portal forced passed 15, its layout-change republish refused while the permission dialog was still unanswered; Cinnamon passed 15 on an earlier boot whose shell had crashed, before the desktop-window probe learned to read the root's children | 10 of 11 |
 | GPU | WARP | lavapipe | the real one |
 
 Nothing is ever cross-compiled: a guest's binaries are built on the operating system they are for. Three arrangements cover the matrix, and `artifacts::builder_for` is the one place that says which is which.
@@ -161,6 +161,8 @@ Only the first screen is the console that `screendump` takes with no arguments. 
 
 `cargo xtask vm up <target>` boots a guest and copies the current binaries in without running anything. `cargo xtask vm view <target>` opens its desktop, and `cargo xtask vm ssh <target>` opens a shell in it. To look at the aftermath of a test run instead, use `cargo xtask e2e --target <target> --keep` and then the same two commands.
 
+The suite has no case filter. To run one case, boot the guest with `vm up linux` and run the staged harness over `vm ssh` with the job's environment: source `/var/lib/sunlit-e2e/session.env` with `set -a`, export `SUNLIT_EARTH_BIN=/var/lib/sunlit-e2e/bin/sunlit-earth`, `SUNLIT_EARTH_E2E_FIXTURES=/var/lib/sunlit-e2e/fixtures` and `SUNLIT_EARTH_TEXTURES=/var/lib/sunlit-e2e/textures`, then run `/var/lib/sunlit-e2e/bin/e2e-<hash> --ignored --test-threads=1 --nocapture <case name>`. The harness file's name is the one `ls /var/lib/sunlit-e2e/bin` shows. The same works for a baseline from another commit: `vm up` from a worktree of that commit stages that commit's binaries.
+
 `vm down` is the stop, and an idle guest is worth stopping: it holds 4 GiB of this machine's memory while a Linux guest is up and 6 GiB while a Windows one is. What there is no way to do is save or pause a guest, and nothing in one is worth saving, so ending it and discarding it are the same act: the teardown frees the memory and the overlay, leaves the golden image untouched, and the next `vm up` boots something pristine. Nothing ever runs in the background unasked: a VM exists only during a run, after `--keep`, or after `vm up`.
 
 A builder guest is the one exception, because what is in one is worth keeping: a cargo build directory and a crate registry.
@@ -226,7 +228,7 @@ directory, no host `~/.cargo`, no host environment. That is the whole point of t
 existing beside `cargo build --release`, which builds whatever this machine's toolchain,
 LLVM, Visual Studio and `RUSTFLAGS` make of the tree and records none of it.
 
-A run of one target is four to six minutes plus two boots, measured on this host: a cold
+A run of one target is six to ten minutes plus two boots (6m30s for Linux and 9m50s for Windows on 2026-10-01, the verification render's first tile pack build included), measured on this host: a cold
 release build with fat LTO takes about five minutes on the virtual cores a builder
 gets, and a warm one, which is the ordinary case once the build cache below exists, takes
 three to four. `--target all` does both in sequence, one VM at a time, and prints a line
@@ -311,15 +313,14 @@ full text of every license in the dependency tree.
 |---|---|
 | `sunlit-earth` / `sunlit-earth.exe` | 0755 in the tarball, so nobody has to `chmod +x` |
 | `README.txt` | how to start the app on that platform and where the project lives, from `assets/readme/<platform>.txt` |
-| `textures/` | the four JXL assets. Without them the app draws the procedural grid |
+| `textures/` | the Moon, the Milky Way and the 84 cube faces (day by month, night, mask). Without them the app draws the procedural grid |
 | `LICENSE` | the GPL 3.0 text the workspace declares |
 | `THIRD-PARTY-LICENSES.md` | the license of every crate in the binary and the full text of each of those licenses, from the canonical SPDX texts in `assets/licenses/`. The About window's third tab links each identifier to spdx.org, which is no use to somebody reading an unpacked archive offline, so this file is what carries the texts |
 | `assets/` | Linux only: the desktop entry, the hicolor icons, the SVG master and `install-user.sh`, which exists exactly for someone holding a binary and no package. Windows needs no equivalent, because the icon is a resource inside the exe |
 
 The zip stores the JXL entries and deflates the rest: they are compressed images already,
-and deflating them would spend time to make the archive very slightly larger. Measured, the
-Windows bundle is 25.4 MiB with the exe going from 29.2 to 12.5 MB, and the Linux one 27.5
-MiB.
+and deflating them would spend time to make the archive very slightly larger. Measured on the cube texture set, the
+Windows bundle is 31.3 MiB and the Linux x86_64 one 33.5 MiB (the release workflow dry run of 2026-10-01).
 
 Where the host's `textures/**` is still Git LFS pointers there is nothing to put in a
 bundle, so none is written: the run says so in one line, verifies the loose binary the way

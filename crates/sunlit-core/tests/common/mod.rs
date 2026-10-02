@@ -11,6 +11,10 @@ use std::sync::{LazyLock, Mutex, mpsc};
 pub struct GpuContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Whether the adapter is a CPU, which the renderer samples the surface
+    /// on without anisotropy.
+    #[allow(dead_code)]
+    pub cpu_adapter: bool,
 }
 
 /// Whether this platform exposes a software adapter at all.
@@ -75,8 +79,13 @@ pub fn create_gpu_context(force_software: bool) -> GpuContext {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .expect("failed to create wgpu device");
+        let cpu_adapter = adapter.get_info().device_type == wgpu::DeviceType::Cpu;
 
-        GpuContext { device, queue }
+        GpuContext {
+            device,
+            queue,
+            cpu_adapter,
+        }
     })
 }
 

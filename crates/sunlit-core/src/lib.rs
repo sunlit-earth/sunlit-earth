@@ -18,6 +18,7 @@ pub mod renderer;
 pub mod scene;
 #[cfg(test)]
 mod test_support;
+mod thread_priority;
 pub mod wallpaper;
 pub mod wgpu_init;
 

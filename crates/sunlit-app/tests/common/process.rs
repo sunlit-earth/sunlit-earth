@@ -677,6 +677,14 @@ impl StdoutWatcher {
         tail[start + 1..start + stop].to_vec()
     }
 
+    /// Every stdout line collected so far.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        self.lines
+            .lock()
+            .expect("stdout watcher lock poisoned")
+            .clone()
+    }
+
     /// Number of stdout lines collected so far. Used as a cursor so repeated
     /// queries do not match the reply to an earlier request.
     pub(crate) fn line_count(&self) -> usize {

@@ -17,25 +17,44 @@ pub struct DecodedImage {
     pub height: u32,
 }
 
-/// Load and decode an image file into pixels the sphere can sample.
+/// Load and decode an image file into pixels the sphere can sample, at a
+/// width of at most `max_width`.
+///
+/// The source is halved with the box filter until it fits, before
+/// [`orient`], so a source at or under `max_width` is loaded as it is: the
+/// resolution setting is a cap, not a resize.
 ///
 /// The format comes from the file extension, not from the content, because
 /// that is what `ImageReader::open` reads it from. JXL is one of them once the
 /// decoding hook has been registered through [`register_jxl_hook`].
-#[tracing::instrument(skip_all, fields(path = %path.display()))]
-pub fn load(path: &Path) -> Result<DecodedImage, String> {
+#[tracing::instrument(skip_all, fields(path = %path.display(), max_width))]
+pub fn load_capped(path: &Path, max_width: u32) -> Result<DecodedImage, String> {
     let mut img = decode(path)?;
+    for _ in 0..halvings_to(img.width, max_width) {
+        img.pixels = downsample_2x(&img.pixels, img.width, img.height);
+        img.width = (img.width / 2).max(1);
+        img.height = (img.height / 2).max(1);
+    }
     orient(&mut img);
     Ok(img)
 }
 
-/// Decode an image file to RGBA8 exactly as the file stores it.
+/// How many halvings take `width` down to at most `target`.
 ///
-/// This is the half of [`load`] the texture cache needs: a cached downscale is
-/// written in the source's own orientation, so that reading one back through
-/// `load` is correct and a human opening the file sees the map the right way
-/// round.
-pub(crate) fn decode(path: &Path) -> Result<DecodedImage, String> {
+/// Zero when the source is already small enough. A target of zero stops at
+/// one pixel rather than looping.
+fn halvings_to(width: u32, target: u32) -> u32 {
+    let mut steps = 0;
+    let mut w = width;
+    while w > target && w >= 2 {
+        w /= 2;
+        steps += 1;
+    }
+    steps
+}
+
+/// Decode an image file to RGBA8 exactly as the file stores it.
+fn decode(path: &Path) -> Result<DecodedImage, String> {
     let mut reader = image::ImageReader::open(path)
         .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
     reader.no_limits();
@@ -94,14 +113,14 @@ fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 
 /// Box-filter downsample: average each 2x2 block of RGBA pixels.
 ///
-/// Used for both mip generation in the renderer and the on-disk downscales the
-/// texture cache writes, which is why it lives with the pixel handling rather
-/// than with either caller.
+/// Used for both mip generation in the renderer and the halving of
+/// [`load_capped`], which is why it lives with the pixel handling rather than
+/// with either caller.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the mean of four bytes is a byte, and a pixel count indexes a buffer that already holds those pixels"
 )]
-pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
+pub fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
     let dst_w = (src_w / 2).max(1) as usize;
     let dst_h = (src_h / 2).max(1) as usize;
     let sw = src_w as usize;
@@ -125,6 +144,26 @@ pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
     }
 
     dst
+}
+
+/// Where earlier versions kept halved copies of the flat surface maps, under
+/// the app's cache directory.
+const RETIRED_DOWNSCALES: &str = "texture_cache";
+
+/// Remove the halved copies earlier versions wrote under `cache_dir`, which
+/// nothing reads any more.
+///
+/// A directory that is not there is the usual case and says nothing; one that
+/// cannot be removed is left for the next start.
+pub(crate) fn remove_retired_downscales(cache_dir: &Path) {
+    let dir = cache_dir.join(RETIRED_DOWNSCALES);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => tracing::info!(path = %dir.display(), "removed the retired texture downscales"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), error = %e, "could not remove the retired texture downscales");
+        }
+    }
 }
 
 /// Resolve the textures directory using the fallback chain:
@@ -248,6 +287,70 @@ mod tests {
         assert_eq!(pixel_at(&buf, 7), row2[0]);
     }
 
+    /// The setting is a cap, so a source at or under the target is left alone
+    /// and one above it is halved until it fits. A target of zero has no width
+    /// to reach, so the halving stops at one pixel instead of looping.
+    #[test]
+    fn a_source_is_halved_until_it_fits_the_target() {
+        for (source, target, halvings) in [
+            (8192, 8192, 0),
+            (8192, 4096, 1),
+            (8192, 2048, 2),
+            (4096, 2048, 1),
+            (2048, 8192, 0),
+            (1, 8192, 0),
+            (8, 0, 3),
+        ] {
+            assert_eq!(
+                halvings_to(source, target),
+                halvings,
+                "{source} down to {target}"
+            );
+        }
+    }
+
+    /// A capped load is the halved source, oriented as a full-width load is,
+    /// and one under the cap is the full-width load itself.
+    #[test]
+    fn a_capped_load_halves_before_it_orients() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_capped");
+        let path = scratch.join("source.png");
+        let (width, height) = (32_u32, 16_u32);
+        let source = fixture(width, height, 7);
+        image::RgbaImage::from_raw(width, height, source.clone())
+            .expect("buffer fits")
+            .save(&path)
+            .expect("write the source");
+
+        let capped = load_capped(&path, 8).expect("a capped load");
+        let mut expected = DecodedImage {
+            pixels: downsample_2x(
+                &downsample_2x(&source, width, height),
+                width / 2,
+                height / 2,
+            ),
+            width: width / 4,
+            height: height / 4,
+        };
+        orient(&mut expected);
+        assert_eq!((capped.width, capped.height), (8, 4));
+        assert_eq!(capped.pixels, expected.pixels);
+
+        let whole = load_capped(&path, width).expect("an uncapped load");
+        let mut oriented = decode(&path).expect("a decode");
+        orient(&mut oriented);
+        assert_eq!(whole.pixels, oriented.pixels);
+    }
+
+    #[test]
+    fn a_missing_source_is_an_error_rather_than_a_panic() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_missing");
+        let Err(err) = load_capped(&scratch.join("absent.png"), 8) else {
+            panic!("a missing source cannot load");
+        };
+        assert!(err.contains("absent.png"), "{err}");
+    }
+
     // -----------------------------------------------------------------------
     // flip_horizontal
     // -----------------------------------------------------------------------
@@ -355,6 +458,23 @@ mod tests {
             }
             proptest::prop_assert_eq!(buf, original);
         }
+    }
+
+    #[test]
+    fn the_retired_downscales_are_removed_and_their_neighbors_kept() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_retired");
+        let retired = scratch.join(RETIRED_DOWNSCALES);
+        std::fs::create_dir_all(&retired).expect("the retired directory");
+        std::fs::write(retired.join("world.topo.200405.2048.png"), b"a downscale")
+            .expect("a retired file");
+        std::fs::write(scratch.join("clouds.jpg"), b"a neighbor").expect("a neighbor");
+
+        remove_retired_downscales(scratch.path());
+        assert!(!retired.exists());
+        assert!(scratch.join("clouds.jpg").exists());
+
+        remove_retired_downscales(scratch.path());
+        assert!(!retired.exists(), "a second start finds nothing to do");
     }
 
     /// The `.app`'s `Contents/Resources/textures`, which the plain candidate

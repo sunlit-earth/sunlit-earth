@@ -12,7 +12,7 @@ pub enum Target {
     /// everything that needs a real Windows desktop session.
     Windows,
     /// The Debian 13 guest, which carries four desktops and logs into whichever
-    /// one the boot asked for: the windowed-mode subset.
+    /// one the boot asked for: the suite, minus the cases its session cannot exercise.
     Linux,
 }
 

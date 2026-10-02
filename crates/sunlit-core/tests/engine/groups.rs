@@ -4,17 +4,17 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::display::layout::DisplayMode;
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::engine::clock::MockClock;
 use sunlit_core::params::SceneParams;
 
 use crate::clouds_variant::wait_for_cloud_size;
-use crate::harness::{Gpu, Harness, TIMEOUT, test_params};
-use crate::memory::expected_widths;
+use crate::harness::{Gpu, Harness, test_params};
 use crate::sinks::{RecordingSink, two_screens};
 use crate::support;
-use crate::test_support::ScratchDir;
+use crate::test_support::{self, ScratchDir};
 use crate::textures::blend_params;
 
 /// The size the preview quantizes to for every group here, and the size the
@@ -160,12 +160,12 @@ pub(crate) fn watching(_gpu: &Gpu) -> &'static Watching {
     group
 }
 
-/// The engine with the fixture surface behind the day and night slots and a
-/// cloud source behind the overlay.
+/// The engine with the Earth fixture's cube behind the globe and a cloud
+/// source behind the overlay.
 ///
-/// The resolution cases and the cloud cases share it: both want file-backed
-/// slots, neither disturbs the other, and the two together are eleven engine
-/// starts in one.
+/// The resolution cases and the cloud cases share it: both want the surface,
+/// neither disturbs the other, and the two together are a dozen engine starts
+/// in one.
 pub(crate) struct Surface {
     harness: Harness,
     pub(crate) sink: Arc<RecordingSink>,
@@ -179,35 +179,32 @@ impl std::ops::Deref for Surface {
     }
 }
 
-/// The width the fixture surface is written at, and the width the slots hold
-/// when no case has asked for another.
-pub(crate) const SURFACE_WIDTH: u32 = support::SURFACE_FIXTURE_WIDTH;
+/// The resolution setting the surface group runs at when no case has asked
+/// for another: the widest, which allows both tile levels.
+pub(crate) const SURFACE_RESOLUTION: u32 = 8192;
 
 static SURFACE: LazyLock<Surface> = LazyLock::new(|| {
     let dir = FIXTURES.join("surface");
-    let paths = support::write_surface_fixtures(&dir).paths();
+    test_support::write_earth_fixture(&dir.join("textures"));
     let sink = Arc::new(RecordingSink::new(two_screens()));
     let clouds = Arc::new(support::FixtureClouds::bands());
-    let (sink_for_config, clouds_for_config, cache) =
-        (Arc::clone(&sink), Arc::clone(&clouds), dir.clone());
+    let (sink_for_config, clouds_for_config) = (Arc::clone(&sink), Arc::clone(&clouds));
     let harness = Harness::start(move |config| {
-        config.texture_paths = paths;
-        config.texture_resolution = SURFACE_WIDTH;
-        config.cache_dir = Some(cache);
+        config.cube_textures = CubeTextures::resolve(&dir.join("textures"));
+        config.tile_geometry = crate::tiles::EARTH;
+        config.cache_dir = Some(dir.join("cache"));
+        config.texture_resolution = SURFACE_RESOLUTION;
         config.wallpaper = sink_for_config;
         config.cloud = Some(clouds_for_config);
-        // Blend mode, because a file-backed slot is loaded only while the mode
-        // wants it. At `test_params`'s grid the procedural texture alone is
-        // what `TexturesReady` answers for, and both file-backed slots would
-        // still be empty when the first case read them.
+        // Blend mode, the one that wants every cube and both halves of the
+        // page table.
         config.params = blend_params();
         // Short, because the cloud cases swap the served map and the poll is
         // what carries the new one to the slot. Every poll the swap does not
         // follow answers "unchanged" from a string compare.
         config.cloud_poll_interval = Duration::from_millis(50);
     });
-    harness.wait_for_textures("the fixture surface at startup");
-    wait_for_surface_slots(&harness, SURFACE_WIDTH);
+    harness.wait_for_textures("the Earth fixture's cube at startup");
     Surface {
         harness,
         sink,
@@ -217,46 +214,17 @@ static SURFACE: LazyLock<Surface> = LazyLock::new(|| {
 
 pub(crate) fn surface(_gpu: &Gpu) -> &'static Surface {
     let group = &*SURFACE;
-    // Blend mode before the width, and the width before the wait. A slot is
-    // loaded only while the mode wants it, so a case that left a single-texture
-    // mode behind would hand the next one an empty day or night slot, and a
-    // reload at the restored width would fetch only what that mode asked for.
-    group
-        .harness
-        .engine
-        .send(EngineCommand::UpdateParams(Box::new(blend_params())));
+    // Blend mode before the setting, so a reload the restored setting starts
+    // is waited for in the mode the next case begins in.
+    group.harness.settle_at(&blend_params());
     if group.harness.restore_resolution() {
-        group.harness.wait_for_textures("putting the width back");
+        group.harness.wait_for_textures("putting the setting back");
     }
-    wait_for_surface_slots(&group.harness, SURFACE_WIDTH);
     let bands = group.clouds.serve_bands();
     wait_for_cloud_size(&group.harness, bands, "putting the cloud map back");
     group.harness.reset();
     group.sink.reset(two_screens());
     group
-}
-
-/// Block until the day and night slots hold a texture `width` wide.
-///
-/// `TexturesReady` answers for the mode the engine is in, and a case may leave
-/// behind a mode that wants neither file-backed slot, so a group whose cases
-/// read those slots asks about them by name rather than taking readiness for
-/// the answer.
-fn wait_for_surface_slots(harness: &Harness, width: u32) {
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    loop {
-        let report = harness.engine.memory_report().expect("a report");
-        if expected_widths(&report, "day_texture") == [width]
-            && expected_widths(&report, "night_texture") == [width]
-        {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the fixture surface did not reach {width} within {TIMEOUT:?}:\n{report}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// The engine with the Moon and a banded panorama behind their slots.
@@ -282,7 +250,7 @@ static SKY: LazyLock<Sky> = LazyLock::new(|| {
     let cache = dir.clone();
     let harness = Harness::start(move |config| {
         config.preview_size = FRAME;
-        config.texture_paths = vec![None, None, Some(moon), Some(panorama)];
+        config.texture_paths = vec![Some(moon), Some(panorama)];
         config.cache_dir = Some(cache);
         // An overlay's texture is loaded when the overlay is wanted and not
         // before, so the engine has to start with both switched on or neither
@@ -334,7 +302,7 @@ static LANDMARK_SKY: LazyLock<Landmark> = LazyLock::new(|| {
     let cache = dir.clone();
     let harness = Harness::start(move |config| {
         config.preview_size = FRAME;
-        config.texture_paths = vec![None, None, None, Some(path)];
+        config.texture_paths = vec![None, Some(path)];
         config.cache_dir = Some(cache);
         config.params = overlays_wanted();
     });

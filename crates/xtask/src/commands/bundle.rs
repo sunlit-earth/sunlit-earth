@@ -31,7 +31,7 @@ use crate::commands::dist::{
     SMOKE_HEIGHT, SMOKE_WIDTH, TEXTURE_LOOKUP_FLOOR,
 };
 use crate::commands::{bake_icon, bake_licenses};
-use crate::guest::artifacts::{self, TEXTURE_FILES};
+use crate::guest::artifacts;
 use crate::guest::toolchain;
 use crate::provider::target::Target;
 use crate::runner::{Cmd, Runner};
@@ -456,10 +456,10 @@ pub fn app_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String>
             false,
         ),
     ];
-    for name in TEXTURE_FILES {
+    for name in artifacts::bundle_texture_files() {
         items.push(Item::file(
             format!("{resources}/textures/{name}"),
-            sources.textures.join(name),
+            sources.textures.join(&name),
             false,
         ));
     }
@@ -528,10 +528,10 @@ pub fn layout(platform: Platform, sources: &Sources) -> Vec<Item> {
     )];
     items.push(readme(platform, sources));
 
-    for name in TEXTURE_FILES {
+    for name in artifacts::bundle_texture_files() {
         items.push(Item::file(
             format!("textures/{name}"),
-            sources.textures.join(name),
+            sources.textures.join(&name),
             false,
         ));
     }
@@ -908,16 +908,15 @@ const UNVERIFIED: &str = "  nothing has run this bundle: --no-verify skipped the
                           renders from it, so nothing has shown that its textures are found \
                           where it puts them, and its record says so with a null verified_in";
 
-/// Why there is no bundle, when the host holds Git LFS pointers rather than the
-/// assets.
+/// Why there is no bundle, said after the verdict on the textures, which names
+/// what is wrong and, where it is a Git LFS pointer, how to fetch the asset.
 ///
 /// A bundle without the textures would be a bundle that renders a grid under a
 /// name promising a release, which is worse than not writing one.
 pub fn skipped_note() -> String {
-    "no bundle: this checkout holds Git LFS pointers rather than the texture \
-     assets, and a bundle without them would render the procedural grid under a \
-     name that promises a release. `git lfs pull` fetches them; the loose binary \
-     and its record are in the dist directory either way."
+    "a bundle without its textures would render the procedural grid under a \
+     name that promises a release, so there is none; the loose binary and its \
+     record are in the dist directory either way."
         .to_owned()
 }
 
@@ -1012,8 +1011,8 @@ pub fn run(runner: &dyn Runner, options: &Options) -> Result<u8, String> {
     // instead, and this command has nothing else to produce.
     let textures = artifacts::textures_present(&repo).map_err(|why| {
         format!(
-            "{why}\n`git lfs pull` fetches the texture assets; without them a bundle \
-             would render the procedural grid under a name that promises a release."
+            "{why}\nwithout its textures a bundle would render the procedural grid \
+             under a name that promises a release."
         )
     })?;
 
@@ -1486,7 +1485,7 @@ mod tests {
             &format!("{}/{}", bake_icon::BAKED_DIR, bake_icon::ICNS_FILE),
             b"icns",
         );
-        for name in TEXTURE_FILES {
+        for name in artifacts::bundle_texture_files() {
             // Deliberately compressible bytes, so a writer that deflated a JXL
             // rather than storing it would be visible in the size.
             write(&format!("textures/{name}"), &vec![b'j'; 4096]);
@@ -1590,7 +1589,7 @@ mod tests {
             let items = layout(platform, &sources(&repo, &exe, &textures));
             let paths: Vec<&str> = items.iter().map(|i| i.path.as_str()).collect();
             assert!(paths.contains(&exe_name(platform)), "{platform}: {paths:?}");
-            for name in TEXTURE_FILES {
+            for name in artifacts::bundle_texture_files() {
                 assert!(
                     paths.contains(&format!("textures/{name}").as_str()),
                     "{platform}: {paths:?}"
@@ -1788,11 +1787,44 @@ mod tests {
         assert!(err.contains("b/stowaway"), "{err}");
     }
 
+    /// The cube is 84 files, and a bundle one face short renders a grid: it must
+    /// stop at the source and again at the archive.
+    #[test]
+    fn a_bundle_one_cube_face_short_is_refused_at_the_source_and_at_the_archive() {
+        let dir = scratch("one_face_short");
+        let repo = fabricate(&dir);
+        let exe = repo.join("bin").join("sunlit-earth.exe");
+        let textures = repo.join("textures");
+        let face = "day/200407/py.jxl";
+        assert!(
+            artifacts::cube_texture_files()
+                .iter()
+                .any(|name| name == face)
+        );
+        std::fs::remove_file(textures.join(face)).expect("remove a face");
+
+        let items = layout(Platform::Windows, &sources(&repo, &exe, &textures));
+        let name = bundle_name("0.1.0", Platform::Windows, Arch::X86_64);
+        let err = assemble(&dir, &name, &items).unwrap_err();
+        assert!(err.contains("py.jxl"), "{err}");
+
+        std::fs::write(textures.join(face), vec![b'j'; 4096]).expect("restore the face");
+        let root = assemble(&dir, &name, &items).expect("assembled");
+        let archive = dir.join(archive_name("0.1.0", Platform::Windows, Arch::X86_64));
+        write(Format::Zip, &root, &name, &items, &archive).expect("written");
+        let mut read = read_back(Format::Zip, &archive).expect("read back");
+        read.retain(|entry| !entry.path.ends_with(face));
+        let assembled = walk(&root).expect("walk");
+        let err = verify(&name, &assembled, &read).unwrap_err();
+        assert!(err.contains(face), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// JXL is already compressed, so a zip that deflated it would spend time to
     /// make it slightly larger. Everything else is deflated.
     #[test]
     fn the_already_compressed_entries_are_stored_and_the_rest_deflated() {
-        assert!(stored("textures/world.topo.200405.jxl"));
+        assert!(stored("textures/day/200405/pz.jxl"));
         assert!(!stored("sunlit-earth.exe"));
         assert!(!stored("LICENSE"));
         assert!(!stored(
@@ -1849,11 +1881,13 @@ mod tests {
         assert!(unverified.contains("verified_in"), "{unverified}");
     }
 
-    /// The one line a run without the assets prints instead of a bundle.
+    /// The line a run without the assets prints after the verdict, instead of
+    /// a bundle. The verdict carries the advice where there is any, so an empty
+    /// file is not told to fetch from Git LFS.
     #[test]
     fn the_skip_says_what_is_missing_and_what_was_produced_anyway() {
         let text = skipped_note();
-        assert!(text.contains("git lfs pull"), "{text}");
+        assert!(!text.contains("git lfs"), "{text}");
         assert!(text.contains("grid"), "{text}");
         assert!(text.contains("loose binary"), "{text}");
     }
@@ -1975,7 +2009,7 @@ mod tests {
             paths.contains(&"Contents/Resources/sunlit-earth.icns"),
             "{paths:?}"
         );
-        for name in TEXTURE_FILES {
+        for name in artifacts::bundle_texture_files() {
             assert!(
                 paths.contains(&format!("Contents/Resources/textures/{name}").as_str()),
                 "{paths:?}"

@@ -261,16 +261,63 @@ mod tests {
         assert_eq!(in_layout_order(placed), vec![None, path("/right.png")]);
     }
 
-    /// On Linux the answer depends on the session, which a unit test does not
-    /// have, so what is asserted is that a refusal explains itself.
+    /// A session with nothing in it: no variables, no programs, no processes,
+    /// no bus, no display.
+    #[cfg(target_os = "linux")]
+    struct EmptySession;
+
+    #[cfg(target_os = "linux")]
+    impl crate::desktop::Session for EmptySession {
+        fn var(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn on_path(&self, _: &str) -> bool {
+            false
+        }
+        fn process_running(&self, _: &str) -> bool {
+            false
+        }
+        fn bus_name_owned(&self, _: &str) -> bool {
+            false
+        }
+        fn path_exists(&self, _: &std::path::Path) -> bool {
+            false
+        }
+        fn x11(&self) -> Option<crate::desktop::X11Facts> {
+            None
+        }
+        fn wayland_globals(&self) -> Option<Vec<String>> {
+            None
+        }
+        fn processes_named(&self, _: &str) -> Vec<Vec<String>> {
+            Vec::new()
+        }
+        fn wallpaper_dir(&self) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn portal(&self) -> Option<crate::desktop::PortalFacts> {
+            None
+        }
+    }
+
+    /// A refusal explains itself: always from a session with nothing in it,
+    /// and from this one whenever it refuses.
+    ///
+    /// The live session is asked once. It is shared with every test running
+    /// beside this one, so two askings can get two answers, and whether one
+    /// succeeds says nothing about whether the next does.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_linux_refusal_says_what_was_tried() {
-        if let Err(refusal) = SystemWallpaper.check_supported() {
+        let explains = |refusal: &str| {
             assert!(refusal.contains("no way to set the wallpaper"), "{refusal}");
             assert!(refusal.contains(": "), "{refusal}");
-        } else {
-            assert!(crate::desktop::detect_current().is_some());
+        };
+        let empty = crate::desktop::choose(&EmptySession)
+            .expect_err("a session with nothing in it has no setter");
+        explains(&empty.to_string());
+        if let Err(refusal) = SystemWallpaper.check_supported() {
+            explains(&refusal);
         }
     }
 }

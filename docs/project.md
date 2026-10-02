@@ -25,7 +25,7 @@ The original [DesktopEarth](https://web.archive.org/web/20221006113849/http://ww
 | 3D rendering | **wgpu** | WebGPU-based abstraction over Vulkan/Metal/DX12/OpenGL. Built-in software fallback via `force_fallback_adapter` (WARP on Windows, lavapipe on Linux) |
 | GUI | **Slint** | Declarative UI via `.slint` DSL. Official wgpu integration (v1.12+). Built-in software renderer. Good accessibility and IME support. Licensed GPLv3 (free for open source) |
 | Astronomy | **Astronomy Engine** (C, via FFI) | Sun/moon/planet positions, eclipses, coordinate transforms. MIT licensed, actively maintained. Used via the `astronomy-engine-bindings` Rust crate |
-| Earth textures | **NASA Blue Marble Next Generation** | Monthly equirectangular images for seasonal vegetation and snow cover |
+| Earth textures | **NASA Blue Marble Next Generation** | Monthly images, baked into cube faces, for seasonal vegetation and snow cover |
 | Cloud data | TBD | Real-time cloud cover overlay from satellite sources (to be researched) |
 | Wallpaper API | OS-specific | Windows: `SystemParametersInfo`. Linux: `gsettings`/DBus. macOS: `osascript`/`NSWorkspace` |
 

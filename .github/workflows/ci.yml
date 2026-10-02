@@ -68,6 +68,27 @@ jobs:
       - run: cargo fmt --check
         shell: bash
 
+  pipeline:
+    name: Texture pipeline
+    needs: plan
+    if: ${{ contains(fromJSON(needs.plan.outputs.include).*.os, 'ubuntu-latest') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/texture-pipeline
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv publishes no major-version tag, hence the full version. openexr
+      # has no wheel for the pipeline's Python, so a cold cache builds it from
+      # source, which is what caching the uv directory saves on later runs.
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          working-directory: tools/texture-pipeline
+          enable-cache: true
+          cache-python: true
+      - run: uv run --locked pytest
+
   test:
     name: Test (${{ matrix.name }})
     needs: plan

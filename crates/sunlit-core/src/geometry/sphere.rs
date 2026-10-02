@@ -38,6 +38,23 @@ pub struct SphereMesh {
     pub indices: Vec<u32>,
 }
 
+/// Stacks of the globe's mesh, the rings from pole to pole.
+pub const GLOBE_STACKS: u32 = 64;
+
+/// Sectors of the globe's mesh, the slices round the pole.
+pub const GLOBE_SECTORS: u32 = 64;
+
+/// The angle from the middle of the largest facet of a UV sphere of `stacks`
+/// and `sectors` to its corners: half the diagonal of a quad at the equator,
+/// a stack high and a sector wide, which is the circumradius of each of its
+/// two triangles.
+#[must_use]
+pub fn facet_radius(stacks: u32, sectors: u32) -> f64 {
+    let stack = std::f64::consts::PI / f64::from(stacks);
+    let sector = std::f64::consts::TAU / f64::from(sectors);
+    0.5 * stack.hypot(sector)
+}
+
 /// Generate a UV sphere with the given number of stacks (horizontal rings)
 /// and sectors (vertical slices).
 #[expect(

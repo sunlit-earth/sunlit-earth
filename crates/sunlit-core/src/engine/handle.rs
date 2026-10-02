@@ -17,7 +17,9 @@ use super::clock::{Clock, SystemClock};
 use super::wallpaper_sink::{self, WallpaperSink};
 use super::{Engine, EngineCommand, EngineEvent};
 use crate::assets::cloud_source::CloudSource;
+use crate::assets::cube_layout::CubeTextures;
 use crate::assets::mailbox::TextureMailbox;
+use crate::assets::tiles::{GEOMETRY, Geometry};
 use crate::config::QualityTier;
 use crate::memory_report::MemoryReport;
 use crate::params::SceneParams;
@@ -26,7 +28,8 @@ use crate::params::SceneParams;
 pub struct EngineConfig {
     /// Force the CPU adapter.
     pub force_software: bool,
-    /// One entry per file-backed texture slot, in slot order after the grid.
+    /// One entry per file-backed texture slot, in slot order after the grid:
+    /// the Moon, then the Milky Way.
     pub texture_paths: Vec<Option<PathBuf>>,
     /// Initial preview size; quantized by the engine.
     pub preview_size: (u32, u32),
@@ -36,18 +39,20 @@ pub struct EngineConfig {
     pub params: SceneParams,
     /// Caps the preview size and the MSAA sample count.
     pub quality: QualityTier,
-    /// Width the file-backed surface textures are loaded at, and the cloud
-    /// image variant that goes with it. Independent of the quality tier, which
-    /// governs how much work a frame is allowed to be rather than how much
-    /// texture memory the app holds.
+    /// The resolution setting: the equirectangular width whose detail the
+    /// finest tile level may reach (8192 the 2048 level, 4096 the 1024 level,
+    /// 2048 the floors alone), the width the Milky Way is capped at, and the
+    /// cloud image variant. Independent of the quality tier, which governs how
+    /// much work a frame is allowed to be rather than how much texture memory
+    /// the app holds.
     pub texture_resolution: u32,
     pub clock: Arc<dyn Clock>,
     /// `None` disables cloud fetching entirely (the `SUNLIT_EARTH_NO_CLOUDS`
     /// case, and the default for tests that do not care about clouds).
     pub cloud: Option<Arc<dyn CloudSource>>,
     pub cloud_poll_interval: Duration,
-    /// The app's data directory, holding both the cloud image cache and the
-    /// downscaled copies of the surface textures. `None` disables both caches.
+    /// The app's data directory, holding the cloud image cache and the tile
+    /// packs. `None` disables both, and with them the cube surface.
     pub cache_dir: Option<PathBuf>,
     /// Unattended wallpaper refresh interval; `None` disables it.
     pub auto_refresh: Option<Duration>,
@@ -61,13 +66,37 @@ pub struct EngineConfig {
     pub on_event: Arc<dyn Fn(EngineEvent) + Send + Sync>,
     /// Write periodic memory samples to the metrics CSV.
     pub record_metrics: bool,
-    /// The mailbox decoded textures are parked in, with one slot per texture
-    /// (`texture_paths.len() + 2`). `None` builds one.
+    /// The mailbox decoded textures are parked in, with one slot per flat
+    /// texture (`texture_paths.len() + 2`). `None` builds one.
     ///
     /// Injectable for the same reason the clock and the cloud source are: a
     /// caller holding the same mailbox the engine drains can produce an arrival
     /// order that no amount of waiting makes reliable.
     pub mailbox: Option<TextureMailbox>,
+    /// The cube faces the textures directory holds. With every one of them
+    /// there and a cache directory to build the tile packs in, the globe is
+    /// drawn from the cube surface; otherwise it is the grid.
+    pub cube_textures: CubeTextures,
+    /// The sizes the tile packs are cut to: `tiles::GEOMETRY` for the shipped
+    /// faces, `tiles::FIXTURE` for the test bake's.
+    pub tile_geometry: Geometry,
+    /// Layers of the tile array. `None` takes the budget for the adapter
+    /// (`renderer::tiles::TILE_LAYER_BUDGET`, or `CPU_TILE_LAYER_BUDGET` on a
+    /// CPU adapter), as the app does; a test sets fewer to make the loader
+    /// evict, or none to draw the floors alone.
+    pub tile_layers: Option<u32>,
+    /// Holds the tile loader's reads while shut; open, and never shut, in the
+    /// app.
+    pub tile_gate: super::TileGate,
+    /// Holds the transcoder at the start of each pack it builds; open, and
+    /// never held, in the app.
+    pub build_gate: crate::assets::tiles::BuildGate,
+    /// Whether every month's day floor stays resident. `None` takes the
+    /// adapter's way, as the app does: every month on a GPU, and on a CPU
+    /// adapter the month in force's and the month ahead's alone, the others
+    /// made resident when their month comes into force. The tests, which run
+    /// on a software adapter, set it to cover a GPU's way.
+    pub every_floor: Option<bool>,
 }
 
 impl EngineConfig {
@@ -80,9 +109,9 @@ impl EngineConfig {
     pub fn headless(preview_size: (u32, u32)) -> Self {
         Self {
             force_software: true,
-            // Four file-backed slots (day, night, moon, Milky Way) so the slot
+            // Two file-backed slots (the Moon, the Milky Way) so the slot
             // layout matches production even when no texture files are present.
-            texture_paths: vec![None, None, None, None],
+            texture_paths: vec![None, None],
             preview_size,
             preview_enabled: true,
             params: SceneParams::default(),
@@ -100,7 +129,18 @@ impl EngineConfig {
             on_event: Arc::new(|_| {}),
             record_metrics: false,
             mailbox: None,
+            cube_textures: CubeTextures::default(),
+            tile_geometry: GEOMETRY,
+            tile_layers: None,
+            tile_gate: super::TileGate::default(),
+            build_gate: crate::assets::tiles::BuildGate::default(),
+            every_floor: None,
         }
+    }
+
+    /// Whether the engine will draw the globe from the cube surface.
+    pub fn takes_cube(&self) -> bool {
+        self.cube_textures.is_complete() && self.cache_dir.is_some()
     }
 }
 
@@ -175,6 +215,19 @@ impl EngineHandle {
         let (reply, replies) = bounded(1);
         self.tx
             .send(EngineCommand::ReportMemory { reply })
+            .map_err(|_| "engine has stopped".to_owned())?;
+        replies
+            .recv()
+            .map_err(|_| "engine stopped before answering".to_owned())
+    }
+
+    /// Ask the engine thread what its tile loader holds and wants, and block
+    /// until it answers; `None` where the globe is not drawn from the cube
+    /// surface.
+    pub fn tile_report(&self) -> Result<Option<Box<super::TileReport>>, String> {
+        let (reply, replies) = bounded(1);
+        self.tx
+            .send(EngineCommand::ReportTiles { reply })
             .map_err(|_| "engine has stopped".to_owned())?;
         replies
             .recv()

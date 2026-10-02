@@ -1,0 +1,1363 @@
+//! The tiles above the floor: one texture array whose layers hold tiles of the
+//! day and of the night alike, and the page table the globe's fragment shader
+//! reads once per fragment to learn what refines the floor there.
+//!
+//! The page table is an `R32Uint` array of six layers, one per face, with one
+//! cell per tile of the finest level. The low 16 bits of a cell say what the
+//! day draws there and the high 16 bits what the night draws, so blend mode
+//! learns both from one load. Each half is a [`PageEntry`]: the floor, the
+//! constant ocean color of the surface's pack, or a layer of the array and how
+//! many levels coarser than the finest the tile in it is, which is the best
+//! resident ancestor of the cell. The table is rewritten whole on the CPU
+//! whenever what is resident changes and uploaded with one `write_texture`.
+//! The queue carries out every write staged before a submit ahead of that
+//! submit's commands, so the tiles a rewrite names and the rewrite itself reach
+//! the GPU together, and a layer given to another tile is never read through
+//! the mapping of the one it held before.
+//!
+//! Public, like `uniforms`, so the render pipeline's tests drive the upload
+//! and the rewrite the renderer uses rather than a copy of them.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::assets::tiles::{
+    BlockFormat, Geometry, Pack, PackKind, TILE_LEVELS, TileKey, blob_bytes, decode_bc7, mip_levels,
+};
+
+use super::surface::{CubeLevel, write_cube_level};
+
+/// Layers the tile array is created with on a GPU where the device allows as
+/// many: 1.7 times the tiles the worst 4K frame wants in view for the day and
+/// 1.3 times the worst in blend mode at the default shading (plan departures
+/// 18 and 22).
+pub const TILE_LAYER_BUDGET: u32 = 900;
+
+/// Layers the tile array is created with on a CPU adapter, whose layers are
+/// RGBA8 in system memory, four times a BC7 layer, and whose sampler without
+/// anisotropy wants fewer tiles (plan departure 22).
+pub const CPU_TILE_LAYER_BUDGET: u32 = 640;
+
+const LAYER_BITS: u32 = 12;
+const STEPS_SHIFT: u32 = 12;
+const KIND_SHIFT: u32 = 14;
+const KIND_OCEAN: u16 = 1;
+const KIND_TILE: u16 = 2;
+
+/// The most layers a page table entry can name.
+pub const MAX_TILE_LAYERS: u32 = 1 << LAYER_BITS;
+
+/// The most tiled levels a page table entry can name.
+pub const MAX_TILED_LEVELS: u32 = 1 << (KIND_SHIFT - STEPS_SHIFT);
+
+/// What one surface draws from at one cell of the page table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageEntry {
+    /// The floor cube.
+    Floor,
+    /// The constant ocean color of the surface's pack.
+    Ocean,
+    /// Layer `layer` of the tile array, which holds a tile `steps` levels
+    /// coarser than the finest.
+    Tile { layer: u32, steps: u32 },
+}
+
+impl PageEntry {
+    /// The 16 bits the shader reads: the kind in bits 14 and 15, the steps in
+    /// 12 and 13, the layer in 0 to 11.
+    ///
+    /// # Panics
+    ///
+    /// If the layer or the steps do not fit their bits, which the tile array's
+    /// capacity and the geometry's check rule out: the check holds a
+    /// geometry's `levels` to [`MAX_TILED_LEVELS`], and a tile is fewer steps
+    /// up than there are levels.
+    #[must_use]
+    pub fn encode(self) -> u16 {
+        match self {
+            Self::Floor => 0,
+            Self::Ocean => KIND_OCEAN << KIND_SHIFT,
+            Self::Tile { layer, steps } => {
+                assert!(
+                    layer < MAX_TILE_LAYERS && steps < MAX_TILED_LEVELS,
+                    "layer {layer} {steps} levels up does not fit a page table entry"
+                );
+                let bits = u16::try_from(steps << STEPS_SHIFT | layer).expect("checked above");
+                (KIND_TILE << KIND_SHIFT) | bits
+            }
+        }
+    }
+
+    /// The entry `bits` encode, or `None` for a kind no entry has.
+    #[must_use]
+    pub fn decode(bits: u16) -> Option<Self> {
+        let layer = u32::from(bits) & (MAX_TILE_LAYERS - 1);
+        let steps = (u32::from(bits) >> STEPS_SHIFT) & (MAX_TILED_LEVELS - 1);
+        match bits >> KIND_SHIFT {
+            0 if bits == 0 => Some(Self::Floor),
+            KIND_OCEAN if bits == KIND_OCEAN << KIND_SHIFT => Some(Self::Ocean),
+            KIND_TILE => Some(Self::Tile { layer, steps }),
+            _ => None,
+        }
+    }
+}
+
+/// A tile of one surface: the pack it comes from and where it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TileId {
+    pub pack: PackKind,
+    pub key: TileKey,
+}
+
+/// A tile to make resident: its texels, and the layer to put it in when the
+/// caller has chosen one.
+#[derive(Debug)]
+pub struct TileUpload {
+    pub id: TileId,
+    pub texels: TileTexels,
+    /// A layer another tile holds is taken from that tile. `None` keeps the
+    /// layer the tile already has, or takes the lowest free one.
+    pub layer: Option<u32>,
+}
+
+/// The levels of a tile's layer, finest first, in one of the two forms an
+/// upload takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileTexels {
+    /// BC7 blocks, the blob as [`Pack::read`] returns it. An array in RGBA8
+    /// decodes them at upload, on the thread that uploads.
+    Blocks(Vec<u8>),
+    /// RGBA8 texels as [`decode_tile`] makes them, for an array in RGBA8, so
+    /// that the decode can happen on another thread.
+    Decoded(Vec<u8>),
+}
+
+impl TileTexels {
+    /// The bytes an upload hands the queue.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Blocks(bytes) | Self::Decoded(bytes) => bytes.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Decode a tile's BC7 blob, a layer of `layer` texels and its mips, to the
+/// RGBA8 levels an array in RGBA8 takes, finest first.
+pub fn decode_tile(blob: &[u8], layer: u32) -> Result<Vec<u8>, String> {
+    let expected = blob_bytes(BlockFormat::Bc7, layer, TILE_LEVELS);
+    if blob.len() != expected {
+        return Err(format!(
+            "a blob of {} bytes, where a layer of {layer} px is {expected}",
+            blob.len()
+        ));
+    }
+    let mut texels = Vec::with_capacity(4 * expected);
+    for mip in mip_levels(BlockFormat::Bc7, layer, TILE_LEVELS) {
+        texels.extend(decode_bc7(
+            &blob[mip.offset..mip.offset + mip.len],
+            mip.size,
+            mip.size,
+        )?);
+    }
+    Ok(texels)
+}
+
+/// The layers of the tile array and the tile each one holds.
+#[derive(Debug)]
+pub struct TileLayers {
+    held: Vec<Option<TileId>>,
+    resident: HashMap<TileId, u32>,
+}
+
+impl TileLayers {
+    #[must_use]
+    pub fn new(capacity: u32) -> Self {
+        Self {
+            held: vec![None; capacity as usize],
+            resident: HashMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn capacity(&self) -> u32 {
+        u32::try_from(self.held.len()).expect("a capacity that came from a u32")
+    }
+
+    /// Layers that hold no tile.
+    #[must_use]
+    pub fn free(&self) -> u32 {
+        self.capacity() - u32::try_from(self.resident.len()).expect("at most the capacity")
+    }
+
+    #[must_use]
+    pub fn layer_of(&self, id: TileId) -> Option<u32> {
+        self.resident.get(&id).copied()
+    }
+
+    #[must_use]
+    pub fn holder(&self, layer: u32) -> Option<TileId> {
+        self.held.get(layer as usize).copied().flatten()
+    }
+
+    /// Every resident tile and its layer.
+    pub fn resident(&self) -> impl Iterator<Item = (TileId, u32)> {
+        self.resident.iter().map(|(&id, &layer)| (id, layer))
+    }
+
+    /// Give `id` a layer: `layer` when the caller named one, else the one it
+    /// already holds, else the lowest free one. Returns the layer, and the
+    /// tile that had to give it up.
+    pub fn claim(
+        &mut self,
+        id: TileId,
+        layer: Option<u32>,
+    ) -> Result<(u32, Option<TileId>), String> {
+        let layer = match layer {
+            Some(layer) if layer < self.capacity() => layer,
+            Some(layer) => {
+                return Err(format!(
+                    "layer {layer} of a tile array of {}",
+                    self.capacity()
+                ));
+            }
+            None => match self.layer_of(id) {
+                Some(layer) => layer,
+                None => self
+                    .held
+                    .iter()
+                    .position(Option::is_none)
+                    .map(|at| u32::try_from(at).expect("an index below the capacity"))
+                    .ok_or_else(|| "every layer of the tile array holds a tile".to_owned())?,
+            },
+        };
+        if let Some(before) = self.resident.insert(id, layer)
+            && before != layer
+        {
+            self.held[before as usize] = None;
+        }
+        let displaced = self.held[layer as usize]
+            .replace(id)
+            .filter(|&other| other != id);
+        if let Some(other) = displaced {
+            self.resident.remove(&other);
+        }
+        Ok((layer, displaced))
+    }
+
+    /// Free the layer `id` holds, and say which it was.
+    pub fn release(&mut self, id: TileId) -> Option<u32> {
+        let layer = self.resident.remove(&id)?;
+        self.held[layer as usize] = None;
+        Some(layer)
+    }
+}
+
+/// The finest level the page table may name at each cell, in the table's
+/// layout: the level the wanted set asks for there.
+///
+/// A tile is sampled at its own two levels only, so one finer than the frame
+/// asks for is read at its coarser level clamped and aliases. A cell whose
+/// resident tile is finer than its level falls back on a coarser resident
+/// ancestor, or on the floor, instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellLevels {
+    finest: u8,
+    cells: u32,
+    levels: Vec<u8>,
+}
+
+impl CellLevels {
+    /// `level` at every cell of a table cut by `geometry`.
+    #[must_use]
+    pub fn uniform(geometry: &Geometry, level: u8) -> Self {
+        let cells = geometry.face / geometry.tile;
+        Self {
+            finest: Geometry::level_of(geometry.face),
+            cells,
+            levels: vec![level; 6 * (cells * cells) as usize],
+        }
+    }
+
+    /// No cap: the finest tiled level at every cell.
+    #[must_use]
+    pub fn finest(geometry: &Geometry) -> Self {
+        Self::uniform(geometry, Geometry::level_of(geometry.face))
+    }
+
+    /// Cells along each side of a face.
+    #[must_use]
+    pub fn cells(&self) -> u32 {
+        self.cells
+    }
+
+    #[must_use]
+    pub fn at(&self, face: u8, row: u32, col: u32) -> u8 {
+        self.levels[self.index(face, row, col)]
+    }
+
+    /// Raise every cell `key` covers to at least `key`'s level.
+    ///
+    /// # Panics
+    ///
+    /// If `key` is finer than the finest level or lies outside its face.
+    pub fn raise(&mut self, key: TileKey) {
+        let shift = self
+            .finest
+            .checked_sub(key.level)
+            .unwrap_or_else(|| panic!("{key:?} is finer than level {}", self.finest));
+        let span = 1_u32 << shift;
+        let (row, col) = (u32::from(key.row) * span, u32::from(key.col) * span);
+        assert!(
+            row + span <= self.cells && col + span <= self.cells,
+            "{key:?} lies outside its face"
+        );
+        for r in row..row + span {
+            for c in col..col + span {
+                let at = self.index(key.face, r, c);
+                self.levels[at] = self.levels[at].max(key.level);
+            }
+        }
+    }
+
+    fn index(&self, face: u8, row: u32, col: u32) -> usize {
+        let cells = self.cells as usize;
+        (usize::from(face) * cells + row as usize) * cells + col as usize
+    }
+}
+
+/// One surface as the page table sees it: the pack its tiles come from, and
+/// the tiles that pack flags constant ocean.
+#[derive(Clone, Copy, Debug)]
+pub struct PageSurface<'a> {
+    pub pack: PackKind,
+    pub ocean: &'a HashSet<TileKey>,
+}
+
+/// The page table on the CPU: what each surface draws at each cell of each
+/// face, in the layout the texture takes, face after face and row after row.
+#[derive(Debug, Clone)]
+pub struct PageTable {
+    geometry: Geometry,
+    entries: Vec<u32>,
+}
+
+impl PageTable {
+    /// A table that draws the floor everywhere.
+    #[must_use]
+    pub fn new(geometry: Geometry) -> Self {
+        let cells = geometry.face / geometry.tile;
+        Self {
+            geometry,
+            entries: vec![0; 6 * (cells * cells) as usize],
+        }
+    }
+
+    /// Cells along each side of a face: the tiles of the finest level.
+    #[must_use]
+    pub fn cells(&self) -> u32 {
+        self.geometry.face / self.geometry.tile
+    }
+
+    /// Every cell, as the texture holds it.
+    #[must_use]
+    pub fn entries(&self) -> &[u32] {
+        &self.entries
+    }
+
+    fn index(&self, face: u8, row: u32, col: u32) -> usize {
+        let cells = self.cells() as usize;
+        (usize::from(face) * cells + row as usize) * cells + col as usize
+    }
+
+    /// What the day and the night draw at a cell. An entry of no known kind
+    /// reads as `None`.
+    #[must_use]
+    pub fn at(&self, face: u8, row: u32, col: u32) -> [Option<PageEntry>; 2] {
+        let bits = self.entries[self.index(face, row, col)];
+        [bits & 0xFFFF, bits >> 16]
+            .map(|half| PageEntry::decode(u16::try_from(half).expect("sixteen bits")))
+    }
+
+    /// Point every cell of both halves at the best that is resident for it no
+    /// finer than `cap` allows there: its tile at the cap's level, else the
+    /// nearest ancestor that is resident, a layer or constant ocean alike,
+    /// else the floor. A half with no surface draws the floor.
+    ///
+    /// Checked in a debug build: every cell has to name what it resolves to.
+    ///
+    /// # Panics
+    ///
+    /// If `cap` is not cut to this table's cells.
+    pub fn rewrite(
+        &mut self,
+        surfaces: [Option<PageSurface<'_>>; 2],
+        layers: &TileLayers,
+        cap: &CellLevels,
+    ) {
+        assert_eq!(cap.cells(), self.cells(), "a cap for another table");
+        let cells = self.cells();
+        for face in 0..6_u8 {
+            for row in 0..cells {
+                for col in 0..cells {
+                    let finest = self.finest_steps(cap, face, row, col);
+                    let [day, night] = surfaces.map(|surface| {
+                        surface.map_or(PageEntry::Floor, |surface| {
+                            self.resolve(surface, layers, face, row, col, finest)
+                        })
+                    });
+                    let at = self.index(face, row, col);
+                    self.entries[at] = u32::from(day.encode()) | u32::from(night.encode()) << 16;
+                }
+            }
+        }
+        debug_assert_eq!(self.check(surfaces, layers, cap), Ok(()));
+    }
+
+    /// The fewest levels coarser than the finest a cell may draw from.
+    fn finest_steps(&self, cap: &CellLevels, face: u8, row: u32, col: u32) -> u32 {
+        let finest = Geometry::level_of(self.geometry.face);
+        u32::from(finest.saturating_sub(cap.at(face, row, col)))
+    }
+
+    /// The tile a cell of the finest level lies in, `steps` levels coarser.
+    fn ancestor(&self, face: u8, row: u32, col: u32, steps: u32) -> TileKey {
+        let finest = Geometry::level_of(self.geometry.face);
+        let index = |i: u32| u16::try_from(i >> steps).expect("a tile index");
+        TileKey {
+            level: finest - u8::try_from(steps).expect("a few levels"),
+            face,
+            row: index(row),
+            col: index(col),
+        }
+    }
+
+    fn resolve(
+        &self,
+        surface: PageSurface<'_>,
+        layers: &TileLayers,
+        face: u8,
+        row: u32,
+        col: u32,
+        finest: u32,
+    ) -> PageEntry {
+        for steps in finest..self.geometry.levels {
+            let key = self.ancestor(face, row, col, steps);
+            let id = TileId {
+                pack: surface.pack,
+                key,
+            };
+            if let Some(layer) = layers.layer_of(id) {
+                return PageEntry::Tile { layer, steps };
+            }
+            if surface.ocean.contains(&key) {
+                return PageEntry::Ocean;
+            }
+        }
+        PageEntry::Floor
+    }
+
+    /// Whether every cell names something that is there and no finer than
+    /// `cap` allows: a layer that holds the cell's own ancestor at the level
+    /// the entry says, of the surface's pack, or an ancestor the pack flags
+    /// constant ocean, or the floor, which is resident whenever a surface is
+    /// drawn at all.
+    ///
+    /// It reads the layers from the side the rewrite does not, which layer
+    /// holds what rather than where a tile is, so a layer freed or given to
+    /// another tile without a rewrite is caught here.
+    pub fn check(
+        &self,
+        surfaces: [Option<PageSurface<'_>>; 2],
+        layers: &TileLayers,
+        cap: &CellLevels,
+    ) -> Result<(), String> {
+        if cap.cells() != self.cells() {
+            return Err(format!(
+                "a cap of {} cells a side for a table of {}",
+                cap.cells(),
+                self.cells()
+            ));
+        }
+        let cells = self.cells();
+        for face in 0..6_u8 {
+            for row in 0..cells {
+                for col in 0..cells {
+                    let finest = self.finest_steps(cap, face, row, col);
+                    for (half, (entry, surface)) in self
+                        .at(face, row, col)
+                        .into_iter()
+                        .zip(surfaces)
+                        .enumerate()
+                    {
+                        let cell = || format!("half {half} of cell ({row}, {col}) of face {face}");
+                        match (entry, surface) {
+                            (None, _) => return Err(format!("{} is no entry", cell())),
+                            (Some(PageEntry::Floor), _) => {}
+                            (Some(_), None) => {
+                                return Err(format!("{} names a tile of no surface", cell()));
+                            }
+                            (Some(PageEntry::Ocean), Some(surface)) => {
+                                let flagged = (finest..self.geometry.levels).any(|steps| {
+                                    surface
+                                        .ocean
+                                        .contains(&self.ancestor(face, row, col, steps))
+                                });
+                                if !flagged {
+                                    return Err(format!(
+                                        "{} is ocean where {:?} flags none of its tiles \
+                                         at or below its cap",
+                                        cell(),
+                                        surface.pack
+                                    ));
+                                }
+                            }
+                            (Some(PageEntry::Tile { steps, .. }), Some(_)) if steps < finest => {
+                                return Err(format!(
+                                    "{} names a tile {steps} levels up, finer than its cap of {finest}",
+                                    cell()
+                                ));
+                            }
+                            (Some(PageEntry::Tile { layer, steps }), Some(surface)) => {
+                                let wanted = TileId {
+                                    pack: surface.pack,
+                                    key: self.ancestor(face, row, col, steps),
+                                };
+                                if steps >= self.geometry.levels
+                                    || layers.holder(layer) != Some(wanted)
+                                {
+                                    return Err(format!(
+                                        "{} names layer {layer} for {wanted:?}, which holds {:?}",
+                                        cell(),
+                                        layers.holder(layer)
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What a surface's pack says about its tiles without reading one: which are
+/// constant ocean, and the color they stand for.
+#[derive(Debug)]
+struct OceanCells {
+    color: [u8; 4],
+    tiles: HashSet<TileKey>,
+}
+
+/// The tile array, the page table, and what each holds, for one device.
+pub struct SurfaceTiles {
+    geometry: Geometry,
+    /// The format the array is created in: BC7 where the device samples the
+    /// blocks, RGBA8 decoded from them where it does not.
+    format: wgpu::TextureFormat,
+    layers: TileLayers,
+    /// Created with the first tile, so a device that never draws one never
+    /// holds the array.
+    array: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The day packs and the night pack handed over so far.
+    ocean: HashMap<PackKind, OceanCells>,
+    /// The month in force, whose day pack the day half names once it has
+    /// been handed over, and no other month's; the day half draws the floor
+    /// until then.
+    month: Option<usize>,
+    /// The finest level each cell may draw, the wanted set's; the finest
+    /// tiled level everywhere until one is set.
+    cap: CellLevels,
+    table: PageTable,
+    page: wgpu::Texture,
+    page_view: wgpu::TextureView,
+}
+
+impl SurfaceTiles {
+    /// A page table that draws the floor everywhere, and room for `capacity`
+    /// layers once the first tile comes.
+    ///
+    /// # Panics
+    ///
+    /// If `geometry` cannot be cut, which a pack built under it would already
+    /// have refused.
+    #[must_use]
+    pub fn new(
+        device: &wgpu::Device,
+        geometry: Geometry,
+        format: wgpu::TextureFormat,
+        capacity: u32,
+    ) -> Self {
+        geometry
+            .check()
+            .unwrap_or_else(|e| panic!("the tile geometry: {e}"));
+        let table = PageTable::new(geometry);
+        let page = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("page_table"),
+            size: wgpu::Extent3d {
+                width: table.cells(),
+                height: table.cells(),
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let page_view = page.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        Self {
+            geometry,
+            format,
+            layers: TileLayers::new(capacity.min(MAX_TILE_LAYERS)),
+            array: None,
+            ocean: HashMap::new(),
+            month: None,
+            cap: CellLevels::finest(&geometry),
+            table,
+            page,
+            page_view,
+        }
+    }
+
+    #[must_use]
+    pub fn geometry(&self) -> Geometry {
+        self.geometry
+    }
+
+    #[must_use]
+    pub fn layers(&self) -> &TileLayers {
+        &self.layers
+    }
+
+    #[must_use]
+    pub fn table(&self) -> &PageTable {
+        &self.table
+    }
+
+    #[must_use]
+    pub fn page_view(&self) -> &wgpu::TextureView {
+        &self.page_view
+    }
+
+    /// The array's view, once a tile has been uploaded.
+    #[must_use]
+    pub fn array_view(&self) -> Option<&wgpu::TextureView> {
+        self.array.as_ref().map(|(_, view)| view)
+    }
+
+    /// The textures held, with the labels they carry.
+    pub fn textures(&self) -> impl Iterator<Item = (&'static str, &wgpu::Texture)> {
+        std::iter::once(("page_table", &self.page)).chain(
+            self.array
+                .as_ref()
+                .map(|(texture, _)| ("tile_array", texture)),
+        )
+    }
+
+    /// The constant ocean colors of the month in force's day pack and of the
+    /// night, RGBA8, zero for a surface whose pack has not come.
+    #[must_use]
+    pub fn ocean_colors(&self) -> [[u8; 4]; 2] {
+        let color = |kind: Option<PackKind>| {
+            kind.and_then(|kind| self.ocean.get(&kind))
+                .map_or([0; 4], |cells| cells.color)
+        };
+        [color(self.day()), color(Some(PackKind::Night))]
+    }
+
+    /// The day pack the day half names, the month in force's.
+    fn day(&self) -> Option<PackKind> {
+        self.month.map(PackKind::Day)
+    }
+
+    /// The month whose day pack the day half names, once its pack has been
+    /// handed over.
+    #[must_use]
+    pub fn day_month(&self) -> Option<usize> {
+        self.month
+            .filter(|&month| self.ocean.contains_key(&PackKind::Day(month)))
+    }
+
+    /// Make `month`, January 0, the month in force, whose tiles the day half
+    /// names from now on, and no other month's; until its pack has been
+    /// handed over the day half draws the floor. Rewrites the table if that
+    /// changes it, and returns whether it did.
+    pub fn set_month(&mut self, queue: &wgpu::Queue, month: usize) -> bool {
+        let before = self.day_month();
+        self.month = Some(month);
+        if self.day_month() == before {
+            return false;
+        }
+        self.publish(queue);
+        true
+    }
+
+    /// Every tile the table names, in either half, each once.
+    #[must_use]
+    pub fn named(&self) -> Vec<TileId> {
+        let cells = self.table.cells();
+        let mut named = HashSet::new();
+        for face in 0..6_u8 {
+            for row in 0..cells {
+                for col in 0..cells {
+                    for entry in self.table.at(face, row, col).into_iter().flatten() {
+                        if let PageEntry::Tile { layer, .. } = entry
+                            && let Some(id) = self.layers.holder(layer)
+                        {
+                            named.insert(id);
+                        }
+                    }
+                }
+            }
+        }
+        named.into_iter().collect()
+    }
+
+    /// Whether `pack`'s tiles are cut the way this table and array take them.
+    pub fn accepts(&self, pack: &Pack) -> Result<(), String> {
+        if matches!(pack.kind(), PackKind::Mask) || pack.format() != BlockFormat::Bc7 {
+            return Err(format!(
+                "a {:?} pack in {:?} has no tiles to draw",
+                pack.kind(),
+                pack.format()
+            ));
+        }
+        let cut = (pack.tile(), pack.gutter(), pack.tile_levels());
+        let drawn = (self.geometry.tile, self.geometry.gutter, TILE_LEVELS);
+        if cut != drawn {
+            return Err(format!(
+                "the pack's tiles are {cut:?} (tile, gutter, levels), the renderer draws {drawn:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Take what a day or night pack says about its tiles without reading
+    /// any, beside every other month's, and rewrite the table if the pack is
+    /// one it names: the night, or the day pack of the month in force, which
+    /// [`Self::set_month`] names. Returns whether it rewrote the table.
+    pub fn add_pack(&mut self, queue: &wgpu::Queue, pack: &Pack) -> Result<bool, String> {
+        self.accepts(pack)?;
+        let tiles = pack
+            .entries()
+            .iter()
+            .filter(|entry| entry.ocean)
+            .map(|entry| entry.key)
+            .collect();
+        let kind = pack.kind();
+        self.ocean.insert(
+            kind,
+            OceanCells {
+                color: pack.ocean(),
+                tiles,
+            },
+        );
+        let named = kind == PackKind::Night || Some(kind) == self.day();
+        if named {
+            self.publish(queue);
+        }
+        Ok(named)
+    }
+
+    /// Let go of what `kind`'s pack said about its tiles, for a floor that is
+    /// let go of. The table never names a pack other than the month in force's
+    /// and the night's, so nothing it draws changes.
+    pub fn forget_pack(&mut self, kind: PackKind) {
+        debug_assert!(
+            kind != PackKind::Night && Some(kind) != self.day(),
+            "{kind:?} is a pack the table names"
+        );
+        self.ocean.remove(&kind);
+    }
+
+    /// Make `tiles` resident and rewrite the table over them.
+    ///
+    /// A tile whose texels do not have the layout of the geometry's layers in
+    /// a form the array takes, or that cannot be placed, is left out and
+    /// returned with the reason; the others are uploaded. On a device that
+    /// does not sample BC7, blocks that were not decoded already are decoded
+    /// here.
+    pub fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        tiles: Vec<TileUpload>,
+    ) -> Vec<(TileId, String)> {
+        let mut failed = Vec::new();
+        for tile in tiles {
+            if let Err(why) = self.place(device, queue, &tile) {
+                failed.push((tile.id, why));
+            }
+        }
+        self.publish(queue);
+        failed
+    }
+
+    /// Give one tile a layer and stage the upload of its levels.
+    fn place(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        tile: &TileUpload,
+    ) -> Result<(), String> {
+        let levels = self.levels_of(&tile.texels)?;
+        let (layer, _) = self.layers.claim(tile.id, tile.layer)?;
+        if self.array.is_none() {
+            self.array = Some(create_array(
+                device,
+                &self.geometry,
+                self.format,
+                self.layers.capacity(),
+            ));
+        }
+        let (texture, _) = self.array.as_ref().expect("created above");
+        for (level, (size, texels)) in (0..).zip(&levels) {
+            write_cube_level(
+                queue,
+                texture,
+                CubeLevel {
+                    face: layer,
+                    level,
+                    size: *size,
+                },
+                texels,
+            );
+        }
+        Ok(())
+    }
+
+    /// Free the layers `tiles` hold and rewrite the table without them.
+    pub fn evict(&mut self, queue: &wgpu::Queue, tiles: &[TileId]) {
+        for &id in tiles {
+            self.layers.release(id);
+        }
+        self.publish(queue);
+    }
+
+    /// Let go of every tile and of the array itself, whose memory goes with
+    /// it, and rewrite the table without them. The next tile uploaded creates
+    /// the array again.
+    pub fn purge(&mut self, queue: &wgpu::Queue) {
+        self.layers = TileLayers::new(self.layers.capacity());
+        if let Some((texture, _)) = self.array.take() {
+            texture.destroy();
+        }
+        self.publish(queue);
+    }
+
+    /// The finest level each cell may draw from now.
+    #[must_use]
+    pub fn cap(&self) -> &CellLevels {
+        &self.cap
+    }
+
+    /// Hold every cell to the level `cap` names there from now on, and
+    /// rewrite the table if that changes it. Returns whether it did.
+    ///
+    /// # Panics
+    ///
+    /// If `cap` is cut for another geometry.
+    pub fn set_cap(&mut self, queue: &wgpu::Queue, cap: CellLevels) -> bool {
+        assert_eq!(cap.cells(), self.table.cells(), "a cap for another table");
+        if cap == self.cap {
+            return false;
+        }
+        self.cap = cap;
+        self.publish(queue);
+        true
+    }
+
+    /// The texels or blocks of each level of a tile's layer, in the array's
+    /// format, with the level's width.
+    fn levels_of(&self, texels: &TileTexels) -> Result<Vec<(u32, Vec<u8>)>, String> {
+        let layer = self.geometry.layer();
+        let rgba = self.format == wgpu::TextureFormat::Rgba8Unorm;
+        match texels {
+            TileTexels::Blocks(blob) if rgba => rgba_levels(&decode_tile(blob, layer)?, layer),
+            TileTexels::Blocks(blob) => {
+                let expected = blob_bytes(BlockFormat::Bc7, layer, TILE_LEVELS);
+                if blob.len() != expected {
+                    return Err(format!(
+                        "a blob of {} bytes, where a layer of {layer} px is {expected}",
+                        blob.len()
+                    ));
+                }
+                Ok(mip_levels(BlockFormat::Bc7, layer, TILE_LEVELS)
+                    .into_iter()
+                    .map(|mip| (mip.size, blob[mip.offset..mip.offset + mip.len].to_vec()))
+                    .collect())
+            }
+            TileTexels::Decoded(texels) if rgba => rgba_levels(texels, layer),
+            TileTexels::Decoded(_) => {
+                Err(format!("decoded texels for an array in {:?}", self.format))
+            }
+        }
+    }
+
+    /// Rewrite the table from what is resident and stage its upload.
+    fn publish(&mut self, queue: &wgpu::Queue) {
+        let surface = |kind: PackKind| {
+            self.ocean.get(&kind).map(|cells| PageSurface {
+                pack: kind,
+                ocean: &cells.tiles,
+            })
+        };
+        let surfaces = [self.day().and_then(surface), surface(PackKind::Night)];
+        self.table.rewrite(surfaces, &self.layers, &self.cap);
+        let cells = self.table.cells();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.page,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(self.table.entries()),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * cells),
+                rows_per_image: Some(cells),
+            },
+            wgpu::Extent3d {
+                width: cells,
+                height: cells,
+                depth_or_array_layers: 6,
+            },
+        );
+    }
+}
+
+/// The levels of a layer of `layer` RGBA8 texels, finest first, with each
+/// level's width.
+fn rgba_levels(texels: &[u8], layer: u32) -> Result<Vec<(u32, Vec<u8>)>, String> {
+    let sizes = (0..TILE_LEVELS).map(|level| layer >> level);
+    let bytes = |size: u32| 4 * (size * size) as usize;
+    let expected: usize = sizes.clone().map(bytes).sum();
+    if texels.len() != expected {
+        return Err(format!(
+            "{} decoded bytes, where a layer of {layer} px is {expected}",
+            texels.len()
+        ));
+    }
+    let mut rest = texels;
+    Ok(sizes
+        .map(|size| {
+            let (level, tail) = rest.split_at(bytes(size));
+            rest = tail;
+            (size, level.to_vec())
+        })
+        .collect())
+}
+
+fn create_array(
+    device: &wgpu::Device,
+    geometry: &Geometry,
+    format: wgpu::TextureFormat,
+    layers: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("tile_array"),
+        size: wgpu::Extent3d {
+            width: geometry.layer(),
+            height: geometry.layer(),
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: TILE_LEVELS,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    (texture, view)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::tiles::FIXTURE;
+
+    const DAY: PackKind = PackKind::Day(3);
+
+    fn uncapped() -> CellLevels {
+        CellLevels::finest(&FIXTURE)
+    }
+
+    fn id(level: u8, face: u8, row: u16, col: u16) -> TileId {
+        TileId {
+            pack: DAY,
+            key: TileKey {
+                level,
+                face,
+                row,
+                col,
+            },
+        }
+    }
+
+    /// The fixture geometry's two tiled levels: 16 px faces, 2 x 2 cells.
+    const FINE: u8 = 4;
+    const COARSE: u8 = 3;
+
+    #[test]
+    fn every_entry_survives_its_encoding() {
+        for entry in [
+            PageEntry::Floor,
+            PageEntry::Ocean,
+            PageEntry::Tile { layer: 0, steps: 0 },
+            PageEntry::Tile {
+                layer: MAX_TILE_LAYERS - 1,
+                steps: 1,
+            },
+            PageEntry::Tile {
+                layer: 899,
+                steps: 3,
+            },
+        ] {
+            assert_eq!(PageEntry::decode(entry.encode()), Some(entry));
+        }
+        assert_eq!(PageEntry::Floor.encode(), 0, "a zeroed table is all floor");
+        assert_eq!(PageEntry::decode(3 << KIND_SHIFT), None);
+        assert_eq!(PageEntry::decode(1), None, "a floor with a layer");
+    }
+
+    /// The deepest geometry the check lets through names its coarsest tiles in
+    /// an entry, and one more level is refused by the check rather than left
+    /// to panic in the encoding on the engine thread.
+    #[test]
+    fn the_deepest_geometry_the_check_allows_fits_an_entry() {
+        let deepest = Geometry {
+            face: 4096,
+            levels: MAX_TILED_LEVELS,
+            tile: 128,
+            gutter: 8,
+            floor: 64,
+            mask: 1024,
+        };
+        deepest.check().expect("as many levels as an entry names");
+        let coarsest = PageEntry::Tile {
+            layer: MAX_TILE_LAYERS - 1,
+            steps: deepest.levels - 1,
+        };
+        assert_eq!(PageEntry::decode(coarsest.encode()), Some(coarsest));
+        let deeper = Geometry {
+            levels: deepest.levels + 1,
+            ..deepest
+        };
+        assert!(
+            deeper.check().is_err(),
+            "{deeper:?} has tiles an entry cannot name"
+        );
+    }
+
+    #[test]
+    fn a_tile_takes_the_lowest_free_layer_and_keeps_it() {
+        let mut layers = TileLayers::new(3);
+        assert_eq!(layers.claim(id(FINE, 0, 0, 0), None), Ok((0, None)));
+        assert_eq!(layers.claim(id(FINE, 0, 0, 1), None), Ok((1, None)));
+        assert_eq!(layers.claim(id(FINE, 0, 0, 0), None), Ok((0, None)));
+        assert_eq!(layers.release(id(FINE, 0, 0, 0)), Some(0));
+        assert_eq!(layers.claim(id(FINE, 1, 0, 0), None), Ok((0, None)));
+        assert_eq!(layers.free(), 1);
+        assert_eq!(layers.claim(id(FINE, 2, 0, 0), None), Ok((2, None)));
+        assert!(layers.claim(id(FINE, 3, 0, 0), None).is_err(), "full");
+    }
+
+    #[test]
+    fn a_named_layer_is_taken_from_its_tile() {
+        let mut layers = TileLayers::new(2);
+        layers.claim(id(FINE, 0, 0, 0), None).unwrap();
+        layers.claim(id(FINE, 0, 0, 1), None).unwrap();
+        assert_eq!(
+            layers.claim(id(FINE, 0, 1, 0), Some(1)),
+            Ok((1, Some(id(FINE, 0, 0, 1))))
+        );
+        assert_eq!(layers.layer_of(id(FINE, 0, 0, 1)), None);
+        assert_eq!(layers.holder(1), Some(id(FINE, 0, 1, 0)));
+
+        assert_eq!(
+            layers.claim(id(FINE, 0, 1, 0), Some(0)),
+            Ok((0, Some(id(FINE, 0, 0, 0))))
+        );
+        assert_eq!(layers.holder(1), None, "a tile moved leaves its layer free");
+        assert_eq!(layers.free(), 1);
+        assert!(layers.claim(id(FINE, 0, 1, 1), Some(2)).is_err());
+    }
+
+    fn resolved(table: &PageTable, face: u8, row: u32, col: u32) -> PageEntry {
+        table.at(face, row, col)[0].expect("an entry")
+    }
+
+    /// A cell without its own tile draws from the resident parent that covers
+    /// it, else from the floor; a cell with its own tile draws that.
+    #[test]
+    fn a_cell_draws_its_own_tile_else_its_parent_else_the_floor() {
+        let ocean = HashSet::new();
+        let day = PageSurface {
+            pack: DAY,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(8);
+        let mut table = PageTable::new(FIXTURE);
+        assert_eq!(table.cells(), 2);
+
+        layers.claim(id(FINE, 4, 1, 0), None).unwrap();
+        layers.claim(id(COARSE, 4, 0, 0), None).unwrap();
+        layers.claim(id(FINE, 2, 0, 1), None).unwrap();
+        // Another month's tile and the night's are nothing to the day half.
+        layers
+            .claim(
+                TileId {
+                    pack: PackKind::Day(4),
+                    key: id(FINE, 0, 0, 0).key,
+                },
+                None,
+            )
+            .unwrap();
+        table.rewrite([Some(day), None], &layers, &uncapped());
+
+        assert_eq!(
+            resolved(&table, 4, 1, 0),
+            PageEntry::Tile { layer: 0, steps: 0 }
+        );
+        for (row, col) in [(0, 0), (0, 1), (1, 1)] {
+            assert_eq!(
+                resolved(&table, 4, row, col),
+                PageEntry::Tile { layer: 1, steps: 1 },
+                "({row}, {col}) of +Z falls back on the parent"
+            );
+        }
+        assert_eq!(
+            resolved(&table, 2, 0, 1),
+            PageEntry::Tile { layer: 2, steps: 0 }
+        );
+        assert_eq!(
+            resolved(&table, 2, 0, 0),
+            PageEntry::Floor,
+            "no parent is resident"
+        );
+        assert_eq!(
+            resolved(&table, 0, 0, 0),
+            PageEntry::Floor,
+            "another month's tile"
+        );
+        assert!(
+            table.entries().iter().all(|&bits| bits >> 16 == 0),
+            "a half with no surface is all floor"
+        );
+    }
+
+    /// Constant ocean is resident without a layer, at whichever level the pack
+    /// flags it, and a resident tile of a finer level wins over it.
+    #[test]
+    fn a_flagged_tile_is_drawn_as_ocean_where_nothing_finer_is_resident() {
+        let ocean: HashSet<TileKey> = [id(COARSE, 5, 0, 0).key, id(FINE, 1, 1, 1).key].into();
+        let night = PageSurface {
+            pack: PackKind::Night,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(4);
+        let fine = TileId {
+            pack: PackKind::Night,
+            key: id(FINE, 5, 1, 1).key,
+        };
+        layers.claim(fine, None).unwrap();
+        let mut table = PageTable::new(FIXTURE);
+        table.rewrite([None, Some(night)], &layers, &uncapped());
+
+        let night_at = |face, row, col| table.at(face, row, col)[1].expect("an entry");
+        assert_eq!(night_at(5, 0, 0), PageEntry::Ocean);
+        assert_eq!(night_at(5, 1, 1), PageEntry::Tile { layer: 0, steps: 0 });
+        assert_eq!(night_at(1, 1, 1), PageEntry::Ocean);
+        assert_eq!(night_at(1, 0, 0), PageEntry::Floor);
+        assert_eq!(table.at(5, 0, 0)[0], Some(PageEntry::Floor));
+    }
+
+    /// The check reads which tile a layer holds, so a layer freed or handed on
+    /// without a rewrite shows up as a cell naming something that is not there.
+    #[test]
+    fn the_check_catches_a_table_left_behind_by_its_layers() {
+        let ocean = HashSet::new();
+        let day = PageSurface {
+            pack: DAY,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(2);
+        layers.claim(id(COARSE, 3, 0, 0), None).unwrap();
+        let mut table = PageTable::new(FIXTURE);
+        table.rewrite([Some(day), None], &layers, &uncapped());
+        assert_eq!(table.check([Some(day), None], &layers, &uncapped()), Ok(()));
+
+        layers.claim(id(FINE, 0, 0, 0), Some(0)).unwrap();
+        let why = table
+            .check([Some(day), None], &layers, &uncapped())
+            .expect_err("layer 0 now holds another tile");
+        assert!(why.contains("layer 0"), "{why}");
+
+        layers.release(id(FINE, 0, 0, 0));
+        assert!(
+            table
+                .check([Some(day), None], &layers, &uncapped())
+                .is_err(),
+            "a freed layer"
+        );
+        assert!(
+            table.check([None, None], &layers, &uncapped()).is_err(),
+            "a tile of no surface"
+        );
+        table.rewrite([Some(day), None], &layers, &uncapped());
+        assert_eq!(table.check([Some(day), None], &layers, &uncapped()), Ok(()));
+    }
+
+    /// The rewrite asserts its own result in a debug build, so a table whose
+    /// layers disagree with it cannot be published from one.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "holds")]
+    fn a_debug_build_refuses_to_publish_a_table_that_names_a_missing_tile() {
+        let ocean = HashSet::new();
+        let day = PageSurface {
+            pack: DAY,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(2);
+        layers.claim(id(FINE, 0, 0, 0), None).unwrap();
+        // A layer map whose two sides disagree, which no claim or release
+        // leaves behind: the tile says layer 1, layer 1 says nothing.
+        layers.resident.insert(id(FINE, 0, 0, 0), 1);
+        let mut table = PageTable::new(FIXTURE);
+        table.rewrite([Some(day), None], &layers, &uncapped());
+    }
+
+    #[test]
+    fn an_ocean_entry_with_no_flag_behind_it_is_caught() {
+        let flagged: HashSet<TileKey> = [id(FINE, 0, 0, 0).key].into();
+        let none = HashSet::new();
+        let mut table = PageTable::new(FIXTURE);
+        let layers = TileLayers::new(1);
+        table.rewrite(
+            [
+                Some(PageSurface {
+                    pack: DAY,
+                    ocean: &flagged,
+                }),
+                None,
+            ],
+            &layers,
+            &uncapped(),
+        );
+        let why = table
+            .check(
+                [
+                    Some(PageSurface {
+                        pack: DAY,
+                        ocean: &none,
+                    }),
+                    None,
+                ],
+                &layers,
+                &uncapped(),
+            )
+            .expect_err("the flag is gone");
+        assert!(why.contains("ocean"), "{why}");
+    }
+
+    /// A cell draws nothing finer than its cap: a resident tile past it gives
+    /// way to its resident parent, and a cap at the floor draws the floor even
+    /// over a tile the pack flags constant ocean.
+    #[test]
+    fn a_cell_draws_nothing_finer_than_its_cap() {
+        let ocean: HashSet<TileKey> = [id(FINE, 1, 0, 0).key].into();
+        let day = PageSurface {
+            pack: DAY,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(4);
+        layers.claim(id(FINE, 4, 1, 1), None).unwrap();
+        layers.claim(id(COARSE, 4, 0, 0), None).unwrap();
+        let floor = Geometry::level_of(FIXTURE.floor);
+        let mut cap = CellLevels::uniform(&FIXTURE, floor);
+        cap.raise(id(COARSE, 4, 0, 0).key);
+        cap.raise(id(FINE, 4, 0, 0).key);
+        let mut table = PageTable::new(FIXTURE);
+        table.rewrite([Some(day), None], &layers, &cap);
+
+        assert_eq!(
+            resolved(&table, 4, 1, 1),
+            PageEntry::Tile { layer: 1, steps: 1 },
+            "the fine tile is past the cap, its parent is not"
+        );
+        assert_eq!(
+            resolved(&table, 4, 0, 0),
+            PageEntry::Tile { layer: 1, steps: 1 },
+            "a cell capped at the finest level without its tile"
+        );
+        assert_eq!(
+            resolved(&table, 1, 0, 0),
+            PageEntry::Floor,
+            "ocean at a level the cap does not reach"
+        );
+        assert_eq!(table.check([Some(day), None], &layers, &cap), Ok(()));
+
+        cap.raise(id(FINE, 4, 1, 1).key);
+        cap.raise(id(FINE, 1, 0, 0).key);
+        table.rewrite([Some(day), None], &layers, &cap);
+        assert_eq!(
+            resolved(&table, 4, 1, 1),
+            PageEntry::Tile { layer: 0, steps: 0 }
+        );
+        assert_eq!(resolved(&table, 1, 0, 0), PageEntry::Ocean);
+    }
+
+    #[test]
+    fn the_check_catches_a_tile_finer_than_its_cap() {
+        let ocean = HashSet::new();
+        let day = PageSurface {
+            pack: DAY,
+            ocean: &ocean,
+        };
+        let mut layers = TileLayers::new(1);
+        layers.claim(id(FINE, 2, 1, 0), None).unwrap();
+        let mut table = PageTable::new(FIXTURE);
+        table.rewrite([Some(day), None], &layers, &uncapped());
+
+        let coarse = CellLevels::uniform(&FIXTURE, COARSE);
+        let why = table
+            .check([Some(day), None], &layers, &coarse)
+            .expect_err("the fine tile is past the cap");
+        assert!(why.contains("finer than its cap"), "{why}");
+        table.rewrite([Some(day), None], &layers, &coarse);
+        assert_eq!(resolved(&table, 2, 1, 0), PageEntry::Floor);
+    }
+
+    /// A key raises the cells it covers at the finest level, and only raises.
+    #[test]
+    fn a_key_raises_the_cells_it_covers() {
+        let floor = Geometry::level_of(FIXTURE.floor);
+        let mut cap = CellLevels::uniform(&FIXTURE, floor);
+        cap.raise(id(FINE, 3, 1, 0).key);
+        cap.raise(id(COARSE, 3, 0, 0).key);
+        cap.raise(id(COARSE, 5, 0, 0).key);
+        for (row, col) in [(0, 0), (0, 1), (1, 1)] {
+            assert_eq!(cap.at(3, row, col), COARSE);
+        }
+        assert_eq!(cap.at(3, 1, 0), FINE, "a coarser key lowers nothing");
+        assert_eq!(cap.at(5, 1, 1), COARSE);
+        assert_eq!(cap.at(0, 0, 0), floor);
+        assert_eq!(CellLevels::finest(&FIXTURE).at(0, 1, 1), FINE);
+    }
+}

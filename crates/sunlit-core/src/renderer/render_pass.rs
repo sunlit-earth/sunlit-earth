@@ -4,7 +4,7 @@ use crate::params::{
     CLOUD_SPHERE_RADIUS, CLOUD_TERMINATOR_WIDTH, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS,
     RAYLEIGH_RADIUS, SceneParams,
 };
-use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
+use crate::scene::camera::OrbitalCamera;
 use crate::scene::moon;
 use crate::scene::sky::SkyState;
 use crate::scene::sun_occlusion;
@@ -13,13 +13,31 @@ use super::Renderer;
 use super::uniforms::Uniforms;
 
 /// The per-frame values that are not part of `SceneParams`: astronomy derived
-/// from the clock, and whether the resolved bind group carries both a day and
-/// a night texture.
+/// from the clock, whether the resolved bind group carries both a day and a
+/// night texture, and what the cube's tiles need beyond their bindings.
 #[derive(Clone)]
 pub(super) struct FrameInputs {
     pub sky: SkyState,
     pub use_blend: bool,
+    /// The cube drawn alone is the night floor, so the night half of the page
+    /// table refines it.
+    pub night_alone: bool,
+    pub tiles: TileUniforms,
 }
+
+/// The constant ocean colors of the day and the night, RGBA8, and a tile's
+/// width and gutter in texels. Zero where the globe has no tiles.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TileUniforms {
+    pub ocean: [[u8; 4]; 2],
+    pub tile: u32,
+    pub gutter: u32,
+}
+
+/// Bit 0 of `Uniforms::flags`: diffuse shading.
+const FLAG_DIFFUSE: u32 = 1;
+/// Bit 2 of `Uniforms::flags`: the cube drawn alone is the night floor.
+const FLAG_NIGHT_ALONE: u32 = 4;
 
 /// Texture views to render into. Decouples render pass encoding from
 /// which textures are used (preview vs export).
@@ -80,13 +98,7 @@ pub(super) fn write_uniforms<'a>(
 ) -> Option<Moon<'a>> {
     let aspect = viewport_width as f32 / viewport_height as f32;
     let cam = &params.camera;
-    let mut camera = OrbitalCamera::new(cam.longitude, cam.latitude, zoom_to_distance(cam.zoom));
-    camera.offset_x = cam.offset_x;
-    camera.offset_y = cam.offset_y;
-    camera.tilt_deg = cam.tilt_deg;
-    camera.yaw_deg = cam.yaw_deg;
-    camera.pitch_deg = cam.pitch_deg;
-    camera.fov_deg = cam.fov_deg;
+    let camera = OrbitalCamera::from_params(cam);
     let mvp = camera.mvp_matrix(aspect);
     let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();
@@ -140,7 +152,15 @@ pub(super) fn write_uniforms<'a>(
         } else {
             -1.0
         },
-        flags: u32::from(inputs.use_blend && params.diffuse_shading),
+        flags: if inputs.use_blend && params.diffuse_shading {
+            FLAG_DIFFUSE
+        } else {
+            0
+        } | if inputs.night_alone {
+            FLAG_NIGHT_ALONE
+        } else {
+            0
+        },
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,
@@ -208,8 +228,12 @@ pub(super) fn write_uniforms<'a>(
         atmo_sunrise_glow: params.atmo_sunrise_glow,
         atmo_sunrise_g: sun_occlusion::henyey_greenstein_asymmetry(params.atmo_sunrise_width),
         sun_flux: sun.flux,
-        _pad7: 0.0,
-        _pad8: 0.0,
+        day_ocean: u32::from_le_bytes(inputs.tiles.ocean[0]),
+        night_ocean: u32::from_le_bytes(inputs.tiles.ocean[1]),
+        tile_texels: inputs.tiles.tile as f32,
+        tile_gutter: inputs.tiles.gutter as f32,
+        _pad9: 0.0,
+        _pad10: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

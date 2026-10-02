@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::{debug, error, info};
 
 use crate::assets::mailbox::DecodedTextureMessage;
-use crate::assets::{texture_cache, texture_loader};
+use crate::assets::texture_loader;
 
 /// Descriptor for a texture that can be loaded on demand.
 pub(super) struct TextureSlot {
@@ -45,7 +45,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
             // file-backed slot in the same breath. So the flag was either
             // cleared there or has since been set by the reload, and clearing it
             // here would say a live load is not running, which puts a second
-            // decode of the same 8K source in flight beside the first.
+            // decode of the same source in flight beside the first.
             continue;
         }
         applied_any = true;
@@ -67,15 +67,8 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 info!(slot = msg.slot_index, "GPU texture created");
                 crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-                let bind_group = create_bind_group(
-                    &res.device,
-                    &res.bind_group_layout,
-                    &res.uniform_buffer,
-                    &tex_view,
-                    &res.sampler,
-                    &res.dummy_texture_view,
-                    &format!("bind_group_slot_{}", msg.slot_index),
-                );
+                let bind_group =
+                    res.flat_bind_group(&tex_view, &format!("bind_group_slot_{}", msg.slot_index));
                 let slot = &mut res.texture_slots[msg.slot_index];
                 slot.bind_group = Some(bind_group);
                 slot.loading = false;
@@ -86,13 +79,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 // replacement is allocated.
                 slot.texture = Some(tex);
 
-                if msg.slot_index == super::slots::DAY_SLOT {
-                    res.day_texture_view = Some(tex_view);
-                    maybe_create_composite_bind_group(res);
-                } else if msg.slot_index == super::slots::NIGHT_SLOT {
-                    res.night_texture_view = Some(tex_view);
-                    maybe_create_composite_bind_group(res);
-                } else if msg.slot_index == res.layout().clouds() {
+                if msg.slot_index == res.layout().clouds() {
                     res.cloud_texture_view = Some(tex_view);
                     maybe_create_cloud_bind_group(res);
                 }
@@ -120,27 +107,21 @@ fn is_current(posted: Option<u64>, current: u64) -> bool {
 
 /// Free the textures of every file-backed slot and let them reload.
 ///
-/// This is what makes a switch to a lower resolution actually lower the
-/// process's memory: the bind groups and views that reference the old textures
-/// are cleared first, so `Texture::destroy` has nothing left holding the
-/// allocation, and the reload allocates only after that. The same
-/// nil-before-recreate order as `gpu_setup::replace_render_textures`.
+/// This is what makes a switch to a lower resolution lower the Milky Way's
+/// memory: the bind groups that reference the old textures are cleared first,
+/// so `Texture::destroy` has nothing left holding the allocation, and the
+/// reload allocates only after that. The same nil-before-recreate order as
+/// `gpu_setup::replace_render_textures`.
 ///
 /// A slot is file-backed when it has a source path, which is exactly the slots
 /// the resolution governs: the grid is procedural and the cloud overlay arrives
 /// from the fetcher.
 ///
-/// `last_rendered_index` goes back to the grid because it is the one slot that
-/// is always loaded, and `Renderer::render` treats it as a bind group that must
-/// be there. `last_state` is cleared so the next frame is drawn rather than
-/// skipped as unchanged.
+/// `last_state` is cleared so the next frame is drawn rather than skipped as
+/// unchanged.
 pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
-    res.composite_bind_group = None;
-    res.day_texture_view = None;
-    res.night_texture_view = None;
     res.last_resolved = None;
     res.last_state = None;
-    res.last_rendered_index = 0;
 
     for slot in &mut res.texture_slots {
         if slot.source_path.is_none() {
@@ -164,36 +145,10 @@ pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
     }
 }
 
-/// Create the composite bind group if both day and night texture views are available.
-pub(super) fn maybe_create_composite_bind_group(res: &mut super::Renderer) {
-    if let (Some(day_view), Some(night_view)) = (&res.day_texture_view, &res.night_texture_view) {
-        res.composite_bind_group = Some(create_bind_group(
-            &res.device,
-            &res.bind_group_layout,
-            &res.uniform_buffer,
-            day_view,
-            &res.sampler,
-            night_view,
-            "composite_bind_group",
-        ));
-    }
-}
-
 /// Create the cloud bind group if the cloud texture view is available.
-///
-/// `fs_cloud` reads one texture, so binding 3 of the shared layout takes the
-/// dummy and the group depends on the cloud slot alone.
 pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
     if let Some(cloud_view) = &res.cloud_texture_view {
-        res.cloud_bind_group = Some(create_bind_group(
-            &res.device,
-            &res.bind_group_layout,
-            &res.uniform_buffer,
-            cloud_view,
-            &res.sampler,
-            &res.dummy_texture_view,
-            "cloud_bind_group",
-        ));
+        res.cloud_bind_group = Some(res.flat_bind_group(cloud_view, "cloud_bind_group"));
     }
 }
 
@@ -215,27 +170,21 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
     let mailbox = res.texture_mailbox.clone();
     let notify = std::sync::Arc::clone(&res.notify);
     let target_width = res.texture_resolution;
-    let cache_dir = res.texture_cache_dir.clone();
     let generation = res.texture_generation;
 
     std::thread::spawn(move || {
         texture_loader::register_jxl_hook();
         let start = std::time::Instant::now();
-        let result =
-            match texture_cache::load_at_resolution(&path, target_width, cache_dir.as_deref()) {
-                Ok(img) => {
-                    info!(
-                        width = img.width,
-                        height = img.height,
-                        path = %path.display(),
-                        elapsed_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
-                        "loaded texture"
-                    );
-                    crate::memory::log_memory_usage("after texture decode");
-                    Ok(img)
-                }
-                Err(e) => Err(e),
-            };
+        let result = texture_loader::load_capped(&path, target_width).inspect(|img| {
+            info!(
+                width = img.width,
+                height = img.height,
+                path = %path.display(),
+                elapsed_secs = format_args!("{:.2}", start.elapsed().as_secs_f64()),
+                "loaded texture"
+            );
+            crate::memory::log_memory_usage("after texture decode");
+        });
 
         // Park the result for the consumer to pick up, then wake it
         mailbox.post(DecodedTextureMessage {
@@ -247,21 +196,10 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
     });
 }
 
-/// Determine which texture slot to render with: the requested slot if loaded,
-/// otherwise `last_rendered_index` as a fallback.
-pub(super) fn resolve_render_index(res: &mut super::Renderer, slot_index: usize) -> usize {
-    if res.texture_slots[slot_index].bind_group.is_some() {
-        res.last_rendered_index = slot_index;
-        slot_index
-    } else {
-        res.last_rendered_index
-    }
-}
-
 /// Create a texture from RGBA8 pixel data with CPU-generated mipmaps.
 ///
-/// Takes ownership of `rgba_pixels` to avoid a 128 MB clone for 8K textures.
-/// The buffer is reused in-place for mipmap downsampling.
+/// Takes ownership of `rgba_pixels` to avoid cloning a decoded texture. The
+/// buffer is reused in-place for mipmap downsampling.
 #[tracing::instrument(skip(device, queue, rgba_pixels), fields(label, width, height))]
 pub(super) fn create_mipmapped_texture(
     device: &wgpu::Device,
@@ -292,7 +230,6 @@ pub(super) fn create_mipmapped_texture(
     crate::memory::log_memory_usage("mipmap: after level 0 upload");
 
     // Generate subsequent mip levels by box-filtering the previous level.
-    // We take ownership of the pixel buffer to avoid cloning 128 MB for 8K textures.
     let mut pixels = rgba_pixels;
     let mut w = width;
     let mut h = height;
@@ -307,20 +244,36 @@ pub(super) fn create_mipmapped_texture(
     texture
 }
 
-/// Create a bind group with a uniform buffer, day texture, sampler, and night texture.
+/// What one bind group of the shared layout holds besides the uniforms.
 ///
-/// For every group that reads one texture, the Grid, Day and Night modes and
-/// the cloud overlay alike, pass the dummy 1x1 texture as `night_texture_view`.
-/// For blend mode, pass the actual night texture.
+/// A group that reads one flat texture, the Moon, the Milky Way or the
+/// clouds, has the dummy cube in all three cube places. A group that draws the
+/// globe from a cube, the grid's or the surface's, has the dummy 1x1 texture as
+/// its flat texture and the surface sampler. Every group but the surface's has
+/// the dummy tile array and the dummy page table, which draws the floor
+/// everywhere.
+pub(super) struct Bindings<'a> {
+    /// Binding 1.
+    pub texture: &'a wgpu::TextureView,
+    /// Binding 2.
+    pub sampler: &'a wgpu::Sampler,
+    /// Bindings 4 to 6: the day or grid cube, the night cube and the mask.
+    pub cubes: [&'a wgpu::TextureView; 3],
+    /// Bindings 7 and 8: the tile array and the page table.
+    pub tiles: [&'a wgpu::TextureView; 2],
+}
+
+/// Create a bind group of the shared layout.
 pub(super) fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     uniform_buffer: &wgpu::Buffer,
-    texture_view: &wgpu::TextureView,
-    sampler: &wgpu::Sampler,
-    night_texture_view: &wgpu::TextureView,
+    bindings: &Bindings<'_>,
     label: &str,
 ) -> wgpu::BindGroup {
+    let view = wgpu::BindingResource::TextureView;
+    let [day_cube, night_cube, mask_cube] = bindings.cubes;
+    let [tile_array, page_table] = bindings.tiles;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
@@ -331,15 +284,31 @@ pub(super) fn create_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(texture_view),
+                resource: view(bindings.texture),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::Sampler(sampler),
+                resource: wgpu::BindingResource::Sampler(bindings.sampler),
             },
             wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(night_texture_view),
+                binding: 4,
+                resource: view(day_cube),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: view(night_cube),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: view(mask_cube),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: view(tile_array),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: view(page_table),
             },
         ],
     })

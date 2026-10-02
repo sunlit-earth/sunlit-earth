@@ -42,16 +42,16 @@ pub use self::macos::snapshot;
 #[cfg(windows)]
 pub use self::windows::snapshot;
 
-/// What a cold-cache launch costs in private bytes before any surface texture
-/// or cloud image is resident.
-///
-/// The measured startup peak at the widest resolution is about 2.43 GiB in a
-/// release build, of which 512 MiB is the three resident textures. The rest is
-/// the two 8K JXL decodes, wgpu, the driver, and the process itself. The
-/// decodes happen at every resolution, because a cold downscale cache reads
-/// the full-width source whatever width it is asked for, so this part of the
-/// budget does not shrink with the setting. Rounded up from about 1.93 GiB.
-const COLD_START_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// What a launch costs in private bytes before any surface texture or cloud
+/// image is resident: the decodes that build the textures, the transcoder's
+/// first packs, wgpu, the driver, and the process itself, none of which
+/// shrinks with the setting. Measured on the cube surface at 772 MiB on this
+/// machine's GPU without a cloud image, and at 829 MiB on WARP once the
+/// textures the budget counts below are taken off its 1140 MiB peak; rounded
+/// up. Not the peak itself, which is what the whole budget, this and the
+/// headroom and the resident textures, has to clear at every resolution
+/// (`docs/testing.md`).
+const COLD_START_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Slack above a cold start before the budget is crossed.
 ///
@@ -64,22 +64,46 @@ const BUDGET_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Bytes the resident textures cost at `texture_resolution`.
 ///
-/// Three textures at `width` by `width / 2` RGBA8: the day and night surfaces
-/// and the cloud overlay, which follows the same setting. Each carries a full
-/// mip chain, which is four thirds of its base level. Then the two overlays
-/// with a width of their own, one of which the setting moves and one of which
-/// it does not. Saturating, because the renderer takes any width as a cap and a
-/// nonsense one must produce a large budget rather than a panic.
+/// The cube surface ([`surface_texture_bytes`]); the cloud overlay, `width` by
+/// `width / 2` RGBA8 at the setting's own width with a full mip chain, which is
+/// four thirds of its base level; then the two overlays with a width of their
+/// own, one of which the setting moves and one of which it does not.
+/// Saturating, because the renderer takes any width as a cap and a nonsense
+/// one must produce a large budget rather than a panic.
 fn resident_texture_bytes(texture_resolution: u32) -> u64 {
-    /// The day surface, the night surface, and the cloud overlay.
-    const RESIDENT_TEXTURES: u64 = 3;
-
     let width = u64::from(texture_resolution);
-    let base_level = width.saturating_mul(width / 2).saturating_mul(4);
-    base_level
-        .saturating_mul(RESIDENT_TEXTURES * 4 / 3)
+    let clouds = width.saturating_mul(width / 2).saturating_mul(4);
+    surface_texture_bytes(texture_resolution)
+        .saturating_add(clouds.saturating_mul(4) / 3)
         .saturating_add(MOON_TEXTURE_BYTES)
         .saturating_add(milky_way_texture_bytes(texture_resolution))
+}
+
+/// Bytes the cube surface costs at `texture_resolution` on a CPU adapter,
+/// whose textures are process memory: the day floors it keeps, the month in
+/// force's and the month ahead's near a hand-over, and the night floor,
+/// decoded to RGBA8 with their mip chains, the water mask in BC4 with its,
+/// and, at a setting that allows a tile at all, the tile array of
+/// `CPU_TILE_LAYER_BUDGET` RGBA8 layers, each a tile with its gutters and one
+/// mip. The setting moves only the array, since it caps the finest level and
+/// not how many layers hold it.
+fn surface_texture_bytes(texture_resolution: u32) -> u64 {
+    use crate::assets::tiles::{GEOMETRY, Geometry};
+
+    let square = |side: u32| u64::from(side) * u64::from(side);
+    let floors = 3 * 6 * square(GEOMETRY.floor) * 4 * 4 / 3;
+    let mask = 6 * square(GEOMETRY.mask) / 2 * 4 / 3;
+    let tiled = crate::renderer::residency::finest_level(texture_resolution)
+        > Geometry::level_of(GEOMETRY.floor);
+    let layer = GEOMETRY.tile + 2 * GEOMETRY.gutter;
+    let array = if tiled {
+        u64::from(crate::renderer::tiles::CPU_TILE_LAYER_BUDGET)
+            * (square(layer) + square(layer / 2))
+            * 4
+    } else {
+        0
+    };
+    floors + mask + array
 }
 
 /// Bytes the Milky Way panorama costs at `texture_resolution`.
@@ -87,7 +111,7 @@ fn resident_texture_bytes(texture_resolution: u32) -> u64 {
 /// Its source is 4096 wide, which is wider than the narrowest cap the setting
 /// offers and no wider than the other two, so the setting moves this term at
 /// the narrow end and not at the wide one: 42.7 MiB with its mip chain at 8192
-/// and 4096, 10.7 MiB at 2048 where the halving cache serves the downscale.
+/// and 4096, 10.7 MiB at 2048, where the loader halves the panorama in memory.
 /// `PANORAMA_WIDTH` is what stops the term growing above the source's own
 /// width, which is the same clause `halvings_to` applies to the pixels.
 fn milky_way_texture_bytes(texture_resolution: u32) -> u64 {
@@ -113,8 +137,7 @@ const MOON_TEXTURE_BYTES: u64 = 6 * 1024 * 1024;
 ///
 /// A cold start plus its headroom plus whatever the chosen resolution keeps
 /// resident, so the Low end of the setting is not judged against the High end's
-/// footprint. At the widest resolution this is 3 GiB, the Moon's 6 MiB and the
-/// panorama's 42.7 MiB.
+/// footprint.
 fn private_bytes_budget(texture_resolution: u32) -> u64 {
     COLD_START_BYTES
         .saturating_add(BUDGET_HEADROOM_BYTES)
@@ -318,11 +341,12 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
-    /// The one cold-cache startup peak anyone has measured: about 2.43 GiB of
-    /// private bytes, at 8192, in a release build. Every resolution is held to
-    /// this figure rather than to a smaller one derived from it; the reasoning
-    /// is in `docs/testing.md`.
-    const MEASURED_COLD_START_PEAK: u64 = 2488 * MIB;
+    /// The highest startup peak measured on the cube surface: 1140 MiB of
+    /// private bytes, at 8192, in a release build on WARP with a cloud image.
+    /// Every resolution is held to this figure rather than to a smaller one
+    /// derived from it; the reasoning and the other measurements are in
+    /// `docs/testing.md`.
+    const MEASURED_COLD_START_PEAK: u64 = 1140 * MIB;
 
     /// Build a snapshot with known values for format and rotation tests.
     fn sample_snapshot() -> MemorySnapshot {
@@ -495,11 +519,10 @@ mod tests {
         }
     }
 
-    /// A cold cache at any resolution still decodes both 8K sources, so that
-    /// launch is the worst normal operation gets and the budget has to clear it
-    /// everywhere. The narrow end is the binding case rather than a restatement
-    /// of the wide one: it gets the smallest resident allowance and has the same
-    /// decode to pay for. The measured clearances are in `docs/testing.md`.
+    /// A cold-cache launch is the worst normal operation gets, and the budget
+    /// has to clear it at every resolution. The narrow end is the binding case
+    /// rather than a restatement of the wide one: it gets the smallest resident
+    /// allowance. The measured clearances are in `docs/testing.md`.
     #[test]
     fn the_budget_stays_above_a_cold_cache_first_run_at_every_resolution() {
         for width in TEXTURE_RESOLUTIONS {
@@ -529,14 +552,61 @@ mod tests {
         }
     }
 
+    /// The figures are summed level by level from the texture sizes, where the
+    /// function takes four thirds of the base level, so a term it drops or
+    /// miscounts moves the total by far more than the difference between the
+    /// two ways of counting a mip chain.
     #[test]
+    #[allow(clippy::cast_precision_loss)]
     fn the_resident_half_is_the_textures_the_renderer_keeps() {
-        let surfaces = |width| {
-            resident_texture_bytes(width) - MOON_TEXTURE_BYTES - milky_way_texture_bytes(width)
+        use crate::assets::tiles::GEOMETRY;
+
+        let chain = |width: u32, height: u32, bytes_per_pixel: f64| -> f64 {
+            (0..32)
+                .map(|level| (width >> level, height >> level))
+                .take_while(|&(w, h)| w > 0 && h > 0)
+                .map(|(w, h)| f64::from(w) * f64::from(h) * bytes_per_pixel)
+                .sum()
         };
-        assert_eq!(surfaces(8192), 512 * MIB);
-        assert_eq!(surfaces(4096), 128 * MIB);
-        assert_eq!(surfaces(2048), 32 * MIB);
+        // The month in force's and the month ahead's day floors, and the
+        // night's.
+        let floors = 3.0 * 6.0 * chain(GEOMETRY.floor, GEOMETRY.floor, 4.0);
+        let mask = 6.0 * chain(GEOMETRY.mask, GEOMETRY.mask, 0.5);
+        let layer = GEOMETRY.tile + 2 * GEOMETRY.gutter;
+        let array = f64::from(crate::renderer::tiles::CPU_TILE_LAYER_BUDGET)
+            * (f64::from(layer * layer) + f64::from(layer / 2 * (layer / 2)))
+            * 4.0;
+        for width in TEXTURE_RESOLUTIONS {
+            let expected = floors
+                + mask
+                + if width >= 4096 { array } else { 0.0 }
+                + chain(width, width / 2, 4.0)
+                + MOON_TEXTURE_BYTES as f64
+                + chain(width.min(4096), width.min(4096) / 2, 4.0);
+            approx::assert_relative_eq!(
+                resident_texture_bytes(width) as f64,
+                expected,
+                max_relative = 1e-3
+            );
+        }
+    }
+
+    /// The setting caps the finest tile level, so the tile array is there at
+    /// every width that allows a tile and at the same size, and the floors and
+    /// the mask are there at all of them.
+    #[test]
+    fn the_surfaces_term_moves_only_with_the_tile_array() {
+        let tile = u64::from(crate::assets::tiles::GEOMETRY.tile);
+        assert_eq!(surface_texture_bytes(8192), surface_texture_bytes(4096));
+        let array = surface_texture_bytes(4096) - surface_texture_bytes(2048);
+        assert!(
+            array > u64::from(crate::renderer::tiles::CPU_TILE_LAYER_BUDGET) * tile * tile * 4,
+            "the array's {array} bytes hold fewer than its layers' tiles"
+        );
+        assert!(
+            surface_texture_bytes(2048) > 0,
+            "the floors are always there"
+        );
     }
 
     #[test]

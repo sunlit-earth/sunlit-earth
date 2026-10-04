@@ -53,8 +53,8 @@ wsl -d Ubuntu-22.04 -- rm -rf /home/<user>/sunlit-target-<worktree>
 - At the end of any session that built in WSL, bound the directories with cargo-sweep (`cargo install cargo-sweep`). It finds a target directory through `cargo metadata`, so point `CARGO_TARGET_DIR` at each one and give it any checkout. This caps every directory at 8 GB by deleting the oldest artifacts first:
 
 ```bash
-for d in $HOME/sunlit-target-*; do CARGO_TARGET_DIR=$d cargo sweep --maxsize 8GB /mnt/c/path/to/sunlit-earth; done
-CARGO_TARGET_DIR=$HOME/sunlit-target cargo sweep --maxsize 10GB /mnt/c/path/to/sunlit-earth
+for d in "$HOME"/sunlit-target-*; do [ -d "$d" ] || continue; CARGO_TARGET_DIR=$d cargo sweep --maxsize 8GB /mnt/c/path/to/sunlit-earth; done
+[ -d "$HOME/sunlit-target" ] && CARGO_TARGET_DIR=$HOME/sunlit-target cargo sweep --maxsize 10GB /mnt/c/path/to/sunlit-earth
 ```
 
 `--dry-run` reports without deleting, and `--time 7` removes what nothing has used for a week instead of capping by size. The flags are exclusive, so run them one at a time.

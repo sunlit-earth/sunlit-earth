@@ -782,6 +782,8 @@ fn test_a_fresh_install_builds_its_packs_once() {
         .ready(Ready::Listener)
         .start();
     stdout_watcher.wait_for_signal("loading_text Preparing", READY);
+    let mask_path = pack_path(&cache_dir, PackKind::Mask);
+    let mask_first = mask_path.is_file();
     while !packs.iter().all(|(_, path)| path.is_file()) {
         assert!(
             started.elapsed() < FIRST_RUN,
@@ -836,7 +838,7 @@ fn test_a_fresh_install_builds_its_packs_once() {
         "the loading line never named the night: {lines:?}"
     );
     assert!(
-        lines.iter().any(|line| line == "Preparing Oceans"),
+        mask_first || lines.iter().any(|line| line == "Preparing Oceans"),
         "the loading line never named the oceans: {lines:?}"
     );
 

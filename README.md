@@ -32,6 +32,7 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 - 📸 Custom camera controls and presets let you choose your view of Earth.
 - 🌍 Sunlight and city lights reflect the current date and time, with automatic wallpaper updates throughout the day.
 - ⛅️ Recent satellite cloud imagery shows changing weather patterns on top of detailed NASA surface textures.
+- ❄️ The surface follows the seasons, with snow cover and vegetation from twelve months of NASA imagery.
 - 🌌 The Sun, Moon, planets, visible stars, and Milky Way are rendered at their astronomically correct positions.
 - 🖥 Wallpapers fit your monitor layout, with support for mirrored views or continuous panoramas.
 - ⚙️ Everything is adjustable: camera position, lighting, atmospheric effects, apparent size and brightness of celestial objects, etc.
@@ -39,7 +40,6 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 Planned features:
 
 - 🔧 More setup options and autostart.
-- ❄️ Seasonal surface textures for Earth.
 - 🌑 Eclipse rendering (see the moon's shadow moving over the surface of Earth).
 - 💾 Save and load your own profiles.
 
@@ -83,7 +83,7 @@ If you know your way around the Rust toolchain, you also have the option to [bui
 
 Sunlit Earth is controlled through the UI, and all components have tooltips. To get started:
 
-1. Open Sunlit Earth and wait for the surface textures to load (takes a few seconds on first launch).
+1. Open Sunlit Earth and wait for the surface textures to load (the first launch takes longer while the app prepares them).
 2. Choose a preset or drag the globe to adjust the view to your liking.
 3. Click **Set as Wallpaper** to apply the scene as your desktop background.
 4. Enable **Auto-refresh wallpaper** if you want the wallpaper to keep updating in the background.
@@ -93,7 +93,7 @@ The desktop shows a still image between updates. The preview lets you compose th
 
 Cloud imagery downloads automatically and is cached for later use. Internet access is needed to obtain fresh clouds. The bundled surface textures and astronomical calculations work offline. Clouds are recent imagery (usually less than 3 hours old).
 
-The default globe texture resolution is 4096 pixels wide. Under Advanced → Rendering, choose 2048 to reduce memory use or 8192 for more surface detail. This setting also selects the cloud download resolution. Rendering happens on the GPU by default. If your device does not have a supported GPU or video driver, Sunlit Earth falls back to software rendering, which is slower, but renders at a similar quality level.
+The default globe texture resolution is 4096 pixels around the equator. Under Advanced → Rendering, choose 2048 to reduce memory use or 8192 for more surface detail. This setting also selects the cloud download resolution. Rendering happens on the GPU by default. If your device does not have a supported GPU or video driver, Sunlit Earth falls back to software rendering, which is slower, but renders at a similar quality level.
 
 ## Using the app
 
@@ -117,7 +117,7 @@ Configuration, caches, and generated wallpapers live under these directories:
 - Windows: `%LOCALAPPDATA%\SunlitEarth`
 - macOS: `~/Library/Application Support/SunlitEarth`
 
-The settings file is `config.toml`. Back it up if you want to keep a configuration before experimenting.
+The settings file is `config.toml`. Back it up if you want to keep a configuration before experimenting. The cache also holds the surface textures prepared on the first launch (about 420 MiB); if deleted, they are prepared again.
 
 ### Export an image
 
@@ -180,7 +180,7 @@ To render an image from the checkout:
 cargo run --release -- render --output earth.png --width 1920 --height 1080
 ```
 
-When building through WSL from a Windows checkout, set `CARGO_TARGET_DIR` to a separate directory in the Linux filesystem, such as `$HOME/sunlit-target`, before building.
+When building through WSL from a Windows checkout, set `CARGO_TARGET_DIR` to a separate directory in the Linux filesystem, such as `$HOME/sunlit-target-main`, before building. `$HOME/sunlit-target` is reserved for `cargo xtask`.
 
 If the build reports that libclang is missing, check the platform prerequisites above. On Ubuntu and Debian, the required package is `libclang-dev`.
 

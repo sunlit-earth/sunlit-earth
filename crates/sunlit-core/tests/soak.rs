@@ -269,6 +269,23 @@ fn a_frame_parked_per_simulated_day_is_growth() {
 }
 
 #[test]
+fn a_slow_steady_rise_under_the_cap_is_growth() {
+    const MIB: u64 = 1024 * 1024;
+    let floors: Vec<u64> = (0..7).map(|i| 56 * MIB + i * 3 * MIB).collect();
+    assert!(check_growth(&floors).is_err(), "{floors:?}");
+}
+
+#[test]
+fn one_large_step_that_plateaus_is_still_over_the_cap() {
+    const MIB: u64 = 1024 * 1024;
+    let floors: Vec<u64> = [0, 0, 40, 40, 40, 40, 40]
+        .iter()
+        .map(|step| (56 + step) * MIB)
+        .collect();
+    assert!(check_growth(&floors).is_err(), "{floors:?}");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     let _guard = gpu_lock();

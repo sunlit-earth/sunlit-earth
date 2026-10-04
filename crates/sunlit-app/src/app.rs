@@ -171,7 +171,7 @@ fn init_ui(
     displays::apply_diagram_to_window(window, &monitors, config.anchor().as_deref());
 
     ui_callbacks::apply_config_to_window(window, config);
-    ui_callbacks::defer_combobox_indices(
+    ui_callbacks::set_combobox_indices(
         &window.as_weak(),
         ui_callbacks::ComboIndices::of(
             config,

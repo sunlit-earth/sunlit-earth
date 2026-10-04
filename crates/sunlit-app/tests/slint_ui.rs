@@ -351,8 +351,8 @@ fn test_load_defaults_fires_a_callback_that_can_reset_the_window() {
 /// `apply_whole_config` is what load-defaults and reset both run, and it is
 /// four things at once: the window, the diagram, the two settings the engine
 /// holds itself because they are not in `SceneParams`, and the push. The combo
-/// indices are the one part left out, since `defer_combobox_indices` lands on
-/// an event loop this backend does not run.
+/// indices' second write lands on an event loop this backend does not run; the
+/// first, which the push reads, is the next case's.
 #[test]
 fn test_load_defaults_applies_the_whole_config_the_app_would() {
     use slint::Model;
@@ -416,6 +416,46 @@ fn test_load_defaults_applies_the_whole_config_the_app_would() {
         })
         .expect("the scene the window now holds reaches the engine");
     approx::assert_relative_eq!(pushed.camera.longitude, wanted.camera.longitude);
+}
+
+/// The scene load-defaults pushes carries the config's sample count and
+/// texture mode, which are rows of two combo boxes, rather than the rows the
+/// window was on. Startup sets the rows through the same
+/// `set_combobox_indices` before its own push.
+#[test]
+fn test_load_defaults_pushes_the_configs_combo_rows() {
+    use sunlit_core::engine::EngineCommand;
+
+    let window = create_window();
+    let (sender, sent) = crossbeam_channel::unbounded();
+    let counts = vec![1, 2, 4, 8];
+    let link = sunlit_earth::engine_client::EngineLink::new(
+        sender,
+        counts.iter().map(|count| format!("{count}x")).collect(),
+        counts.clone(),
+    );
+    let screens = sunlit_earth::displays::shared_monitors();
+    sunlit_earth::ui_callbacks::register_action_callbacks(&window, &link, &screens);
+
+    let defaults = sunlit_core::config::AppConfig::default();
+    let other_count = counts
+        .iter()
+        .position(|&count| count != defaults.sample_count)
+        .expect("a count the defaults do not ask for");
+    window.set_aa_index(i32::try_from(other_count).expect("a small index"));
+    window.set_texture_index((defaults.texture_index + 1) % 4);
+
+    window.invoke_load_defaults();
+
+    let pushed = sent
+        .try_iter()
+        .find_map(|command| match command {
+            EngineCommand::UpdateParams(params) => Some(params),
+            _ => None,
+        })
+        .expect("load-defaults pushes the window's scene");
+    assert_eq!(pushed.sample_count, defaults.sample_count);
+    assert_eq!(pushed.texture_index, defaults.texture_index);
 }
 
 // ---------------------------------------------------------------------------
@@ -801,8 +841,8 @@ fn test_the_diagram_marks_the_screen_the_plan_will_use() {
 /// A layout that moved while the window was open.
 ///
 /// The anchor row is the return value rather than a property read, because
-/// setting it goes through `defer_combobox_indices`, which needs an event loop
-/// this backend deliberately does not have.
+/// the write that sticks is the second of `set_combobox_indices`, which needs
+/// an event loop this backend deliberately does not have.
 #[test]
 fn test_a_layout_that_changed_rebuilds_the_displays_group() {
     use slint::Model;

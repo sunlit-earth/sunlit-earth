@@ -297,7 +297,7 @@ fn apply_whole_config(
 ) {
     apply_config_to_window(window, config);
 
-    defer_combobox_indices(
+    set_combobox_indices(
         &window.as_weak(),
         ComboIndices::of(
             config,
@@ -389,7 +389,7 @@ impl ComboIndices {
 
     /// The rows the window is on right now.
     ///
-    /// What a caller that is changing one combo needs, so the deferred write
+    /// What a caller that is changing one combo needs, so the second write
     /// puts every other combo back where it already was instead of reading a
     /// config the window may be ahead of.
     pub fn of_window(window: &MainWindow) -> Self {
@@ -401,19 +401,30 @@ impl ComboIndices {
             display_anchor: window.get_display_anchor_index(),
         }
     }
+
+    fn apply_to(self, window: &MainWindow) {
+        window.set_aa_index(self.aa);
+        window.set_texture_index(self.texture);
+        window.set_texture_resolution_index(self.texture_resolution);
+        window.set_display_mode_index(self.display_mode);
+        window.set_display_anchor_index(self.display_anchor);
+    }
 }
 
-/// Defer setting `ComboBox` indices so they apply after Slint processes model
-/// changes. This replaces four identical copies of the same pattern.
-pub fn defer_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: ComboIndices) {
+/// Set the `ComboBox` indices now, and again once Slint has processed the
+/// model changes made in this turn, which can move them.
+///
+/// The second write is the one that sticks. The first is what a push of the
+/// window's scene in the same turn reads, as the startup's and load-defaults'
+/// do: the sample count and the texture mode are combo rows.
+pub fn set_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: ComboIndices) {
+    if let Some(win) = window_weak.upgrade() {
+        indices.apply_to(&win);
+    }
     let weak = window_weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(win) = weak.upgrade() {
-            win.set_aa_index(indices.aa);
-            win.set_texture_index(indices.texture);
-            win.set_texture_resolution_index(indices.texture_resolution);
-            win.set_display_mode_index(indices.display_mode);
-            win.set_display_anchor_index(indices.display_anchor);
+            indices.apply_to(&win);
             win.window().request_redraw();
         }
     })
@@ -424,8 +435,8 @@ pub fn defer_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: Co
 ///
 /// Called at startup, on reset, and on load-defaults. Window geometry is
 /// applied only at startup so that reset/load-defaults don't move or resize
-/// the window. The `texture_index` and `aa_index` are set via a deferred
-/// `invoke_from_event_loop` instead, so they are not set here.
+/// the window. The `texture_index` and `aa_index` are set through
+/// `set_combobox_indices` instead, so they are not set here.
 pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     apply_params_to_window(window, &SceneParams::from_config(config));
 
@@ -442,8 +453,8 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
 /// Write scene parameters into the window's properties.
 ///
 /// The texture and AA combo boxes are deliberately left alone: their indices
-/// are applied through `defer_combobox_indices` so they land after Slint has
-/// processed the model changes.
+/// are applied through `set_combobox_indices`, whose second write lands after
+/// Slint has processed the model changes.
 pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     let cam = &params.camera;
     window.set_camera_longitude(cam.longitude);

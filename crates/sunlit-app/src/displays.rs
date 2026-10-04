@@ -189,10 +189,10 @@ pub fn apply_diagram_to_window(window: &MainWindow, monitors: &[Monitor], anchor
 /// Rebuild the Displays group around a layout that changed, and say which row
 /// the screen combo was put back on.
 ///
-/// The row is returned rather than only set, because setting it goes through
-/// [`crate::ui_callbacks::defer_combobox_indices`], which lands after Slint has
-/// processed the model change and therefore after this function returns. A test
-/// with no event loop has nothing else to assert against.
+/// The row is returned rather than only set, because the write that sticks is
+/// the second of [`crate::ui_callbacks::set_combobox_indices`], which lands
+/// after Slint has processed the model change and therefore after this function
+/// returns. A test with no event loop has nothing else to assert against.
 ///
 /// `stored_anchor` is the id in the config file, which is written the moment the
 /// plan changes and is therefore the anchor the engine is planning with. A
@@ -214,7 +214,7 @@ pub fn replace_monitors(
     apply_models_to_window(window, &monitors);
     let row = anchor_index(&screen_ids(&monitors), stored_anchor);
     indices.display_anchor = row;
-    crate::ui_callbacks::defer_combobox_indices(&window.as_weak(), indices);
+    crate::ui_callbacks::set_combobox_indices(&window.as_weak(), indices);
     let stored = (!stored_anchor.trim().is_empty()).then_some(stored_anchor);
     apply_diagram_to_window(window, &monitors, stored);
     set_monitors(screens, monitors);

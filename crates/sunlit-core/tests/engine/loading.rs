@@ -80,6 +80,24 @@ fn before(seen: &[String]) -> &[String] {
     &seen[..seen.len() - 1]
 }
 
+/// The lines the engine shows while no pack is being prepared and a floor it
+/// draws with is not resident yet. A slow adapter can show any of them for a
+/// tick between two statuses of the case, and a fast one none.
+const TRANSIENT: [&str; 3] = [
+    "Loading Day and Night...",
+    "Loading Day...",
+    "Loading Night...",
+];
+
+/// The statuses in `seen` before its last, less the transient loading lines.
+fn between(seen: &[String]) -> Vec<&str> {
+    before(seen)
+        .iter()
+        .map(String::as_str)
+        .filter(|text| !TRANSIENT.contains(text))
+        .collect()
+}
+
 /// Every status the engine sent once it has finished a whole tick, in order.
 fn statuses_so_far(harness: &Harness) -> Vec<String> {
     for _ in 0..2 {
@@ -125,35 +143,30 @@ fn a_first_run_names_each_pack_it_prepares_and_counts_the_months() {
     });
 
     let first = statuses_until(&harness, "Preparing Oceans");
-    assert!(
-        before(&first)
-            .iter()
-            .all(|text| text == "Loading Day and Night..."),
-        "before the mask: {first:?}"
-    );
+    assert!(between(&first).is_empty(), "before the mask: {first:?}");
     for next in ["Preparing March, 1 of 12", "Preparing Night"] {
         gate.allow(1);
         let seen = statuses_until(&harness, next);
-        assert!(before(&seen).is_empty(), "on the way to {next:?}: {seen:?}");
+        assert!(
+            between(&seen).is_empty(),
+            "on the way to {next:?}: {seen:?}"
+        );
     }
-    // The night pack is built and the build is over, so the line names the
-    // night floor until it is resident, which a software adapter can take a
-    // tick or two to do and a fast one does between two statuses.
     gate.allow(1);
     let seen = statuses_until(&harness, "");
     assert!(
-        before(&seen).is_empty() || before(&seen) == ["Loading Night..."],
+        between(&seen).is_empty(),
         "on the way to the end of the first frame's packs: {seen:?}"
     );
 
     harness.advance(&clock, IDLE);
     let seen = statuses_until_idle(&harness, &clock, "Preparing April, 2 of 12");
-    assert!(before(&seen).is_empty(), "{seen:?}");
+    assert!(between(&seen).is_empty(), "{seen:?}");
 
     gate.open();
     let rest = statuses_until(&harness, "");
-    let places: Vec<usize> = before(&rest)
-        .iter()
+    let places: Vec<usize> = between(&rest)
+        .into_iter()
         .map(|text| {
             let (_, count) = text
                 .strip_prefix("Preparing ")

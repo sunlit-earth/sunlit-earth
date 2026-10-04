@@ -53,10 +53,11 @@ const STEP: Duration = Duration::from_hours(1);
 const STEPS: u64 = 7 * 24;
 /// The upstream cloud service publishes every three hours.
 const STEPS_PER_CLOUD_UPDATE: u64 = 3;
-/// Fixture cloud image size: large enough that a leaked frame (8 MiB decoded)
-/// would dominate the noise, small enough to decode hundreds of times.
-const CLOUD_WIDTH: u32 = 2048;
-const CLOUD_HEIGHT: u32 = 1024;
+/// Fixture cloud image size: large enough that a leaked frame (8 MiB decoded,
+/// the overlay being one channel) would dominate the noise, small enough to
+/// decode hundreds of times.
+const CLOUD_WIDTH: u32 = 4096;
+const CLOUD_HEIGHT: u32 = 2048;
 /// Wallpaper export size.
 ///
 /// Small on purpose, and the test is about the schedule and the memory rather
@@ -70,7 +71,7 @@ const EXPORT_SIZE: (u32, u32) = (160, 96);
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Growth allowed from the floor after warm-up to the floor at the end: four
-/// decoded 2048x1024 frames.
+/// decoded frames.
 ///
 /// A cap and not the test: lavapipe's allocator and device memory rise in
 /// one-off steps of 8 to 12 MiB that land anywhere in the week, and 13.5 MiB
@@ -137,13 +138,13 @@ struct FixtureCloud {
 
 impl FixtureCloud {
     fn new(width: u32, height: u32) -> Self {
-        // A gradient rather than a flat color, so the JPEG is a realistic size
-        // and the decode does real work.
-        let mut img = image::RgbImage::new(width, height);
+        // A gradient rather than a flat value, so the JPEG is a realistic size
+        // and the decode does real work. Gray, as the upstream maps are.
+        let mut img = image::GrayImage::new(width, height);
         for (x, y, px) in img.enumerate_pixels_mut() {
             #[allow(clippy::cast_possible_truncation)]
             let v = ((x + y) % 256) as u8;
-            *px = image::Rgb([v, 255 - v, v / 2]);
+            *px = image::Luma([v]);
         }
         let mut buf = std::io::Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Jpeg)

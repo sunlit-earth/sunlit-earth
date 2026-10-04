@@ -65,14 +65,14 @@ const BUDGET_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 /// Bytes the resident textures cost at `texture_resolution`.
 ///
 /// The cube surface ([`surface_texture_bytes`]); the cloud overlay, `width` by
-/// `width / 2` RGBA8 at the setting's own width with a full mip chain, which is
-/// four thirds of its base level; then the two overlays with a width of their
-/// own, one of which the setting moves and one of which it does not.
+/// `width / 2` of one channel at the setting's own width with a full mip chain,
+/// which is four thirds of its base level; then the two overlays with a width
+/// of their own, one of which the setting moves and one of which it does not.
 /// Saturating, because the renderer takes any width as a cap and a nonsense
 /// one must produce a large budget rather than a panic.
 fn resident_texture_bytes(texture_resolution: u32) -> u64 {
     let width = u64::from(texture_resolution);
-    let clouds = width.saturating_mul(width / 2).saturating_mul(4);
+    let clouds = width.saturating_mul(width / 2);
     surface_texture_bytes(texture_resolution)
         .saturating_add(clouds.saturating_mul(4) / 3)
         .saturating_add(MOON_TEXTURE_BYTES)
@@ -580,7 +580,7 @@ mod tests {
             let expected = floors
                 + mask
                 + if width >= 4096 { array } else { 0.0 }
-                + chain(width, width / 2, 4.0)
+                + chain(width, width / 2, 1.0)
                 + MOON_TEXTURE_BYTES as f64
                 + chain(width.min(4096), width.min(4096) / 2, 4.0);
             approx::assert_relative_eq!(

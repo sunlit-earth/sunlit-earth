@@ -21,7 +21,7 @@ use crate::config::{DEFAULT_TEXTURE_RESOLUTION, TEXTURE_RESOLUTIONS};
 
 use super::cloud_source::CloudSource;
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
-use super::texture_loader::{self, DecodedImage};
+use super::texture_loader::{self, Channels, DecodedImage};
 
 /// Callback invoked after a new frame has been posted, so a client that only
 /// works on demand knows there is something waiting. Headless callers that poll
@@ -218,22 +218,32 @@ fn discard_cache_meta(path: &Path) {
     }
 }
 
-/// Decode a JPEG cloud image from raw bytes into RGBA8 pixel data.
+/// Decode a JPEG cloud image from raw bytes into its red channel, which is the
+/// one the cloud shader reads.
+///
+/// The channel comes straight out of the decoder's buffer, so the image is
+/// never held as RGBA: a gray source is one channel already, and a color one,
+/// which is how upstream ships its gray maps, costs its three-byte decode and
+/// the one-byte copy.
 ///
 /// Through [`texture_loader::orient`], so the overlay lands in the same UV
 /// layout as the file-backed maps and cannot drift from them.
 #[tracing::instrument(skip(bytes), fields(bytes_len = bytes.len()))]
 fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| format!("Failed to decode cloud JPEG: {e}"))?
-        .into_rgba8();
+    let img =
+        image::load_from_memory(bytes).map_err(|e| format!("Failed to decode cloud JPEG: {e}"))?;
 
     let width = img.width();
     let height = img.height();
+    let pixels = match img {
+        image::DynamicImage::ImageLuma8(gray) => gray.into_raw(),
+        other => other.into_rgb8().pixels().map(|pixel| pixel[0]).collect(),
+    };
     let mut decoded = DecodedImage {
-        pixels: img.into_raw(),
+        pixels,
         width,
         height,
+        channels: Channels::Red,
     };
     texture_loader::orient(&mut decoded);
 
@@ -687,7 +697,37 @@ mod tests {
         let decoded = result.unwrap();
         assert_eq!(decoded.width, 2);
         assert_eq!(decoded.height, 2);
-        assert_eq!(decoded.pixels.len(), 2 * 2 * 4);
+        assert_eq!(decoded.channels, Channels::Red);
+        assert_eq!(decoded.pixels.len(), 2 * 2);
+    }
+
+    /// The overlay keeps the channel the shader samples, red, rather than a
+    /// luminance, which for this color would be about 75.
+    #[test]
+    fn a_decoded_cloud_image_is_its_red_channel() {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([128, 64, 32]));
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("encode");
+
+        let decoded = decode_cloud_jpeg(buf.get_ref()).expect("a decode");
+        assert!(
+            decoded.pixels.iter().all(|&red| red == 128),
+            "{:?}",
+            decoded.pixels
+        );
+
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(8, 8, image::Luma([77])))
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("encode");
+        let decoded = decode_cloud_jpeg(buf.get_ref()).expect("a decode");
+        assert!(
+            decoded.pixels.iter().all(|&gray| gray == 77),
+            "{:?}",
+            decoded.pixels
+        );
     }
 
     // -----------------------------------------------------------------------

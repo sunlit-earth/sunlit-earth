@@ -8,7 +8,7 @@
 //! continuous: the shader extends a face's coordinates past its edge exactly
 //! as [`cube::texel_center`] does.
 
-use crate::assets::texture_loader::downsample_2x;
+use crate::assets::texture_loader::downsample_2x_channels;
 use crate::geometry::cube::{self, FACES};
 
 /// One face of one level: `size` texels square, `channels` bytes each, row 0
@@ -27,40 +27,12 @@ impl Plane {
 
     /// Half the size, by the box filter the mip chain uses.
     pub fn halved(&self) -> Self {
-        let texels = if self.channels == 4 {
-            downsample_2x(&self.texels, self.size, self.size)
-        } else {
-            halve_channels(&self.texels, self.size, self.channels)
-        };
         Self {
             size: (self.size / 2).max(1),
             channels: self.channels,
-            texels,
+            texels: downsample_2x_channels(&self.texels, self.size, self.size, self.channels),
         }
     }
-}
-
-/// [`downsample_2x`] for any number of channels.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the mean of four bytes is a byte"
-)]
-fn halve_channels(src: &[u8], size: u32, channels: usize) -> Vec<u8> {
-    let s = size as usize;
-    let d = (s / 2).max(1);
-    let mut dst = vec![0_u8; d * d * channels];
-    for y in 0..d {
-        for x in 0..d {
-            let (x0, y0) = (x * 2, y * 2);
-            let (x1, y1) = ((x0 + 1).min(s - 1), (y0 + 1).min(s - 1));
-            for c in 0..channels {
-                let at = |xx: usize, yy: usize| u16::from(src[(yy * s + xx) * channels + c]);
-                let sum = at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1);
-                dst[(y * d + x) * channels + c] = ((sum + 2) / 4) as u8;
-            }
-        }
-    }
-    dst
 }
 
 /// Six planes of one size and channel count, in cube layer order.
@@ -336,21 +308,6 @@ pub(crate) mod tests {
             clamped_worst > 10,
             "the check has to be able to tell a repeated edge: {clamped_worst}"
         );
-    }
-
-    #[test]
-    fn halving_one_channel_is_halving_rgba_one_channel_at_a_time() {
-        let size = 6;
-        let gray: Vec<u8> = (0..size * size)
-            .map(|i| u8::try_from(i * 7 % 256).unwrap())
-            .collect();
-        let rgba: Vec<u8> = gray.iter().flat_map(|&g| [g, g, g, 255]).collect();
-        let halved = halve_channels(&gray, size, 1);
-        let expected: Vec<u8> = downsample_2x(&rgba, size, size)
-            .chunks(4)
-            .map(|t| t[0])
-            .collect();
-        assert_eq!(halved, expected);
     }
 
     #[test]

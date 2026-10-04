@@ -10,11 +10,31 @@ pub fn register_jxl_hook() {
     jxl_oxide::integration::register_image_decoding_hook();
 }
 
-/// Decoded RGBA8 image data.
+/// What each pixel of a [`DecodedImage`] holds, a byte per channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channels {
+    /// Red, green, blue and alpha.
+    Rgba,
+    /// The red channel alone, for a map the shader reads one channel of.
+    Red,
+}
+
+impl Channels {
+    /// Bytes per pixel.
+    pub const fn count(self) -> usize {
+        match self {
+            Self::Rgba => 4,
+            Self::Red => 1,
+        }
+    }
+}
+
+/// Decoded 8-bit image data, row 0 first.
 pub struct DecodedImage {
     pub pixels: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub channels: Channels,
 }
 
 /// Load and decode an image file into pixels the sphere can sample, at a
@@ -31,7 +51,8 @@ pub struct DecodedImage {
 pub fn load_capped(path: &Path, max_width: u32) -> Result<DecodedImage, String> {
     let mut img = decode(path)?;
     for _ in 0..halvings_to(img.width, max_width) {
-        img.pixels = downsample_2x(&img.pixels, img.width, img.height);
+        img.pixels =
+            downsample_2x_channels(&img.pixels, img.width, img.height, img.channels.count());
         img.width = (img.width / 2).max(1);
         img.height = (img.height / 2).max(1);
     }
@@ -68,6 +89,7 @@ fn decode(path: &Path) -> Result<DecodedImage, String> {
         pixels: img.into_raw(),
         width,
         height,
+        channels: Channels::Rgba,
     })
 }
 
@@ -79,20 +101,19 @@ fn decode(path: &Path) -> Result<DecodedImage, String> {
 /// - Horizontal shift left by 1/4 width: aligns the prime meridian with u=0
 ///   in our sphere's UV mapping.
 pub(crate) fn orient(img: &mut DecodedImage) {
-    flip_horizontal(&mut img.pixels, img.width, img.height);
-    shift_horizontal(&mut img.pixels, img.width, img.height);
+    let channels = img.channels.count();
+    flip_horizontal(&mut img.pixels, img.width, img.height, channels);
+    shift_horizontal(&mut img.pixels, img.width, img.height, channels);
 }
 
 /// Mirror every row, so east ends up where the sphere's winding expects it.
-fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
-    let w = width as usize;
-    let row_bytes = w * 4;
-    for y in 0..height as usize {
-        let row = &mut pixels[y * row_bytes..(y + 1) * row_bytes];
-        for x in 0..w / 2 {
-            let (left, right) = (x * 4, (w - 1 - x) * 4);
-            for c in 0..4 {
-                row.swap(left + c, right + c);
+fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32, channels: usize) {
+    let row_bytes = width as usize * channels;
+    for row in pixels.chunks_exact_mut(row_bytes).take(height as usize) {
+        row.reverse();
+        if channels > 1 {
+            for pixel in row.chunks_exact_mut(channels) {
+                pixel.reverse();
             }
         }
     }
@@ -100,10 +121,10 @@ fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 
 /// Shift all rows left by 1/4 width (wrapping), aligning the prime meridian
 /// with the sphere's u=0.
-fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32, channels: usize) {
     let w = width as usize;
-    let row_bytes = w * 4;
-    let shift_bytes = w * 3; // 3/4 width in bytes (each pixel is 4 bytes)
+    let row_bytes = w * channels;
+    let shift_bytes = w * 3 * channels / 4;
 
     for y in 0..height as usize {
         let row = &mut pixels[y * row_bytes..(y + 1) * row_bytes];
@@ -143,6 +164,39 @@ pub fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
         }
     }
 
+    dst
+}
+
+/// [`downsample_2x`] for pixels of `channels` bytes each.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the mean of four bytes is a byte"
+)]
+pub fn downsample_2x_channels(src: &[u8], src_w: u32, src_h: u32, channels: usize) -> Vec<u8> {
+    if channels == 4 {
+        return downsample_2x(src, src_w, src_h);
+    }
+    let dst_w = (src_w / 2).max(1) as usize;
+    let dst_h = (src_h / 2).max(1) as usize;
+    let sw = src_w as usize;
+    let sh = src_h as usize;
+    let row = sw * channels;
+    let mut dst = vec![0u8; dst_w * dst_h * channels];
+    for (y, out) in dst.chunks_exact_mut(dst_w * channels).enumerate() {
+        let top = &src[y * 2 * row..][..row];
+        let bottom = &src[(y * 2 + 1).min(sh - 1) * row..][..row];
+        for x in 0..dst_w {
+            let left = x * 2 * channels;
+            let right = (x * 2 + 1).min(sw - 1) * channels;
+            for c in 0..channels {
+                let sum = u16::from(top[left + c])
+                    + u16::from(top[right + c])
+                    + u16::from(bottom[left + c])
+                    + u16::from(bottom[right + c]);
+                out[x * channels + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
     dst
 }
 
@@ -241,7 +295,7 @@ mod tests {
                 .map(|i| [(i * 10) as u8, (i * 10 + 1) as u8, (i * 10 + 2) as u8, 255])
                 .collect();
             let mut buf = pixels_from(&px);
-            shift_horizontal(&mut buf, width as u32, 1);
+            shift_horizontal(&mut buf, width as u32, 1, 4);
 
             let shift = width * 3 / 4;
             for (i, pixel) in px.iter().enumerate() {
@@ -255,7 +309,7 @@ mod tests {
 
         let mut uniform = [128, 64, 32, 255].repeat(4);
         let original = uniform.clone();
-        shift_horizontal(&mut uniform, 4, 1);
+        shift_horizontal(&mut uniform, 4, 1, 4);
         assert_eq!(uniform, original, "a row of one colour cannot rotate");
     }
 
@@ -274,7 +328,7 @@ mod tests {
             [29, 30, 31, 32],
         ];
         let mut buf = pixels_from(&[row1.as_slice(), row2.as_slice()].concat());
-        shift_horizontal(&mut buf, 4, 2);
+        shift_horizontal(&mut buf, 4, 2, 4);
         // Row 0: rotate_right by 3 -> [B, C, D, A]
         assert_eq!(pixel_at(&buf, 0), row1[1]);
         assert_eq!(pixel_at(&buf, 1), row1[2]);
@@ -331,6 +385,7 @@ mod tests {
             ),
             width: width / 4,
             height: height / 4,
+            channels: Channels::Rgba,
         };
         orient(&mut expected);
         assert_eq!((capped.width, capped.height), (8, 4));
@@ -367,7 +422,7 @@ mod tests {
             .into_raw();
 
             let mut ours = pixels;
-            flip_horizontal(&mut ours, w, h);
+            flip_horizontal(&mut ours, w, h, 4);
             assert_eq!(ours, expected, "differed at {w}x{h}");
         }
     }
@@ -415,6 +470,44 @@ mod tests {
         }
     }
 
+    /// The red channel of an RGBA image.
+    fn red(rgba: &[u8]) -> Vec<u8> {
+        rgba.chunks(4).map(|pixel| pixel[0]).collect()
+    }
+
+    /// A one-channel image is halved and oriented to the red channel of the
+    /// RGBA image it came from, which is what lets the clouds keep one channel
+    /// without the overlay moving or blurring differently.
+    #[test]
+    fn one_channel_is_halved_and_oriented_as_its_rgba_red_channel() {
+        for (w, h) in [(6_u32, 4_u32), (8, 8), (5, 3), (16, 2)] {
+            let rgba = fixture(w, h, 3);
+            assert_eq!(
+                downsample_2x_channels(&red(&rgba), w, h, 1),
+                red(&downsample_2x(&rgba, w, h)),
+                "halving {w}x{h}"
+            );
+        }
+        for (w, h) in [(4_u32, 2_u32), (8, 8), (16, 3)] {
+            let rgba = fixture(w, h, 5);
+            let mut whole = DecodedImage {
+                pixels: rgba.clone(),
+                width: w,
+                height: h,
+                channels: Channels::Rgba,
+            };
+            let mut one = DecodedImage {
+                pixels: red(&rgba),
+                width: w,
+                height: h,
+                channels: Channels::Red,
+            };
+            orient(&mut whole);
+            orient(&mut one);
+            assert_eq!(one.pixels, red(&whole.pixels), "orienting {w}x{h}");
+        }
+    }
+
     /// An image of `width` by `height` filled from `seed`.
     ///
     /// Derived from the dimensions rather than generated beside them, so no
@@ -436,8 +529,8 @@ mod tests {
             let original = fixture(width, height, seed);
             let mut buf = original.clone();
 
-            flip_horizontal(&mut buf, width, height);
-            flip_horizontal(&mut buf, width, height);
+            flip_horizontal(&mut buf, width, height, 4);
+            flip_horizontal(&mut buf, width, height, 4);
             proptest::prop_assert_eq!(buf, original);
         }
     }
@@ -454,7 +547,7 @@ mod tests {
 
             // Four shifts of 3/4 width = 3 full rotations = identity
             for _ in 0..4 {
-                shift_horizontal(&mut buf, width, height);
+                shift_horizontal(&mut buf, width, height, 4);
             }
             proptest::prop_assert_eq!(buf, original);
         }

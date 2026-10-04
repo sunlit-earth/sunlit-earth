@@ -122,6 +122,7 @@ mod tests {
                 pixels: vec![0; 4],
                 width,
                 height: 1,
+                channels: texture_loader::Channels::Rgba,
             }),
             generation: None,
         }

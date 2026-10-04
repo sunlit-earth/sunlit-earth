@@ -55,9 +55,7 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                     &res.device,
                     &res.queue,
                     &res.slot_label(msg.slot_index),
-                    img.width,
-                    img.height,
-                    img.pixels,
+                    img,
                 );
                 // Flush staging buffers so they don't accumulate across textures
                 let _ = res.device.poll(wgpu::PollType::Wait {
@@ -196,20 +194,33 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
     });
 }
 
-/// Create a texture from RGBA8 pixel data with CPU-generated mipmaps.
+/// Create a texture from decoded pixels with CPU-generated mipmaps:
+/// `Rgba8Unorm` for an RGBA image and `R8Unorm` for one channel, which the
+/// shader samples as red, the channel it reads.
 ///
-/// Takes ownership of `rgba_pixels` to avoid cloning a decoded texture. The
-/// buffer is reused in-place for mipmap downsampling.
-#[tracing::instrument(skip(device, queue, rgba_pixels), fields(label, width, height))]
+/// Takes ownership of the image to avoid cloning a decoded texture. Each level
+/// is made from the one before and dropped once the next exists.
+#[tracing::instrument(skip(device, queue, image), fields(label, width = image.width, height = image.height))]
 pub(super) fn create_mipmapped_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &str,
-    width: u32,
-    height: u32,
-    rgba_pixels: Vec<u8>,
+    image: texture_loader::DecodedImage,
 ) -> wgpu::Texture {
+    let texture_loader::DecodedImage {
+        mut pixels,
+        width,
+        height,
+        channels,
+    } = image;
     let mip_count = width.max(height).ilog2() + 1;
+    let format = match channels {
+        texture_loader::Channels::Rgba => wgpu::TextureFormat::Rgba8Unorm,
+        texture_loader::Channels::Red => wgpu::TextureFormat::R8Unorm,
+    };
+    let bytes_per_pixel = format
+        .block_copy_size(None)
+        .expect("an uncompressed format has a texel size");
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -221,23 +232,22 @@ pub(super) fn create_mipmapped_texture(
         mip_level_count: mip_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
 
-    upload_mip(queue, &texture, 0, width, height, &rgba_pixels);
+    upload_mip(queue, &texture, 0, width, height, bytes_per_pixel, &pixels);
     crate::memory::log_memory_usage("mipmap: after level 0 upload");
 
     // Generate subsequent mip levels by box-filtering the previous level.
-    let mut pixels = rgba_pixels;
     let mut w = width;
     let mut h = height;
     for level in 1..mip_count {
-        pixels = texture_loader::downsample_2x(&pixels, w, h);
+        pixels = texture_loader::downsample_2x_channels(&pixels, w, h, channels.count());
         w = (w / 2).max(1);
         h = (h / 2).max(1);
-        upload_mip(queue, &texture, level, w, h, &pixels);
+        upload_mip(queue, &texture, level, w, h, bytes_per_pixel, &pixels);
     }
     crate::memory::log_memory_usage("mipmap: after all levels");
 
@@ -320,6 +330,7 @@ fn upload_mip(
     mip_level: u32,
     width: u32,
     height: u32,
+    bytes_per_pixel: u32,
     data: &[u8],
 ) {
     queue.write_texture(
@@ -332,7 +343,7 @@ fn upload_mip(
         data,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(4 * width),
+            bytes_per_row: Some(width * bytes_per_pixel),
             rows_per_image: Some(height),
         },
         wgpu::Extent3d {

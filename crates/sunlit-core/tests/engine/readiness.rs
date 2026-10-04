@@ -52,8 +52,10 @@ struct Rig {
 }
 
 /// An engine over the Earth fixture at `params`, publishing to one screen of
-/// `SCREEN`'s size, with everything it wants resident or failed. `prepare`
-/// runs on the scratch directory before the engine starts.
+/// `SCREEN`'s size, with everything it wants resident or failed, and the
+/// night's pack landed: a day mode is ready without it, and its landing starts
+/// a waiting publish's tile wait over at whatever the mock clock reads then.
+/// `prepare` runs on the scratch directory before the engine starts.
 fn rig(name: &str, params: SceneParams, prepare: impl FnOnce(&ScratchDir)) -> Rig {
     rig_at(name, params, time::OffsetDateTime::UNIX_EPOCH, prepare)
 }
@@ -94,6 +96,7 @@ fn rig_configured(
         configure(config);
     });
     harness.wait_for_textures("the floors and the preview's tiles");
+    harness.wait_for_slot_texture("night_floor");
     Rig {
         dir,
         harness,

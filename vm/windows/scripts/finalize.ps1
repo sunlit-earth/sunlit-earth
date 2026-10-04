@@ -54,6 +54,13 @@ if ((Get-Service TermService).StartType -ne 'Disabled') {
     $problems += 'Remote Desktop Services is not disabled, so vmconnect would offer an enhanced session'
 }
 
+# A password with an expiry date is a desktop that stops appearing 42 days
+# after the build. No expiry date at all is how Get-LocalUser reports an
+# account whose password never expires.
+if ((Get-LocalUser -Name 'tester').PasswordExpires) {
+    $problems += 'the tester account password expires, so the autologon would stop working'
+}
+
 Write-Output '== ensuring a boot path that survives the hypervisor change'
 # This image is installed under OVMF and then booted on Hyper-V generation 2.
 # The boot entry Windows Setup wrote lives in OVMF's own NVMe-backed variable

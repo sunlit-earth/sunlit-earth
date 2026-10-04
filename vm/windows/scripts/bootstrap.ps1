@@ -47,6 +47,14 @@ try {
     icacls $adminKeys /grant 'Administrators:F' | Out-Null
     icacls $adminKeys /grant 'SYSTEM:F' | Out-Null
 
+    Step 'account password'
+    # Windows gives a local account a password that expires after 42 days, and
+    # an expired one stops the autologon at the sign-in screen. The image is
+    # read-only and every run boots an overlay of it, so nothing a guest does
+    # about it survives the guest: 42 days after the build, every boot of
+    # this image would stop reaching a desktop.
+    Set-LocalUser -Name 'tester' -PasswordNeverExpires $true
+
     Step 'visual c++ runtime'
     # Windows ships no vcruntime140.dll, and every Rust MSVC binary this suite
     # runs links it dynamically. Without it the test harness cannot start at all,

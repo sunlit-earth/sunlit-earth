@@ -1553,6 +1553,27 @@ mod tests {
         assert!(stand.evicted.is_empty());
     }
 
+    #[test]
+    fn tiles_on_their_way_are_counted_by_the_surface_they_belong_to() {
+        let dir = ScratchDir::new("tile_loader_by_surface");
+        let pack = day_pack(&dir);
+        let tiles = stored(&pack);
+        let mut loader = loader(1, &pack);
+        let mut stand = Stand::new(8);
+        let night: Vec<TileId> = tiles[3..5]
+            .iter()
+            .map(|id| TileId {
+                pack: PackKind::Night,
+                key: id.key,
+            })
+            .collect();
+        let set: Vec<TileId> = tiles[..3].iter().chain(&night).copied().collect();
+        loader.apply(&wanted(&set), &mut stand);
+
+        assert_eq!(loader.missing_by_surface(&stand), (3, 2));
+        assert_eq!(loader.missing(&stand), 5);
+    }
+
     /// An export waits for the tiles the set took, and not for those it left
     /// for want of layers, which never land.
     #[test]

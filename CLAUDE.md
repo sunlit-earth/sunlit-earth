@@ -41,7 +41,7 @@ cargo run -- displays              # the monitors this session has and the plan 
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden   # regenerate goldens for this adapter
 ```
 
-Building the Linux port from Windows goes through WSL with `CARGO_TARGET_DIR` pointed into the distribution, or `target/` ends up holding two platforms' worth of artifacts; `sunlit-app`'s build script refuses a directory another platform has claimed, and the command is in README under "Linux from Windows (WSL)".
+Building the Linux port from Windows goes through WSL, and every WSL build uses `CARGO_TARGET_DIR=$HOME/sunlit-target-<worktree>`, named after the worktree directory (`main` for the main checkout) and reused for every build of that worktree; `~/sunlit-target` belongs to the xtask and nothing else gets a directory. Remove a worktree's directory with the worktree, run `cargo sweep --maxsize 8GB` over the rest at the end of any session that built in WSL, and keep temporary files out of the distribution's home. `sunlit-app`'s build script refuses a directory another platform has claimed. The commands, the cargo-sweep loop and the occasional vhdx compaction are in `docs/building.md` under "Building through WSL"; README has its own shorter note under "Linux from Windows (WSL)".
 
 ### The desktop e2e suite and the VMs
 

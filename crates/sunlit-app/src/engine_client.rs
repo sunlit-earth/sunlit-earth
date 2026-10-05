@@ -118,7 +118,10 @@ impl EngineLink {
     pub fn memory_report(&self) -> Result<Box<MemoryReport>, String> {
         let (reply, replies) = crossbeam_channel::bounded(1);
         self.tx
-            .send(EngineCommand::ReportMemory { reply })
+            .send(EngineCommand::ReportMemory {
+                reply,
+                settled: false,
+            })
             .map_err(|_| "engine has stopped".to_owned())?;
         replies
             .recv()

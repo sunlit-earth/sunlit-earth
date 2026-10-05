@@ -226,6 +226,18 @@ impl Renderer {
         crate::memory_report::collect(&self.device, adapter, self.expected_textures())
     }
 
+    /// Submit the writes staged since the last submit, and wait until the GPU
+    /// has finished everything submitted and wgpu has destroyed what only
+    /// those submissions held: wgpu destroys a submission's staging buffers
+    /// at the first submit or poll that finds it finished, and not before.
+    pub(crate) fn flush_and_wait(&self) {
+        self.queue.submit(std::iter::empty());
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+    }
+
     /// Every texture this renderer owns, and the shape each one should be.
     ///
     /// Slot textures and the surface's cubes report their own shape, because
@@ -423,11 +435,7 @@ impl Renderer {
         // The cube's levels are staged until a submit; this one carries them
         // now rather than holding them until the next frame, which an idle
         // engine may not draw for minutes.
-        self.queue.submit(std::iter::empty());
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
+        self.flush_and_wait();
         let drawn = floor || !matches!(layer, SurfaceLayer::Day(_));
         if drawn {
             self.rebuild_surface_groups();

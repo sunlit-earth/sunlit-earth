@@ -424,7 +424,10 @@ impl Engine {
                 reply,
             } => self.export(width, height, publish::ExportReply::Pixels(reply)),
             EngineCommand::SetTextureResolution(width) => self.set_texture_resolution(width),
-            EngineCommand::ReportMemory { reply } => {
+            EngineCommand::ReportMemory { reply, settled } => {
+                if settled {
+                    self.renderer.flush_and_wait();
+                }
                 let _ = reply.send(Box::new(self.renderer.memory_report(&self.adapter_key)));
             }
             EngineCommand::ReportTiles { reply } => {

@@ -48,8 +48,14 @@ pub enum EngineCommand {
     /// Assemble a memory report and hand it back.
     ///
     /// Answered on the engine thread because the device is owned there, in the
-    /// same reply-channel shape as `ExportPixels`.
-    ReportMemory { reply: Sender<Box<MemoryReport>> },
+    /// same reply-channel shape as `ExportPixels`. With `settled`, the writes
+    /// staged since the last submit go out first and the GPU is waited for,
+    /// so wgpu's counters count what is kept rather than the staging buffers
+    /// a submission has yet to give back; without it they count both.
+    ReportMemory {
+        reply: Sender<Box<MemoryReport>>,
+        settled: bool,
+    },
     /// Say what the tile loader holds and wants, `None` where the globe is
     /// not drawn from the cube surface.
     ReportTiles {

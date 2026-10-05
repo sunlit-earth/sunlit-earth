@@ -12,8 +12,8 @@
 //!
 //! The leak checks are exact rather than statistical: after every simulated
 //! hour no decoded pixel buffer is alive, and wgpu's own counters read the
-//! same after every hour without a publication once the warm-up is over.
-//! Private bytes are a generous backstop for what neither of those sees.
+//! same after every hour once the warm-up is over. Private bytes are a
+//! generous backstop for what neither of those sees.
 //!
 //! Nothing here touches the network, the desktop, or the real clock.
 
@@ -237,9 +237,10 @@ fn named_counters(counters: CounterSection) -> [(&'static str, i64); 5] {
 /// Hold every counter wgpu maintains on this backend to the value it had at
 /// the first reading, and say which ones it does not maintain.
 ///
-/// The readings are the ones after the warm-up taken one export after the last
-/// upload: an update leaves its staging buffers alive until the next export
-/// submits and retires them, so a step with a publication reads them too.
+/// The readings are every hour's after the warm-up, from settled reports: the
+/// staging buffers of a write or a draw after the hour's export would
+/// otherwise be counted until the next export retires them, which a tile that
+/// lands after the export makes a matter of timing.
 ///
 /// A counter that reads zero there is one the backend does not keep, since a
 /// kept one counts at least the textures and buffers every frame uses, and one
@@ -374,8 +375,8 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
         wait_for_decoded_frames_to_go(step, made_before + cloud.fetches());
 
         private.push(private_bytes());
-        if step > WARMUP_STEPS && !published {
-            let report = engine.memory_report().expect("a memory report");
+        if step > WARMUP_STEPS {
+            let report = engine.settled_memory_report().expect("a memory report");
             counters.push((step, report.counters));
             adapter = report.adapter;
         }

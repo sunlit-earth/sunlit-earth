@@ -212,9 +212,24 @@ impl EngineHandle {
 
     /// Ask the engine thread for a memory report and block until it answers.
     pub fn memory_report(&self) -> Result<Box<MemoryReport>, String> {
+        self.report_memory(false)
+    }
+
+    /// Ask the engine thread for a memory report taken once the GPU has
+    /// finished everything submitted, and block until it answers.
+    ///
+    /// wgpu's counters then count what the engine keeps: the staging buffers
+    /// of the writes since the last submit, and those of a submission no poll
+    /// has found finished yet, are gone by then. [`Self::memory_report`]
+    /// counts them, which is what a check that an upload was submitted needs.
+    pub fn settled_memory_report(&self) -> Result<Box<MemoryReport>, String> {
+        self.report_memory(true)
+    }
+
+    fn report_memory(&self, settled: bool) -> Result<Box<MemoryReport>, String> {
         let (reply, replies) = bounded(1);
         self.tx
-            .send(EngineCommand::ReportMemory { reply })
+            .send(EngineCommand::ReportMemory { reply, settled })
             .map_err(|_| "engine has stopped".to_owned())?;
         replies
             .recv()

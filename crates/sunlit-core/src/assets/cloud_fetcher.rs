@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::config::{DEFAULT_TEXTURE_RESOLUTION, TEXTURE_RESOLUTIONS};
 
-use super::cloud_source::CloudSource;
+use super::cloud_source::{CloudSource, Download};
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
 use super::texture_loader::{self, Channels, DecodedImage, Pixels};
 
@@ -394,7 +394,7 @@ impl CloudUpdater {
         let Some(path) = self.image_path.as_ref().filter(|p| p.exists()) else {
             return false;
         };
-        match fs::read(path) {
+        match fs::read(path).map(Download::new) {
             Ok(bytes) => match decode_cloud_jpeg(&bytes) {
                 Ok(img) => {
                     info!(
@@ -838,7 +838,7 @@ mod tests {
                 self.jpeg.clone()
             };
             Ok(Some(CloudImage {
-                bytes,
+                bytes: Download::new(bytes),
                 etag: Some(current),
                 last_modified: None,
             }))

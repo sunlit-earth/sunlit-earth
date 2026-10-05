@@ -345,7 +345,7 @@ impl sunlit_core::assets::cloud_source::CloudSource for FixtureClouds {
             return Ok(None);
         }
         Ok(Some(sunlit_core::assets::cloud_source::CloudImage {
-            bytes: served.bytes.clone(),
+            bytes: sunlit_core::assets::cloud_source::Download::new(served.bytes.clone()),
             etag: Some(served.etag.clone()),
             last_modified: None,
         }))

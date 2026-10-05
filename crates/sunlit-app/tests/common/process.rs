@@ -754,9 +754,10 @@ pub(crate) fn mib(bytes: u64) -> f64 {
 
 /// The section headers `memory-report` promises. Only these are a contract;
 /// the numbers on them and the rows beneath them are free to change.
-pub(crate) const REPORT_SECTIONS: [&str; 5] = [
+pub(crate) const REPORT_SECTIONS: [&str; 6] = [
     "process:",
     "decoded pixels:",
+    "cloud downloads:",
     "wgpu counters:",
     "gpu allocations:",
     "expected:",

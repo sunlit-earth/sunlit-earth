@@ -11,9 +11,9 @@
 //! exports.
 //!
 //! The leak checks are exact rather than statistical: after every simulated
-//! hour no decoded pixel buffer is alive, and wgpu's own counters read the
-//! same after every hour once the warm-up is over. Private bytes are a
-//! generous backstop for what neither of those sees.
+//! hour no decoded pixel buffer and no download is alive, and wgpu's own
+//! counters read the same after every hour once the warm-up is over. Private
+//! bytes are a coarse backstop for what none of those sees.
 //!
 //! Nothing here touches the network, the desktop, or the real clock.
 
@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use sunlit_core::assets::cloud_source::{CloudImage, CloudSource};
+use sunlit_core::assets::cloud_source::{CloudImage, CloudSource, Download, downloads};
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::texture_loader::decoded_pixels;
 use sunlit_core::assets::tiles;
@@ -98,12 +98,15 @@ const WARMUP_STEPS: u64 = 18;
 /// Growth of private bytes allowed from the end of the warm-up to the end of
 /// the run.
 ///
-/// A backstop rather than the test: the exact checks are the decoded frames
-/// and wgpu's counters. This one is there for what neither sees, host memory
-/// outside a decoded frame and GPU memory on a backend that keeps no byte
-/// counters, and is generous because single readings move: lavapipe's allocator
-/// steps by 8 to 12 MiB at a time, and on `macos-latest` about one reading in
-/// twenty is 8 to 11 MiB high.
+/// A backstop rather than the test: the exact checks are the decoded frames,
+/// the downloads and wgpu's counters. This one is there for host memory
+/// outside the counted buffers and GPU memory on a backend that keeps no byte
+/// counters, and at this fixture it reaches only so far: the hours it compares,
+/// 18 and 48, are ten publications and thirty exports apart, so it fails a leak
+/// of more than about 6.4 MiB a publication or 2.1 MiB an export, and not one
+/// of the 384 KiB a color decode of the fixture goes through. It is generous
+/// because single readings move: lavapipe's allocator steps by 8 to 12 MiB at a
+/// time, and on `macos-latest` about one reading in twenty is 8 to 11 MiB high.
 const PRIVATE_GROWTH_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// A cloud source that serves a fixed JPEG under an `ETag` the test controls.
@@ -154,7 +157,7 @@ impl CloudSource for FixtureCloud {
         }
         self.fetches.fetch_add(1, Ordering::SeqCst);
         Ok(Some(CloudImage {
-            bytes: self.jpeg.clone(),
+            bytes: Download::new(self.jpeg.clone()),
             etag: Some(current),
             last_modified: None,
         }))
@@ -217,6 +220,32 @@ fn wait_for_decoded_frames_to_go(step: u64, made_by_now: u64) {
              long-lived struct",
             count.frames,
             mib(count.bytes),
+            count.made
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Wait until every download so far has been made and dropped again.
+///
+/// The download outlives its decode by the rest of the poll that fetched it,
+/// writing it to the cache and posting the frame, so it may still be alive for
+/// a moment after its frame has gone. One still alive at the deadline is
+/// parked somewhere, and the failure says so.
+fn wait_for_downloads_to_go(step: u64, made_by_now: u64) {
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    loop {
+        let count = downloads();
+        if count.made >= made_by_now && count.buffers == 0 && count.bytes == 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "simulated hour {step}: {} downloads ({} bytes) were still alive {STEP_TIMEOUT:?} \
+             after the hour, with {} of the {made_by_now} downloads so far made; a download \
+             that outlives its poll is parked in a queue, a cache or a long-lived struct",
+            count.buffers,
+            count.bytes,
             count.made
         );
         std::thread::sleep(Duration::from_millis(1));
@@ -342,6 +371,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
     // Every download is one decoded frame; the ones before this point are in
     // `made` already or about to be.
     let made_before = decoded_pixels().made.saturating_sub(cloud.fetches());
+    let downloaded_before = downloads().made.saturating_sub(cloud.fetches());
 
     let started = Instant::now();
 
@@ -373,6 +403,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
             wait_until("the cloud download", || cloud.fetches() >= expected_fetches);
         }
         wait_for_decoded_frames_to_go(step, made_before + cloud.fetches());
+        wait_for_downloads_to_go(step, downloaded_before + cloud.fetches());
 
         private.push(private_bytes());
         if step > WARMUP_STEPS {
@@ -418,7 +449,8 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
     let simulated_days = STEPS / 24;
     println!(
         "{simulated_days} simulated days in {:.1}s: {exports} exports, {fetches} cloud fetches \
-         (of {expected_publications} publications), no decoded frame alive after any hour",
+         (of {expected_publications} publications), no decoded frame or download alive after \
+         any hour",
         elapsed.as_secs_f64()
     );
 

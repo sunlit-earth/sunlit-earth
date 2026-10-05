@@ -15,7 +15,7 @@
 //! - `hide-window` — hides the main window
 //! - `export-test` — attempts a small GPU export, signals success/failure
 //! - `query-memory` — reports the current process memory counters and the
-//!   decoded pixel buffers alive
+//!   decoded pixel buffers and cloud downloads alive
 //! - `memory-report` — prints the full memory report between two signal lines
 //! - `set-wallpaper` — renders and publishes the wallpaper, signalling the
 //!   outcome once the engine reports it
@@ -27,6 +27,7 @@ use crate::engine_client::EngineLink;
 use interprocess::local_socket::traits::ListenerExt;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use slint::ComponentHandle;
+use sunlit_core::assets::cloud_source::DownloadCount;
 use sunlit_core::assets::texture_loader::DecodedCount;
 use sunlit_core::memory::MemorySnapshot;
 use tracing::{debug, info, warn};
@@ -190,6 +191,7 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
                     &MemorySignal::new(
                         &snap,
                         sunlit_core::assets::texture_loader::decoded_pixels(),
+                        sunlit_core::assets::cloud_source::downloads(),
                     )
                     .line(),
                 ),
@@ -269,18 +271,25 @@ pub struct MemorySignal {
     pub decoded_frames: u64,
     /// Bytes those buffers hold.
     pub decoded_bytes: u64,
+    /// Downloaded cloud images alive in the process.
+    pub downloads: u64,
+    /// Bytes those downloads hold.
+    pub download_bytes: u64,
 }
 
 impl MemorySignal {
-    /// The process counters and the decoded pixel buffers, as one answer.
+    /// The process counters, the decoded pixel buffers and the downloads, as
+    /// one answer.
     #[must_use]
-    pub fn new(snapshot: &MemorySnapshot, decoded: DecodedCount) -> Self {
+    pub fn new(snapshot: &MemorySnapshot, decoded: DecodedCount, downloads: DownloadCount) -> Self {
         Self {
             rss_bytes: snapshot.rss_bytes,
             peak_rss_bytes: snapshot.peak_rss_bytes,
             private_bytes: snapshot.private_bytes,
             decoded_frames: decoded.frames,
             decoded_bytes: decoded.bytes,
+            downloads: downloads.buffers,
+            download_bytes: downloads.bytes,
         }
     }
 
@@ -289,12 +298,14 @@ impl MemorySignal {
     pub fn line(&self) -> String {
         format!(
             "memory rss_bytes={} peak_rss_bytes={} private_bytes={} decoded_frames={} \
-             decoded_bytes={}",
+             decoded_bytes={} downloads={} download_bytes={}",
             self.rss_bytes,
             self.peak_rss_bytes,
             self.private_bytes,
             self.decoded_frames,
-            self.decoded_bytes
+            self.decoded_bytes,
+            self.downloads,
+            self.download_bytes
         )
     }
 
@@ -327,6 +338,8 @@ impl MemorySignal {
             private_bytes: signal_number(line, "private_bytes")?,
             decoded_frames: signal_number(line, "decoded_frames")?,
             decoded_bytes: signal_number(line, "decoded_bytes")?,
+            downloads: signal_number(line, "downloads")?,
+            download_bytes: signal_number(line, "download_bytes")?,
         })
     }
 }
@@ -507,6 +520,8 @@ mod tests {
             private_bytes: 345_678,
             decoded_frames: 2,
             decoded_bytes: 456_789,
+            downloads: 1,
+            download_bytes: 567_890,
         };
         let line = format!("SIGNAL:{}", counters.line());
         assert_eq!(MemorySignal::parse(&line), Some(counters));
@@ -521,7 +536,7 @@ mod tests {
     #[test]
     fn peak_rss_is_not_read_as_rss() {
         let line = "SIGNAL:memory peak_rss_bytes=222 private_bytes=333 rss_bytes=111 \
-                    decoded_frames=0 decoded_bytes=0";
+                    decoded_frames=0 decoded_bytes=0 download_bytes=0 downloads=0";
         assert_eq!(
             MemorySignal::parse(line),
             Some(MemorySignal {
@@ -530,6 +545,8 @@ mod tests {
                 private_bytes: 333,
                 decoded_frames: 0,
                 decoded_bytes: 0,
+                downloads: 0,
+                download_bytes: 0,
             })
         );
     }
@@ -552,6 +569,13 @@ mod tests {
                 "SIGNAL:memory rss_bytes=1 peak_rss_bytes=2 private_bytes=3 decoded_frames=0"
             ),
             Some("decoded_bytes")
+        );
+        assert_eq!(
+            MemorySignal::missing_field(
+                "SIGNAL:memory rss_bytes=1 peak_rss_bytes=2 private_bytes=3 decoded_frames=0 \
+                 decoded_bytes=0 downloads=0"
+            ),
+            Some("download_bytes")
         );
         assert_eq!(
             MemorySignal::missing_field(

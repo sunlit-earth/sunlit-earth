@@ -1,10 +1,10 @@
 //! Where the process's memory actually is, expected next to measured.
 //!
-//! [`MemoryReport`] is five short sections: the process counters, the decoded
-//! pixel buffers alive in the process, wgpu's own internal counters, the
-//! backend allocator's live allocations, and the table of what the renderer
-//! believes it owns. The point is the last two side by side: the day the
-//! columns disagree is the day there is a leak.
+//! [`MemoryReport`] is six short sections: the process counters, the decoded
+//! pixel buffers and the downloaded cloud images alive in the process, wgpu's
+//! own internal counters, the backend allocator's live allocations, and the
+//! table of what the renderer believes it owns. The point is the last two side
+//! by side: the day the columns disagree is the day there is a leak.
 //!
 //! The report is short on purpose. Everything below `REPORT_FLOOR_BYTES` is
 //! rolled into one line, and only the `TOP_N` largest allocation groups are
@@ -14,7 +14,7 @@
 //! line, and the row layout are free to change; nothing parses this, unlike the
 //! single `query-memory` line the e2e suite reads.
 //!
-//! Two of the five sections can be absent, and say so rather than vanishing.
+//! Two of the six sections can be absent, and say so rather than vanishing.
 //! `Device::generate_allocator_report` is implemented for D3D12 and Vulkan and
 //! returns `None` everywhere else, so Metal has no allocation section; the
 //! process snapshot is absent only on a platform `memory::snapshot` does not
@@ -27,6 +27,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::assets::cloud_source::{self, DownloadCount};
 use crate::assets::texture_loader::{self, DecodedCount};
 use crate::memory::{mib, mib_signed};
 
@@ -142,6 +143,8 @@ pub struct MemoryReport {
     pub process: Option<ProcessSection>,
     /// The decoded pixel buffers alive when the report was taken.
     pub decoded: DecodedCount,
+    /// The downloaded cloud images alive when the report was taken.
+    pub downloads: DownloadCount,
     pub counters: CounterSection,
     pub allocator: Option<AllocatorSection>,
     /// Every texture the renderer owns, including ones under the floor. The
@@ -178,6 +181,7 @@ pub(crate) fn collect(
             private_bytes: snap.private_bytes,
         }),
         decoded: texture_loader::decoded_pixels(),
+        downloads: cloud_source::downloads(),
         counters: CounterSection {
             texture_bytes: counter(counters.hal.texture_memory.read()),
             buffer_bytes: counter(counters.hal.buffer_memory.read()),
@@ -282,6 +286,14 @@ impl fmt::Display for MemoryReport {
             self.decoded.frames,
             mib(self.decoded.bytes),
             self.decoded.made
+        )?;
+
+        writeln!(
+            f,
+            "cloud downloads: {} alive, {:.1} MiB, {} since start",
+            self.downloads.buffers,
+            mib(self.downloads.bytes),
+            self.downloads.made
         )?;
 
         writeln!(
@@ -577,6 +589,11 @@ mod tests {
                 bytes: 2 * MIB,
                 made: 3,
             },
+            downloads: DownloadCount {
+                buffers: 1,
+                bytes: MIB,
+                made: 3,
+            },
             counters: CounterSection {
                 texture_bytes: counter_mib(90),
                 buffer_bytes: counter_mib(1),
@@ -597,21 +614,22 @@ mod tests {
         }
     }
 
-    /// Five sections and nothing else: one header line each, plus the rows the
+    /// Six sections and nothing else: one header line each, plus the rows the
     /// allocation and expected sections are made of.
     #[test]
-    fn the_report_has_exactly_five_sections() {
+    fn the_report_has_exactly_six_sections() {
         let text = fabricated().to_string();
         let headers: Vec<&str> = text
             .lines()
             .filter(|line| !line.starts_with(' ') && !line.starts_with("memory report"))
             .collect();
-        assert_eq!(headers.len(), 5, "unexpected sections in:\n{text}");
+        assert_eq!(headers.len(), 6, "unexpected sections in:\n{text}");
         assert!(headers[0].starts_with("process:"));
         assert!(headers[1].starts_with("decoded pixels:"));
-        assert!(headers[2].starts_with("wgpu counters:"));
-        assert!(headers[3].starts_with("gpu allocations:"));
-        assert!(headers[4].starts_with("expected:"));
+        assert!(headers[2].starts_with("cloud downloads:"));
+        assert!(headers[3].starts_with("wgpu counters:"));
+        assert!(headers[4].starts_with("gpu allocations:"));
+        assert!(headers[5].starts_with("expected:"));
     }
 
     #[test]
@@ -649,7 +667,7 @@ mod tests {
             text.lines()
                 .filter(|line| !line.starts_with(' ') && !line.starts_with("memory report"))
                 .count(),
-            5
+            6
         );
     }
 

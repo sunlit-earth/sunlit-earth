@@ -105,7 +105,7 @@ impl sunlit_core::assets::cloud_source::CloudSource for VariantCloud {
         self.fetches
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Some(sunlit_core::assets::cloud_source::CloudImage {
-            bytes: buf.into_inner(),
+            bytes: sunlit_core::assets::cloud_source::Download::new(buf.into_inner()),
             etag: Some(etag),
             last_modified: None,
         }))

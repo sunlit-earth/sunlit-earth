@@ -912,3 +912,95 @@ The peak comes in the first two seconds whether or not anything is built: it is 
 | Debian 13, lavapipe | 533 MiB, 236 s, 374 MiB | 314, 315 MiB | 427, 428 MiB |
 
 With the hint the twelve floors cost 128 MiB in the Windows guest and 113 MiB in the Linux one, their allocators' reserves going from 140 to 268 MiB and from 111 to 239 MiB, against the 62 MiB measured here, where the reserve at the first frame had room; the CPU adapter keeps its two floors (plan departure 35). The e2e suite's render case, an 800 x 800 render from an empty cache that builds the first frame's packs, peaked at 504 MB of RSS in the Linux guest and ended at 492 MB, against 2088 and 444 on the flat path (testing.md).
+
+## 28. Memory on the desktop GPU: three quick wins
+
+Measured on 2026-10-04 on this desktop: Radeon RX 6800 XT on Vulkan (AMD driver 32.0.21043.10005, "26.5.2"), one 3440 x 1440 screen, release builds of `feature/memory-quick-wins` at 363c014 and at the commits after it [M]. The starting point was a release app idling at about 1.07 GB of private bytes at the 8192 setting while its working set stayed near 400 MiB.
+
+**Method.** Two harnesses, each run twice per variant, everything in the run directory (`run-memory/`):
+
+- The app: the release binary, `--mode window --texture-resolution 8192`, its config a copy of the user's (8x MSAA in the config, the window 1932 x 1068, which gives a 1536 x 1024 preview), `SUNLIT_EARTH_CONFIG`, `SUNLIT_EARTH_CACHE_DIR` and `SUNLIT_EARTH_METRICS_DIR` in the run directory, and the cache a fresh copy for each run of a seed built once against the worktree's textures, so every run is warm (no pack written during it, checked). `SUNLIT_EARTH_CLOUD_URL` points at a closed local port, and the seed holds the user's 8192 x 4096 cloud image as `clouds_cache_override.jpg`, so every run posts the same clouds at startup and never downloads. Private bytes and the working set are sampled once a second from outside (`measure-app.ps1`); memory reports come over IPC 10 s after the start, after an `export-test` 2 s later, and after 60 s idle, then `quit`. The IPC export is 64 x 64, which goes through the same `Renderer::export_image_with` as a wallpaper; no wallpaper was set.
+- A headless engine (`bench/`, linked against the worktree's `sunlit-core`): the GPU adapter, the user's scene at a fixed date, a 1536 x 1024 preview at 8x MSAA from the start, the twelve day floors, the clouds and the Milky Way resident; then the median of 21 preview frames (an `UpdateParams` to the `PreviewFrame` it produces) and ten 3440 x 1440 exports, the wallpaper this screen gets, through `EngineHandle::export_pixels`, with memory reports around them. `MQW_PREVIEW=2880x1344` repeats it at a preview of a window filling most of this screen.
+
+Hints other than the build's own were measured through a throwaway `MQW_MEMORY_HINTS` override in `wgpu_init.rs`, never committed.
+
+**Device memory is private bytes on this driver.** `bench/src/bin/devmem.rs` creates a Vulkan device, allocates 4096 x 4096 RGBA8 render targets, clears them and frees them:
+
+| Step | `Performance` | `MemoryUsage` |
+|---|---|---|
+| Before the device | 15.8 MiB | 15.8 MiB |
+| Device created (192 / 12 MiB reserved) | 214.7 | 34.3 |
+| Seven 64 MiB targets created, nothing written | 731.1 (704 reserved) | 490.1 (462 reserved) |
+| The same, cleared | 731.1 | 490.2 |
+| Six freed (reserve back to 192 / 76) | 346.4 | 296.3 |
+| A 128 MiB mappable buffer, then freed | 474.6, then 474.6 | 359.9, then 359.9 |
+
+A block counts in private bytes the moment the allocator takes it, with nothing written and the working set flat (103 to 108 MiB throughout); D3D12 on the same card behaves the same (322 MiB once its device exists, 837 with the targets). Freed blocks come back only in part and, in the app, a few seconds later: the driver keeps some of what it was handed back. So on this machine the GPU bytes do overlap private bytes, which `architecture.md` had said only of WARP and lavapipe, and the allocator's slack is paid for in full.
+
+**The baseline.** The app as built at 363c014 draws its preview at 2x MSAA although the config asks for 8x (the second win below says why), and at the first change of any setting it moves to 8x. Both states, and the headless engine, which is at 8x from the start:
+
+| 363c014 | Private, 10 s / after export / idle | Working set | wgpu textures | Allocator in use / reserved | Cloud texture | MSAA color, depth |
+|---|---|---|---|---|---|---|
+| App, as started (2x) | 792 to 793 / 797 to 798 / 778 to 779 | 381 to 402 | 319.0 | 320.3 / 512 in 4 | 170.8 | 13.6, 12.2 |
+| App, 8x (win 2 alone) | 1046 to 1076 / 1051 to 1076 / 1032 to 1058 | 381 to 455 | 395.5 | 396.8 / 768 in 5 | 170.8 | 54.1, 48.2 |
+| Engine, 8x | 896 to 906 after the frames, 903 to 913 after the exports | 271 to 431 | 395.5 | 396.8 / 768 in 5 | 170.8 | 54.1, 48.2 |
+
+The second row is the user's report: 1023 MiB private, 768 MiB reserved in five blocks, the same MSAA rows. The engine's preview frame is 2.86 to 2.88 ms, its 3440 x 1440 export 45.9 to 46.2 ms (the first one 52 to 54), and the app's peak private bytes 1081 to 1083 MiB.
+
+**Win 1: the clouds as one channel** (`Keep the cloud overlay as one channel`). `fs_cloud` reads `.r` and nothing else reads the cloud slot, so the fetcher keeps the red channel straight out of the decoder (a gray JPEG is one channel already; upstream's are three equal channels, so the copy is the R of the RGB decode and never an RGBA buffer), `orient` and the box filter work on any channel count, and `create_mipmapped_texture` uploads `R8Unorm`. `R8Unorm` is a core, filterable format on every backend, and the sampled red is the same unorm byte either way; the WARP goldens pass unchanged, which is all this machine can run, and nothing in the change is specific to an adapter, so lavapipe and Metal need no new references. Alone:
+
+| Win 1 | Private | wgpu textures | In use / reserved | Frame | Export |
+|---|---|---|---|---|---|
+| App, 2x | 792 to 816 / 797 to 822 / 779 to 803 | 191.0 | 192.2 / 512 in 4 | | |
+| Engine, 8x | 641 to 649 after the frames, 648 to 656 after the exports | 267.5 | 268.8 / 512 in 4 | 2.80 to 2.87 ms | 77.3 to 77.5 ms |
+
+128 MiB less in use everywhere, and the decoded frame goes from 128 to 32 MiB. Private bytes follow only where a block goes with it: the engine at 8x drops a 256 MiB block and 255 MiB of private bytes, the app at 2x frees the bytes inside blocks it keeps and does not move. The app's peak private bytes went from 1081 to 1083 to 1041 to 1065 MiB and its peak working set from 831 to 836 to 736 to 793. The export got slower, 46 to 77 ms, because it no longer finds room for its targets in the slack the cloud texture left and allocates fresh blocks every time; the hint below takes most of that back.
+
+The soak test's cloud fixture had a decoded frame of 8 MiB at 2048 x 1024 RGBA, which its limits are written in; at one channel that frame would be 2 MiB and a frame parked once a simulated day would no longer fail it. The fixture is now 4096 x 2048 gray, 8 MiB again, which makes the soak 66 to 74 s here where 2048 x 1024 of one channel took 19 s.
+
+**Win 2: the export's MSAA targets** (`Set the combo rows before the window's scene is pushed`). The export's targets are not what stays. `export_image_with` makes its four targets as locals; the readback ends in `poll(Wait)`, which retires the submissions that used them, and the locals drop when it returns, which frees them there and then: in the engine the wgpu counters and the allocator read 395.5 MiB and 396.8 / 768 MiB before the first export, after it and after ten (`benchruns/*`). Private bytes do jump right after an export, by 135 MiB (906 to 1041), and are back 5 s later (913): that is the driver releasing what it was handed back late, as in the probe above, not anything wgpu holds. The MSAA rows of the user's report are the preview's own targets, 1536 x 1024 at 8 samples, x1 each in the allocation list and in the expected table, 48 MiB each plus the 6 MiB AMD keeps beside a color target of that many samples.
+
+They had grown because the sample count had: the first report was taken at 2x, the second at 8x. At startup `app.rs` pushes the window's scene to the engine in the same turn that `defer_combobox_indices` asks for the combo rows to be set on the next turn, so the push read the AA row the `.slint` file starts on, 1, which is 2x on this adapter; nothing pushed again until a setting changed, and the first change (in the report, the switch to 8192) sent the configured 8x. Load-defaults had the same order. `set_combobox_indices` now sets the rows at once and again on the next turn, and `tests/slint_ui.rs` holds load-defaults to pushing the config's sample count and texture mode (it fails with the first write removed). Alone this costs the as-started app what 8x costs: idle 1032 to 1058 MiB rather than 778 to 779, the second row of the baseline table, which is where every session ended up after its first change anyway.
+
+**Win 3: the allocator's block size.** Each hint on the baseline (the app as started, at 2x, idle; the engine at 8x after its exports), then with win 1 at both preview sizes:
+
+| Hint (device blocks) | App idle | App reserved | Engine | Engine reserved | Frame | Export |
+|---|---|---|---|---|---|---|
+| `Performance` (128 to 256 MiB) | 777 to 802 | 512 in 4 | 903 to 911 | 768 in 5 | 2.88 to 2.98 ms | 46.1 to 46.3 ms |
+| `MemoryUsage` (8 to 64) | 638 to 641 | 375 in 8 | 607 to 612 | 473 in 9 | 3.41 to 3.47 | 54.4 to 54.9 |
+| `Manual` 16 to 64 | 663 to 664 | 403 in 7 | 569 to 570 | 435 in 8 | 2.87 to 3.01 | 64.2 to 64.7 |
+| `Manual` 32 to 128 | 687 to 689 | 427 in 6 | 690 to 692 | 555 in 7 | 2.92 to 2.99 | 56.0 to 56.7 |
+
+| With win 1, engine | 1536 x 1024: private, reserved | frame | export | 2880 x 1344: private, reserved | frame | export |
+|---|---|---|---|---|---|---|
+| `Performance` | 641 to 649, 512 in 4 | 2.80 to 2.87 | 77.3 to 77.5 | 897 to 906, 768 in 5 | 5.49 to 6.12 | 78.5 to 80.5 |
+| `MemoryUsage` | not measured | | | 662 to 664, 517 in 9 | 6.34 to 6.42 | 63.9 to 64.0 |
+| `Manual` 16 to 64 | 456, 328 in 8 | 2.89 to 2.91 | 64.0 to 64.5 | 652 to 653, 509 in 8 | 6.22 to 6.25 | 64.1 to 64.3 |
+| `Manual` 32 to 128 | 511 to 513, 384 in 6 | 2.86 to 2.87 | 55.8 to 55.9 | 648, 518 in 7 | 5.52 to 5.53 | 73.9 to 76.2 |
+| `Manual` 64 to 128 | 544 to 545, 416 in 5 | 2.83 to 2.91 | 73.8 to 74.7 | not measured | | |
+
+Every smaller block saves 100 to 300 MiB of private bytes, more the more is resident. The one cost besides the export is the preview frame under `MemoryUsage` and 16 to 64 MiB: the preview is read back through a staging buffer made for each frame (6 MiB at 1536 x 1024, 15 MiB at 2880 x 1344), in host memory whose first block those hints make 4 or 8 MiB, so a buffer that does not fit takes a block of its own, allocated and freed every frame: 0.5 to 0.9 ms of a 3 to 6 ms frame. The default's 64 MiB host blocks hide that, and so do 32 to 128 MiB's 16 MiB ones up to a 16 MiB readback, but no block size covers every window. On WARP with win 1, at the same settings, `MemoryUsage` holds 586 to 593 MiB and 32 to 128 MiB 663 to 669, with frames (248 to 260 ms) and 1920 x 1088 exports (310 to 327 ms) the same within their spread.
+
+**Decision (win 3): `MemoryUsage` on every adapter, and the preview read back through a buffer the renderer keeps** (`Ask every device for small allocator blocks`). The hint is the one that saves the most where it matters, about 300 MiB on this GPU at 8x, and on WARP it held the least of the hints measured there, and it is already what a CPU adapter asks for (plan departure 38), so one setting now serves every adapter and `wgpu_init::memory_hints` and its per-type test are gone. Its frame cost was not the hint's but the per-frame staging buffer's, so that buffer is now made once per preview size (`Renderer::read_preview_pixels`, dropped on a resize or a failed read and made again at the next frame), which removes a per-frame allocation under any hint. The 16 to 64 MiB and 32 to 128 MiB ranges were measured to see whether a range could keep the default's frame time without that change; 32 to 128 did up to a 16 MiB readback but held 75 MiB more than `MemoryUsage` on WARP and 55 to 120 MiB more on this GPU, and with the buffer kept neither range buys anything `MemoryUsage` does not. Win 3 alone, over 363c014:
+
+| Win 3 | Private | In use / reserved | Frame | Export |
+|---|---|---|---|---|
+| App, 2x, at 10 s / after export / idle | 661 to 692 / 666 to 697 / 647 to 678 | 326.3 / 383 in 9 | | |
+| Engine, 8x, 1536 x 1024 | 639 to 679 after the frames, 614 to 622 after the exports | 402.5 / 479 in 10 | 2.86 to 2.87 ms | 54.1 to 54.5 ms |
+| Engine, 8x, 2880 x 1344 | 767 to 783 | 581.7 / 638 in 10 | 4.63 to 4.67 ms | 33.7 to 33.8 ms |
+
+The frame is the default's at 1536 x 1024 and faster than it at 2880 x 1344, where the default too had been making a 15 MiB buffer every frame (5.49 to 6.12 ms with win 1). In use is 6 MiB higher than with the default: the kept readback buffer. The export is 54 ms where the default took 46 with the baseline's slack around.
+
+**What the MSAA finding means for the 1.07 GB.** The MSAA rows were never the export's: they were a preview that ran at 2 samples from startup until a UI change pushed the configured 8x. The report the user took after switching to 8192 caught that push: the 8x targets (+76 MiB in use) arrived together with the 8192 cloud image (+128 MiB), and the two together took the allocator's fifth 256 MiB block, which this driver charges to private bytes in full. So the 1.07 GB is the app in the state it was always meant to be in, the configured 8x, with the default hint's slack and an RGBA cloud texture, and not a leak or a retained export; and a session that nobody touched had been drawing at 2x and reading about 250 MiB lower only because of the bug. With win 2 every session starts in that state, which is why win 2 alone reads 1032 to 1058 MiB.
+
+**All three** (579bf63, d6c354d and the hint commit), against that state and against the baseline as it started:
+
+| All three | Private, 10 s / after export / idle | Working set | wgpu textures | In use / reserved | Cloud | MSAA color, depth | Peak private, peak working set |
+|---|---|---|---|---|---|---|---|
+| App, 8x | 683 to 716 / 687 to 721 / 668 to 702 | 267 to 346 | 267.5 | 274.7 / 404 in 11 | 42.8 | 54.1, 48.1 | 906 to 938, 623 to 685 |
+| Engine, 8x, 1536 x 1024 | 439 to 446 after the frames, 445 to 453 after the exports | 150 to 182 | 267.5 | 274.5 / 308 in 9 | 42.8 | 54.1, 48.1 | 887 to 944 |
+| Engine, 8x, 2880 x 1344 | 660, then 675 to 676 | 158 to 174 | 437.9 | 453.7 / 531 in 10 | 42.8 | 134.2, 118.5 | 1174 to 1175 |
+
+Against win 2 alone, the same 8x state at 363c014, the idle app holds 668 to 702 MiB instead of 1032 to 1058, 340 to 365 MiB less, with 404 MiB reserved instead of 768; against the baseline as it started, at 2x, it holds 80 to 110 MiB less while drawing at 8x. The headless engine goes from 903 to 913 MiB to 445 to 453, its preview frame from 2.86 to 2.88 ms to 2.36 to 2.88, and its 3440 x 1440 export from 45.9 to 46.2 ms to 34.0 to 64.1, the two runs falling on either side (the export now always allocates its 360 MiB of targets, and how long the driver takes to hand them over varies). The app's startup peak goes from 1081 to 1083 MiB to 906 to 938 and its peak working set from 831 to 836 to 623 to 685. The working set barely moves anywhere, as it should: what went is device memory the process was charged for.
+
+A sunlit-earth process this run did not start was running on the desktop from 00:52 on 2026-10-05, beside the gates; the measurements above are per process and were all taken the day before.

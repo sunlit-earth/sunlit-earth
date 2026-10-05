@@ -617,15 +617,8 @@ impl<'a> Overlays<'a> {
     }
 }
 
-/// Read back a 2D `Rgba8Unorm` texture as raw RGBA8 pixel data.
-///
-/// Creates a staging buffer with 256-byte row alignment, copies the texture
-/// into it, maps the buffer synchronously, and strips any row padding.
-///
-/// Losing the device mid-readback is an ordinary event on Windows, where a
-/// driver update or a reset takes it out from under a running process. This is
-/// the wallpaper export and the preview readback, so it fails one frame rather
-/// than the engine thread.
+/// Read back a 2D `Rgba8Unorm` texture as raw RGBA8 pixel data, through a
+/// staging buffer made for this one read.
 pub fn read_texture_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -633,17 +626,45 @@ pub fn read_texture_rgba8(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, String> {
-    // bytes_per_row must be aligned to 256 for buffer-texture copies
-    let bytes_per_row_unaligned = width * 4;
-    let bytes_per_row = (bytes_per_row_unaligned + 255) & !255;
-    let buffer_size = u64::from(bytes_per_row) * u64::from(height);
+    let readback = readback_buffer(device, width, height);
+    read_texture_rgba8_into(device, queue, texture, width, height, &readback)
+}
 
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+/// Bytes a row of a `width` wide RGBA8 texture takes in a staging buffer,
+/// which a buffer-texture copy aligns to 256.
+fn padded_row_bytes(width: u32) -> u32 {
+    (width * 4).next_multiple_of(256)
+}
+
+/// A staging buffer [`read_texture_rgba8_into`] can read a `width` by `height`
+/// RGBA8 texture into, as many times as it likes.
+pub(super) fn readback_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
-        size: buffer_size,
+        size: u64::from(padded_row_bytes(width)) * u64::from(height),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
-    });
+    })
+}
+
+/// Read back a 2D `Rgba8Unorm` texture through `readback`, a buffer from
+/// [`readback_buffer`] for the same size: copy the texture into it, map it
+/// synchronously, strip the row padding, and unmap it again.
+///
+/// Losing the device mid-readback is an ordinary event on Windows, where a
+/// driver update or a reset takes it out from under a running process. This is
+/// the wallpaper export and the preview readback, so it fails one frame rather
+/// than the engine thread. A buffer whose read failed may be left mapped or
+/// waiting on a map, so a caller that keeps one lets it go on an error.
+pub(super) fn read_texture_rgba8_into(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    readback: &wgpu::Buffer,
+) -> Result<Vec<u8>, String> {
+    let bytes_per_row = padded_row_bytes(width);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     encoder.copy_texture_to_buffer(
@@ -654,7 +675,7 @@ pub fn read_texture_rgba8(
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
+            buffer: readback,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),

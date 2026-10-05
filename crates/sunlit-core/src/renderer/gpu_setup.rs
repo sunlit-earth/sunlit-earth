@@ -363,6 +363,7 @@ pub(super) fn create_renderer(
         texture_generation: 0,
         depth_texture,
         render_texture,
+        preview_readback: None,
         msaa_texture_view,
         msaa_depth_view,
         sample_count,
@@ -780,6 +781,7 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
 pub(super) fn rebuild_render_textures(res: &mut Renderer, width: u32, height: u32) {
     debug!(width, height, "rebuilding render textures");
     replace_render_textures(res, width, height, res.sample_count);
+    res.preview_readback = None;
     res.render_width = width;
     res.render_height = height;
 }

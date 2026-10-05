@@ -112,6 +112,10 @@ pub(crate) struct Renderer {
     texture_generation: u64,
     depth_texture: wgpu::TextureView,
     render_texture: wgpu::Texture,
+    /// The staging buffer every preview frame is read back through, made at
+    /// the first read after each resize and kept, so a frame allocates no
+    /// memory of its own.
+    preview_readback: Option<wgpu::Buffer>,
     msaa_texture_view: Option<wgpu::TextureView>,
     msaa_depth_view: Option<wgpu::TextureView>,
     sample_count: u32,
@@ -724,14 +728,20 @@ impl Renderer {
     ///
     /// Only valid when the renderer was built with `COPY_SRC` on its preview
     /// texture (see [`RendererConfig`] users that need readback).
-    pub(crate) fn read_preview_pixels(&self) -> Result<Vec<u8>, String> {
-        read_texture_rgba8(
+    pub(crate) fn read_preview_pixels(&mut self) -> Result<Vec<u8>, String> {
+        let readback = self.preview_readback.take().unwrap_or_else(|| {
+            render_pass::readback_buffer(&self.device, self.render_width, self.render_height)
+        });
+        let pixels = render_pass::read_texture_rgba8_into(
             &self.device,
             &self.queue,
             &self.render_texture,
             self.render_width,
             self.render_height,
-        )
+            &readback,
+        )?;
+        self.preview_readback = Some(readback);
+        Ok(pixels)
     }
 
     /// The largest export this device will take, and the largest readback.

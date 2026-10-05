@@ -1,7 +1,9 @@
 //! The memory report.
 
+use sunlit_core::engine::EngineCommand;
+
 use crate::groups::{FRAME, plain, surface};
-use crate::harness::{gpu, test_params};
+use crate::harness::{Harness, gpu, test_params};
 use crate::textures::{blend_params, mib};
 use crate::tiles::{EARTH, settled};
 
@@ -183,4 +185,42 @@ fn the_allocator_section_reports_reserved_at_least_as_large_as_allocated() {
         allocator.total_allocated_bytes > 0,
         "a live device holds something:\n{report}"
     );
+}
+
+/// The buffer preview frames are read back through goes when the preview is
+/// switched off, and comes back with the next frame once it is on again.
+///
+/// An engine of its own, because the case switches the preview off and reads
+/// the buffer count, which a shared engine's earlier cases would move.
+#[test]
+fn the_preview_readback_goes_while_the_preview_is_off() {
+    let _gpu = gpu();
+    let harness = Harness::start(|config| config.preview_enabled = false);
+    let buffers = || {
+        harness
+            .engine
+            .settled_memory_report()
+            .expect("a report")
+            .counters
+            .buffers
+    };
+
+    harness.engine.send(EngineCommand::SetPreviewEnabled(true));
+    harness.next_frame();
+    let on = buffers();
+    if on <= 0 {
+        println!("skipping: this backend keeps no buffer count ({on})");
+        return;
+    }
+
+    harness.engine.send(EngineCommand::SetPreviewEnabled(false));
+    let off = buffers();
+    assert!(
+        off < on,
+        "{on} buffers with the preview on and {off} with it off"
+    );
+
+    harness.engine.send(EngineCommand::SetPreviewEnabled(true));
+    harness.next_frame();
+    assert_eq!(buffers(), on, "the buffer count with the preview on again");
 }

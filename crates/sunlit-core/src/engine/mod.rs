@@ -405,6 +405,9 @@ impl Engine {
                 if enabled && !self.preview.enabled {
                     self.preview.owed = true;
                 }
+                if !enabled {
+                    self.renderer.release_preview_readback();
+                }
                 self.preview.enabled = enabled;
             }
             EngineCommand::RenderWallpaperNow => self.publish_asked = true,

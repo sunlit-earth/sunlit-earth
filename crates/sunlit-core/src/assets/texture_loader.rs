@@ -224,10 +224,6 @@ fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32, channels: usize)
 }
 
 /// Box-filter downsample: average each 2x2 block of RGBA pixels.
-///
-/// Used for both mip generation in the renderer and the halving of
-/// [`load_capped`], which is why it lives with the pixel handling rather than
-/// with either caller.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the mean of four bytes is a byte, and a pixel count indexes a buffer that already holds those pixels"
@@ -259,6 +255,10 @@ pub fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
 }
 
 /// [`downsample_2x`] for pixels of `channels` bytes each.
+///
+/// Used for both mip generation in the renderer and the halving of
+/// [`load_capped`], which is why it lives with the pixel handling rather than
+/// with either caller.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the mean of four bytes is a byte"

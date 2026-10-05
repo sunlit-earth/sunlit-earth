@@ -114,7 +114,7 @@ pub(crate) struct Renderer {
     render_texture: wgpu::Texture,
     /// The staging buffer every preview frame is read back through, made at
     /// the first read after each resize and kept, so a frame allocates no
-    /// memory of its own.
+    /// memory of its own. Dropped while the preview is off.
     preview_readback: Option<wgpu::Buffer>,
     msaa_texture_view: Option<wgpu::TextureView>,
     msaa_depth_view: Option<wgpu::TextureView>,
@@ -750,6 +750,12 @@ impl Renderer {
         )?;
         self.preview_readback = Some(readback);
         Ok(pixels)
+    }
+
+    /// Let go of the preview's readback buffer, for as long as nobody reads
+    /// the preview; the next read makes it again.
+    pub(crate) fn release_preview_readback(&mut self) {
+        self.preview_readback = None;
     }
 
     /// The largest export this device will take, and the largest readback.

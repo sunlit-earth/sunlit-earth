@@ -270,7 +270,16 @@ fn named_counters(counters: CounterSection) -> [(&'static str, i64); 5] {
 /// On these a counter that reads zero or below is a check gone missing rather
 /// than one the backend never kept, so it fails the test. Any other adapter
 /// has its counters inferred from the readings alone.
-fn kept_counters(adapter: &str) -> &'static [&'static str] {
+///
+/// The adapter slug does not name the backend: `lavapipe` also stands for
+/// Mesa's llvmpipe under GL, which keeps only the object counts. The memory
+/// report carries no backend, but wgpu-hal implements the allocator report for
+/// D3D12 and Vulkan alone, so `allocator_reported` is what tells those two
+/// from GL and Metal.
+fn kept_counters(adapter: &str, allocator_reported: bool) -> &'static [&'static str] {
+    if !allocator_reported {
+        return &[];
+    }
     match adapter {
         "warp" => &["texture bytes", "buffer bytes", "textures", "buffers"],
         "lavapipe" => &["texture bytes", "buffer bytes", "buffers"],
@@ -291,11 +300,11 @@ fn kept_counters(adapter: &str) -> &'static [&'static str] {
 /// that reads below zero is one it keeps half of, counting down on destroy and
 /// never up on create, as Vulkan does with textures in wgpu 28. Neither is
 /// asserted on, except where [`kept_counters`] says the backend keeps it.
-fn check_counters(adapter: &str, readings: &[(u64, CounterSection)]) {
+fn check_counters(adapter: &str, allocator_reported: bool, readings: &[(u64, CounterSection)]) {
     let (_, first) = readings[0];
     for (index, (name, baseline)) in named_counters(first).into_iter().enumerate() {
         assert!(
-            baseline > 0 || !kept_counters(adapter).contains(&name),
+            baseline > 0 || !kept_counters(adapter, allocator_reported).contains(&name),
             "wgpu {name} reads {baseline} on {adapter}, whose backend keeps it: the check on it \
              is lost, through wgpu's `counters` feature left off or a backend that stopped \
              counting it"
@@ -402,6 +411,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
     let mut private: Vec<Option<u64>> = Vec::new();
     let mut counters: Vec<(u64, CounterSection)> = Vec::new();
     let mut adapter = String::new();
+    let mut allocator_reported = false;
 
     for step in 1..=STEPS {
         let published = step % STEPS_PER_CLOUD_UPDATE == 0;
@@ -430,6 +440,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
         if step > WARMUP_STEPS {
             let report = engine.settled_memory_report().expect("a memory report");
             counters.push((step, report.counters));
+            allocator_reported = report.allocator.is_some();
             adapter = report.adapter;
         }
     }
@@ -494,7 +505,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
         elapsed.as_secs_f64()
     );
 
-    check_counters(&adapter, &counters);
+    check_counters(&adapter, allocator_reported, &counters);
 
     for (row, chunk) in private.chunks(12).enumerate() {
         let values: Vec<String> = chunk

@@ -34,7 +34,7 @@ static MADE_BUFFERS: AtomicU64 = AtomicU64::new(0);
 /// The [`Download`]s alive in this process, and how many there have been.
 ///
 /// A download lives only through the poll that fetched it, or the cache read
-/// that loaded it, while it is decoded and written to the cache, so between
+/// that loaded it, while it is decoded, and for a poll written to the cache, so between
 /// updates the live count is zero, and a buffer that stays alive is a download
 /// parked in a queue, a cache or a long-lived struct. `made` tells "dropped"
 /// from "not fetched yet", as it does for the decoded frames.

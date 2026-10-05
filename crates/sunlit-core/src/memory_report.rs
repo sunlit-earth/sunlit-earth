@@ -1,9 +1,10 @@
 //! Where the process's memory actually is, expected next to measured.
 //!
-//! [`MemoryReport`] is four short sections: the process counters, wgpu's own
-//! internal counters, the backend allocator's live allocations, and the table
-//! of what the renderer believes it owns. The point is the last two side by
-//! side: the day the columns disagree is the day there is a leak.
+//! [`MemoryReport`] is five short sections: the process counters, the decoded
+//! pixel buffers alive in the process, wgpu's own internal counters, the
+//! backend allocator's live allocations, and the table of what the renderer
+//! believes it owns. The point is the last two side by side: the day the
+//! columns disagree is the day there is a leak.
 //!
 //! The report is short on purpose. Everything below `REPORT_FLOOR_BYTES` is
 //! rolled into one line, and only the `TOP_N` largest allocation groups are
@@ -13,16 +14,19 @@
 //! line, and the row layout are free to change; nothing parses this, unlike the
 //! single `query-memory` line the e2e suite reads.
 //!
-//! Two of the four sections can be absent, and say so rather than vanishing.
+//! Two of the five sections can be absent, and say so rather than vanishing.
 //! `Device::generate_allocator_report` is implemented for D3D12 and Vulkan and
 //! returns `None` everywhere else, so Metal has no allocation section; the
 //! process snapshot is absent only on a platform `memory::snapshot` does not
 //! cover. The counters read zero on a backend that does not maintain them,
-//! which is a number rather than an absence, so that section is always printed.
+//! which is a number rather than an absence, so that section is always printed:
+//! in wgpu 28 the byte counters are kept by D3D12 and Vulkan and not by Metal,
+//! the object counts by all three, and the allocation count by none.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::assets::texture_loader::{self, DecodedCount};
 use crate::memory::{mib, mib_signed};
 
 /// Allocations and textures below this are rolled up rather than listed.
@@ -49,6 +53,10 @@ pub struct CounterSection {
     pub texture_bytes: i64,
     pub buffer_bytes: i64,
     pub allocations: i64,
+    /// Live texture objects.
+    pub textures: i64,
+    /// Live buffer objects.
+    pub buffers: i64,
 }
 
 /// Live allocations sharing one label, which is how the report names a texture.
@@ -131,6 +139,8 @@ pub struct MemoryReport {
     /// on a software rasterizer, and mostly do not on a real GPU.
     pub adapter: String,
     pub process: Option<ProcessSection>,
+    /// The decoded pixel buffers alive when the report was taken.
+    pub decoded: DecodedCount,
     pub counters: CounterSection,
     pub allocator: Option<AllocatorSection>,
     /// Every texture the renderer owns, including ones under the floor. The
@@ -166,10 +176,13 @@ pub(crate) fn collect(
             peak_rss_bytes: snap.peak_rss_bytes,
             private_bytes: snap.private_bytes,
         }),
+        decoded: texture_loader::decoded_pixels(),
         counters: CounterSection {
             texture_bytes: counter(counters.hal.texture_memory.read()),
             buffer_bytes: counter(counters.hal.buffer_memory.read()),
             allocations: counter(counters.hal.memory_allocations.read()),
+            textures: counter(counters.hal.textures.read()),
+            buffers: counter(counters.hal.buffers.read()),
         },
         allocator: device
             .generate_allocator_report()
@@ -264,9 +277,19 @@ impl fmt::Display for MemoryReport {
 
         writeln!(
             f,
-            "wgpu counters: textures {:.1} MiB, buffers {:.1} MiB, {} allocations",
+            "decoded pixels: {} frames alive, {:.1} MiB, {} decoded since start",
+            self.decoded.frames,
+            mib(self.decoded.bytes),
+            self.decoded.made
+        )?;
+
+        writeln!(
+            f,
+            "wgpu counters: textures {:.1} MiB in {}, buffers {:.1} MiB in {}, {} allocations",
             mib_signed(self.counters.texture_bytes),
+            self.counters.textures,
             mib_signed(self.counters.buffer_bytes),
+            self.counters.buffers,
             self.counters.allocations
         )?;
 
@@ -548,10 +571,17 @@ mod tests {
                 peak_rss_bytes: 200 * MIB,
                 private_bytes: 300 * MIB,
             }),
+            decoded: DecodedCount {
+                frames: 1,
+                bytes: 2 * MIB,
+                made: 3,
+            },
             counters: CounterSection {
                 texture_bytes: counter_mib(90),
                 buffer_bytes: counter_mib(1),
                 allocations: 7,
+                textures: 4,
+                buffers: 2,
             },
             allocator: Some(grouped(&pairs(&[
                 ("day_texture", 40 * MIB),
@@ -566,20 +596,21 @@ mod tests {
         }
     }
 
-    /// Four sections and nothing else: one header line each, plus the rows the
+    /// Five sections and nothing else: one header line each, plus the rows the
     /// allocation and expected sections are made of.
     #[test]
-    fn the_report_has_exactly_four_sections() {
+    fn the_report_has_exactly_five_sections() {
         let text = fabricated().to_string();
         let headers: Vec<&str> = text
             .lines()
             .filter(|line| !line.starts_with(' ') && !line.starts_with("memory report"))
             .collect();
-        assert_eq!(headers.len(), 4, "unexpected sections in:\n{text}");
+        assert_eq!(headers.len(), 5, "unexpected sections in:\n{text}");
         assert!(headers[0].starts_with("process:"));
-        assert!(headers[1].starts_with("wgpu counters:"));
-        assert!(headers[2].starts_with("gpu allocations:"));
-        assert!(headers[3].starts_with("expected:"));
+        assert!(headers[1].starts_with("decoded pixels:"));
+        assert!(headers[2].starts_with("wgpu counters:"));
+        assert!(headers[3].starts_with("gpu allocations:"));
+        assert!(headers[4].starts_with("expected:"));
     }
 
     #[test]
@@ -617,7 +648,7 @@ mod tests {
             text.lines()
                 .filter(|line| !line.starts_with(' ') && !line.starts_with("memory report"))
                 .count(),
-            4
+            5
         );
     }
 

@@ -14,7 +14,8 @@
 //! - `show-window` — makes the main window visible
 //! - `hide-window` — hides the main window
 //! - `export-test` — attempts a small GPU export, signals success/failure
-//! - `query-memory` — reports the current process memory counters
+//! - `query-memory` — reports the current process memory counters and the
+//!   decoded pixel buffers alive
 //! - `memory-report` — prints the full memory report between two signal lines
 //! - `set-wallpaper` — renders and publishes the wallpaper, signalling the
 //!   outcome once the engine reports it
@@ -26,6 +27,7 @@ use crate::engine_client::EngineLink;
 use interprocess::local_socket::traits::ListenerExt;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use slint::ComponentHandle;
+use sunlit_core::assets::texture_loader::DecodedCount;
 use sunlit_core::memory::MemorySnapshot;
 use tracing::{debug, info, warn};
 
@@ -184,7 +186,13 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             // Answered on this thread: GetProcessMemoryInfo is process-wide,
             // so the reply is correct even when the event loop is idle or busy.
             match sunlit_core::memory::snapshot() {
-                Some(snap) => signal(&MemorySignal::from(&snap).line()),
+                Some(snap) => signal(
+                    &MemorySignal::new(
+                        &snap,
+                        sunlit_core::assets::texture_loader::decoded_pixels(),
+                    )
+                    .line(),
+                ),
                 None => signal("memory_unavailable"),
             }
         }
@@ -257,15 +265,36 @@ pub struct MemorySignal {
     pub rss_bytes: u64,
     pub peak_rss_bytes: u64,
     pub private_bytes: u64,
+    /// Decoded pixel buffers alive in the process.
+    pub decoded_frames: u64,
+    /// Bytes those buffers hold.
+    pub decoded_bytes: u64,
 }
 
 impl MemorySignal {
+    /// The process counters and the decoded pixel buffers, as one answer.
+    #[must_use]
+    pub fn new(snapshot: &MemorySnapshot, decoded: DecodedCount) -> Self {
+        Self {
+            rss_bytes: snapshot.rss_bytes,
+            peak_rss_bytes: snapshot.peak_rss_bytes,
+            private_bytes: snapshot.private_bytes,
+            decoded_frames: decoded.frames,
+            decoded_bytes: decoded.bytes,
+        }
+    }
+
     /// The signal body, without the `SIGNAL:` prefix.
     #[must_use]
     pub fn line(&self) -> String {
         format!(
-            "memory rss_bytes={} peak_rss_bytes={} private_bytes={}",
-            self.rss_bytes, self.peak_rss_bytes, self.private_bytes
+            "memory rss_bytes={} peak_rss_bytes={} private_bytes={} decoded_frames={} \
+             decoded_bytes={}",
+            self.rss_bytes,
+            self.peak_rss_bytes,
+            self.private_bytes,
+            self.decoded_frames,
+            self.decoded_bytes
         )
     }
 
@@ -296,17 +325,9 @@ impl MemorySignal {
             rss_bytes: signal_number(line, "rss_bytes")?,
             peak_rss_bytes: signal_number(line, "peak_rss_bytes")?,
             private_bytes: signal_number(line, "private_bytes")?,
+            decoded_frames: signal_number(line, "decoded_frames")?,
+            decoded_bytes: signal_number(line, "decoded_bytes")?,
         })
-    }
-}
-
-impl From<&MemorySnapshot> for MemorySignal {
-    fn from(snapshot: &MemorySnapshot) -> Self {
-        Self {
-            rss_bytes: snapshot.rss_bytes,
-            peak_rss_bytes: snapshot.peak_rss_bytes,
-            private_bytes: snapshot.private_bytes,
-        }
     }
 }
 
@@ -484,6 +505,8 @@ mod tests {
             rss_bytes: 123_456,
             peak_rss_bytes: 234_567,
             private_bytes: 345_678,
+            decoded_frames: 2,
+            decoded_bytes: 456_789,
         };
         let line = format!("SIGNAL:{}", counters.line());
         assert_eq!(MemorySignal::parse(&line), Some(counters));
@@ -497,13 +520,16 @@ mod tests {
     /// the first `rss_bytes=` in it belongs to another field.
     #[test]
     fn peak_rss_is_not_read_as_rss() {
-        let line = "SIGNAL:memory peak_rss_bytes=222 private_bytes=333 rss_bytes=111";
+        let line = "SIGNAL:memory peak_rss_bytes=222 private_bytes=333 rss_bytes=111 \
+                    decoded_frames=0 decoded_bytes=0";
         assert_eq!(
             MemorySignal::parse(line),
             Some(MemorySignal {
                 rss_bytes: 111,
                 peak_rss_bytes: 222,
                 private_bytes: 333,
+                decoded_frames: 0,
+                decoded_bytes: 0,
             })
         );
     }
@@ -520,6 +546,12 @@ mod tests {
         assert_eq!(
             MemorySignal::missing_field("SIGNAL:memory rss_bytes=1 private_bytes=3"),
             Some("peak_rss_bytes")
+        );
+        assert_eq!(
+            MemorySignal::missing_field(
+                "SIGNAL:memory rss_bytes=1 peak_rss_bytes=2 private_bytes=3 decoded_frames=0"
+            ),
+            Some("decoded_bytes")
         );
         assert_eq!(
             MemorySignal::missing_field(

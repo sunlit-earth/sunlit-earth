@@ -1,6 +1,7 @@
 //! Load equirectangular texture images from disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Register the JPEG-XL decoding hook with the `image` crate.
 ///
@@ -31,10 +32,99 @@ impl Channels {
 
 /// Decoded 8-bit image data, row 0 first.
 pub struct DecodedImage {
-    pub pixels: Vec<u8>,
+    pub pixels: Pixels,
     pub width: u32,
     pub height: u32,
     pub channels: Channels,
+}
+
+/// The decoded pixel buffers of this process, as [`decoded_pixels`] counts
+/// them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DecodedCount {
+    /// Buffers alive now.
+    pub frames: u64,
+    /// Bytes the live buffers hold.
+    pub bytes: u64,
+    /// Buffers made since the process started, alive or not.
+    pub made: u64,
+}
+
+static LIVE_FRAMES: AtomicU64 = AtomicU64::new(0);
+static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
+static MADE_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// The [`Pixels`] alive in this process, and how many there have been.
+///
+/// Every decoded image is made to be uploaded and dropped, so between loads
+/// the live count is zero, and a frame that stays alive is one parked in a
+/// queue, a cache or a long-lived struct. `made` is what lets a caller tell
+/// "uploaded" from "not decoded yet": a count that is zero after `made` moved
+/// past a frame is that frame gone.
+pub fn decoded_pixels() -> DecodedCount {
+    DecodedCount {
+        made: MADE_FRAMES.load(Ordering::SeqCst),
+        frames: LIVE_FRAMES.load(Ordering::SeqCst),
+        bytes: LIVE_BYTES.load(Ordering::SeqCst),
+    }
+}
+
+/// The pixels of a [`DecodedImage`], counted in [`decoded_pixels`] for as long
+/// as they exist.
+///
+/// A frame is counted on creation and uncounted on drop. [`Pixels::replace`]
+/// swaps the buffer of a frame that changes size, a halving or the next mip
+/// level, so a frame stays one frame from its decode until its last level is
+/// gone.
+pub struct Pixels(Vec<u8>);
+
+/// Bytes a buffer holds, as the counter counts them.
+fn held(bytes: &Vec<u8>) -> u64 {
+    bytes.capacity() as u64
+}
+
+impl Pixels {
+    /// Count `bytes` as one decoded frame.
+    pub fn new(bytes: Vec<u8>) -> Self {
+        LIVE_BYTES.fetch_add(held(&bytes), Ordering::SeqCst);
+        LIVE_FRAMES.fetch_add(1, Ordering::SeqCst);
+        MADE_FRAMES.fetch_add(1, Ordering::SeqCst);
+        Self(bytes)
+    }
+
+    /// Hold `bytes` in place of the buffer this frame held, which is dropped.
+    pub fn replace(&mut self, bytes: Vec<u8>) {
+        LIVE_BYTES.fetch_add(held(&bytes), Ordering::SeqCst);
+        let old = std::mem::replace(&mut self.0, bytes);
+        LIVE_BYTES.fetch_sub(held(&old), Ordering::SeqCst);
+    }
+}
+
+impl Drop for Pixels {
+    fn drop(&mut self) {
+        LIVE_BYTES.fetch_sub(held(&self.0), Ordering::SeqCst);
+        LIVE_FRAMES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl std::ops::Deref for Pixels {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Pixels {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl std::fmt::Debug for Pixels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Load and decode an image file into pixels the sphere can sample, at a
@@ -51,8 +141,9 @@ pub struct DecodedImage {
 pub fn load_capped(path: &Path, max_width: u32) -> Result<DecodedImage, String> {
     let mut img = decode(path)?;
     for _ in 0..halvings_to(img.width, max_width) {
-        img.pixels =
+        let halved =
             downsample_2x_channels(&img.pixels, img.width, img.height, img.channels.count());
+        img.pixels.replace(halved);
         img.width = (img.width / 2).max(1);
         img.height = (img.height / 2).max(1);
     }
@@ -86,7 +177,7 @@ fn decode(path: &Path) -> Result<DecodedImage, String> {
 
     let (width, height) = img.dimensions();
     Ok(DecodedImage {
-        pixels: img.into_raw(),
+        pixels: Pixels::new(img.into_raw()),
         width,
         height,
         channels: Channels::Rgba,
@@ -378,23 +469,23 @@ mod tests {
 
         let capped = load_capped(&path, 8).expect("a capped load");
         let mut expected = DecodedImage {
-            pixels: downsample_2x(
+            pixels: Pixels::new(downsample_2x(
                 &downsample_2x(&source, width, height),
                 width / 2,
                 height / 2,
-            ),
+            )),
             width: width / 4,
             height: height / 4,
             channels: Channels::Rgba,
         };
         orient(&mut expected);
         assert_eq!((capped.width, capped.height), (8, 4));
-        assert_eq!(capped.pixels, expected.pixels);
+        assert_eq!(*capped.pixels, *expected.pixels);
 
         let whole = load_capped(&path, width).expect("an uncapped load");
         let mut oriented = decode(&path).expect("a decode");
         orient(&mut oriented);
-        assert_eq!(whole.pixels, oriented.pixels);
+        assert_eq!(*whole.pixels, *oriented.pixels);
     }
 
     #[test]
@@ -491,20 +582,20 @@ mod tests {
         for (w, h) in [(4_u32, 2_u32), (8, 8), (16, 3)] {
             let rgba = fixture(w, h, 5);
             let mut whole = DecodedImage {
-                pixels: rgba.clone(),
+                pixels: Pixels::new(rgba.clone()),
                 width: w,
                 height: h,
                 channels: Channels::Rgba,
             };
             let mut one = DecodedImage {
-                pixels: red(&rgba),
+                pixels: Pixels::new(red(&rgba)),
                 width: w,
                 height: h,
                 channels: Channels::Red,
             };
             orient(&mut whole);
             orient(&mut one);
-            assert_eq!(one.pixels, red(&whole.pixels), "orienting {w}x{h}");
+            assert_eq!(*one.pixels, *red(&whole.pixels), "orienting {w}x{h}");
         }
     }
 

@@ -199,7 +199,12 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
 /// shader samples as red, the channel it reads.
 ///
 /// Takes ownership of the image to avoid cloning a decoded texture. Each level
-/// is made from the one before and dropped once the next exists.
+/// is made from the one before and replaces it in the same [`Pixels`], so the
+/// frame stays one live frame in [`decoded_pixels`] until its last level has
+/// been uploaded and it drops here.
+///
+/// [`Pixels`]: texture_loader::Pixels
+/// [`decoded_pixels`]: texture_loader::decoded_pixels
 #[tracing::instrument(skip(device, queue, image), fields(label, width = image.width, height = image.height))]
 pub(super) fn create_mipmapped_texture(
     device: &wgpu::Device,
@@ -244,7 +249,8 @@ pub(super) fn create_mipmapped_texture(
     let mut w = width;
     let mut h = height;
     for level in 1..mip_count {
-        pixels = texture_loader::downsample_2x_channels(&pixels, w, h, channels.count());
+        let next = texture_loader::downsample_2x_channels(&pixels, w, h, channels.count());
+        pixels.replace(next);
         w = (w / 2).max(1);
         h = (h / 2).max(1);
         upload_mip(queue, &texture, level, w, h, bytes_per_pixel, &pixels);

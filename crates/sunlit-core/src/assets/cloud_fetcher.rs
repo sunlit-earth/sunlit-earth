@@ -21,7 +21,7 @@ use crate::config::{DEFAULT_TEXTURE_RESOLUTION, TEXTURE_RESOLUTIONS};
 
 use super::cloud_source::CloudSource;
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
-use super::texture_loader::{self, Channels, DecodedImage};
+use super::texture_loader::{self, Channels, DecodedImage, Pixels};
 
 /// Callback invoked after a new frame has been posted, so a client that only
 /// works on demand knows there is something waiting. Headless callers that poll
@@ -240,7 +240,7 @@ fn decode_cloud_jpeg(bytes: &[u8]) -> Result<DecodedImage, String> {
         other => other.into_rgb8().pixels().map(|pixel| pixel[0]).collect(),
     };
     let mut decoded = DecodedImage {
-        pixels,
+        pixels: Pixels::new(pixels),
         width,
         height,
         channels: Channels::Red,

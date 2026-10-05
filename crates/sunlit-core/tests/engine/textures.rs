@@ -6,7 +6,7 @@ use std::time::Duration;
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::mailbox::DecodedTextureMessage;
 use sunlit_core::assets::mailbox::TextureMailbox;
-use sunlit_core::assets::texture_loader::{Channels, DecodedImage};
+use sunlit_core::assets::texture_loader::{Channels, DecodedImage, Pixels};
 use sunlit_core::assets::tiles::{self, PackKind};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::engine::EngineConfig;
@@ -148,7 +148,7 @@ fn decoded(slot_index: usize, width: u32, generation: u64, value: u8) -> Decoded
     DecodedTextureMessage {
         slot_index,
         result: Ok(DecodedImage {
-            pixels: vec![value; (width as usize) * (height as usize) * 4],
+            pixels: Pixels::new(vec![value; (width as usize) * (height as usize) * 4]),
             width,
             height,
             channels: Channels::Rgba,

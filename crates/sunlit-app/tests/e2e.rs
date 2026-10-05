@@ -666,7 +666,7 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     assert_no_error_lines(&stderr_watcher.lines());
 }
 
-/// Verify that `memory-report` answers with the four sections, and print what
+/// Verify that `memory-report` answers with the five sections, and print what
 /// it said.
 ///
 /// The printing is the point as much as the assertions are: this is the one

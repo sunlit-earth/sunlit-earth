@@ -21,7 +21,8 @@
 //! cover. The counters read zero on a backend that does not maintain them,
 //! which is a number rather than an absence, so that section is always printed:
 //! in wgpu 28 the byte counters are kept by D3D12 and Vulkan and not by Metal,
-//! the object counts by all three, and the allocation count by none.
+//! the object counts by D3D12 and Metal, the buffer count by Vulkan, whose
+//! texture count only ever goes down, and the allocation count by none.
 
 use std::collections::BTreeMap;
 use std::fmt;

@@ -14,7 +14,7 @@
 //! - `show-window` — makes the main window visible
 //! - `hide-window` — hides the main window
 //! - `export-test` — attempts a small GPU export, signals success/failure
-//! - `query-memory` — reports the current process memory counters and the
+//! - `query-memory`: reports the current process memory counters and the
 //!   decoded pixel buffers and cloud downloads alive
 //! - `memory-report` — prints the full memory report between two signal lines
 //! - `set-wallpaper` — renders and publishes the wallpaper, signalling the

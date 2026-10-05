@@ -263,6 +263,21 @@ fn named_counters(counters: CounterSection) -> [(&'static str, i64); 5] {
     ]
 }
 
+/// The counters the backend under each software adapter the suite runs on
+/// keeps in wgpu 28 (research section 28): D3D12 under WARP the bytes and both
+/// object counts, Vulkan under lavapipe the bytes and the buffer count.
+///
+/// On these a counter that reads zero or below is a check gone missing rather
+/// than one the backend never kept, so it fails the test. Any other adapter
+/// has its counters inferred from the readings alone.
+fn kept_counters(adapter: &str) -> &'static [&'static str] {
+    match adapter {
+        "warp" => &["texture bytes", "buffer bytes", "textures", "buffers"],
+        "lavapipe" => &["texture bytes", "buffer bytes", "buffers"],
+        _ => &[],
+    }
+}
+
 /// Hold every counter wgpu maintains on this backend to the value it had at
 /// the first reading, and say which ones it does not maintain.
 ///
@@ -275,10 +290,16 @@ fn named_counters(counters: CounterSection) -> [(&'static str, i64); 5] {
 /// kept one counts at least the textures and buffers every frame uses, and one
 /// that reads below zero is one it keeps half of, counting down on destroy and
 /// never up on create, as Vulkan does with textures in wgpu 28. Neither is
-/// asserted on.
+/// asserted on, except where [`kept_counters`] says the backend keeps it.
 fn check_counters(adapter: &str, readings: &[(u64, CounterSection)]) {
     let (_, first) = readings[0];
     for (index, (name, baseline)) in named_counters(first).into_iter().enumerate() {
+        assert!(
+            baseline > 0 || !kept_counters(adapter).contains(&name),
+            "wgpu {name} reads {baseline} on {adapter}, whose backend keeps it: the check on it \
+             is lost, through wgpu's `counters` feature left off or a backend that stopped \
+             counting it"
+        );
         if baseline == 0 {
             println!("wgpu {name}: reads zero on {adapter}, which does not keep it; not checked");
             continue;

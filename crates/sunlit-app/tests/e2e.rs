@@ -6,9 +6,7 @@
 use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
-#[cfg(windows)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use image::GenericImageView;
 use serial_test::serial;
@@ -515,21 +513,21 @@ fn test_gpu_persistence_after_hide() {
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }
 
-/// Cloud updates arriving while the window is hidden must not grow process
-/// memory without bound.
+/// Cloud updates arriving while the window is hidden must reach the GPU and
+/// leave no decoded frame behind.
 ///
-/// Decoded cloud frames reach the GPU through a channel drained from
-/// `BeforeRendering`, which stops firing once the window is hidden. The case
-/// points the fetcher at a local stub server, hides the window, publishes
-/// `WARMUP_UPDATES` updates and then 15 more, and asserts both that private
-/// bytes stay bounded across the 15 and that the updates still reach the GPU
-/// while hidden.
+/// The case points the fetcher at a local stub server, hides the window,
+/// publishes `WARMUP_UPDATES` updates and then `UPDATES` more, and asserts
+/// that no decoded frame is alive once each batch has landed, that the
+/// updates still reach the GPU while hidden, and that private bytes stay
+/// within a coarse limit across the later batch.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 #[allow(clippy::too_many_lines)]
 fn test_hidden_window_cloud_updates_do_not_grow_memory() {
-    /// Decoded size is 2048 * 1024 * 4 = 8 MiB per frame.
+    /// A decoded frame is one channel, 2 MiB, and the cloud texture made from
+    /// it 2.67 MiB with its mips.
     const FIXTURE_WIDTH: u32 = 2048;
     const FIXTURE_HEIGHT: u32 = 1024;
     /// Hidden updates before the baseline, which the allocators grow through
@@ -540,9 +538,15 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     /// update; what the case bounds is the growth after that.
     const WARMUP_UPDATES: u64 = 4;
     const UPDATES: u64 = 15;
+    /// A backstop for what the frame count does not see, such as GPU memory
+    /// or host memory outside a decoded frame. The frame count is the exact
+    /// check.
     const GROWTH_LIMIT_BYTES: u64 = 40 * 1024 * 1024;
     /// Long enough for at least one tick of the 5 s drain timer.
     const SETTLE: Duration = Duration::from_secs(8);
+    /// How much longer than `SETTLE` a decoded frame may stay alive before it
+    /// counts as parked: two more ticks of the drain timer.
+    const FRAME_DEADLINE: Duration = Duration::from_secs(10);
     /// One image served by the local stub, which is polled once a second.
     const DOWNLOAD: Duration = Duration::from_secs(15);
 
@@ -580,7 +584,6 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     wait_for_downloads(&stub, 1, READY);
     stderr_watcher.wait_for_log("GPU texture created", READY);
 
-    // From here on `BeforeRendering` no longer fires.
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", SIGNAL_REPLY);
 
@@ -592,15 +595,26 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         }
     };
 
+    // Once the last download has had its drain tick, asked until no decoded
+    // frame is alive or `FRAME_DEADLINE` has passed.
+    let settled = || {
+        std::thread::sleep(SETTLE);
+        let deadline = Instant::now() + FRAME_DEADLINE;
+        loop {
+            let memory = query_memory(&socket_name, &stdout_watcher);
+            if memory.decoded_frames == 0 || Instant::now() >= deadline {
+                return memory;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    };
+
     publish(WARMUP_UPDATES);
-    std::thread::sleep(SETTLE);
-    let baseline = query_memory(&socket_name, &stdout_watcher);
+    let baseline = settled();
     let stderr_cursor = stderr_watcher.line_count();
 
     publish(UPDATES);
-
-    std::thread::sleep(SETTLE);
-    let end = query_memory(&socket_name, &stdout_watcher);
+    let end = settled();
 
     send_ipc_command(&socket_name, "export-test");
     stdout_watcher.wait_for_signal("export_test_ok", SIGNAL_REPLY);
@@ -623,15 +637,19 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         .count();
 
     println!(
-        "baseline after {WARMUP_UPDATES} hidden cloud updates: rss={:.1} MiB private={:.1} MiB",
+        "baseline after {WARMUP_UPDATES} hidden cloud updates: rss={:.1} MiB private={:.1} MiB \
+         decoded frames={}",
         mib(baseline.rss_bytes),
-        mib(baseline.private_bytes)
+        mib(baseline.private_bytes),
+        baseline.decoded_frames
     );
     println!(
-        "after {UPDATES} more: rss={:.1} MiB private={:.1} MiB peak_rss={:.1} MiB",
+        "after {UPDATES} more: rss={:.1} MiB private={:.1} MiB peak_rss={:.1} MiB \
+         decoded frames={}",
         mib(end.rss_bytes),
         mib(end.private_bytes),
-        mib(end.peak_rss_bytes)
+        mib(end.peak_rss_bytes),
+        end.decoded_frames
     );
     println!(
         "growth: private={:.1} MiB rss={:.1} MiB (limit {:.0} MiB), \
@@ -640,6 +658,21 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         mib(rss_growth),
         mib(GROWTH_LIMIT_BYTES)
     );
+
+    for (when, memory) in [
+        (format!("after {WARMUP_UPDATES} updates"), &baseline),
+        (format!("after {UPDATES} more"), &end),
+    ] {
+        assert!(
+            memory.decoded_frames == 0 && memory.decoded_bytes == 0,
+            "{} decoded frames ({:.1} MiB) still alive {when} with the window hidden, {:?} \
+             after the last download: a frame that outlives its upload is a decoded pixel \
+             buffer parked in a queue, a cache or a long-lived struct",
+            memory.decoded_frames,
+            mib(memory.decoded_bytes),
+            SETTLE + FRAME_DEADLINE
+        );
+    }
 
     // Private bytes (commit charge) rather than RSS, because working-set
     // trimming can hide heap growth from RSS.

@@ -117,7 +117,7 @@ Configuration, caches, and generated wallpapers live under these directories:
 - Windows: `%LOCALAPPDATA%\SunlitEarth`
 - macOS: `~/Library/Application Support/SunlitEarth`
 
-The settings file is `config.toml`. Back it up if you want to keep a configuration before experimenting. The cache also holds the surface textures prepared on the first launch (about 420 MiB); if deleted, they are prepared again.
+The settings file is `config.toml`. Back it up if you want to keep a configuration before experimenting. The `tile_cache` folder holds the surface textures prepared on first launch.
 
 ### Export an image
 

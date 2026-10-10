@@ -38,6 +38,7 @@ mod months;
 mod moon;
 mod panorama;
 mod readiness;
+mod sea_ice;
 mod sinks;
 mod stars;
 mod sun;

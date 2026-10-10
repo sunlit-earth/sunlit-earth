@@ -384,6 +384,12 @@ pub(crate) fn parse_memory_entries(stderr: &str) -> Vec<MemoryEntry> {
     entries
 }
 
+/// The texture resolution every start of the app under test that loads
+/// textures runs at, through the one-run `--texture-resolution` override
+/// rather than the default, so the suite's memory and its run time in the
+/// guests do not follow a change of default.
+pub(crate) const TEXTURE_RESOLUTION: &str = "4096";
+
 /// Monotonically increasing counter for names that have to be unique within
 /// this process: socket names and throwaway config paths.
 static SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -497,6 +503,7 @@ impl<'a> Spawn<'a> {
         let mut guard = ChildGuard::new(
             command
                 .args(["--log-level", "debug"])
+                .args(["--texture-resolution", TEXTURE_RESOLUTION])
                 .args(&self.args)
                 .args(["--ipc-socket", self.socket_name])
                 .stdout(Stdio::piped())

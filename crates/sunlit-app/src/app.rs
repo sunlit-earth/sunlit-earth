@@ -486,7 +486,7 @@ fn start_engine(
     }));
 
     let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
-    let (aa_labels, aa_counts, _) =
+    let (aa_labels, aa_counts) =
         renderer::build_aa_options(engine.supported_sample_counts(), quality.max_sample_count());
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
     // The window is about to show the override, and a save must not write it.

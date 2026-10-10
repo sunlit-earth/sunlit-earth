@@ -91,9 +91,9 @@ pub const TEXTURE_RESOLUTIONS: [u32; 3] = [8192, 4096, 2048];
 
 /// The width a config without a `texture_resolution` key lands on.
 ///
-/// The middle entry, so the widest is opt-in: at 8192 the cloud overlay alone
-/// holds 171 MiB with its mip chain, against 43 MiB at 4096.
-pub const DEFAULT_TEXTURE_RESOLUTION: u32 = 4096;
+/// The widest entry, so the narrower two are opt-in savings: at 8192 the cloud
+/// overlay holds 43 MiB with its mip chain, against 11 MiB at 4096.
+pub const DEFAULT_TEXTURE_RESOLUTION: u32 = 8192;
 
 /// Replace a texture resolution that is not one of [`TEXTURE_RESOLUTIONS`] with
 /// the default.
@@ -392,7 +392,7 @@ impl Default for AppConfig {
             camera_fov: cam.fov_deg,
             texture_index: 3,
             texture_resolution: DEFAULT_TEXTURE_RESOLUTION,
-            sample_count: 8,
+            sample_count: 2,
             quality_tier: QualityTier::default_for_build(),
             terminator_width: 0.1,
             diffuse_shading: true,
@@ -540,17 +540,17 @@ fn save_config_to(config: &AppConfig, path: &std::path::Path) {
     crate::files::write_toml(&file, path, "config");
 }
 
-/// Find the index of `desired` sample count in `aa_counts`, or fall back
-/// to the last index (highest available count).
+/// Find the index in `aa_counts` of the count the renderer draws with when
+/// `desired` is asked for: `desired` itself, or the highest count below it, or
+/// the lowest on offer when every count is above it.
+///
+/// Through the renderer's own `resolve_sample_count`, so the combo box shows
+/// the count the engine draws with.
 ///
 /// Returns the index as `i32` for direct use with Slint's `set_aa_index()`.
 pub fn find_sample_count_index(aa_counts: &[u32], desired: u32) -> i32 {
-    slint_index(
-        aa_counts
-            .iter()
-            .position(|&c| c == desired)
-            .unwrap_or(aa_counts.len().saturating_sub(1)),
-    )
+    let resolved = crate::renderer::resolve_sample_count(desired, aa_counts, u32::MAX);
+    slint_index(aa_counts.iter().position(|&c| c == resolved).unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -686,7 +686,7 @@ mod tests {
             offset_y: -0.2,
             camera_fov: 35.0,
             texture_index: 1,
-            texture_resolution: 8192,
+            texture_resolution: 2048,
             sample_count: 4,
             quality_tier: QualityTier::Medium,
             terminator_width: 0.2,
@@ -1130,12 +1130,14 @@ sky_fov = 111.0
     // --- find_sample_count_index ---
 
     #[test]
-    fn a_sample_count_indexes_itself_or_the_strongest_on_offer() {
+    fn a_sample_count_indexes_itself_or_the_strongest_at_or_below_it() {
         for (offered, requested, expected) in [
             (&[1, 2, 4, 8][..], 4, 2),
             (&[1, 2, 4, 8][..], 8, 3),
             (&[1, 2, 4][..], 8, 2),
             (&[1][..], 8, 0),
+            (&[1, 4, 8][..], 2, 0),
+            (&[4, 8][..], 2, 0),
         ] {
             assert_eq!(
                 find_sample_count_index(offered, requested),

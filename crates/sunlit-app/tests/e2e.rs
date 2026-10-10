@@ -22,11 +22,11 @@ use common::pixels::{
 };
 use common::process::{
     ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY, Spawn,
-    StderrWatcher, StdoutWatcher, TempDirGuard, WALLPAPER_OPT_IN, WALLPAPER_PLATFORM,
-    assert_no_error_lines, binary, fixture, isolated_config_path, isolated_state_dir,
-    memory_report, mib, parse_memory_entries, query_memory, quit_and_expect_clean_exit,
-    send_ipc_command, skip_case, tray_supported, unique_socket_name, wait_with_timeout,
-    wallpaper_supported,
+    StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
+    WALLPAPER_PLATFORM, assert_no_error_lines, binary, fixture, isolated_config_path,
+    isolated_state_dir, memory_report, mib, parse_memory_entries, query_memory,
+    quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
+    wait_with_timeout, wallpaper_supported,
 };
 
 #[cfg(target_os = "linux")]
@@ -120,6 +120,8 @@ fn test_render_and_exit() {
             .args([
                 "--log-level",
                 "debug",
+                "--texture-resolution",
+                TEXTURE_RESOLUTION,
                 "render",
                 "--output",
                 output_path.to_str().expect("non-UTF-8 temp path"),

@@ -30,7 +30,7 @@ A debug build logs `resolved texture paths` at startup. Release builds compile i
 
 ## Resolution and caching
 
-Advanced → Rendering selects a maximum texture width of 8192, 4096, or 2048. For the Earth it caps the finest tile level: 8192 keeps both tile levels, 4096 the coarser one, and 2048 the floors alone. The default is 4096, including configurations saved before this setting existed. Selecting another width in the UI persists it. A source narrower than the selected width is not enlarged.
+Advanced → Rendering selects a maximum texture width of 8192, 4096, or 2048. For the Earth it caps the finest tile level: 8192 keeps both tile levels, 4096 the coarser one, and 2048 the floors alone. The default is 8192, including configurations saved before this setting existed. Selecting another width in the UI persists it. A source narrower than the selected width is not enlarged.
 
 Nothing is cached on disk for a downscale. The Milky Way panorama is halved in memory on each load at 2048, and earlier versions' `texture_cache/` directory is deleted from the cache directory at startup. The tile packs the Earth is drawn from are built from the cube faces on first use and cached; see [architecture.md](architecture.md#texture-resolution) for validation, measurements, and loading behavior.
 

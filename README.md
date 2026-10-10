@@ -93,7 +93,7 @@ The desktop shows a still image between updates. The preview lets you compose th
 
 Cloud imagery downloads automatically and is cached for later use. Internet access is needed to obtain fresh clouds. The bundled surface textures and astronomical calculations work offline. Clouds are recent imagery (usually less than 3 hours old).
 
-The default globe texture resolution is 4096 pixels around the equator. Under Advanced → Rendering, choose 2048 to reduce memory use or 8192 for more surface detail. This setting also selects the cloud download resolution. Rendering happens on the GPU by default. If your device does not have a supported GPU or video driver, Sunlit Earth falls back to software rendering, which is slower, but renders at a similar quality level.
+The default globe texture resolution is 8192 pixels around the equator. Under Advanced → Rendering, choose 4096 or 2048 to reduce memory use. This setting also selects the cloud download resolution. Rendering happens on the GPU by default. If your device does not have a supported GPU or video driver, Sunlit Earth falls back to software rendering, which is slower, but renders at a similar quality level.
 
 ## Using the app
 

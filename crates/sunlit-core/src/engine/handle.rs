@@ -117,7 +117,9 @@ impl EngineConfig {
             params: SceneParams::default(),
             // Tests always run at the cheap tier, whatever the build profile.
             quality: QualityTier::Low,
-            texture_resolution: crate::config::DEFAULT_TEXTURE_RESOLUTION,
+            // A fixed width rather than the default, so the suite's tile levels
+            // and its run time do not follow a change of default.
+            texture_resolution: 4096,
             clock: Arc::new(SystemClock::new()),
             cloud: None,
             cloud_poll_interval: Duration::from_hours(1),

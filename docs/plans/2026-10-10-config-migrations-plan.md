@@ -207,3 +207,11 @@ The e2e case `test_across_screens_writes_what_this_desktop_can_hold` writes a ve
 ## Rollback Strategy
 
 Reverting the change leaves stamped files on users' machines. A build without this code reads them as it reads any file: `version` is an unknown key and is dropped on the next save, and the migrated values are valid in every release since 0.1.0. Nothing else is needed.
+
+## Departures
+
+1. A step receives a `ChangeLog` rather than a `&mut Vec<Change>`. `Change` carries `from_version`, and the helpers have the signature the plan gives them with no version in it, so with a bare `Vec` either the helpers would push a placeholder version that `migrate` patches afterwards, or every helper would grow a version parameter that every step passes by hand. `ChangeLog` is the `Vec` plus the running step's version, which `migrate` sets once per step; a step and its helpers still see one `&mut` recorder, and `Migration` is `fn(&mut toml::Table, &mut ChangeLog)`.
+
+2. `ConfigFile::version` is `#[serde(skip_deserializing)]`. `migrate` is the one reader of the version, from the raw table, and a file from a newer build is left as it is, so a `version` too large for a `u32` would otherwise fail deserialization and reset every setting, which decision 7 says must not happen. Skipped on the way in, the field takes `ConfigFile::default()`'s `CONFIG_VERSION`, and nothing reads it after loading.
+
+3. When the backup cannot be written, the migrated file is not written either. Decision 6 orders the two but does not say what a failed backup means; writing anyway would replace the only copy of the original, and skipping the write costs what a failed write already costs: the next load migrates the same file in memory again and warns again.

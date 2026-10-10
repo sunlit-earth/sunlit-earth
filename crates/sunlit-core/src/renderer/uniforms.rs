@@ -53,7 +53,8 @@ uniform_block! {
     sun_dir: [f32; 3] as vec3,
     terminator_width: f32 as f32,
     /// Bit 0 is diffuse shading; bit 2 says the cube drawn alone is the night
-    /// floor.
+    /// floor; bits 3 and 4 light the shells over the globe as day or as night
+    /// everywhere instead of by the Sun.
     flags: u32 as u32,
     diffuse_floor: f32 as f32,
     diffuse_ramp: f32 as f32,

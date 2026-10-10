@@ -2,7 +2,7 @@ struct Uniforms {
     mvp: mat4x4<f32>,              // 64 bytes, offset 0
     sun_dir: vec3<f32>,            // 12 bytes, offset 64
     terminator_width: f32,         // 4 bytes, offset 76
-    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 2: night alone)
+    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 2: night alone, bits 3 and 4: uniform day and night)
     diffuse_floor: f32,            // 4 bytes, offset 84
     diffuse_ramp: f32,             // 4 bytes, offset 88
     _pad: f32,                     // 4 bytes, offset 92
@@ -574,6 +574,29 @@ fn shell_vertex(in: VertexInput, radius: f32) -> VertexOutput {
     return out;
 }
 
+/// Bits 3 and 4 of `uniforms.flags`: the surface mode shows one map lit
+/// evenly, so the shells over the globe are lit as day everywhere, or as night
+/// everywhere, rather than by the Sun.
+const FLAG_UNIFORM_DAY: u32 = 8u;
+const FLAG_UNIFORM_NIGHT: u32 = 16u;
+
+fn shells_follow_the_sun() -> bool {
+    return (uniforms.flags & (FLAG_UNIFORM_DAY | FLAG_UNIFORM_NIGHT)) == 0u;
+}
+
+/// The cosine of the Sun's angle from the zenith that the shells light the
+/// point under `n` by: the Sun's own, or the noon or the midnight of every
+/// point when the surface mode lights the globe evenly.
+fn shell_n_dot_l(n: vec3<f32>) -> f32 {
+    if (uniforms.flags & FLAG_UNIFORM_DAY) != 0u {
+        return 1.0;
+    }
+    if (uniforms.flags & FLAG_UNIFORM_NIGHT) != 0u {
+        return -1.0;
+    }
+    return dot(n, uniforms.sun_dir);
+}
+
 @vertex
 fn vs_cloud(in: VertexInput) -> VertexOutput {
     return shell_vertex(in, uniforms.cloud_sphere_radius);
@@ -590,7 +613,7 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let floored = saturate((raw - uniforms.cloud_floor) / max(1.0 - uniforms.cloud_floor, 0.001));
     let cloud_density = pow(floored, 1.0 / max(uniforms.cloud_gamma, 0.01));
     let n = normalize(in.world_normal);
-    let n_dot_l = dot(n, uniforms.sun_dir);
+    let n_dot_l = shell_n_dot_l(n);
     // A cloud top at the shell's radius keeps the direct beam until the Sun is
     // sqrt(1 - 1/r^2) below its local horizontal, which is the same tangent
     // condition fs_rayleigh calls earth_limb_ndotv. So the ramp is centered
@@ -689,7 +712,7 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let v = normalize(uniforms.eye_pos - in.world_normal);
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let n_dot_l = dot(n, uniforms.sun_dir);
+    let n_dot_l = shell_n_dot_l(n);
 
     // Bidirectional falloff: Gaussian-like profile peaking where the view ray
     // grazes the Earth's surface (not at the shell edge). The shell is larger
@@ -737,7 +760,8 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let ray_height = (r * sqrt(max(1.0 - n_dot_v * n_dot_v, 0.0)) - 1.0) * EARTH_RADIUS_KM;
     // The atmosphere at the top of the band sees the Sun some ten degrees past
     // the surface terminator, so the gate reaches a little into the night side.
-    let sunlit = smoothstep(-0.2, 0.0, n_dot_l);
+    // The lobe is a terminator effect, so a globe lit evenly has none.
+    let sunlit = smoothstep(-0.2, 0.0, n_dot_l) * f32(shells_follow_the_sun());
     let sunrise = limb_hue_km(ray_height) * lobe * sunlit * uniforms.atmo_sunrise_glow;
 
     // In-scattering: blue light scattered toward the viewer.
@@ -767,7 +791,7 @@ fn fs_nightglow_orange(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let v = normalize(uniforms.eye_pos - in.world_normal);
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let n_dot_l = dot(n, uniforms.sun_dir);
+    let n_dot_l = shell_n_dot_l(n);
 
     // Rim falloff toward disk center, with soft edge at the shell silhouette
     // to avoid a hard color band where the sphere geometry ends.
@@ -802,7 +826,7 @@ fn fs_nightglow_green(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let v = normalize(uniforms.eye_pos - in.world_normal);
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let n_dot_l = dot(n, uniforms.sun_dir);
+    let n_dot_l = shell_n_dot_l(n);
 
     // Rim falloff toward disk center, with soft edge at the shell silhouette
     let rim = pow(1.0 - n_dot_v, uniforms.nightglow_falloff)

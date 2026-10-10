@@ -141,6 +141,7 @@ docs/                 see the table above
 - WGSL `vec3<f32>` is 16-byte aligned: every `[f32; 3]` in `Uniforms` is followed by `_pad: f32`. `uniforms.rs` declares the block once as a list of Rust type and WGSL type, asserts the struct size at compile time, and has unit tests that parse `sphere.wgsl` and compare the two field lists name for name and offset for offset, so a field added on one side alone fails, a field appended into the trailing padding included.
 - Render texture size is quantized to 64 px and capped by the quality tier. Zoom is normalized 0 to 1 through `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.
 - Every `SUNLIT_EARTH_*` variable that carries a value goes through `sunlit_core::env_override`, which treats blank as unset. The xtask and the e2e harness read theirs directly under the same rule. The tables are in README.
+- Changing an `AppConfig` default that existing users should follow, renaming a key or changing its type takes a step in `config/migrate.rs`, with `change_default` or `override_value` for a default; `docs/architecture.md` has the rule.
 - CI sets `RUSTFLAGS: "-D warnings"`; a warning is a build failure there. LF line endings everywhere.
 
 ## Testing conventions

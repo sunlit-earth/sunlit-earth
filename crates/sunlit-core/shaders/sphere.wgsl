@@ -505,6 +505,12 @@ const ICE_EDGE_CONTOUR: f32 = 0.1;
 /// which is a little darker for being thinner and wetter.
 const ICE_THIN_SHADE: f32 = 0.9;
 
+/// How much faster than the mask the ice covers a coast texel. A texel the
+/// mask calls partly water has a day color that is partly the dark ocean, so
+/// covering it only in the mask's proportion leaves a dark rim where the ice
+/// meets the land; a texel the mask calls land is never covered.
+const ICE_COAST_GAIN: f32 = 2.0;
+
 /// The spacing of the two octaves' cells, in kilometers.
 const ICE_FLOE_KM: f32 = 25.0;
 const ICE_FLOE_SMALL_KM: f32 = 5.0;
@@ -752,7 +758,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             ice = sea_ice(plane * EARTH_RADIUS_KM, c, c_width, pixel_km);
         }
         let shade = mix(ICE_THIN_SHADE, 1.0, c);
-        day = mix(day, sea_ice_color(n) * shade, ice * surface.water);
+        day = mix(day, sea_ice_color(n) * shade, ice * saturate(ICE_COAST_GAIN * surface.water));
         water = surface.water * (1.0 - ice);
     }
 

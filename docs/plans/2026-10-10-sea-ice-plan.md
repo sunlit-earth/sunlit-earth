@@ -189,6 +189,10 @@ Turning the setting's default off hides the feature without a release of the ass
 
 7. The extent check of criterion 1 counts the atlas's texels over the source's ocean cells only. The land extension of decision 2 gives coastal land the ice beside it, which the app's mask removes at draw time and which along a winter coastline of tens of thousands of kilometers would be millions of square kilometers the source does not count.
 
+8. The cases for criteria 2 to 6 are in `tests/render_pipeline.rs`, not in the shading target. The shading target compiles `blend.wgsl` alone, while the ice is `sphere.wgsl`'s; `render_pipeline` already compiles both with the production bind group layout, so criteria 2 and 6 are rendered frames of the pole there, and criteria 3 to 5 are two compute probes appended to the production shaders that call `sea_ice` and `ice_concentration` directly, which samples thousands of points per case instead of framing a camera for each.
+
+9. The memory budget counts the atlas at 6 MiB plus the stand-in's 24 bytes, what stays resident, as Step 4 says. The Moon's term also counts its transient decode; the atlas's decode, 6 MiB of one channel, is dropped as soon as its layers are uploaded and is left out.
+
 ## Settled with the user
 
 - The checkbox of decision 8 is wanted, on by default.

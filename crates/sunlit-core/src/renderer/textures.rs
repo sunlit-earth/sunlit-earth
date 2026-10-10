@@ -65,10 +65,14 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 info!(slot = msg.slot_index, "GPU texture created");
                 crate::memory::log_memory_usage("after texture upload");
                 let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-                let bind_group =
-                    res.flat_bind_group(&tex_view, &format!("bind_group_slot_{}", msg.slot_index));
+                let layout = res.layout();
+                // The clouds and their background are drawn through the cloud
+                // group alone, which is rebuilt below.
+                let bind_group = (msg.slot_index < layout.clouds()).then(|| {
+                    res.flat_bind_group(&tex_view, &format!("bind_group_slot_{}", msg.slot_index))
+                });
                 let slot = &mut res.texture_slots[msg.slot_index];
-                slot.bind_group = Some(bind_group);
+                slot.bind_group = bind_group;
                 slot.loading = false;
                 // Dropping the previous handle here, not destroying it: the
                 // bind group being replaced below may still reference it, and
@@ -77,9 +81,12 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
                 // replacement is allocated.
                 slot.texture = Some(tex);
 
-                if msg.slot_index == res.layout().clouds() {
+                if msg.slot_index == layout.clouds() {
                     res.cloud_texture_view = Some(tex_view);
-                    maybe_create_cloud_bind_group(res);
+                    res.rebuild_cloud_group();
+                } else if msg.slot_index == layout.cloud_background() {
+                    res.cloud_background_view = Some(tex_view);
+                    res.rebuild_cloud_group();
                 }
             }
             Err(e) => {
@@ -140,13 +147,6 @@ pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
         if let Some(texture) = slot.texture.take() {
             texture.destroy();
         }
-    }
-}
-
-/// Create the cloud bind group if the cloud texture view is available.
-pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
-    if let Some(cloud_view) = &res.cloud_texture_view {
-        res.cloud_bind_group = Some(res.flat_bind_group(cloud_view, "cloud_bind_group"));
     }
 }
 
@@ -262,17 +262,21 @@ pub(super) fn create_mipmapped_texture(
 
 /// What one bind group of the shared layout holds besides the uniforms.
 ///
-/// A group that reads one flat texture, the Moon, the Milky Way or the
-/// clouds, has the dummy cube in all three cube places. A group that draws the
-/// globe from a cube, the grid's or the surface's, has the dummy 1x1 texture as
-/// its flat texture and the surface sampler. Every group but the surface's has
-/// the dummy tile array and the dummy page table, which draws the floor
-/// everywhere.
+/// A group that reads one flat texture, the Moon's or the Milky Way's, has the
+/// dummy cube in all three cube places. The cloud group has the map, its
+/// background and the water mask, the mask in the third cube place. A group
+/// that draws the globe from a cube, the grid's or the surface's, has the
+/// dummy 1x1 texture as its flat texture and the surface sampler. Every group
+/// but the surface's has the dummy tile array and the dummy page table, which
+/// draws the floor everywhere.
 pub(super) struct Bindings<'a> {
     /// Binding 1.
     pub texture: &'a wgpu::TextureView,
     /// Binding 2.
     pub sampler: &'a wgpu::Sampler,
+    /// Binding 3: the cloud map's clear-sky background in the cloud group,
+    /// the dummy 1x1 texture everywhere else.
+    pub background: &'a wgpu::TextureView,
     /// Bindings 4 to 6: the day or grid cube, the night cube and the mask.
     pub cubes: [&'a wgpu::TextureView; 3],
     /// Bindings 7 and 8: the tile array and the page table.
@@ -305,6 +309,10 @@ pub(super) fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(bindings.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: view(bindings.background),
             },
             wgpu::BindGroupEntry {
                 binding: 4,

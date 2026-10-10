@@ -11,6 +11,7 @@ use sunlit_core::assets::tiles::{self, PackKind};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::engine::EngineConfig;
 use sunlit_core::params::SceneParams;
+use sunlit_core::renderer::SlotLayout;
 
 use crate::groups::{SURFACE_RESOLUTION, surface};
 use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, test_params};
@@ -178,7 +179,7 @@ fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
 
     let _gpu = gpu();
     let fixture = PanoramaFixture::with_width("engine_resolution_stale", WIDE);
-    let mailbox = TextureMailbox::new(fixture.paths().len() + 2);
+    let mailbox = TextureMailbox::new(SlotLayout::new(fixture.paths().len()).count());
     let harness = fixture.start(WIDE, Some(mailbox.clone()));
     wait_for_panorama_width(&harness, WIDE, "at startup");
 
@@ -213,8 +214,8 @@ fn a_stale_decode_must_not_replace_the_texture_that_superseded_it() {
 #[test]
 fn a_mailbox_that_does_not_match_the_slot_count_is_refused() {
     let mut config = EngineConfig::headless((64, 64));
-    // Two file-backed paths need four slots: the grid, both of them, the
-    // clouds.
+    // Two file-backed paths need five slots: the grid, both of them, the
+    // clouds and their background.
     config.mailbox = Some(TextureMailbox::new(3));
     let Err(error) = sunlit_core::engine::start(config) else {
         panic!("a mailbox with the wrong slot count must not produce a handle");
@@ -237,7 +238,7 @@ fn a_stale_arrival_produces_no_frame_at_all() {
 
     let _gpu = gpu();
     let fixture = PanoramaFixture::with_width("engine_resolution_stale_alone", WIDE);
-    let mailbox = TextureMailbox::new(fixture.paths().len() + 2);
+    let mailbox = TextureMailbox::new(SlotLayout::new(fixture.paths().len()).count());
     let harness = fixture.start(WIDE, Some(mailbox.clone()));
     wait_for_panorama_width(&harness, WIDE, "at startup");
     harness.set_texture_resolution(WIDE / 2);

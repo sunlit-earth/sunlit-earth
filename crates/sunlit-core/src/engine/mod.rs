@@ -23,6 +23,7 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use tracing::{debug, info, warn};
 
+use crate::assets::cloud_fetcher::CloudSlots;
 use crate::assets::mailbox::TextureMailbox;
 use crate::assets::tiles::TranscoderConfig;
 use crate::config::QualityTier;
@@ -298,7 +299,10 @@ impl Engine {
                 cloud_poll_interval,
                 now,
                 texture_resolution,
-                slots.clouds(),
+                CloudSlots {
+                    map: slots.clouds(),
+                    background: slots.cloud_background(),
+                },
             )
         });
 
@@ -911,7 +915,7 @@ fn checked_mailbox(
             mailbox.slot_count(),
             slots.count(),
             "the texture mailbox must have one slot per texture: the grid, \
-             {paths} file-backed, and the cloud overlay"
+             {paths} file-backed, the cloud overlay and its background"
         );
     }
     mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()))

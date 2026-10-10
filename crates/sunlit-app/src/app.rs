@@ -82,7 +82,7 @@ pub fn run() -> ExitCode {
         Some(Commands::Render {
             config: Some(path), ..
         }) => config::load_config_from(path),
-        _ => config::load_config(),
+        _ => config::load_and_upgrade_config(),
     };
 
     match &cli.command {

@@ -1,5 +1,6 @@
+use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -8,8 +9,10 @@ use tracing::warn;
 
 use crate::scene::camera::{CAMERA_FOV_MAX, CAMERA_FOV_MIN, CameraParams};
 
+mod migrate;
 mod window_geometry;
 
+use migrate::{CONFIG_VERSION, Migrated, migrate};
 pub use window_geometry::{save_window_geometry, validated_window_geometry};
 
 /// How much the app is allowed to spend on looking good.
@@ -155,11 +158,26 @@ pub fn texture_resolution_at(index: i32) -> u32 {
         .unwrap_or(DEFAULT_TEXTURE_RESOLUTION)
 }
 
-/// Top-level config file structure, producing a `[sunlit.earth]` table in TOML.
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+/// Top-level config file structure, producing a `version` and a
+/// `[sunlit.earth]` table in TOML.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 struct ConfigFile {
+    /// The schema version, ahead of the table so the serializer writes it at
+    /// the top. [`migrate::migrate`] is its one reader, so deserialization
+    /// skips it and a number too large for a `u32` cannot fail the file.
+    #[serde(skip_deserializing)]
+    version: u32,
     sunlit: SunlitSection,
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        Self {
+            version: CONFIG_VERSION,
+            sunlit: SunlitSection::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -481,6 +499,8 @@ fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
 /// Load the app configuration from the standard path.
 ///
 /// [`load_config_from`] does the work and states what a failure gives back.
+/// Writes nothing; [`load_and_upgrade_config`] is the startup load that also
+/// writes a migrated file back.
 pub fn load_config() -> AppConfig {
     let Some(path) = config_path() else {
         warn!("could not determine config directory");
@@ -489,32 +509,121 @@ pub fn load_config() -> AppConfig {
     load_config_from(&path)
 }
 
+/// The startup load: [`load_config`], and a file from an older build is
+/// written back at this build's version, with the original kept beside it as
+/// `config.v{N}.toml`.
+///
+/// For the one load at startup, before the window and the IPC listener exist,
+/// so no other writer of the file is running; every later load is
+/// [`load_config`].
+pub fn load_and_upgrade_config() -> AppConfig {
+    let Some(path) = config_path() else {
+        warn!("could not determine config directory");
+        return AppConfig::default();
+    };
+    load_and_upgrade(&path)
+}
+
 /// Load config from a specific path.
+///
+/// A file from an older build is migrated in memory only: nothing is written,
+/// so a file handed to `render --config` keeps its bytes.
 ///
 /// Returns `AppConfig::default()` if the file does not exist, cannot be read,
 /// or contains invalid TOML. A read or parse failure is logged at `warn`.
-pub fn load_config_from(path: &std::path::Path) -> AppConfig {
-    let contents = match fs::read_to_string(path) {
+pub fn load_config_from(path: &Path) -> AppConfig {
+    load(path).map_or_else(AppConfig::default, |loaded| loaded.config)
+}
+
+/// A config file as it was read and as it loads.
+struct Loaded {
+    original: String,
+    migrated: Migrated,
+    config: AppConfig,
+}
+
+/// Parse, migrate, deserialize and sanitize `path`, or `None` when it holds
+/// nothing usable, which every caller answers with the defaults.
+fn load(path: &Path) -> Option<Loaded> {
+    let original = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return AppConfig::default();
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             warn!(path = %path.display(), error = %e, "could not read config file");
-            return AppConfig::default();
+            return None;
         }
     };
-    match toml::from_str::<ConfigFile>(&contents) {
-        Ok(file) => {
+    let parsed = toml::from_str::<toml::Table>(&original).and_then(|mut doc| {
+        let migrated = migrate(&mut doc);
+        Ok((migrated, doc.try_into::<ConfigFile>()?))
+    });
+    match parsed {
+        Ok((migrated, file)) => {
             let mut config = file.sunlit.earth;
             config.sanitize();
-            config
+            migrated.log(path);
+            Some(Loaded {
+                original,
+                migrated,
+                config,
+            })
         }
         Err(e) => {
             warn!(path = %path.display(), error = %e, "could not parse config file");
-            AppConfig::default()
+            None
         }
     }
+}
+
+/// [`load_config_from`], then write a file from an older build back at this
+/// build's version once its original is safe in [`backup_path`].
+///
+/// A file that fails to load is left for the next save to replace, as before.
+fn load_and_upgrade(path: &Path) -> AppConfig {
+    let Some(loaded) = load(path) else {
+        return AppConfig::default();
+    };
+    if loaded.migrated.upgraded() && back_up(path, loaded.migrated.from_version, &loaded.original) {
+        save_config_to(&loaded.config, path);
+    }
+    loaded.config
+}
+
+/// Where the original of a file migrated from `version` is kept:
+/// `config.toml` becomes `config.v0.toml`.
+fn backup_path(path: &Path, version: u32) -> PathBuf {
+    let mut name = path
+        .file_stem()
+        .map(OsStr::to_os_string)
+        .unwrap_or_default();
+    name.push(format!(".v{version}"));
+    if let Some(extension) = path.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    path.with_file_name(name)
+}
+
+/// Keep `original` at [`backup_path`] unless a backup of that version already
+/// exists, so the backup is the first file of that version this install had.
+/// Returns whether a backup is in place.
+fn back_up(path: &Path, version: u32, original: &str) -> bool {
+    let backup = backup_path(path, version);
+    if backup.exists() {
+        return true;
+    }
+    let unfinished = crate::files::unfinished(&backup, "~");
+    if let Err(e) = fs::write(&unfinished, original).and_then(|()| fs::rename(&unfinished, &backup))
+    {
+        let _ = fs::remove_file(&unfinished);
+        warn!(
+            path = %backup.display(),
+            error = %e,
+            "could not back up the config file, leaving it at its old version"
+        );
+        return false;
+    }
+    true
 }
 
 /// Save the app configuration to disk.
@@ -531,8 +640,9 @@ pub fn save_config(config: &AppConfig) {
 }
 
 /// Save config to a specific path (used by both the public API and tests).
-fn save_config_to(config: &AppConfig, path: &std::path::Path) {
+fn save_config_to(config: &AppConfig, path: &Path) {
     let file = ConfigFile {
+        version: CONFIG_VERSION,
         sunlit: SunlitSection {
             earth: config.clone(),
         },
@@ -981,6 +1091,7 @@ sky_fov = 111.0
         };
         let file = ConfigFile {
             sunlit: SunlitSection { earth: config },
+            ..ConfigFile::default()
         };
         let toml_str = toml::to_string_pretty(&file).unwrap();
         let parsed: ConfigFile = toml::from_str(&toml_str).unwrap();
@@ -994,7 +1105,226 @@ sky_fov = 111.0
     fn config_file_contains_sunlit_earth_table() {
         let file = ConfigFile::default();
         let toml_str = toml::to_string_pretty(&file).unwrap();
-        assert!(toml_str.contains("[sunlit.earth]"));
+        let table = toml_str.find("[sunlit.earth]").expect("the table");
+        let version = toml_str
+            .find(&format!("version = {CONFIG_VERSION}\n"))
+            .expect("the version");
+        assert!(version < table, "{toml_str}");
+    }
+
+    // --- versions and migration ---
+
+    const V0_2_2: &str = include_str!("fixtures/v0.2.2.toml");
+
+    /// A file as the build before versions wrote it, holding the given keys.
+    fn write_unstamped(scratch: &ScratchDir, keys: &str) -> PathBuf {
+        let path = scratch.join("config.toml");
+        fs::write(&path, format!("[sunlit.earth]\n{keys}")).unwrap();
+        path
+    }
+
+    fn file_version(path: &Path) -> Option<toml::Value> {
+        let doc: toml::Table = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        doc.get("version").cloned()
+    }
+
+    fn stamped() -> toml::Value {
+        toml::Value::Integer(i64::from(CONFIG_VERSION))
+    }
+
+    /// The steps bring the migrated keys to today's defaults, and every other
+    /// key of a full 0.2.2 file keeps the value the file holds.
+    #[test]
+    fn a_file_from_0_2_2_loads_its_own_values_and_the_migrated_defaults() {
+        let scratch = ScratchDir::new("config_v022");
+        let path = scratch.join("config.toml");
+        fs::write(&path, V0_2_2).unwrap();
+
+        let as_written: ConfigFile = toml::from_str(V0_2_2).unwrap();
+        let as_written = as_written.sunlit.earth;
+        assert_eq!(
+            (as_written.texture_resolution, as_written.sample_count),
+            (4096, 8),
+            "the fixture holds 0.2.2's defaults"
+        );
+        let defaults = AppConfig::default();
+        assert_eq!(
+            load_config_from(&path),
+            AppConfig {
+                texture_resolution: defaults.texture_resolution,
+                sample_count: defaults.sample_count,
+                ..as_written
+            }
+        );
+    }
+
+    #[test]
+    fn the_startup_load_writes_the_migrated_file_back_and_keeps_the_original() {
+        let scratch = ScratchDir::new("config_upgrade");
+        let path = write_unstamped(&scratch, "texture_resolution = 4096\nsample_count = 8\n");
+        let original = fs::read(&path).unwrap();
+
+        let loaded = load_and_upgrade(&path);
+        let defaults = AppConfig::default();
+        assert_eq!(
+            (loaded.texture_resolution, loaded.sample_count),
+            (defaults.texture_resolution, defaults.sample_count)
+        );
+        assert_eq!(file_version(&path), Some(stamped()));
+        assert_eq!(load_config_from(&path), loaded);
+        assert_eq!(fs::read(scratch.join("config.v0.toml")).unwrap(), original);
+    }
+
+    #[test]
+    fn a_value_other_than_the_old_default_survives_and_msaa_is_reset() {
+        let scratch = ScratchDir::new("config_kept_choice");
+        let path = write_unstamped(&scratch, "texture_resolution = 2048\nsample_count = 4\n");
+        let loaded = load_config_from(&path);
+        assert_eq!(loaded.texture_resolution, 2048);
+        assert_eq!(loaded.sample_count, AppConfig::default().sample_count);
+
+        let path = write_unstamped(&scratch, "texture_resolution = 2048\n");
+        assert_eq!(
+            load_config_from(&path).sample_count,
+            AppConfig::default().sample_count
+        );
+    }
+
+    #[test]
+    fn a_choice_made_after_the_migration_is_kept() {
+        let scratch = ScratchDir::new("config_current");
+        let path = scratch.join("config.toml");
+        let contents = format!(
+            "version = {CONFIG_VERSION}\n[sunlit.earth]\ntexture_resolution = 4096\nsample_count = 8\n"
+        );
+        fs::write(&path, &contents).unwrap();
+
+        let loaded = load_and_upgrade(&path);
+        assert_eq!((loaded.texture_resolution, loaded.sample_count), (4096, 8));
+        assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        assert!(!scratch.join("config.v0.toml").exists());
+    }
+
+    #[test]
+    fn a_file_from_a_newer_build_loads_without_migration_and_is_not_written() {
+        let scratch = ScratchDir::new("config_newer");
+        let path = scratch.join("config.toml");
+        let newer = CONFIG_VERSION + 1;
+        let contents = format!(
+            "version = {newer}\n[sunlit.earth]\ntexture_resolution = 4096\nsample_count = 8\nfuture_key = true\n"
+        );
+        fs::write(&path, &contents).unwrap();
+
+        let loaded = load_and_upgrade(&path);
+        assert_eq!((loaded.texture_resolution, loaded.sample_count), (4096, 8));
+        assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_version_too_large_for_the_build_does_not_reset_the_settings() {
+        let scratch = ScratchDir::new("config_huge_version");
+        let path = scratch.join("config.toml");
+        let huge = u64::from(u32::MAX) + 1;
+        fs::write(
+            &path,
+            format!("version = {huge}\n[sunlit.earth]\nlongitude = 42.0\n"),
+        )
+        .unwrap();
+        assert_relative_eq!(load_config_from(&path).longitude, 42.0);
+    }
+
+    #[test]
+    fn loading_from_a_given_path_never_writes() {
+        let scratch = ScratchDir::new("config_pure");
+        let path = write_unstamped(&scratch, "texture_resolution = 4096\nsample_count = 8\n");
+        let original = fs::read(&path).unwrap();
+
+        let loaded = load_config_from(&path);
+        assert_eq!(loaded.sample_count, AppConfig::default().sample_count);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn every_save_stamps_the_build_version_above_the_table() {
+        let scratch = ScratchDir::new("config_stamp");
+        let path = scratch.join("config.toml");
+        save_config_to(&AppConfig::default(), &path);
+
+        assert_eq!(file_version(&path), Some(stamped()));
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.starts_with(&format!("version = {CONFIG_VERSION}\n")),
+            "{contents}"
+        );
+    }
+
+    #[test]
+    fn a_file_the_steps_leave_unchanged_is_still_stamped() {
+        let scratch = ScratchDir::new("config_stamp_unchanged");
+        let path = write_unstamped(&scratch, "longitude = 12.0\n");
+        let loaded = load_and_upgrade(&path);
+        assert_eq!(file_version(&path), Some(stamped()));
+        assert_eq!(load_config_from(&path), loaded);
+        assert!(scratch.join("config.v0.toml").exists());
+    }
+
+    /// A downgrade round trip leaves a second file at the same old version;
+    /// the backup stays the first one.
+    #[test]
+    fn a_second_upgrade_from_the_same_version_keeps_the_first_backup() {
+        let scratch = ScratchDir::new("config_backup_once");
+        let path = write_unstamped(&scratch, "longitude = 1.0\n");
+        let first = fs::read(&path).unwrap();
+        load_and_upgrade(&path);
+
+        write_unstamped(&scratch, "longitude = 2.0\n");
+        let loaded = load_and_upgrade(&path);
+        assert_relative_eq!(loaded.longitude, 2.0);
+        assert_eq!(file_version(&path), Some(stamped()));
+        assert_eq!(fs::read(scratch.join("config.v0.toml")).unwrap(), first);
+    }
+
+    #[test]
+    fn a_file_that_does_not_load_is_neither_backed_up_nor_rewritten() {
+        let scratch = ScratchDir::new("config_upgrade_corrupt");
+        let path = scratch.join("config.toml");
+        for contents in [
+            "{{{invalid toml content",
+            "[sunlit.earth]\nlongitude = \"east\"\n",
+        ] {
+            fs::write(&path, contents).unwrap();
+            assert_eq!(load_and_upgrade(&path), AppConfig::default());
+            assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+            assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn a_missing_file_is_not_created_by_loading() {
+        let scratch = ScratchDir::new("config_upgrade_missing");
+        let path = scratch.join("config.toml");
+        assert_eq!(load_and_upgrade(&path), AppConfig::default());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_backup_carries_the_version_before_the_extension() {
+        for (path, backup) in [
+            (
+                "C:/data/SunlitEarth/config.toml",
+                "C:/data/SunlitEarth/config.v0.toml",
+            ),
+            ("/tmp/sunlit/custom.toml", "/tmp/sunlit/custom.v0.toml"),
+            ("/tmp/sunlit/settings", "/tmp/sunlit/settings.v0"),
+        ] {
+            assert_eq!(backup_path(Path::new(path), 0), PathBuf::from(backup));
+        }
+        assert_eq!(
+            backup_path(Path::new("config.toml"), 3),
+            PathBuf::from("config.v3.toml")
+        );
     }
 
     // --- quality tiers ---

@@ -101,6 +101,8 @@ By default, `config.toml`, the cloud cache, the tile packs the Earth is drawn fr
 - Linux uses `~/.local/share/SunlitEarth`.
 - macOS uses `~/Library/Application Support/SunlitEarth`.
 
+When a release changes what `config.toml` holds, its first start updates the file and keeps the one it found beside it, named after the version that file was at, such as `config.v0.toml`. Starting 0.3.0 for the first time moves a texture resolution of 4096 to 8192 and sets anti-aliasing to MSAA 2x; both are in the Rendering group.
+
 Each wallpaper publish writes images into a fresh `gen-<id>/` directory, with one image per monitor and a canvas where required. Fresh paths let desktop shells notice updates without reading a partially rewritten image. The app manages retention and cleanup; [platforms.md](platforms.md) explains the lifecycle and the older alternating file scheme it replaced.
 
 Started from a terminal, the app writes its log there and nowhere else. Started any other way, which is a launcher, a shortcut, or a macOS app bundle, it also writes `sunlit-earth.<date>.log` into the directory above: one file per day and a week of them kept. The newest is what to attach to a bug report, and the app's own first log line names the file it is writing.

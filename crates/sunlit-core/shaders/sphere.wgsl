@@ -433,7 +433,10 @@ fn face_point(w: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> FacePoint {
     let st = vec2<f32>(dot(along, w), dot(down, w)) / m;
     let st_dx = (vec2<f32>(dot(along, dx), dot(down, dx)) - st * dot(major, dx)) / m;
     let st_dy = (vec2<f32>(dot(along, dy), dot(down, dy)) - st * dot(major, dy)) / m;
-    return FacePoint(face, st * 0.5 + 0.5, st_dx * 0.5, st_dy * 0.5);
+    // A GPU's division need not round correctly, so at a face edge `st` can
+    // land a few ulps past it, which would put a tile at -1.
+    let uv = clamp(st * 0.5 + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
+    return FacePoint(face, uv, st_dx * 0.5, st_dy * 0.5);
 }
 
 /// What one half of a page table entry draws at `at`: `base`, the floor's

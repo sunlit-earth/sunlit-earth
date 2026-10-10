@@ -260,7 +260,6 @@ The change is one feature branch. Before release, reverting it is enough. After 
 - Whether the cap becomes a setting and whether a polar fade is needed.
 - Whether frozen sea keeps a veil, and the ice concentration as land once the sea ice atlas exists (Relation to the sea ice plan).
 - The cloud draw's cost on lavapipe at 1920 x 1080, before and after (criterion 6, departure 6). It is the adapter risk 2 is about, since the texture overhaul research found anisotropic cube reads expensive there, and this run had no way to it without WSL. CI or the user measures it; if the mask read costs, the cloud group can carry the surface sampler at a binding of its own for the mask.
-- `sunlit-earth render` with the real binary for criterion 7 (departure 7).
 
 ## Validation Record
 
@@ -285,3 +284,7 @@ On 17b48d0..67054f2, with the gates green and every finding of round 1 verified 
 1. Minor: departure 8 claimed the cache and its `ETag` were written before the decode, which is the wrong order, so a download that returned with the layer off could be dropped before the decode without the 304 trap it named. Implemented: `CloudUpdater::set_gate` and `PollOutcome::Abandoned` drop such a download with nothing written and give the request up, and departure 8, architecture.md, rendering.md and the `clouds_enabled` doc now say that only a transfer already under way completes while the layer is off. The fixture source holds a fetch until released, so the engine case `a_download_that_returns_after_the_switch_is_not_decoded` covers it, beside the updater's `a_download_returning_through_a_closed_gate_leaves_nothing_behind`.
 2. Minor: the "Show clouds" hint now reads "While it is off, no new download starts and nothing is decoded.", which is what the code does.
 3. Minor: the lavapipe and Metal golden means in testing.md were averages over RGBA; they are now over RGB as `support::compare` takes them (lavapipe 0.318 and 0.103, Metal 0.317 and 0.099), with the counts unchanged.
+
+### Criterion 7 with the real binary
+
+Run by the orchestrator at 62aebc7 after round 2, since departure 7 left it open: the debug build of `sunlit-earth render` at 640 x 480 over North America, with `SUNLIT_EARTH_CACHE_DIR` on a scratch directory whose `tile_cache` was a junction to the real tile cache, `SUNLIT_EARTH_CLOUD_URL` on a closed local port, and a copy of a version 1 config. With the cached 8192 map in the scratch directory, three renders out of three have clouds (14% of the pixels near white, against 0.2% without), where research section 8 found one of nine. With no cached map, the first poll fails, the log says "no cloud map is cached and the first poll failed, rendering without clouds", and the render is saved 0.04 s later. With `clouds_enabled = false`, the render is saved without waiting and without a poll. The map and its background were resident about two seconds after the engine started; the cached renders took longer only because the worktree's texture files carry new timestamps, so the tile packs' keys read stale and three packs were rebuilt before `TexturesReady`.

@@ -28,6 +28,10 @@ permissions:
 env:
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
   PUSH: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.push) }}
+  # The manifests are installed from a local tap, which needs no newer Homebrew
+  # than the runner's. An update also migrates and upgrades what the runner
+  # image preinstalled, which on the Intel runner means compiling from source.
+  HOMEBREW_NO_AUTO_UPDATE: "1"
 
 jobs:
   manifests:
@@ -141,7 +145,6 @@ jobs:
         if: matrix.kind != 'scoop'
         run: |
           set -euo pipefail
-          brew update --quiet
           brew tap-new --no-git sunlit-earth/verify
           tap="$(brew --repository)/Library/Taps/sunlit-earth/homebrew-verify"
           if [ "${{ matrix.kind }}" = formula ]; then dir=Formula; else dir=Casks; fi

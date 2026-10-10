@@ -668,8 +668,8 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         night_saturation: 1.0,
         cloud_sphere_radius: 1.0015,
         cloud_opacity: 0.0,
-        cloud_floor: 0.0,
-        cloud_gamma: 1.0,
+        cloud_floor_land: 0.0,
+        cloud_gamma_land: 1.0,
         rayleigh_intensity: 0.0,
         rayleigh_sharpness: 50.0,
         nightglow_intensity: 0.0,
@@ -681,7 +681,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         rayleigh_haze: 0.55,
         cloud_night: 0.35,
         cloud_terminator: sunlit_core::params::CLOUD_TERMINATOR_WIDTH,
-        _pad5: 0.0,
+        cloud_haze_land: 0.0,
         sky_view: glam::Mat4::IDENTITY.to_cols_array(),
         world_from_eqj: [
             [1.0, 0.0, 0.0, 0.0],
@@ -732,8 +732,12 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         night_ocean: 0,
         tile_texels: 0.0,
         tile_gutter: 0.0,
+        cloud_floor_ocean: 0.0,
+        cloud_gamma_ocean: 1.0,
+        cloud_haze_ocean: 0.0,
         _pad9: 0.0,
         _pad10: 0.0,
+        _pad11: 0.0,
     }
 }
 
@@ -874,8 +878,8 @@ fn uniform_readback() {
     // cloud params
     output[22] = uniforms.cloud_sphere_radius;
     output[23] = uniforms.cloud_opacity;
-    output[24] = uniforms.cloud_floor;
-    output[25] = uniforms.cloud_gamma;
+    output[24] = uniforms.cloud_floor_land;
+    output[25] = uniforms.cloud_gamma_land;
     // atmosphere params
     output[26] = uniforms.rayleigh_intensity;
     output[27] = uniforms.rayleigh_sharpness;
@@ -937,6 +941,11 @@ fn uniform_readback() {
     output[76] = f32(uniforms.night_ocean);
     output[77] = uniforms.tile_texels;
     output[78] = uniforms.tile_gutter;
+    // the land and ocean cloud settings
+    output[79] = uniforms.cloud_haze_land;
+    output[80] = uniforms.cloud_floor_ocean;
+    output[81] = uniforms.cloud_gamma_ocean;
+    output[82] = uniforms.cloud_haze_ocean;
 }
 ";
 
@@ -945,7 +954,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 79] = [
+const PROBED_FIELDS: [(f32, &str); 83] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -970,8 +979,8 @@ const PROBED_FIELDS: [(f32, &str); 79] = [
     (0.6, "night_saturation"),
     (1.0015, "cloud_sphere_radius"),
     (0.9, "cloud_opacity"),
-    (0.25, "cloud_floor"),
-    (0.65, "cloud_gamma"),
+    (0.25, "cloud_floor_land"),
+    (0.65, "cloud_gamma_land"),
     (0.5, "rayleigh_intensity"),
     (50.0, "rayleigh_sharpness"),
     (0.25, "nightglow_intensity"),
@@ -1025,6 +1034,10 @@ const PROBED_FIELDS: [(f32, &str); 79] = [
     (984_325.0, "night_ocean"),
     (128.0, "tile_texels"),
     (8.0, "tile_gutter"),
+    (0.85, "cloud_haze_land"),
+    (0.12, "cloud_floor_ocean"),
+    (1.3, "cloud_gamma_ocean"),
+    (0.2, "cloud_haze_ocean"),
 ];
 
 #[allow(clippy::too_many_lines)]
@@ -1076,8 +1089,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         night_saturation: 0.6,
         cloud_sphere_radius: 1.0015,
         cloud_opacity: 0.9,
-        cloud_floor: 0.25,
-        cloud_gamma: 0.65,
+        cloud_floor_land: 0.25,
+        cloud_gamma_land: 0.65,
         rayleigh_intensity: 0.5,
         rayleigh_sharpness: 50.0,
         nightglow_intensity: 0.25,
@@ -1089,7 +1102,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         rayleigh_haze: 0.55,
         cloud_night: 0.31,
         cloud_terminator: 0.19,
-        _pad5: 0.0,
+        cloud_haze_land: 0.85,
         sky_view: mvp,
         world_from_eqj: [
             [1.0, 0.0, 0.0, 0.0],
@@ -1136,8 +1149,12 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         night_ocean: 0x000F_0505,
         tile_texels: 128.0,
         tile_gutter: 8.0,
+        cloud_floor_ocean: 0.12,
+        cloud_gamma_ocean: 1.3,
+        cloud_haze_ocean: 0.2,
         _pad9: 0.0,
         _pad10: 0.0,
+        _pad11: 0.0,
     };
 
     let uniform_buf = ctx

@@ -53,10 +53,15 @@ export component MainWindow inherits Window {
     in-out property <float> day-saturation: 1.0;
     in-out property <float> night-gamma: 0.5;
     in-out property <float> night-saturation: 0.85;
+    in-out property <bool> clouds-enabled: true;
     in-out property <float> cloud-opacity: 0.85;
     in-out property <float> cloud-opacity-night: 0.55;
-    in-out property <float> cloud-floor: 0.25;
-    in-out property <float> cloud-gamma: 0.65;
+    in-out property <float> cloud-haze-land: 1.0;
+    in-out property <float> cloud-floor-land: 0.10;
+    in-out property <float> cloud-gamma-land: 0.65;
+    in-out property <float> cloud-haze-ocean: 0.15;
+    in-out property <float> cloud-floor-ocean: 0.10;
+    in-out property <float> cloud-gamma-ocean: 0.65;
     in-out property <float> cloud-night: 0.20;
     in-out property <bool> atmo-enabled: true;
     in-out property <float> rayleigh-intensity: 0.5;
@@ -676,61 +681,129 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 spacing: 4px;
 
-                                cloud-opacity-slider := SettingRow {
-                                    label: "Day opacity";
-                                    hint: "How strongly the cloud layer covers the sunlit surface underneath it.";
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.cloud-opacity;
-                                    value-text: round(root.cloud-opacity * 100) + "%";
-                                    value-width: 35px;
-                                    changed => { root.sliders-changed(); }
+                                SettingCheck {
+                                    text: "Show clouds";
+                                    hint: "Master switch for the cloud layer. While it is off, no cloud image is downloaded or decoded.";
+                                    checked <=> root.clouds-enabled;
+                                    toggled => { root.sliders-changed(); }
                                 }
 
-                                cloud-opacity-night-slider := SettingRow {
-                                    label: "Night opacity";
-                                    hint: "How strongly the cloud layer covers the night surface, where the city lights under it are far brighter than the cloud itself. At the top of the range nothing shines through.";
-                                    minimum: 0.0;
-                                    maximum: 1.0;
-                                    value <=> root.cloud-opacity-night;
-                                    value-text: round(root.cloud-opacity-night * 100) + "%";
-                                    value-width: 35px;
-                                    changed => { root.sliders-changed(); }
-                                }
+                                if root.clouds-enabled :
+                                VerticalLayout {
+                                    spacing: 4px;
 
-                                cloud-floor-slider := SettingRow {
-                                    label: "Floor";
-                                    hint: "Brightness below which a cloud pixel counts as clear sky, which is what trims the haze out of the source image.";
-                                    minimum: 0.0;
-                                    maximum: 0.5;
-                                    value <=> root.cloud-floor;
-                                    value-text: round(root.cloud-floor * 100) + "%";
-                                    value-width: 35px;
-                                    changed => { root.sliders-changed(); }
-                                }
+                                    cloud-opacity-slider := SettingRow {
+                                        label: "Day opacity";
+                                        hint: "How strongly the cloud layer covers the sunlit surface underneath it.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.cloud-opacity;
+                                        value-text: round(root.cloud-opacity * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
 
-                                cloud-gamma-slider := SettingRow {
-                                    label: "Gamma";
-                                    hint: "Contrast curve of the cloud layer: below one lifts the thin cloud, above one keeps only the dense tops.";
-                                    minimum: 0.1;
-                                    maximum: 2.0;
-                                    value <=> root.cloud-gamma;
-                                    value-text: round(root.cloud-gamma * 100) / 100;
-                                    value-width: 35px;
-                                    changed => { root.sliders-changed(); }
-                                }
+                                    cloud-opacity-night-slider := SettingRow {
+                                        label: "Night opacity";
+                                        hint: "How strongly the cloud layer covers the night surface, where the city lights under it are far brighter than the cloud itself. At the top of the range nothing shines through.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.cloud-opacity-night;
+                                        value-text: round(root.cloud-opacity-night * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
 
-                                cloud-night-slider := SettingRow {
-                                    label: "Night brightness";
-                                    hint: "How bright a cloud is on the night hemisphere, where the real light is far too faint to draw at this exposure.";
-                                    minimum: 0.0;
-                                    maximum: 0.6;
-                                    value <=> root.cloud-night;
-                                    value-text: round(root.cloud-night * 100) + "%";
-                                    value-width: 35px;
-                                    changed => { root.sliders-changed(); }
-                                }
+                                    cloud-night-slider := SettingRow {
+                                        label: "Night brightness";
+                                        hint: "How bright a cloud is on the night hemisphere, where the real light is far too faint to draw at this exposure.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 0.6;
+                                        value <=> root.cloud-night;
+                                        value-text: round(root.cloud-night * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
 
+                                    SettingHeading { text: "Land"; }
+
+                                    cloud-haze-land-slider := SettingRow {
+                                        label: "Haze removal";
+                                        hint: "How much of the grey veil cold clear ground leaves in the source image is taken off over land. The veil is estimated from the map itself, region by region.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.cloud-haze-land;
+                                        value-text: round(root.cloud-haze-land * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    cloud-floor-land-slider := SettingRow {
+                                        label: "Floor";
+                                        hint: "Brightness below which what is left of a cloud pixel after the haze removal counts as clear sky.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 0.5;
+                                        value <=> root.cloud-floor-land;
+                                        value-text: round(root.cloud-floor-land * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    cloud-gamma-land-slider := SettingRow {
+                                        label: "Gamma";
+                                        hint: "Contrast curve of the cloud layer: below one keeps only the dense tops, above one lifts the thin cloud.";
+                                        indent: 8px;
+                                        minimum: 0.1;
+                                        maximum: 2.0;
+                                        value <=> root.cloud-gamma-land;
+                                        value-text: round(root.cloud-gamma-land * 100) / 100;
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    SettingHeading { text: "Ocean"; }
+
+                                    cloud-haze-ocean-slider := SettingRow {
+                                        label: "Haze removal";
+                                        hint: "How much of the estimated clear-sky veil is taken off over open water, where warm sea leaves little of it.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 1.0;
+                                        value <=> root.cloud-haze-ocean;
+                                        value-text: round(root.cloud-haze-ocean * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    cloud-floor-ocean-slider := SettingRow {
+                                        label: "Floor";
+                                        hint: "Brightness below which what is left of a cloud pixel after the haze removal counts as clear sky.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 0.5;
+                                        value <=> root.cloud-floor-ocean;
+                                        value-text: round(root.cloud-floor-ocean * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    cloud-gamma-ocean-slider := SettingRow {
+                                        label: "Gamma";
+                                        hint: "Contrast curve of the cloud layer: below one keeps only the dense tops, above one lifts the thin cloud.";
+                                        indent: 8px;
+                                        minimum: 0.1;
+                                        maximum: 2.0;
+                                        value <=> root.cloud-gamma-ocean;
+                                        value-text: round(root.cloud-gamma-ocean * 100) / 100;
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+                                }
                             }
                         }
 

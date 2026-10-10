@@ -18,8 +18,8 @@ struct Uniforms {
     night_saturation: f32,         // 4 bytes, offset 140
     cloud_sphere_radius: f32,      // 4 bytes, offset 144
     cloud_opacity: f32,            // 4 bytes, offset 148
-    cloud_floor: f32,              // 4 bytes, offset 152
-    cloud_gamma: f32,              // 4 bytes, offset 156
+    cloud_floor_land: f32,         // 4 bytes, offset 152
+    cloud_gamma_land: f32,         // 4 bytes, offset 156
     rayleigh_intensity: f32,       // 4 bytes, offset 160
     rayleigh_sharpness: f32,         // 4 bytes, offset 164
     nightglow_intensity: f32,      // 4 bytes, offset 168
@@ -31,7 +31,7 @@ struct Uniforms {
     rayleigh_haze: f32,            // 4 bytes, offset 192
     cloud_night: f32,              // 4 bytes, offset 196
     cloud_terminator: f32,         // 4 bytes, offset 200
-    _pad5: f32,                    // 4 bytes, offset 204
+    cloud_haze_land: f32,          // 4 bytes, offset 204
     sky_view: mat4x4<f32>,            // 64 bytes, offset 208
     world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
     viewport_size: vec2<f32>,         // 8 bytes, offset 320
@@ -70,8 +70,12 @@ struct Uniforms {
     night_ocean: u32,                 // 4 bytes, offset 540
     tile_texels: f32,                 // 4 bytes, offset 544
     tile_gutter: f32,                 // 4 bytes, offset 548
-    _pad9: f32,                       // 4 bytes, offset 552
-    _pad10: f32,                      // 4 bytes, offset 556
+    cloud_floor_ocean: f32,           // 4 bytes, offset 552
+    cloud_gamma_ocean: f32,           // 4 bytes, offset 556
+    cloud_haze_ocean: f32,            // 4 bytes, offset 560
+    _pad9: f32,                       // 4 bytes, offset 564
+    _pad10: f32,                      // 4 bytes, offset 568
+    _pad11: f32,                      // 4 bytes, offset 572
 };
 
 @group(0) @binding(0)
@@ -82,6 +86,11 @@ var sphere_texture: texture_2d<f32>;
 
 @group(0) @binding(2)
 var sphere_sampler: sampler;
+
+// The cloud map's clear-sky background in the cloud draw's group, the level
+// of its cold clear ground; a 1x1 texture that reads zero everywhere else.
+@group(0) @binding(3)
+var cloud_background: texture_2d<f32>;
 
 // The globe's surface on the equi-angular cube: the day floor or the grid, the
 // night floor, and the water mask, 255 over open water. Read through
@@ -607,12 +616,36 @@ fn vs_cloud(in: VertexInput) -> VertexOutput {
 // cloud the source gives a coverage of 0.1 still hides what is under it.
 const NIGHT_OPACITY_MIN_TRANSMITTANCE: f32 = 0.03125;
 
+// Face width of the water mask level the land weight reads, about 80 km a
+// texel, which is how soft a coastline the cloud settings change across.
+const LAND_WEIGHT_FACE: f32 = 128.0;
+
+/// The ocean's value of a cloud setting moved toward the land's by `land`.
+/// The same blend as `mix`, written so that two equal values come back as
+/// that value exactly.
+fn by_land(ocean: f32, land_value: f32, land: f32) -> f32 {
+    return ocean + (land_value - ocean) * land;
+}
+
 @fragment
 fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let raw = textureSample(sphere_texture, sphere_sampler, in.uv).r;
-    let floored = saturate((raw - uniforms.cloud_floor) / max(1.0 - uniforms.cloud_floor, 0.001));
-    let cloud_density = pow(floored, 1.0 / max(uniforms.cloud_gamma, 0.01));
+    let background = textureSample(cloud_background, sphere_sampler, in.uv).r;
     let n = normalize(in.world_normal);
+    // An explicit level, not an explicit gradient, so Metal takes it from a
+    // cube. The level follows the mask's own size, and a 1x1 dummy, which
+    // makes every point land, is read at its only level.
+    let mask_level = max(log2(f32(textureDimensions(water_cube).x) / LAND_WEIGHT_FACE), 0.0);
+    let land = 1.0 - textureSampleLevel(water_cube, sphere_sampler, equi_angular(n), mask_level).r;
+    let cloud_floor = by_land(uniforms.cloud_floor_ocean, uniforms.cloud_floor_land, land);
+    let cloud_gamma = by_land(uniforms.cloud_gamma_ocean, uniforms.cloud_gamma_land, land);
+    let haze = by_land(uniforms.cloud_haze_ocean, uniforms.cloud_haze_land, land);
+    // Taking the background off and then the floor is one subtraction of
+    // 1 - (1 - haze * background) * (1 - floor), written so that no haze
+    // leaves the floor exactly as it is.
+    let local_floor = cloud_floor + haze * background * (1.0 - cloud_floor);
+    let floored = saturate((raw - local_floor) / max(1.0 - local_floor, 0.001));
+    let cloud_density = pow(floored, 1.0 / max(cloud_gamma, 0.01));
     let n_dot_l = shell_n_dot_l(n);
     // A cloud top at the shell's radius keeps the direct beam until the Sun is
     // sqrt(1 - 1/r^2) below its local horizontal, which is the same tangent

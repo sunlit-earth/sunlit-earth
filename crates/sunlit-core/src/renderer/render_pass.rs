@@ -201,8 +201,12 @@ pub(super) fn write_uniforms<'a>(
         cloud_sphere_radius: CLOUD_SPHERE_RADIUS,
         cloud_opacity: params.cloud_opacity,
         cloud_opacity_night: params.cloud_opacity_night,
-        cloud_floor: params.cloud_floor,
-        cloud_gamma: params.cloud_gamma,
+        cloud_floor_land: params.cloud_floor_land,
+        cloud_gamma_land: params.cloud_gamma_land,
+        cloud_haze_land: params.cloud_haze_land,
+        cloud_floor_ocean: params.cloud_floor_ocean,
+        cloud_gamma_ocean: params.cloud_gamma_ocean,
+        cloud_haze_ocean: params.cloud_haze_ocean,
         rayleigh_intensity: params.effective_rayleigh_intensity(),
         rayleigh_sharpness: params.rayleigh_sharpness,
         nightglow_intensity: params.effective_nightglow_intensity(),
@@ -214,7 +218,6 @@ pub(super) fn write_uniforms<'a>(
         rayleigh_haze: params.rayleigh_haze,
         cloud_night: params.cloud_night,
         cloud_terminator: CLOUD_TERMINATOR_WIDTH,
-        _pad5: 0.0,
         sky_view: sky_view.to_cols_array(),
         world_from_eqj: [
             sky_rotation.x_axis.extend(0.0).into(),
@@ -258,6 +261,7 @@ pub(super) fn write_uniforms<'a>(
         tile_gutter: inputs.tiles.gutter as f32,
         _pad9: 0.0,
         _pad10: 0.0,
+        _pad11: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

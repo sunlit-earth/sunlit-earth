@@ -18,6 +18,7 @@ from rich.progress import (
     TextColumn,
 )
 
+from texture_pipeline import sea_ice
 from texture_pipeline.cube import FACES, area_average, reproject_face, working_size
 from texture_pipeline.discovery import (
     compute_output_path,
@@ -927,4 +928,126 @@ def milky_way(
             blur=blur,
             seed=seed,
         ),
+    )
+
+
+def run_sea_ice(
+    *,
+    input_dir: Path,
+    output_path: Path,
+    fetch: bool,
+    cap_size: int,
+    effort: int,
+) -> None:
+    """Bake the sea ice atlas from the OSI-450-a1 monthly files.
+
+    :param input_dir: Directory holding the monthly files.
+    :param output_path: Path for the output ``.jxl`` atlas.
+    :param fetch: Download the files missing from ``input_dir`` first.
+    :param cap_size: Texels along each side of a cap.
+    :param effort: JPEG XL encoding effort (1--9).
+    """
+    started = time.monotonic()
+    if fetch:
+        downloaded = sea_ice.fetch(
+            input_dir, report=lambda name: typer.echo(f"Fetching {name}")
+        )
+        typer.echo(f"Fetched: {downloaded} files, manifest {sea_ice.MANIFEST}")
+    missing = [
+        name
+        for name in (sea_ice.file_name(*f) for f in sea_ice.window_files())
+        if not (input_dir / name).exists()
+    ]
+    if missing:
+        typer.echo(
+            f"Error: {len(missing)} monthly files are missing from {input_dir}, "
+            f"the first {missing[0]}; pass --fetch to download them",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    result = sea_ice.bake(input_dir, size=cap_size)
+    encode_jxl(Image.fromarray(result.atlas), output_path, quality=100, effort=effort)
+
+    typer.echo(f"Source:  {sea_ice.PRODUCT}, {sea_ice.YEARS[0]} to {sea_ice.YEARS[-1]}")
+    typer.echo("Extent at 15%, million km2, source and baked:")
+    for hemisphere, months in result.extents.items():
+        for month, extent in enumerate(months, start=1):
+            typer.echo(
+                f"  {hemisphere} {month:02d}  {extent.source / 1e6:6.2f}  "
+                f"{extent.baked / 1e6:6.2f}  {(extent.ratio - 1) * 100:+.2f}%"
+            )
+    height, width = result.atlas.shape
+    size_kb = output_path.stat().st_size / 1024
+    typer.echo(f"Output:  {output_path} ({width}x{height}, {size_kb:.0f} KB, lossless)")
+    typer.echo(f"Elapsed: {time.monotonic() - started:.1f}s")
+
+
+def _validate_cap_size(value: int) -> int:
+    if value < 8 or value % 2:
+        msg = f"Cap size must be even and at least 8, got {value}"
+        raise typer.BadParameter(msg)
+    return value
+
+
+@app.command("sea-ice")
+def sea_ice_command(
+    input_dir: Annotated[
+        Path,
+        typer.Option(
+            "--input",
+            "-i",
+            help="Directory of the OSI-450-a1 monthly files, 2010 to 2020.",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output .jxl atlas. Parent directories are created.",
+            resolve_path=True,
+        ),
+    ],
+    fetch: Annotated[
+        bool,
+        typer.Option(
+            "--fetch",
+            help="Download the missing monthly files over HTTPS, one at a time.",
+        ),
+    ] = False,
+    cap_size: Annotated[
+        int,
+        typer.Option(
+            "--cap-size",
+            help="Edge length of each polar cap in pixels.",
+            callback=_validate_cap_size,
+        ),
+    ] = sea_ice.CAP_SIZE,
+    effort: Annotated[
+        int,
+        typer.Option(
+            "--effort",
+            "-e",
+            help="JPEG XL encoding effort (1-9). Higher = smaller file, slower.",
+            callback=_validate_effort,
+        ),
+    ] = 7,
+) -> None:
+    """Bake the monthly sea ice climatology into a JPEG XL atlas.
+
+    Averages each calendar month of EUMETSAT OSI SAF's OSI-450-a1 over 2010 to
+    2020, resamples the means into north and south polar caps and writes them
+    as one lossless single-channel atlas, the months across and the north above
+    the south.
+    """
+    run_sea_ice(
+        input_dir=input_dir,
+        output_path=output_path,
+        fetch=fetch,
+        cap_size=cap_size,
+        effort=effort,
     )

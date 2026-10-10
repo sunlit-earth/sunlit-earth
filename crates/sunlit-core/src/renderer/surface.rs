@@ -139,19 +139,20 @@ pub(super) fn needs(mode: TextureMode, month: usize) -> Vec<SurfaceLayer> {
     }
 }
 
-/// Whether every cube in `needs` is resident, and whether any of them is still
-/// on its way.
+/// Whether every cube in `needs` is resident or failed, and whether any of
+/// them is still on its way.
 ///
-/// Not each other's negation, for the reason the flat slots have: a cube whose
-/// pack failed is neither, and a mode that needs one is not ready and has
-/// nothing left to wait for.
+/// A cube whose pack failed counts as there, as a failed tile does (plan
+/// decision 10): nothing further is coming for it, and the frame draws what
+/// it would draw without it, so a mode that needs it is ready once the rest
+/// is.
 pub(super) fn readiness(
     needs: &[SurfaceLayer],
     state: impl Fn(SurfaceLayer) -> LayerState,
 ) -> (bool, bool) {
     let ready = needs
         .iter()
-        .all(|&layer| state(layer) == LayerState::Resident);
+        .all(|&layer| state(layer) != LayerState::Waiting);
     let pending = needs
         .iter()
         .any(|&layer| state(layer) == LayerState::Waiting);
@@ -626,7 +627,7 @@ mod tests {
         );
     }
 
-    /// A failed pack is terminal: the mode is not ready and nothing is left to
+    /// A failed pack is terminal: the mode is ready and nothing is left to
     /// wait for, unless another cube it needs is still coming.
     #[test]
     fn a_failed_cube_is_not_waited_for() {
@@ -635,7 +636,12 @@ mod tests {
             SurfaceLayer::Mask => LayerState::Failed,
             _ => LayerState::Resident,
         };
-        assert_eq!(readiness(&blend, mask_failed), (false, false));
+        assert_eq!(readiness(&blend, mask_failed), (true, false));
+        assert_eq!(
+            readiness(&blend, |_| LayerState::Failed),
+            (true, false),
+            "every cube failed"
+        );
 
         let mask_failed_night_waits = |layer| match layer {
             SurfaceLayer::Mask => LayerState::Failed,
@@ -653,7 +659,7 @@ mod tests {
         assert_eq!(set.state(SurfaceLayer::Day(5)), LayerState::Failed);
         assert_eq!(set.state(SurfaceLayer::Day(6)), LayerState::Waiting);
         assert_eq!(set.readiness(TextureMode::Grid), (true, false));
-        assert_eq!(set.readiness(TextureMode::Day), (false, false));
+        assert_eq!(set.readiness(TextureMode::Day), (true, false));
         set.month = 6;
         assert_eq!(set.readiness(TextureMode::Day), (false, true));
         assert_eq!(set.route(TextureMode::Blend), None, "nothing to draw yet");

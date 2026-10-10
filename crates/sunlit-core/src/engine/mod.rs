@@ -550,6 +550,11 @@ impl Engine {
         if opened && !self.dirty {
             self.want_now();
         }
+        // A pack that fails changes nothing drawn but can complete what the
+        // latch waits for, and the latch is judged after a draw.
+        if !self.textures_ready && !self.dirty && self.textures_ready() {
+            self.dirty = true;
+        }
 
         if let Some(cloud) = &mut self.cloud {
             if cloud.schedule.due(now) {

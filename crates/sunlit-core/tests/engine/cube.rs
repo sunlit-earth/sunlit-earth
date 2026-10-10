@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sunlit_core::assets::cube_layout::CubeTextures;
-use sunlit_core::assets::tiles::{self, PackKind};
+use sunlit_core::assets::tiles::{self, BuildGate, PackKind};
 use sunlit_core::display::Monitor;
 use sunlit_core::engine::clock::MockClock;
 use sunlit_core::engine::wallpaper_sink::{WallpaperJob, WallpaperSink};
@@ -461,11 +461,12 @@ fn night_mode_reads_the_night_half_of_the_page_table() {
     );
 }
 
-/// A pack that cannot be built is not waited for: the textures never become
-/// ready, and a wallpaper goes out from what there is, the grid, instead of
-/// being held.
+/// A pack that cannot be built is not waited for: once the packs the mode
+/// needs have failed, the textures are ready, without anything else asking
+/// for a frame, and a wallpaper goes out from what there is, the grid,
+/// instead of being held.
 #[test]
-fn a_pack_that_fails_does_not_hold_a_publish() {
+fn a_pack_that_fails_holds_neither_readiness_nor_a_publish() {
     let _gpu = gpu();
     let fixture = CubeFixture::new("engine_cube_failed");
     std::fs::create_dir_all(fixture.cache()).expect("create the cache directory");
@@ -474,11 +475,21 @@ fn a_pack_that_fails_does_not_hold_a_publish() {
         .expect("block the packs' directory");
     let sink = Arc::new(RecordingSink::new(vec![screen("only", 0, 64, 32, true)]));
     let sink_for_config = Arc::clone(&sink);
+    let gate = BuildGate::default();
+    gate.hold();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
     let harness = Harness::start(|config| {
         fixture.configure(config);
         config.wallpaper = sink_for_config;
         config.params = blend_on(MARCH_10);
+        config.clock = clock;
+        config.build_gate = gate.clone();
     });
+    // The first frame is drawn while the packs wait at the gate, so the
+    // failures land in ticks that have nothing to draw.
+    harness.next_frame();
+    gate.open();
+    harness.wait_for_textures("packs that cannot be built");
     assert!(
         harness.publish().is_ok(),
         "a publish with nothing left to wait for goes out"

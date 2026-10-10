@@ -359,10 +359,11 @@ impl Renderer {
         texture_routing::cubes_waiting(self, TextureMode::from_index(texture_index))
     }
 
-    /// Whether every texture the current mode needs is resident: its cubes,
-    /// the floor of the month in force, the night floor, the mask. The clouds,
-    /// the Moon and the Milky Way are excluded: they are overlays, not
-    /// requirements. Without the cube surface only the grid is ever ready.
+    /// Whether every texture the current mode needs is resident or has failed
+    /// for good: its cubes, the floor of the month in force, the night floor,
+    /// the mask. The clouds, the Moon and the Milky Way are excluded: they are
+    /// overlays, not requirements. Without the cube surface only the grid is
+    /// ever ready.
     pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
         let mode = TextureMode::from_index(texture_index);
         self.surface
@@ -374,9 +375,8 @@ impl Renderer {
 
     /// Whether a cube the current mode needs is still on its way.
     ///
-    /// Deliberately not the negation of `textures_ready`: a cube whose pack
-    /// failed is a terminal state where nothing further is coming, so there is
-    /// nothing to wait for, and without the cube surface nothing ever is.
+    /// Deliberately not the negation of `textures_ready`: without the cube
+    /// surface nothing is on its way and only the grid is ready.
     pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
         let mode = TextureMode::from_index(texture_index);
         self.surface

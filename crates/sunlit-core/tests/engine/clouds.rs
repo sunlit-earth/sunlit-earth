@@ -124,39 +124,76 @@ fn a_night_side_cloud_is_brighter_than_the_land_under_it() {
     );
 }
 
-/// The cloud layer is shaded by the sun in every texture mode, not only in the
-/// one whose terminator uniform is real.
+/// The cloud layer over the grid is shaded by the Sun, although the grid is a
+/// mode whose terminator uniform is not real.
 ///
 /// `write_uniforms` puts -1.0 in `terminator_width` outside blend mode, as the
 /// sentinel that tells `fs_sphere` to ignore the sun. `fs_cloud` must not read
 /// that same uniform: its ramp would become `smoothstep(1.0, -1.0, n_dot_l)`,
 /// which the specification calls indeterminate and which the standard formula
-/// inverts. The three single-texture modes are the ones that carry it.
+/// inverts. The grid carries the sentinel and keeps the shells under the Sun,
+/// so it is the mode that shows this.
 ///
 /// The camera does not move between the two readings and the mode ignores the
 /// sun, so the ground under the window is the same texels in both: the whole
 /// difference is the layer's own shading.
 #[test]
-fn a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode() {
-    const MODES: [(i32, &str); 3] = [(0, "grid"), (1, "day"), (2, "night")];
-
+fn a_dayside_cloud_is_brighter_than_a_night_side_one_over_the_grid() {
     let gpu = gpu();
     let harness = surface(&gpu);
 
-    for (mode, name) in MODES {
-        let mut means = Vec::new();
-        for hour in [DAY_HOUR, NIGHT_HOUR] {
-            let pixels = harness.picture(&cloud_case_params(mode, 180.0, hour), CLOUD_CASE_SIZE);
-            means.push(center_window_mean(&pixels, CLOUD_CASE_SIZE));
-        }
-        let (lit, unlit) = (means[0], means[1]);
-        println!("{name} mode: {lit:.1} at noon, {unlit:.1} at midnight");
-        assert!(
-            lit > unlit + 40.0,
-            "in {name} mode the deck reads {lit:.1} at noon and {unlit:.1} at midnight: \
-             the cloud ramp is reading the sentinel rather than its own width"
-        );
+    let mut means = Vec::new();
+    for hour in [DAY_HOUR, NIGHT_HOUR] {
+        let pixels = harness.picture(&cloud_case_params(0, 180.0, hour), CLOUD_CASE_SIZE);
+        means.push(center_window_mean(&pixels, CLOUD_CASE_SIZE));
     }
+    let (lit, unlit) = (means[0], means[1]);
+    println!("grid mode: {lit:.1} at noon, {unlit:.1} at midnight");
+    assert!(
+        lit > unlit + 40.0,
+        "in grid mode the deck reads {lit:.1} at noon and {unlit:.1} at midnight: \
+         the cloud ramp is reading the sentinel rather than its own width"
+    );
+}
+
+/// Day and Night show one map lit evenly, and the cloud layer over it is lit
+/// the same way: Day draws day clouds over the night side, Night draws night
+/// clouds over the day side, and neither reading moves with the Sun.
+///
+/// The surface in either mode ignores the Sun too, so the two hours of one
+/// mode put the same ground under the window, and any difference between them
+/// would be the layer's own shading.
+#[test]
+fn day_and_night_light_the_clouds_evenly() {
+    let gpu = gpu();
+    let harness = surface(&gpu);
+    let read = |mode: i32, hour: f32| {
+        let pixels = harness.picture(&cloud_case_params(mode, 180.0, hour), CLOUD_CASE_SIZE);
+        center_window_mean(&pixels, CLOUD_CASE_SIZE)
+    };
+
+    let (day_at_noon, day_at_midnight) = (read(1, DAY_HOUR), read(1, NIGHT_HOUR));
+    let (night_at_noon, night_at_midnight) = (read(2, DAY_HOUR), read(2, NIGHT_HOUR));
+    println!(
+        "day mode: {day_at_noon:.1} at noon, {day_at_midnight:.1} at midnight; \
+         night mode: {night_at_noon:.1} at noon, {night_at_midnight:.1} at midnight"
+    );
+
+    assert!(
+        (day_at_noon - day_at_midnight).abs() < 2.0,
+        "in day mode the deck reads {day_at_noon:.1} at noon and {day_at_midnight:.1} at \
+         midnight, so the night side still darkens it"
+    );
+    assert!(
+        (night_at_noon - night_at_midnight).abs() < 2.0,
+        "in night mode the deck reads {night_at_noon:.1} at noon and {night_at_midnight:.1} \
+         at midnight, so the day side still lights it"
+    );
+    assert!(
+        day_at_midnight > night_at_noon + 40.0,
+        "day clouds on the night side read {day_at_midnight:.1} and night clouds on the day \
+         side {night_at_noon:.1}, so the two modes do not light the layer as day and as night"
+    );
 }
 
 /// Either opacity at zero switches off its own hemisphere and not the layer.

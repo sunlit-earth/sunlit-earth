@@ -701,6 +701,33 @@ mod tests {
         assert_ne!(a.digest(), b.digest());
     }
 
+    /// The switch gates the draw whichever hemisphere's opacity is up, and with
+    /// it on either one alone draws the layer.
+    #[test]
+    fn the_cloud_switch_gates_the_draw_whatever_the_opacities() {
+        for (day, night) in [(0.5, 0.0), (0.0, 0.5), (0.5, 0.5)] {
+            let on = SceneParams {
+                clouds_enabled: true,
+                cloud_opacity: day,
+                cloud_opacity_night: night,
+                ..params()
+            };
+            assert!(on.draws_clouds(), "day {day}, night {night}");
+            let off = SceneParams {
+                clouds_enabled: false,
+                ..on
+            };
+            assert!(!off.draws_clouds(), "day {day}, night {night}");
+        }
+        let neither = SceneParams {
+            clouds_enabled: true,
+            cloud_opacity: 0.0,
+            cloud_opacity_night: 0.0,
+            ..params()
+        };
+        assert!(!neither.draws_clouds());
+    }
+
     #[test]
     fn direction_quantization_uses_milliradians() {
         let q = quantize_direction(glam::Vec3::new(0.1234, -0.5678, 0.9012));

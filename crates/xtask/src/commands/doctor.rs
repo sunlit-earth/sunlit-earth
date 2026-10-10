@@ -15,6 +15,7 @@ use crate::host::facts::{
     FEATURE_HYPERV, FEATURE_WHPX, FeatureState, HostFacts, REQUIRED_TOOLS, WSL_DISTRO,
 };
 use crate::provider::firmware;
+use crate::provider::hyperv::SwitchDhcp;
 use crate::provider::target::{HostOs, Image, ProviderKind, Target, provider_for};
 use crate::runner::Runner;
 use crate::store::inventory::{ImageCondition, Inventory};
@@ -198,6 +199,45 @@ fn windows_checks(facts: &HostFacts, checks: &mut Vec<Check>) {
     };
     windows_hypervisor_checks(windows, checks);
     windows_access_checks(windows, checks);
+    switch_dhcp_check(windows, checks);
+}
+
+/// Is the Default Switch's DHCP server there to give the Windows guest an
+/// address?
+///
+/// A warning rather than a failure, because only the Windows guest is on that
+/// switch: the Linux guest runs under QEMU with its own network. Not asked
+/// without the Hyper-V feature, since there is no switch to ask about.
+fn switch_dhcp_check(windows: &crate::host::facts::WindowsFacts, checks: &mut Vec<Check>) {
+    if windows.feature(FEATURE_HYPERV) != FeatureState::Enabled {
+        return;
+    }
+    checks.push(match &windows.switch_dhcp {
+        SwitchDhcp::Listening { address } => Check::new(
+            "default switch dhcp",
+            Status::Pass,
+            format!("listening on {address}:67"),
+        ),
+        SwitchDhcp::Silent { address } => Check::new(
+            "default switch dhcp",
+            Status::Warn,
+            format!(
+                "nothing listens on {address}:67, so the Windows guest would never get an \
+                 address"
+            ),
+        )
+        .hint(
+            "with no guest running, in an elevated PowerShell: \
+             `wsl --shutdown; Restart-Service hns -Force`, or restart the host. It has been \
+             seen to stop after the host resumed from sleep",
+        ),
+        SwitchDhcp::Unknown => Check::new(
+            "default switch dhcp",
+            Status::Warn,
+            "could not be determined: no IPv4 address on the Default Switch was found",
+        )
+        .hint("only the Windows guest needs it; `vm up windows` asks again before it boots"),
+    });
 }
 
 /// Can this host run a hypervisor at all, and is one running?
@@ -615,6 +655,9 @@ mod tests {
                 }],
                 machine_path: r"C:\Windows\system32;C:\Program Files\qemu".to_owned(),
                 user_path: String::new(),
+                switch_dhcp: SwitchDhcp::Listening {
+                    address: "172.22.48.1".to_owned(),
+                },
             }),
             tools,
             vnc_viewer: Some(PathBuf::from("C:/bin/vncviewer.exe")),
@@ -818,6 +861,41 @@ mod tests {
         let check = report.get("wsl distro").expect("checked");
         assert_eq!(check.status, Status::Warn);
         assert!(!report.failed());
+    }
+
+    /// The state a resume from sleep left the development host in: the switch
+    /// has its address and nothing serves DHCP on it, so the Windows guest
+    /// boots and is never reachable.
+    #[test]
+    fn a_silent_switch_dhcp_warns_and_names_the_restart() {
+        let mut facts = good_windows();
+        facts.windows.as_mut().unwrap().switch_dhcp = SwitchDhcp::Silent {
+            address: "172.22.48.1".to_owned(),
+        };
+        let report = evaluate(&facts, &built_images(), now());
+        let check = report.get("default switch dhcp").expect("checked");
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("172.22.48.1:67"), "{check:?}");
+        assert!(
+            check.hint.as_ref().unwrap().contains("Restart-Service hns"),
+            "{check:?}"
+        );
+        assert!(!report.failed(), "it only blocks the Windows guest");
+    }
+
+    #[test]
+    fn an_unanswered_switch_dhcp_question_warns_and_a_host_without_hyper_v_is_not_asked() {
+        let mut facts = good_windows();
+        facts.windows.as_mut().unwrap().switch_dhcp = SwitchDhcp::Unknown;
+        let report = evaluate(&facts, &built_images(), now());
+        assert_eq!(
+            report.get("default switch dhcp").unwrap().status,
+            Status::Warn
+        );
+
+        facts.windows.as_mut().unwrap().features = features(2, 2);
+        let report = evaluate(&facts, &built_images(), now());
+        assert!(report.get("default switch dhcp").is_none());
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::provider::hyperv::{SWITCH_DHCP_PROBE, SwitchDhcp};
 use crate::provider::target::HostOs;
 use crate::runner::{Cmd, Runner, powershell, ps_quote};
 
@@ -249,6 +250,9 @@ pub struct WindowsFacts {
     pub machine_path: String,
     /// The user `PATH`, which is where winget appends its links directory.
     pub user_path: String,
+    /// Whether the Default Switch's DHCP server is there to give the Windows
+    /// guest an address.
+    pub switch_dhcp: SwitchDhcp,
 }
 
 impl WindowsFacts {
@@ -410,6 +414,7 @@ $env:WSL_UTF8 = '1'
 $wsl = ''
 try { $wsl = (& wsl.exe --list --verbose 2>&1 | Out-String) } catch { $wsl = '' }
 
+__SWITCH_DHCP__
 $free = $null
 try {
   $qualifier = Split-Path -Qualifier __STORE__
@@ -430,12 +435,17 @@ try {
   free_bytes = $free
   machine_path = [string][Environment]::GetEnvironmentVariable('Path','Machine')
   user_path = [string][Environment]::GetEnvironmentVariable('Path','User')
+  switch_dhcp = $dhcpState
+  switch_dhcp_address = $dhcpAddress
 } | ConvertTo-Json -Compress
 "#;
 
-/// The probe script with the store path filled in.
+/// The probe script with the store path and the Default Switch's DHCP probe
+/// filled in.
 pub fn windows_probe_script(store_root: &Path) -> String {
-    WINDOWS_PROBE.replace("__STORE__", &ps_quote(store_root))
+    WINDOWS_PROBE
+        .replace("__STORE__", &ps_quote(store_root))
+        .replace("__SWITCH_DHCP__", SWITCH_DHCP_PROBE)
 }
 
 /// Gather everything about the host.
@@ -679,6 +689,10 @@ struct RawWindowsFacts {
     machine_path: String,
     #[serde(default)]
     user_path: String,
+    #[serde(default)]
+    switch_dhcp: String,
+    #[serde(default)]
+    switch_dhcp_address: String,
 }
 
 /// Parse the probe's JSON into facts plus the free-space figure.
@@ -709,6 +723,7 @@ pub fn parse_windows_facts(json: &str) -> Result<(WindowsFacts, Option<u64>), St
         wsl_distros: parse_wsl_list(&raw.wsl_raw),
         machine_path: raw.machine_path,
         user_path: raw.user_path,
+        switch_dhcp: SwitchDhcp::parse(&raw.switch_dhcp, &raw.switch_dhcp_address),
     };
     Ok((facts, raw.free_bytes))
 }
@@ -782,7 +797,9 @@ mod tests {
         "elevated": false,
         "wsl_raw": "  NAME            STATE           VERSION\r\n* Ubuntu-22.04    Stopped         2\r\n  docker-desktop  Running         2\r\n",
         "free_bytes": 274877906944,
-        "machine_path": "C:\\Windows\\system32;C:\\Program Files\\qemu\\"
+        "machine_path": "C:\\Windows\\system32;C:\\Program Files\\qemu\\",
+        "switch_dhcp": "silent",
+        "switch_dhcp_address": "172.22.48.1"
     }"#;
 
     #[test]
@@ -799,6 +816,21 @@ mod tests {
         assert!(!facts.elevated);
         assert_eq!(free, Some(274_877_906_944));
         assert_eq!(facts.distro(WSL_DISTRO).map(|d| d.version), Some(2));
+        assert_eq!(
+            facts.switch_dhcp,
+            SwitchDhcp::Silent {
+                address: "172.22.48.1".to_owned()
+            }
+        );
+    }
+
+    /// A probe from before the DHCP question, or one whose answer was lost,
+    /// is no evidence about the switch either way.
+    #[test]
+    fn a_probe_without_the_dhcp_answer_reads_as_unknown() {
+        let json = r#"{"caption": "Microsoft Windows 11 Pro", "sku": 48}"#;
+        let (facts, _) = parse_windows_facts(json).expect("valid probe output");
+        assert_eq!(facts.switch_dhcp, SwitchDhcp::Unknown);
     }
 
     #[test]
@@ -1136,10 +1168,12 @@ mod tests {
 
     #[test]
     fn the_probe_script_carries_the_store_path_and_the_group_sid() {
-        let script = WINDOWS_PROBE.replace("__STORE__", &ps_quote(Path::new(r"C:\vm")));
+        let script = windows_probe_script(Path::new(r"C:\vm"));
         assert!(script.contains(r"'C:\vm'"));
         assert!(script.contains(HYPERV_ADMINS_SID));
         assert!(!script.contains("__STORE__"));
+        assert!(script.contains(SWITCH_DHCP_PROBE));
+        assert!(!script.contains("__SWITCH_DHCP__"));
         // Nothing in the probe may change the machine.
         for forbidden in ["Enable-Windows", "Set-", "New-Item", "Add-LocalGroupMember"] {
             assert!(

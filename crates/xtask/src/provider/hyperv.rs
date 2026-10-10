@@ -618,6 +618,93 @@ pub fn first_usable_ipv4(addresses: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// Sets `$dhcpAddress` to the host's IPv4 address on the Default Switch and
+/// `$dhcpState` to `listening`, `silent` or `unknown`, for whether anything on
+/// the host listens for DHCP there.
+///
+/// The switch's DHCP server is part of Internet Connection Sharing and listens
+/// on UDP port 67 at that address. Without it a guest assigns itself a 169.254
+/// address and never gets a usable one. Both cmdlets answer without elevation.
+/// A fragment rather than a script, because `vm doctor`'s host probe carries it
+/// too.
+pub const SWITCH_DHCP_PROBE: &str = r"
+$dhcpState = 'unknown'
+$dhcpAddress = ''
+try {
+  $dhcpAddress = [string](Get-NetIPAddress -InterfaceAlias 'vEthernet (Default Switch)' -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1).IPAddress
+  $dhcpListeners = @(Get-NetUDPEndpoint -ErrorAction Stop | Where-Object { $_.LocalPort -eq 67 -and ($_.LocalAddress -eq $dhcpAddress -or $_.LocalAddress -eq '0.0.0.0') })
+  if ($dhcpAddress) { $dhcpState = if ($dhcpListeners.Count -gt 0) { 'listening' } else { 'silent' } }
+} catch { }
+";
+
+/// What a guest on the Default Switch can expect from its DHCP server, as the
+/// host sees it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SwitchDhcp {
+    /// Something on the host listens for DHCP at its address on the switch.
+    Listening { address: String },
+    /// The host has an address on the switch and nothing listens for DHCP there.
+    Silent { address: String },
+    /// The question could not be answered: no switch, no address on it, or a
+    /// query that failed.
+    #[default]
+    Unknown,
+}
+
+impl SwitchDhcp {
+    /// Read the two values [`SWITCH_DHCP_PROBE`] sets.
+    pub fn parse(state: &str, address: &str) -> Self {
+        let address = address.trim().to_owned();
+        if address.is_empty() {
+            return Self::Unknown;
+        }
+        match state.trim() {
+            "listening" => Self::Listening { address },
+            "silent" => Self::Silent { address },
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// The script that asks the host about the Default Switch's DHCP server.
+pub fn switch_dhcp_script() -> String {
+    format!(
+        "{SWITCH_DHCP_PROBE}\
+         Write-Output \"DHCP=$dhcpState\"\n\
+         Write-Output \"DHCP_ADDRESS=$dhcpAddress\"\n"
+    )
+}
+
+/// Read that script's output.
+pub fn parse_switch_dhcp(stdout: &str) -> SwitchDhcp {
+    let value = |key: &str| {
+        stdout
+            .lines()
+            .find_map(|line| line.trim().strip_prefix(key))
+            .unwrap_or_default()
+    };
+    SwitchDhcp::parse(value("DHCP="), value("DHCP_ADDRESS="))
+}
+
+/// What to say about a Default Switch whose DHCP server is not running, and
+/// how to bring it back.
+///
+/// The cause seen on the development host was the server failing to start as
+/// the host resumed from sleep (Host Network Service event 1030,
+/// `IpICSHlpStartDhcpServer : 0x80072741`, one second after the resume), after
+/// which it never tried again. Restarting the Host Network Service starts it.
+pub fn silent_dhcp_message(address: &str) -> String {
+    format!(
+        "the Default Switch's DHCP server is not running: the host is {address} on the \
+         switch and nothing listens on {address}:67, so a guest would only ever have a \
+         self-assigned 169.254 address and could not be reached. It has been seen to fail \
+         to start when the host resumed from sleep, and it does not try again on its own. \
+         With no guest running, in an elevated PowerShell: \
+         `wsl --shutdown; Restart-Service hns -Force` (this also drops WSL's networking \
+         until WSL starts again), or restart the host. `cargo xtask vm doctor` checks it."
+    )
+}
+
 /// The `Hyper-V` provider.
 pub struct HypervProvider<'a> {
     runner: &'a dyn Runner,
@@ -774,24 +861,66 @@ impl<'a> HypervProvider<'a> {
         }
     }
 
+    /// What the host says about the Default Switch's DHCP server, `Unknown`
+    /// when the question could not be asked.
+    fn switch_dhcp(&self) -> SwitchDhcp {
+        self.run_script(&switch_dhcp_script())
+            .map_or(SwitchDhcp::Unknown, |out| parse_switch_dhcp(&out))
+    }
+
     /// Poll until the guest reports a usable address.
     fn wait_for_address(&self, name: &str, timeout: Duration) -> Result<String, String> {
         let start = Instant::now();
+        let mut self_assigned = None;
         loop {
             if let Ok(out) = self.run_script(&address_script(name))
                 && answered(&out)
-                && let Some(address) = first_usable_ipv4(&parse_addresses(&out))
             {
-                return Ok(address);
+                let addresses = parse_addresses(&out);
+                if let Some(address) = first_usable_ipv4(&addresses) {
+                    return Ok(address);
+                }
+                if let Some(address) = addresses.iter().find(|a| a.starts_with("169.254.")) {
+                    self_assigned = Some(address.clone());
+                }
             }
             if start.elapsed() >= timeout {
-                return Err(format!(
-                    "{name} reported no address within {:.0}s. The guest is booting \
-                     but not reachable; `cargo xtask vm view windows` shows its console.",
-                    timeout.as_secs_f64()
-                ));
+                return Err(self.no_address_message(name, timeout, self_assigned.as_deref()));
             }
             std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
+    /// Why a guest has no address, as far as the host can tell.
+    fn no_address_message(
+        &self,
+        name: &str,
+        timeout: Duration,
+        self_assigned: Option<&str>,
+    ) -> String {
+        let waited = format!(
+            "{name} reported no address within {:.0}s",
+            timeout.as_secs_f64()
+        );
+        let Some(address) = self_assigned else {
+            return format!(
+                "{waited}. The guest is booting but not reachable; \
+                 `cargo xtask vm view windows` shows its console."
+            );
+        };
+        let lead = format!(
+            "{waited}: it has only the self-assigned {address}, so no DHCP server answered \
+             it on the Default Switch"
+        );
+        match self.switch_dhcp() {
+            SwitchDhcp::Silent { address } => {
+                format!("{lead}, and {}", silent_dhcp_message(&address))
+            }
+            _ => format!(
+                "{lead}. Something on the host listens for DHCP there, so look at the guest: \
+                 `cargo xtask vm view windows` shows its console, and `ipconfig /all` in it \
+                 shows what its adapter tried."
+            ),
         }
     }
 }
@@ -839,6 +968,12 @@ impl crate::provider::Provider for HypervProvider<'_> {
     }
 
     fn start(&self, state: &mut RunState) -> Result<(), String> {
+        // Asked before the start rather than after the wait: a guest started
+        // without it costs five minutes to learn what one query says now. An
+        // unknown answer starts the guest, since it is no evidence of a fault.
+        if let SwitchDhcp::Silent { address } = self.switch_dhcp() {
+            return Err(silent_dhcp_message(&address));
+        }
         self.run_script(&format!("Start-VM -Name {}", ps_quote(&state.vm_name)))?;
         state.started_unix = util::now_unix();
         println!("waiting for the guest to report an address");
@@ -1562,5 +1697,137 @@ mod tests {
         ];
         assert_eq!(first_usable_ipv4(&ready), Some("172.28.144.5".to_owned()));
         assert_eq!(first_usable_ipv4(&[]), None);
+    }
+
+    fn dhcp_answer(state: &str, address: &str) -> CommandOutput {
+        CommandOutput::ok(format!("DHCP={state}\nDHCP_ADDRESS={address}\n"))
+    }
+
+    fn run_state() -> RunState {
+        RunState::new(
+            Image::Windows,
+            ProviderKind::HyperV,
+            PathBuf::from(r"C:\vm\run\windows\overlay.vhdx"),
+            StartReason::Run,
+            0,
+        )
+    }
+
+    #[test]
+    fn the_switch_dhcp_answer_is_read_from_the_marker_lines() {
+        let listening = "172.22.48.1".to_owned();
+        assert_eq!(
+            parse_switch_dhcp("DHCP=listening\nDHCP_ADDRESS=172.22.48.1\n"),
+            SwitchDhcp::Listening { address: listening }
+        );
+        assert_eq!(
+            parse_switch_dhcp("DHCP=silent\r\nDHCP_ADDRESS=172.22.48.1\r\n"),
+            SwitchDhcp::Silent {
+                address: "172.22.48.1".to_owned()
+            }
+        );
+        // Without an address there is no switch to have an opinion about.
+        assert_eq!(
+            parse_switch_dhcp("DHCP=silent\nDHCP_ADDRESS=\n"),
+            SwitchDhcp::Unknown
+        );
+        assert_eq!(parse_switch_dhcp("DHCP=unknown\n"), SwitchDhcp::Unknown);
+        assert_eq!(parse_switch_dhcp(""), SwitchDhcp::Unknown);
+    }
+
+    #[test]
+    fn the_switch_dhcp_probe_asks_the_switch_the_guest_is_on_and_changes_nothing() {
+        assert!(SWITCH_DHCP_PROBE.contains(&format!("'vEthernet ({SWITCH})'")));
+        assert!(SWITCH_DHCP_PROBE.contains("LocalPort -eq 67"));
+        for forbidden in ["Set-", "Restart-", "Stop-", "Start-", "New-", "Remove-"] {
+            assert!(
+                !SWITCH_DHCP_PROBE.contains(forbidden),
+                "the probe must be read-only: {forbidden}"
+            );
+        }
+        let script = switch_dhcp_script();
+        assert!(script.contains("DHCP=$dhcpState"), "{script}");
+        assert!(script.contains("DHCP_ADDRESS=$dhcpAddress"), "{script}");
+    }
+
+    /// A start on a host whose switch serves no DHCP would wait five minutes
+    /// for an address that cannot come, so it is refused before the guest is
+    /// started.
+    #[test]
+    fn a_start_is_refused_while_the_switch_serves_no_dhcp() {
+        let store = Store::new(r"C:\vm");
+        let runner = FakeRunner::new()
+            .on("DHCP=$dhcpState", dhcp_answer("silent", "172.22.48.1"))
+            .on("Start-VM", CommandOutput::ok(""));
+        let error = HypervProvider::new(&runner, &store, HostOs::Windows)
+            .start(&mut run_state())
+            .expect_err("refused");
+        assert!(error.contains("172.22.48.1:67"), "{error}");
+        assert!(error.contains("Restart-Service hns"), "{error}");
+        assert!(
+            !runner.calls().iter().any(|call| call.contains("Start-VM")),
+            "the guest was started anyway"
+        );
+    }
+
+    /// Only a definite answer refuses a start: a query that failed, or a host
+    /// with no address on the switch, is no evidence of a fault.
+    #[test]
+    fn a_start_goes_ahead_when_dhcp_listens_or_the_question_has_no_answer() {
+        let store = Store::new(r"C:\vm");
+        let address = CommandOutput::ok(format!("IP=172.22.48.7\n{QUERY_OK}\n"));
+        for dhcp in [
+            Some(dhcp_answer("listening", "172.22.48.1")),
+            Some(dhcp_answer("unknown", "")),
+            None,
+        ] {
+            let mut runner = FakeRunner::new()
+                .on("Start-VM", CommandOutput::ok(""))
+                .on("Get-VMNetworkAdapter", address.clone());
+            if let Some(dhcp) = dhcp {
+                runner = runner.on("DHCP=$dhcpState", dhcp);
+            }
+            let mut state = run_state();
+            HypervProvider::new(&runner, &store, HostOs::Windows)
+                .start(&mut state)
+                .expect("started");
+            assert_eq!(state.ssh_host, "172.22.48.7");
+        }
+    }
+
+    #[test]
+    fn a_guest_left_with_a_self_assigned_address_is_told_apart_from_a_slow_one() {
+        let store = Store::new(r"C:\vm");
+        let self_assigned = CommandOutput::ok(format!(
+            "IP=169.254.131.218\nIP=fe80::f108:adae:32da:9df0\n{QUERY_OK}\n"
+        ));
+        let wait = |runner: &FakeRunner| {
+            HypervProvider::new(runner, &store, HostOs::Windows)
+                .wait_for_address("sunlit-e2e-windows", Duration::ZERO)
+                .expect_err("no usable address")
+        };
+
+        let runner = FakeRunner::new()
+            .on("Get-VMNetworkAdapter", self_assigned.clone())
+            .on("DHCP=$dhcpState", dhcp_answer("silent", "172.22.48.1"));
+        let error = wait(&runner);
+        assert!(error.contains("169.254.131.218"), "{error}");
+        assert!(error.contains("Restart-Service hns"), "{error}");
+
+        let runner = FakeRunner::new()
+            .on("Get-VMNetworkAdapter", self_assigned)
+            .on("DHCP=$dhcpState", dhcp_answer("listening", "172.22.48.1"));
+        let error = wait(&runner);
+        assert!(error.contains("169.254.131.218"), "{error}");
+        assert!(error.contains("ipconfig /all"), "{error}");
+        assert!(!error.contains("Restart-Service"), "{error}");
+
+        let runner = FakeRunner::new().on(
+            "Get-VMNetworkAdapter",
+            CommandOutput::ok(format!("{QUERY_OK}\n")),
+        );
+        let error = wait(&runner);
+        assert!(error.contains("not reachable"), "{error}");
+        assert!(!error.contains("DHCP"), "{error}");
     }
 }

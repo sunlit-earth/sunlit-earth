@@ -504,6 +504,63 @@ fn a_pack_that_fails_holds_neither_readiness_nor_a_publish() {
     );
 }
 
+/// A pack whose floor fails its checksum keeps the key it was built under, so
+/// the transcoder hands it over as current; the engine that finds the floor
+/// damaged removes it, and the next start builds it again.
+#[test]
+fn a_pack_whose_floor_is_damaged_is_built_again_on_the_next_start() {
+    let _gpu = gpu();
+    let fixture = CubeFixture::new("engine_cube_damaged_floor");
+    let textures = CubeTextures::resolve(&fixture.dir.join("textures"));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    for kind in PackKind::all() {
+        tiles::ensure_pack(&fixture.cache(), kind, &textures, &tiles::FIXTURE, &cancel)
+            .expect("build the pack");
+    }
+    let march = PackKind::Day(2);
+    let path = tiles::pack_path(&fixture.cache(), march);
+    let face = |pack: &tiles::Pack| {
+        pack.entries()
+            .iter()
+            .find(|entry| entry.whole_face)
+            .expect("a floor face")
+            .clone()
+    };
+    let pack = tiles::Pack::open(&path).expect("a built pack");
+    let entry = face(&pack);
+    drop(pack);
+    let mut bytes = std::fs::read(&path).expect("read the pack");
+    bytes[usize::try_from(entry.offset).expect("an offset")] ^= 0xFF;
+    std::fs::write(&path, bytes).expect("damage a floor face");
+
+    let start = || {
+        Harness::start(|config| {
+            fixture.configure(config);
+            config.params = blend_on(MARCH_10);
+        })
+    };
+    let harness = start();
+    harness.wait_for_textures("a damaged floor");
+    assert!(
+        !fixture.pack_exists(march),
+        "the damaged pack is still there"
+    );
+    drop(harness);
+
+    let harness = start();
+    harness.wait_for_textures("a floor built again");
+    let pack = tiles::Pack::open(&path).expect("the pack built again");
+    assert!(
+        pack.read(&face(&pack)).is_ok(),
+        "the floor is still damaged"
+    );
+    let report = harness.engine.memory_report().expect("a report");
+    assert!(
+        !rows(&report, "day_floor").is_empty(),
+        "no day floor is resident:\n{report}"
+    );
+}
+
 /// Dropping the engine while its packs build stops the transcoder and returns,
 /// which is the notify callback's contract: it wakes the engine through a
 /// channel that never blocks, so the join in the transcoder's drop cannot wait

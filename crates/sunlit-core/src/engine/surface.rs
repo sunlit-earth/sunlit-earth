@@ -13,7 +13,7 @@
 //! a CPU adapter keeps the month in force's and the month ahead's, and makes
 //! another month's resident when it comes into force (plan departure 35).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -368,7 +368,9 @@ impl SurfaceFeed {
                 self.landed.push(month);
                 month == self.month && self.make_floor_resident(month, renderer)
             }
-            PackKind::Night | PackKind::Mask => make_resident(&pack, renderer).unwrap_or(false),
+            PackKind::Night | PackKind::Mask => {
+                make_resident(&pack, &self.cache_dir, renderer).unwrap_or(false)
+            }
         }
     }
 
@@ -379,7 +381,7 @@ impl SurfaceFeed {
         let Some(pack) = &self.days[month] else {
             return false;
         };
-        let drawn = make_resident(pack, renderer);
+        let drawn = make_resident(pack, &self.cache_dir, renderer);
         if drawn.is_none() {
             self.days[month] = None;
             self.landed.retain(|&m| m != month);
@@ -390,7 +392,11 @@ impl SurfaceFeed {
 
 /// Make the cube of `pack` resident. Returns whether what the frame draws
 /// changed, or `None` when it could not be made resident.
-fn make_resident(pack: &Pack, renderer: &mut Renderer) -> Option<bool> {
+///
+/// A pack whose cube cannot be made resident is removed from `cache_dir`, so
+/// the next start builds it again: its key still matches, and the transcoder
+/// would otherwise hand it over as current on every start.
+fn make_resident(pack: &Pack, cache_dir: &Path, renderer: &mut Renderer) -> Option<bool> {
     let layer = layer_of(pack.kind());
     match renderer.install_surface(layer, pack) {
         Ok(drawn) => {
@@ -399,6 +405,15 @@ fn make_resident(pack: &Pack, renderer: &mut Renderer) -> Option<bool> {
         }
         Err(e) => {
             error!(?layer, error = %e, "a surface cube could not be made resident");
+            let path = pack_path(cache_dir, pack.kind());
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    info!(path = %path.display(), "the pack is removed and is built again on the next start")
+                }
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "the pack could not be removed")
+                }
+            }
             renderer.mark_surface_failed(layer);
             None
         }

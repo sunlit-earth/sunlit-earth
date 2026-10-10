@@ -406,13 +406,10 @@ fn make_resident(pack: &Pack, cache_dir: &Path, renderer: &mut Renderer) -> Opti
         Err(e) => {
             error!(?layer, error = %e, "a surface cube could not be made resident");
             let path = pack_path(cache_dir, pack.kind());
-            match std::fs::remove_file(&path) {
-                Ok(()) => {
-                    info!(path = %path.display(), "the pack is removed and is built again on the next start")
-                }
-                Err(e) => {
-                    warn!(path = %path.display(), error = %e, "the pack could not be removed")
-                }
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!(path = %path.display(), error = %e, "the pack could not be removed");
+            } else {
+                info!(path = %path.display(), "the pack is removed and is built again on the next start");
             }
             renderer.mark_surface_failed(layer);
             None

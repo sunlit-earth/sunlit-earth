@@ -252,12 +252,28 @@ The change is one feature branch. Before release, reverting it is enough. After 
 
 7. **The real binary was not run for criterion 7.** `logging::file_writer` writes a log file under the app data directory whenever stderr is not a terminal, which it never is from the tools this run has, and its rolling appender also prunes old log files there. That directory is `C:\Users\mcp\AppData\Local\SunlitEarth`, which this run must not touch beyond reading the cloud JPEG. So `sunlit-earth render` was not run here; the behavior criterion 7 describes is held by the engine cases (`CloudsSettled` drawn once after the map and the background land, `drawn: false` before the first retry with no cache and a failing source, no event and no fetch with the layer off) and by the app's unit tests of the wait and of when it is skipped. A run of the binary with a warm tile cache is left to validation.
 
+8. **The switch reaches the worker, and a poll under way finishes.** Decision 8 only keeps the engine from handing the worker a poll while the layer is off. That leaves a poll that is already retrying after a failure going on: the worker backs off for up to five minutes between attempts and never saw the setting, so an outage that began with the layer on kept contacting the source after it was switched off, and once the network returned it downloaded, decoded, estimated and posted a map with the layer off. The engine now writes the switch into an atomic beside `busy` and `target` on every tick, and the worker reads it before every attempt and every 100 ms of a backoff. When the layer is off it gives the request up and sets `abandoned`, the engine owes the poll again, and switching the layer on sends it at once. A poll that has already reached its fetch when the switch flips runs to its end and posts what it downloaded. Stopping it after the download was the alternative, and it has a trap: `poll_once` writes the cache and its `ETag` before posting, so the next poll would answer 304 and nothing would post the map until the cache was read again at the next start or variant switch, which the on transition would then have to do by hand. One download and one decode while the layer goes off is not worth that state.
+
 ## Open items
 
 - The defaults of decision 6, from validation.
 - Whether the cap becomes a setting and whether a polar fade is needed.
 - Whether frozen sea keeps a veil, and the ice concentration as land once the sea ice atlas exists (Relation to the sea ice plan).
+- The cloud draw's cost on lavapipe at 1920 x 1080, before and after (criterion 6, departure 6). It is the adapter risk 2 is about, since the texture overhaul research found anisotropic cube reads expensive there, and this run had no way to it without WSL. CI or the user measures it; if the mask read costs, the cloud group can carry the surface sampler at a binding of its own for the mask.
+- `sunlit-earth render` with the real binary for criterion 7 (departure 7).
 
 ## Validation Record
 
-Not yet run.
+The validation with the user (step 9) has not been run.
+
+### Review round 1
+
+On aa3a37d..17b48d0, with the gates green: one major finding and four minor ones, all resolved.
+
+1. Major: switching the layer off did not stop a poll that was already retrying after a failure, so the worker went on contacting the source and could post a map with the layer off. Resolved by departure 8, in c4793d4, with the engine case `switching_the_layer_off_ends_a_failing_retry`.
+2. Minor: architecture.md gave the background as 128 KiB with its mips; with its full chain it is 174763 bytes, about 171 KiB. Corrected.
+3. Minor: the switch case's last check for no fetch waited two round trips, which a worker that had not reached the source yet could pass. Both of its checks for no fetch now watch the source for a second; the worker's own gate (departure 8) means the case fails only with both gates removed, which was checked.
+4. Minor: no unit test held `draws_clouds` to the switch. Added `the_cloud_switch_gates_the_draw_whatever_the_opacities`, with the night opacity alone among its cases.
+5. Minor: the open items lacked the lavapipe cost left by departure 6. Added, beside criterion 7's binary run.
+
+The validator could not confirm that the shipped mask carries the level `fs_cloud` reads. It does: `assets::tiles::build::chain` cuts every whole face down to 1 px, `Pack::mips` returns the full chain for a whole face, and `cube_from_pack` makes the texture with that many levels, so a 1024 px mask has eleven levels and level 3 is 128 px. A smaller source would be cut to a smaller finest level, and the shader's level follows the texture's own size, so it still reads 128 px faces. The lavapipe and Metal cloud goldens from golden runs 38090094295 and 38090435229 at d3fb9ee were committed in a0976f2.

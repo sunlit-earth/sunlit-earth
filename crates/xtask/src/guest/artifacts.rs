@@ -1288,7 +1288,7 @@ mod tests {
         assert_eq!(files[6 * 11 + 5], "day/200412/nz.jxl");
         assert_eq!(files[6 * 12 + 2], "night/py.jxl");
         assert_eq!(files[83], "mask/nz.jxl");
-        assert_eq!(bundle_texture_files().len(), 86);
+        assert_eq!(bundle_texture_files().len(), 84 + TEXTURE_FILES.len());
     }
 
     fn cube_dir(name: &str) -> PathBuf {

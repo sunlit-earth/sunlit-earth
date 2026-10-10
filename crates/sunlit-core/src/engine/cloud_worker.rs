@@ -39,6 +39,13 @@ pub(super) struct CloudWorker {
     /// discriminant. Written once by the worker, before a failed attempt's
     /// backoff, and read by the engine's tick.
     answer: Arc<AtomicU8>,
+    /// Whether the cloud layer is switched on, which the engine writes on
+    /// every tick and the worker reads before every attempt and while it
+    /// backs off, so a retry stops when the layer is switched off.
+    enabled: Arc<AtomicBool>,
+    /// The worker ended a request without finishing it because the layer was
+    /// switched off. The engine takes it and owes the poll again.
+    abandoned: Arc<AtomicBool>,
     _thread: JoinHandle<()>,
 }
 
@@ -79,6 +86,17 @@ impl CloudWorker {
         self.target.swap(resolution, Ordering::SeqCst) != resolution
     }
 
+    /// Tell the worker whether the cloud layer is switched on.
+    pub(super) fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    /// Whether the worker gave up a request because the layer was switched
+    /// off, clearing the flag.
+    pub(super) fn take_abandoned(&self) -> bool {
+        self.abandoned.swap(false, Ordering::SeqCst)
+    }
+
     /// Ask the worker for one poll. Returns `false` when the worker is still
     /// busy with the previous one, so the caller can retry soon.
     pub(super) fn request(&self) -> bool {
@@ -110,6 +128,7 @@ pub(super) fn spawn_cloud_worker(
     now: Duration,
     texture_resolution: u32,
     slots: CloudSlots,
+    enabled: bool,
 ) -> CloudWorker {
     info!(source = %source.describe(), poll_secs = interval.as_secs(), "cloud source configured");
 
@@ -120,6 +139,10 @@ pub(super) fn spawn_cloud_worker(
     let worker_target = Arc::clone(&target);
     let answer = Arc::new(AtomicU8::new(FirstAnswer::Pending as u8));
     let worker_answer = Arc::clone(&answer);
+    let enabled = Arc::new(AtomicBool::new(enabled));
+    let worker_enabled = Arc::clone(&enabled);
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let worker_abandoned = Arc::clone(&abandoned);
 
     let thread = std::thread::Builder::new()
         .name("sunlit-cloud".into())
@@ -134,7 +157,16 @@ pub(super) fn spawn_cloud_worker(
             );
             let mut backoff = RetryBackoff::new();
             let mut first = true;
+            let give_up = || {
+                info!("the cloud layer is switched off, the poll waits until it is on again");
+                worker_abandoned.store(true, Ordering::SeqCst);
+            };
             while rx.recv().is_ok() {
+                if !worker_enabled.load(Ordering::SeqCst) {
+                    give_up();
+                    worker_busy.store(false, Ordering::SeqCst);
+                    continue;
+                }
                 // Show whatever is on disk before touching the network, on the
                 // first request rather than at spawn, so a session that starts
                 // with the layer switched off decodes nothing until it is on.
@@ -150,6 +182,13 @@ pub(super) fn spawn_cloud_worker(
                 // stale clouds. The engine's own requests are dropped while
                 // this runs (the worker is busy) and retried on the next tick.
                 loop {
+                    // Before every attempt, so a layer switched off during an
+                    // outage makes no further one; a poll already under way
+                    // runs to its end and posts.
+                    if !worker_enabled.load(Ordering::SeqCst) {
+                        give_up();
+                        break;
+                    }
                     // Inside the retry loop, not outside it: an outage can hold
                     // this thread for minutes at a time, and a resolution
                     // switch made during one should change what the next
@@ -180,7 +219,7 @@ pub(super) fn spawn_cloud_worker(
                                 retry_delay_secs = delay.as_secs(),
                                 "cloud poll failed, retrying"
                             );
-                            std::thread::sleep(delay);
+                            rest_while_enabled(delay, &worker_enabled);
                             // Give up if the engine went away while we slept.
                             if matches!(rx.try_recv(), Err(TryRecvError::Disconnected)) {
                                 return;
@@ -204,6 +243,23 @@ pub(super) fn spawn_cloud_worker(
         },
         owed: false,
         answer,
+        enabled,
+        abandoned,
         _thread: thread,
+    }
+}
+
+/// How often a backoff looks at whether the layer is still switched on.
+const REST_SLICE: Duration = Duration::from_millis(100);
+
+/// Sleep out `delay`, or less as soon as `enabled` reads false.
+fn rest_while_enabled(delay: Duration, enabled: &AtomicBool) {
+    let until = std::time::Instant::now() + delay;
+    while enabled.load(Ordering::SeqCst) {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(REST_SLICE));
     }
 }

@@ -683,7 +683,7 @@ export component MainWindow inherits Window {
 
                                 SettingCheck {
                                     text: "Show clouds";
-                                    hint: "Master switch for the cloud layer. While it is off, no cloud image is downloaded or decoded.";
+                                    hint: "Master switch for the cloud layer. While it is off, no cloud image download or decode is started.";
                                     checked <=> root.clouds-enabled;
                                     toggled => { root.sliders-changed(); }
                                 }

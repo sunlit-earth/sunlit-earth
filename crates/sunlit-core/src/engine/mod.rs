@@ -305,6 +305,7 @@ impl Engine {
                     map: slots.clouds(),
                     background: slots.cloud_background(),
                 },
+                params.clouds_enabled,
             )
         });
 
@@ -566,6 +567,12 @@ impl Engine {
         }
 
         if let Some(cloud) = &mut self.cloud {
+            // A request the worker gave up because the layer went off is owed
+            // again, and goes out when it is switched back on.
+            cloud.set_enabled(self.params.clouds_enabled);
+            if cloud.take_abandoned() {
+                cloud.owed = true;
+            }
             if cloud.schedule.due(now) {
                 cloud.owed = true;
             }

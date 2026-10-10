@@ -2,7 +2,7 @@
 //! it has settled.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use sunlit_core::assets::cloud_source::{CloudImage, CloudSource};
@@ -318,7 +318,7 @@ fn the_night_opacity_reaches_full_cover() {
 struct CountingClouds {
     inner: support::FixtureClouds,
     fetches: AtomicU64,
-    offline: bool,
+    offline: AtomicBool,
 }
 
 impl CountingClouds {
@@ -326,19 +326,52 @@ impl CountingClouds {
         Self {
             inner: support::FixtureClouds::bands(),
             fetches: AtomicU64::new(0),
-            offline,
+            offline: AtomicBool::new(offline),
         }
     }
 
     fn fetches(&self) -> u64 {
         self.fetches.load(Ordering::SeqCst)
     }
+
+    fn set_offline(&self, offline: bool) {
+        self.offline.store(offline, Ordering::SeqCst);
+    }
+
+    /// Watch the fetch count for [`QUIET`] and answer the highest it reached,
+    /// so a poll the engine asked for in the ticks before has had the time to
+    /// reach the source.
+    fn fetches_after_quiet(&self) -> u64 {
+        let until = std::time::Instant::now() + QUIET;
+        while std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.fetches()
+    }
+}
+
+/// How long a case watches for a fetch that must not come. The worker makes
+/// one within milliseconds of the tick that asks for it.
+const QUIET: Duration = Duration::from_secs(1);
+
+impl CountingClouds {
+    fn wait_for_fetches(&self, count: u64, what: &str) -> std::time::Instant {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while self.fetches() < count {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: no fetch {count}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::time::Instant::now()
+    }
 }
 
 impl CloudSource for CountingClouds {
     fn fetch_if_changed(&self, known_etag: Option<&str>) -> Result<Option<CloudImage>, String> {
         self.fetches.fetch_add(1, Ordering::SeqCst);
-        if self.offline {
+        if self.offline.load(Ordering::SeqCst) {
             return Err("the fixture is offline".to_owned());
         }
         self.inner.fetch_if_changed(known_etag)
@@ -406,7 +439,11 @@ fn a_switched_off_cloud_layer_fetches_nothing_until_it_is_switched_on() {
         harness.advance(&clock, POLL);
         assert!(clouds_settled(&harness).is_empty(), "hour {hour}");
     }
-    assert_eq!(source.fetches(), 0, "a fetch while the layer is off");
+    assert_eq!(
+        source.fetches_after_quiet(),
+        0,
+        "a fetch while the layer is off"
+    );
     assert!(
         !has_cloud_texture(&harness),
         "a map decoded while the layer is off"
@@ -443,7 +480,53 @@ fn a_switched_off_cloud_layer_fetches_nothing_until_it_is_switched_on() {
 
     harness.advance(&clock, POLL);
     assert!(clouds_settled(&harness).is_empty());
-    assert_eq!(source.fetches(), 1, "a fetch while the layer is off again");
+    assert_eq!(
+        source.fetches_after_quiet(),
+        1,
+        "a fetch while the layer is off again"
+    );
+}
+
+/// Switching the layer off ends a poll that is backing off after a failure:
+/// no further attempt is made while it is off, and switching it back on sends
+/// the poll at once rather than when the backoff would have run out.
+///
+/// Without the switch reaching the worker its retry comes 15 s after the
+/// failure, while the layer is off, which is what the time bound holds.
+#[test]
+fn switching_the_layer_off_ends_a_failing_retry() {
+    let _gpu = gpu();
+    let source = Arc::new(CountingClouds::new(true));
+    let bands = source.inner.serve_bands();
+    let harness = Harness::start(|config| {
+        config.params = switched(true);
+        config.cloud = Some(Arc::clone(&source) as Arc<dyn CloudSource>);
+    });
+    let failed_at = source.wait_for_fetches(1, "the first poll");
+
+    harness.settle_at(&switched(false));
+    source.set_offline(false);
+    assert_eq!(
+        source.fetches_after_quiet(),
+        1,
+        "an attempt after the layer was switched off"
+    );
+    assert!(
+        !has_cloud_texture(&harness),
+        "a map decoded while the layer is off"
+    );
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(switched(true))));
+    source.wait_for_fetches(2, "switched back on");
+    wait_for_cloud_size(&harness, bands, "switched back on");
+    assert!(
+        failed_at.elapsed() < FIRST_RETRY,
+        "the map arrived {:?} after the failure, which is the backoff's retry rather than the poll the switch owed",
+        failed_at.elapsed()
+    );
+    assert_eq!(source.fetches(), 2);
 }
 
 /// The poll interval of the switch cases, on the mock clock.

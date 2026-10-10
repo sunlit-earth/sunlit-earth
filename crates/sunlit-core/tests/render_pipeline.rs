@@ -66,6 +66,9 @@ struct RenderContext {
     /// A one-layer black tile array and a page table of one cell per face that
     /// draws the floor, for every case that draws no tile.
     dummy_tiles: [wgpu::TextureView; 2],
+    /// A 1x1 black texture at binding 3, which reads as no clear-sky
+    /// background.
+    dummy_background: wgpu::TextureView,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -134,6 +137,16 @@ fn create_render_context() -> RenderContext {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
             cube_entry(4),
             cube_entry(5),
             cube_entry(6),
@@ -160,6 +173,7 @@ fn create_render_context() -> RenderContext {
         ],
     });
     let dummy_cube = create_solid_cube(&device, &queue, [[0, 0, 0, 255]; 6]);
+    let dummy_background = create_solid_texture(&device, &queue, [0, 0, 0, 255]);
     let dummy_tiles = create_dummy_tiles(&device, &queue);
     let surface_sampler = device.create_sampler(
         &sunlit_core::renderer::surface_sampler_descriptor(ctx.cpu_adapter),
@@ -234,6 +248,7 @@ fn create_render_context() -> RenderContext {
         surface_sampler,
         dummy_cube,
         dummy_tiles,
+        dummy_background,
     }
 }
 
@@ -438,7 +453,38 @@ fn bind_group_with(
     cubes: [&wgpu::TextureView; 3],
     tiles: [&wgpu::TextureView; 2],
 ) -> wgpu::BindGroup {
+    bind_group_of(ctx, [flat, &ctx.dummy_background], sampler, cubes, tiles)
+}
+
+/// The cloud draw's group: the map and its clear-sky background, the water
+/// mask in the third cube place.
+fn cloud_bind_group(
+    ctx: &RenderContext,
+    map: &wgpu::TextureView,
+    background: &wgpu::TextureView,
+    mask: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    let [tiles, pages] = &ctx.dummy_tiles;
+    let dummy = &ctx.dummy_cube;
+    bind_group_of(
+        ctx,
+        [map, background],
+        &ctx.sampler,
+        [dummy, dummy, mask],
+        [tiles, pages],
+    )
+}
+
+/// A bind group of the production layout: `flat` at bindings 1 and 3.
+fn bind_group_of(
+    ctx: &RenderContext,
+    flat: [&wgpu::TextureView; 2],
+    sampler: &wgpu::Sampler,
+    cubes: [&wgpu::TextureView; 3],
+    tiles: [&wgpu::TextureView; 2],
+) -> wgpu::BindGroup {
     let view = wgpu::BindingResource::TextureView;
+    let [flat, background] = flat;
     ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test_bind_group"),
         layout: &ctx.bind_group_layout,
@@ -454,6 +500,10 @@ fn bind_group_with(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: view(background),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
@@ -1968,7 +2018,6 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
 /// Draw `shell` alone over the clear color, with a solid white cloud map, and
 /// return the RGBA8 pixel data.
 fn render_shell(ctx: &RenderContext, shell: Shell, uniforms: &Uniforms, size: u32) -> Vec<u8> {
-    let pipeline = shell_pipeline(ctx, shell);
     let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
     let dummy_cube = &ctx.dummy_cube;
     let bind_group = test_bind_group(
@@ -1977,6 +2026,19 @@ fn render_shell(ctx: &RenderContext, shell: Shell, uniforms: &Uniforms, size: u3
         &ctx.sampler,
         [dummy_cube, dummy_cube, dummy_cube],
     );
+    render_shell_with(ctx, shell, uniforms, size, &bind_group)
+}
+
+/// Draw `shell` alone over the clear color from `bind_group`, and return the
+/// RGBA8 pixel data.
+fn render_shell_with(
+    ctx: &RenderContext,
+    shell: Shell,
+    uniforms: &Uniforms,
+    size: u32,
+    bind_group: &wgpu::BindGroup,
+) -> Vec<u8> {
+    let pipeline = shell_pipeline(ctx, shell);
     ctx.queue
         .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
 
@@ -2034,7 +2096,7 @@ fn render_shell(ctx: &RenderContext, shell: Shell, uniforms: &Uniforms, size: u3
             ..Default::default()
         });
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
         pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..ctx.index_count, 0, 0..1);
@@ -2062,6 +2124,116 @@ fn cloud_pipeline_renders_with_alpha() {
         visible > 50,
         "Cloud pipeline should render visible pixels, got {visible}"
     );
+}
+
+/// The two masks the land and ocean cloud cases draw over: every texel open
+/// water, which reads 255, or every texel land.
+#[derive(Clone, Copy, Debug)]
+enum Ground {
+    Water,
+    Land,
+}
+
+/// Draw the cloud shell from a solid map of `map` and a solid clear-sky
+/// background of `background` over a mask that is all `ground`.
+fn render_clouds_over(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    map: u8,
+    background: u8,
+    ground: Ground,
+) -> Vec<u8> {
+    let solid = |value| create_solid_texture(&ctx.device, &ctx.queue, [value, value, value, 255]);
+    let water = match ground {
+        Ground::Water => 255,
+        Ground::Land => 0,
+    };
+    let mask = create_solid_cube(&ctx.device, &ctx.queue, [[water, water, water, 255]; 6]);
+    let group = cloud_bind_group(ctx, &solid(map), &solid(background), &mask);
+    render_shell_with(ctx, Shell::Cloud, uniforms, 64, &group)
+}
+
+/// Uniforms for the land and ocean cloud cases: day everywhere, full day
+/// opacity, and the land and ocean settings given as (haze, floor, gamma).
+fn cloud_surface_uniforms(land: (f32, f32, f32), ocean: (f32, f32, f32)) -> Uniforms {
+    Uniforms {
+        flags: FLAG_UNIFORM_DAY,
+        cloud_opacity: 1.0,
+        cloud_haze_land: land.0,
+        cloud_floor_land: land.1,
+        cloud_gamma_land: land.2,
+        cloud_haze_ocean: ocean.0,
+        cloud_floor_ocean: ocean.1,
+        cloud_gamma_ocean: ocean.2,
+        ..default_test_uniforms(64)
+    }
+}
+
+/// With no haze removal and the same values over land and ocean, the mask
+/// cannot be seen in the frame. The one case of the three a swap of land and
+/// water in `fs_cloud` cannot fail, since nothing tells the two apart.
+#[test]
+fn equal_land_and_ocean_settings_hide_the_mask() {
+    let ctx = render_ctx();
+    let uniforms = cloud_surface_uniforms((0.0, 0.2, 0.8), (0.0, 0.2, 0.8));
+    let water = render_clouds_over(&ctx, &uniforms, 180, 120, Ground::Water);
+    let land = render_clouds_over(&ctx, &uniforms, 180, 120, Ground::Land);
+    assert!(count_non_clear_pixels(&water) > 50, "no cloud was drawn");
+    assert_eq!(water, land);
+}
+
+/// The land's floor applies over land and the ocean's over water.
+#[test]
+fn the_land_floor_applies_over_land_and_the_ocean_floor_over_water() {
+    let ctx = render_ctx();
+    let uniforms = cloud_surface_uniforms((0.0, 1.0, 1.0), (0.0, 0.0, 1.0));
+    let water = render_clouds_over(&ctx, &uniforms, 200, 0, Ground::Water);
+    let land = render_clouds_over(&ctx, &uniforms, 200, 0, Ground::Land);
+    assert!(
+        count_non_clear_pixels(&water) > 50,
+        "the ocean's floor of 0 must leave the cloud over water"
+    );
+    assert_eq!(
+        count_non_clear_pixels(&land),
+        0,
+        "the land's floor of 1 must leave no cloud over land"
+    );
+}
+
+/// A background equal to the map is all haze: removing all of it removes the
+/// cloud, and removing none of it leaves the cloud.
+#[test]
+fn haze_removal_takes_the_background_off_the_map() {
+    let ctx = render_ctx();
+    for ground in [Ground::Land, Ground::Water] {
+        let (removed, kept) = match ground {
+            Ground::Land => ((1.0, 0.0, 1.0), (0.0, 0.0, 1.0)),
+            Ground::Water => ((0.0, 0.0, 1.0), (1.0, 0.0, 1.0)),
+        };
+        let all = render_clouds_over(
+            &ctx,
+            &cloud_surface_uniforms(removed, kept),
+            150,
+            150,
+            ground,
+        );
+        let none = render_clouds_over(
+            &ctx,
+            &cloud_surface_uniforms(kept, removed),
+            150,
+            150,
+            ground,
+        );
+        assert_eq!(
+            count_non_clear_pixels(&all),
+            0,
+            "{ground:?}: removing all the haze must remove the cloud"
+        );
+        assert!(
+            count_non_clear_pixels(&none) > 50,
+            "{ground:?}: removing none of the haze must leave the cloud"
+        );
+    }
 }
 
 /// The frame size of the shell lighting cases.

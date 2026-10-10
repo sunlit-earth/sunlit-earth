@@ -198,6 +198,10 @@ fn wait_until(what: &str, condition: impl Fn() -> bool) {
     }
 }
 
+/// The decoded frames each download makes: the map, and the clear-sky
+/// background the cloud worker estimates from it.
+const FRAMES_PER_DOWNLOAD: u64 = 2;
+
 /// Wait until every frame the downloads so far were decoded into has been
 /// made and dropped again.
 ///
@@ -398,9 +402,12 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
                 .any(|texture| texture.label == "cloud_texture")
         })
     });
-    // Every download is one decoded frame; the ones before this point are in
-    // `made` already or about to be.
-    let made_before = decoded_pixels().made.saturating_sub(cloud.fetches());
+    // Every download is two decoded frames, the map and its clear-sky
+    // background; the ones before this point are in `made` already or about
+    // to be.
+    let made_before = decoded_pixels()
+        .made
+        .saturating_sub(FRAMES_PER_DOWNLOAD * cloud.fetches());
     let downloaded_before = downloads().made.saturating_sub(cloud.fetches());
 
     let started = Instant::now();
@@ -433,7 +440,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
             // update rather than coalescing them away.
             wait_until("the cloud download", || cloud.fetches() >= expected_fetches);
         }
-        wait_for_decoded_frames_to_go(step, made_before + cloud.fetches());
+        wait_for_decoded_frames_to_go(step, made_before + FRAMES_PER_DOWNLOAD * cloud.fetches());
         wait_for_downloads_to_go(step, downloaded_before + cloud.fetches());
 
         private.push(private_bytes());

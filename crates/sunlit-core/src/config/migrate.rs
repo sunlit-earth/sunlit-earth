@@ -400,6 +400,10 @@ mod tests {
     /// The defaults as an `f32` field writes them, which is not the shortest
     /// decimal of either.
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the f32 the field was written from is the point"
+    )]
     fn the_old_cloud_defaults_are_recognized_as_written_from_an_f32() {
         let written = format!(
             "cloud_floor = {}\ncloud_gamma = {}\n",

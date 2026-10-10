@@ -198,6 +198,7 @@ const SLINT_LITERAL_PRECISION: f32 = 1.0e-3;
 /// slider a user touches pushes all the others to whatever the `.slint` file
 /// happened to say.
 #[test]
+#[expect(clippy::too_many_lines, reason = "one row per property of the window")]
 fn test_the_window_and_the_config_start_from_the_same_defaults() {
     /// One row per property: the `AppConfig` field, the window getter that
     /// mirrors it, and the tolerance the pair is compared at.

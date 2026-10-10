@@ -43,6 +43,7 @@ const LEVELS: usize = 256;
 /// # Panics
 ///
 /// When the map is not one channel or holds fewer bytes than its size says.
+#[expect(clippy::cast_possible_truncation, reason = "the grid is 512 x 256")]
 pub fn background(map: &DecodedImage) -> DecodedImage {
     assert_eq!(
         map.channels,
@@ -143,6 +144,10 @@ fn reduce(pixels: &[u8], width: usize, height: usize) -> Vec<f32> {
 /// A histogram slides along each row, and the level holding the wanted rank
 /// moves with it, so a step costs the two columns that change and the few
 /// levels the answer moves by rather than a sort of the whole window.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a level below 256, which an f32 holds exactly"
+)]
 fn percentile(grid: &[f32]) -> Vec<f32> {
     let levels: Vec<u8> = grid.iter().map(|&value| quantize(value)).collect();
     let levels = levels.as_slice();
@@ -157,10 +162,10 @@ fn percentile(grid: &[f32]) -> Vec<f32> {
             .map(|offset| (y + offset).saturating_sub(half).min(GRID_HEIGHT - 1))
             .collect();
         let column = |x: usize| rows.iter().map(move |&row| levels[row * GRID_WIDTH + x]);
-        let wrap = |x: isize| x.rem_euclid(GRID_WIDTH as isize) as usize;
+        let wrap = |x: isize| x.rem_euclid(GRID_WIDTH.cast_signed()).cast_unsigned();
 
         let mut histogram = [0u32; LEVELS];
-        for dx in -(half as isize)..=half as isize {
+        for dx in -half.cast_signed()..=half.cast_signed() {
             for value in column(wrap(dx)) {
                 histogram[usize::from(value)] += 1;
             }
@@ -173,12 +178,12 @@ fn percentile(grid: &[f32]) -> Vec<f32> {
 
         for (x, cell) in out_row.iter_mut().enumerate() {
             if x > 0 {
-                let x = x as isize;
-                for value in column(wrap(x - half as isize - 1)) {
+                let x = x.cast_signed();
+                for value in column(wrap(x - half.cast_signed() - 1)) {
                     histogram[usize::from(value)] -= 1;
                     below -= u32::from(usize::from(value) < level);
                 }
-                for value in column(wrap(x + half as isize)) {
+                for value in column(wrap(x + half.cast_signed())) {
                     histogram[usize::from(value)] += 1;
                     below += u32::from(usize::from(value) < level);
                 }
@@ -353,8 +358,8 @@ mod tests {
         for (width, height) in sizes {
             let estimate = background(&uniform(width, height, 60));
             assert_eq!(
-                (estimate.width, estimate.height),
-                (GRID_WIDTH as u32, GRID_HEIGHT as u32),
+                (estimate.width as usize, estimate.height as usize),
+                (GRID_WIDTH, GRID_HEIGHT),
                 "{width} x {height}"
             );
             assert_eq!(estimate.pixels.len(), GRID_WIDTH * GRID_HEIGHT);

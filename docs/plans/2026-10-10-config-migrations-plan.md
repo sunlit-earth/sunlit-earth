@@ -104,12 +104,12 @@ The texture resolution is a memory budget, and a user who chose 2048 to save mem
 
 `load_config_from(path)` stays pure: it migrates in memory and writes nothing. That is what `render --config <path>` uses, and a headless render must not rewrite a file somebody passed it.
 
-`load_config()`, the standard path, writes back when the file it read was below `CONFIG_VERSION`:
+`load_and_upgrade_config()`, the startup load of the standard path in `app.rs` (departure 4; the plan first gave this to `load_config()`), writes back when the file it read was below `CONFIG_VERSION`:
 
 1. Copy the original bytes to `config.v{from}.toml` beside it, unless that file already exists, so the backup is always the first file of that version this install had.
 2. Write the migrated, sanitized config through `save_config_to`, which stamps `CONFIG_VERSION`.
 
-The first `load_config()` of a run is the one in `app.rs` at startup, so in practice the write happens there. Later loads in the same run (`read_config_from_window`, `ipc.rs`, `engine_client.rs`, Reset) find a current file. If the write fails, every later load migrates the same file again in memory and gets the same answer, so a read-only config directory costs a warning per load and nothing else. Two processes migrating at once each write the same content through `write_toml`'s rename.
+It runs once, at startup, before the window and the IPC listener exist. Later loads in the same run (`read_config_from_window`, `ipc.rs`, `engine_client.rs`, Reset) go through `load_config()`, which writes nothing, and find a current file. If the write fails, every later load migrates the same file again in memory and gets the same answer, so a read-only config directory costs a warning per load and nothing else. Two processes migrating at once each write the same content through `write_toml`'s rename.
 
 A file that was stamped but whose steps changed nothing is still written back, so the steps do not run again, and still backed up, which costs one small file and keeps the rule simple.
 
@@ -136,7 +136,7 @@ The order on load is parse, migrate, deserialize, sanitize. Migrations bring a f
 
 ## Success Criteria
 
-1. A version 0 file holding `texture_resolution = 4096` and `sample_count = 8` loads as 8192 and 2, and after the first `load_config()` the file on disk holds `version = 1` with those values and `config.v0.toml` holds the original bytes.
+1. A version 0 file holding `texture_resolution = 4096` and `sample_count = 8` loads as 8192 and 2, and after the startup `load_and_upgrade_config()` the file on disk holds `version = 1` with those values and `config.v0.toml` holds the original bytes.
 2. A version 0 file holding 2048 and 4 loads as 2048 and 2, a version 0 file without `sample_count` loads as 2, and every other key in a full 0.2.2 file loads with the value the file holds.
 3. A version 1 file holding 4096 and 8 loads as 4096 and 8: a choice made after the migration is kept by both kinds.
 4. A file with `version` above the build's loads without migration, logs a warning and is not written at load.
@@ -163,7 +163,7 @@ In `config/mod.rs`, `ConfigFile` gains `version: u32` as its first field, `save_
 
 ### Step 2: Write-back and backup
 
-A private `load_and_upgrade(path) -> AppConfig` in `config/mod.rs` does what `load_config_from` does and then decision 6's backup and write when the file was below `CONFIG_VERSION` and parsed. `load_config()` calls it; `load_config_from` does not. The backup name comes from one function, `backup_path(path, version)`, which turns `config.toml` into `config.v0.toml` and, for an override path from `SUNLIT_EARTH_CONFIG` such as `custom.toml`, into `custom.v0.toml`.
+A private `load_and_upgrade(path) -> AppConfig` in `config/mod.rs` does what `load_config_from` does and then decision 6's backup and write when the file was below `CONFIG_VERSION` and parsed. `load_and_upgrade_config()` calls it (departure 4); `load_config()` and `load_config_from` do not. The backup name comes from one function, `backup_path(path, version)`, which turns `config.toml` into `config.v0.toml` and, for an override path from `SUNLIT_EARTH_CONFIG` such as `custom.toml`, into `custom.v0.toml`.
 
 ### Step 3: Tests
 
@@ -214,4 +214,20 @@ Reverting the change leaves stamped files on users' machines. A build without th
 
 2. `ConfigFile::version` is `#[serde(skip_deserializing)]`. `migrate` is the one reader of the version, from the raw table, and a file from a newer build is left as it is, so a `version` too large for a `u32` would otherwise fail deserialization and reset every setting, which decision 7 says must not happen. Skipped on the way in, the field takes `ConfigFile::default()`'s `CONFIG_VERSION`, and nothing reads it after loading.
 
-3. When the backup cannot be written, the migrated file is not written either. Decision 6 orders the two but does not say what a failed backup means; writing anyway would replace the only copy of the original, and skipping the write costs what a failed write already costs: the next load migrates the same file in memory again and warns again.
+3. When the backup cannot be written, the migrated file is not written either. Decision 6 orders the two but does not say what a failed backup means. Skipping the write-back does not protect the original for long: the first ordinary save, of a setting, of the display plan or of the window geometry at close, writes the stamped file over it with no backup anywhere. What it buys is that the loss is not the startup's doing and is no worse than writing anyway; the run loads the migrated values in memory either way, and a later start tries the backup again if no save has happened since.
+
+4. The write-back moved out of `load_config()` into a separate public entry point, `config::load_and_upgrade_config()`, which `app.rs` calls once for its startup load (every mode except `render --config`, which stays on `load_config_from`). `load_config()` is a pure load again, and every other caller (`ipc.rs`, `engine_client.rs`, `ui_callbacks.rs`, `window_geometry.rs`) stays on it. With the write-back in `load_config()`, any later load could write: after a failed startup backup, a `displays` query on the IPC listener thread could back up and write the earlier migrated values over a setting the UI thread had just saved, through the same `config.toml~` temporary name. At startup the window and the IPC listener do not exist yet, so the only write a load makes happens before anything else can write the file, and nothing races the UI's saves.
+
+## Open items
+
+- The 0.3.0 release notes must say that a texture resolution of 4096 moves to 8192, that anti-aliasing is reset to MSAA 2x for everyone, and that both are in the Rendering group. `CHANGELOG.md` has no Unreleased section and its entries are written at release time, so this item is where the reminder lives until then.
+
+## Validation Record
+
+Round 1: 0 major, 5 minor.
+
+1. Departure 3 overstated what skipping the write-back after a failed backup protects. Reworded: the first ordinary save still replaces the original.
+2. `load_config()` wrote from whatever thread called it, the IPC listener included, unserialized against the UI thread's saves. Fixed by departure 4: the write-back is `load_and_upgrade_config()`, called once at startup in `app.rs`, and `load_config()` writes nothing.
+3. The release notes item of Step 4 was neither done nor recorded. Recorded under Open items.
+4. `a_version_that_is_not_a_non_negative_integer_migrates_from_0` asserted the literal value step 0 writes. It now asserts the version migrated from and that step 0 recorded changes.
+5. (a) Departure 2's reason was tested only at the `migrate` level. Added `a_version_too_large_for_the_build_does_not_reset_the_settings`, which loads a file with a version above `u32::MAX` through `load_config_from` and checks a non-default value survives. (b) The warnings for a damaged or newer version are not asserted: the repository has no log-capture helper, and the tests assert the classification (`FileVersion::Damaged`, `from_version` above `CONFIG_VERSION`) that decides the warning instead. Declined.

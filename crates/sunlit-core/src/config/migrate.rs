@@ -326,10 +326,9 @@ mod tests {
             let mut doc = earth(&source);
             let migrated = migrate(&mut doc);
             assert_eq!(migrated.from_version, 0, "{version}");
-            assert_eq!(
-                doc["sunlit"]["earth"]["sample_count"],
-                Value::Integer(2),
-                "{version}"
+            assert!(
+                migrated.changes.iter().any(|c| c.from_version == 0),
+                "step 0 ran: {version}"
             );
             assert_eq!(doc["version"], Value::Integer(i64::from(CONFIG_VERSION)));
         }

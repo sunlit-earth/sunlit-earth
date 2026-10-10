@@ -499,9 +499,24 @@ fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
 /// Load the app configuration from the standard path.
 ///
 /// [`load_config_from`] does the work and states what a failure gives back.
-/// A file from an older build is also written back at this build's version,
-/// once, with the original kept beside it as `config.v{N}.toml`.
+/// Writes nothing; [`load_and_upgrade_config`] is the startup load that also
+/// writes a migrated file back.
 pub fn load_config() -> AppConfig {
+    let Some(path) = config_path() else {
+        warn!("could not determine config directory");
+        return AppConfig::default();
+    };
+    load_config_from(&path)
+}
+
+/// The startup load: [`load_config`], and a file from an older build is
+/// written back at this build's version, with the original kept beside it as
+/// `config.v{N}.toml`.
+///
+/// For the one load at startup, before the window and the IPC listener exist,
+/// so no other writer of the file is running; every later load is
+/// [`load_config`].
+pub fn load_and_upgrade_config() -> AppConfig {
     let Some(path) = config_path() else {
         warn!("could not determine config directory");
         return AppConfig::default();
@@ -1144,7 +1159,7 @@ sky_fov = 111.0
     }
 
     #[test]
-    fn the_first_standard_load_writes_the_migrated_file_back_and_keeps_the_original() {
+    fn the_startup_load_writes_the_migrated_file_back_and_keeps_the_original() {
         let scratch = ScratchDir::new("config_upgrade");
         let path = write_unstamped(&scratch, "texture_resolution = 4096\nsample_count = 8\n");
         let original = fs::read(&path).unwrap();
@@ -1204,6 +1219,19 @@ sky_fov = 111.0
         assert_eq!((loaded.texture_resolution, loaded.sample_count), (4096, 8));
         assert_eq!(fs::read_to_string(&path).unwrap(), contents);
         assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_version_too_large_for_the_build_does_not_reset_the_settings() {
+        let scratch = ScratchDir::new("config_huge_version");
+        let path = scratch.join("config.toml");
+        let huge = u64::from(u32::MAX) + 1;
+        fs::write(
+            &path,
+            format!("version = {huge}\n[sunlit.earth]\nlongitude = 42.0\n"),
+        )
+        .unwrap();
+        assert_relative_eq!(load_config_from(&path).longitude, 42.0);
     }
 
     #[test]

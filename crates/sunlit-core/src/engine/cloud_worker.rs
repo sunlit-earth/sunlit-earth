@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -35,10 +35,42 @@ pub(super) struct CloudWorker {
     /// separate from the schedule so a busy worker does not drag the deadline
     /// backwards and forwards on every tick.
     pub(super) owed: bool,
+    /// What the worker's first attempt came to, a [`FirstAnswer`] as its
+    /// discriminant. Written once by the worker, before a failed attempt's
+    /// backoff, and read by the engine's tick.
+    answer: Arc<AtomicU8>,
     _thread: JoinHandle<()>,
 }
 
+/// What the worker's first attempt came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum FirstAnswer {
+    /// No attempt has finished yet.
+    Pending,
+    /// A map is on its way to the mailbox, from the cache or the network.
+    Posted,
+    /// There was no cached map and the poll failed, so nothing is coming until
+    /// a retry succeeds.
+    Unavailable,
+}
+
+impl FirstAnswer {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Posted,
+            2 => Self::Unavailable,
+            _ => Self::Pending,
+        }
+    }
+}
+
 impl CloudWorker {
+    /// What the worker's first attempt came to, so far.
+    pub(super) fn first_answer(&self) -> FirstAnswer {
+        FirstAnswer::from_u8(self.answer.load(Ordering::SeqCst))
+    }
+
     /// Point the worker at a different texture resolution's cloud variant.
     ///
     /// Returns whether that changed anything, so the caller can decide whether
@@ -86,6 +118,8 @@ pub(super) fn spawn_cloud_worker(
     let worker_busy = Arc::clone(&busy);
     let target = Arc::new(AtomicU32::new(texture_resolution));
     let worker_target = Arc::clone(&target);
+    let answer = Arc::new(AtomicU8::new(FirstAnswer::Pending as u8));
+    let worker_answer = Arc::clone(&answer);
 
     let thread = std::thread::Builder::new()
         .name("sunlit-cloud".into())
@@ -99,9 +133,17 @@ pub(super) fn spawn_cloud_worker(
                 texture_resolution,
             );
             let mut backoff = RetryBackoff::new();
-            // Show whatever is on disk before touching the network.
-            updater.post_cached();
+            let mut first = true;
             while rx.recv().is_ok() {
+                // Show whatever is on disk before touching the network, on the
+                // first request rather than at spawn, so a session that starts
+                // with the layer switched off decodes nothing until it is on.
+                // A resolution switched before then posts its own entry.
+                if std::mem::take(&mut first)
+                    && !updater.set_resolution(worker_target.load(Ordering::SeqCst))
+                {
+                    updater.post_cached();
+                }
                 // Retry a failed poll with exponential backoff rather than
                 // waiting out the whole poll interval, which in production is
                 // an hour: a thirty-second outage should not cost an hour of
@@ -113,7 +155,16 @@ pub(super) fn spawn_cloud_worker(
                     // switch made during one should change what the next
                     // attempt asks for rather than wait its turn.
                     updater.set_resolution(worker_target.load(Ordering::SeqCst));
-                    match updater.poll_once() {
+                    let outcome = updater.poll_once();
+                    if worker_answer.load(Ordering::SeqCst) == FirstAnswer::Pending as u8 {
+                        let answer = if updater.has_posted() {
+                            FirstAnswer::Posted
+                        } else {
+                            FirstAnswer::Unavailable
+                        };
+                        worker_answer.store(answer as u8, Ordering::SeqCst);
+                    }
+                    match outcome {
                         PollOutcome::Updated => {
                             debug!("cloud frame updated");
                             backoff.reset();
@@ -152,6 +203,7 @@ pub(super) fn spawn_cloud_worker(
             next: now,
         },
         owed: false,
+        answer,
         _thread: thread,
     }
 }

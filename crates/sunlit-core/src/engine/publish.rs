@@ -100,7 +100,7 @@ impl Engine {
         // month, and would otherwise find the old month's floor ready.
         self.sync_month();
         let now = self.clock.elapsed();
-        let cubes_pending = self.renderer.textures_pending(self.params.texture_index);
+        let cubes_pending = self.renderer.textures_pending(&self.params);
         if cubes_pending {
             self.tiles_awaited_since = None;
         }

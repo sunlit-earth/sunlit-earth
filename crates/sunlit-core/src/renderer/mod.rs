@@ -364,21 +364,26 @@ impl Renderer {
 
     /// Whether a cube the current mode needs is on its way, the day side's and
     /// the night side's.
-    pub(crate) fn cubes_waiting(&self, texture_index: i32) -> (bool, bool) {
-        texture_routing::cubes_waiting(self, TextureMode::from_index(texture_index))
+    pub(crate) fn cubes_waiting(&self, params: &SceneParams) -> (bool, bool) {
+        texture_routing::cubes_waiting(
+            self,
+            TextureMode::from_index(params.texture_index),
+            params.draws_clouds(),
+        )
     }
 
     /// Whether every texture the current mode needs is resident or has failed
     /// for good: its cubes, the floor of the month in force, the night floor,
-    /// the mask. The clouds, the Moon and the Milky Way are excluded: they are
+    /// the mask, which the cloud layer reads in every surface mode while it is
+    /// drawn. The clouds, the Moon and the Milky Way are excluded: they are
     /// overlays, not requirements. Without the cube surface only the grid is
     /// ever ready.
-    pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
-        let mode = TextureMode::from_index(texture_index);
+    pub(crate) fn textures_ready(&self, params: &SceneParams) -> bool {
+        let mode = TextureMode::from_index(params.texture_index);
         self.surface
             .as_ref()
             .map_or(mode == TextureMode::Grid, |surface| {
-                surface.readiness(mode).0
+                surface.readiness(mode, params.draws_clouds()).0
             })
     }
 
@@ -386,11 +391,11 @@ impl Renderer {
     ///
     /// Deliberately not the negation of `textures_ready`: without the cube
     /// surface nothing is on its way and only the grid is ready.
-    pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
-        let mode = TextureMode::from_index(texture_index);
+    pub(crate) fn textures_pending(&self, params: &SceneParams) -> bool {
+        let mode = TextureMode::from_index(params.texture_index);
         self.surface
             .as_ref()
-            .is_some_and(|surface| surface.readiness(mode).1)
+            .is_some_and(|surface| surface.readiness(mode, params.draws_clouds()).1)
     }
 
     /// Make `month`, January 0, the month in force: its floor is what

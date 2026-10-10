@@ -9,6 +9,7 @@
 //! `SUNLIT_EARTH_CLOUD_URL`, `SUNLIT_EARTH_CLOUD_POLL_SECS`, and
 //! `SUNLIT_EARTH_CACHE_DIR`.
 
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -293,6 +294,10 @@ pub(crate) struct CloudUpdater {
     image_path: Option<PathBuf>,
     meta_path: Option<PathBuf>,
     cached_meta: Option<CacheMeta>,
+    /// Whether a map has been posted since construction, from the cache or
+    /// the network. A cell because posting reads the updater and changes
+    /// nothing else.
+    posted: Cell<bool>,
 }
 
 /// What a cache entry is named after.
@@ -354,6 +359,7 @@ impl CloudUpdater {
             image_path,
             meta_path,
             cached_meta,
+            posted: Cell::new(false),
         }
     }
 
@@ -368,10 +374,13 @@ impl CloudUpdater {
     ///
     /// A resolution that maps to the variant already in force is a no-op, which
     /// is what lets the worker call this before every poll.
-    pub fn set_resolution(&mut self, resolution: u32) {
+    ///
+    /// Returns whether it moved to another cache entry, whose image it has
+    /// then posted if there was one.
+    pub fn set_resolution(&mut self, resolution: u32) -> bool {
         let variant = cloud_variant(resolution);
         if variant == self.variant {
-            return;
+            return false;
         }
         self.variant = variant;
 
@@ -381,7 +390,7 @@ impl CloudUpdater {
             // nothing: the same image is served either way, and moving the
             // cache entry or dropping the ETag would only cost a re-download of
             // bytes already in hand.
-            return;
+            return false;
         }
         self.url = url;
         info!(url = %self.url, resolution, "cloud variant follows the texture resolution");
@@ -395,6 +404,12 @@ impl CloudUpdater {
         self.meta_path = meta_path;
         self.cached_meta = self.meta_path.as_ref().and_then(|p| load_cache_meta(p));
         self.post_cached();
+        true
+    }
+
+    /// Whether a map has been posted since construction.
+    pub fn has_posted(&self) -> bool {
+        self.posted.get()
     }
 
     /// Decode the cached image, if any, and post it so clouds appear without
@@ -518,6 +533,7 @@ impl CloudUpdater {
             result: Ok(img),
             generation: None,
         });
+        self.posted.set(true);
         (self.notify)();
     }
 }

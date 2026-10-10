@@ -51,6 +51,8 @@ pub struct SceneParams {
     pub spec_intensity: f32,
     pub fresnel_mix: f32,
     pub fresnel_exp: f32,
+    /// Whether the seasonal sea ice is drawn over the ocean.
+    pub sea_ice: bool,
 
     // Clouds
     /// Opacity of a cloud on the day hemisphere, a straight multiplier on the
@@ -150,6 +152,7 @@ impl SceneParams {
             spec_intensity: config.spec_intensity,
             fresnel_mix: config.fresnel_mix,
             fresnel_exp: config.fresnel_exp,
+            sea_ice: config.sea_ice,
             cloud_opacity: config.cloud_opacity,
             cloud_opacity_night: config.cloud_opacity_night,
             cloud_floor: config.cloud_floor,
@@ -225,6 +228,7 @@ impl SceneParams {
         config.spec_intensity = self.spec_intensity;
         config.fresnel_mix = self.fresnel_mix;
         config.fresnel_exp = self.fresnel_exp;
+        config.sea_ice = self.sea_ice;
         config.cloud_opacity = self.cloud_opacity;
         config.cloud_opacity_night = self.cloud_opacity_night;
         config.cloud_floor = self.cloud_floor;
@@ -458,6 +462,7 @@ scene_digest! {
     }
     switched {
         diffuse_shading,
+        sea_ice,
     }
     quantized {
         terminator_width,

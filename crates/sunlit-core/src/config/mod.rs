@@ -235,6 +235,8 @@ pub struct AppConfig {
     pub spec_intensity: f32,
     pub fresnel_mix: f32,
     pub fresnel_exp: f32,
+    /// Whether the seasonal sea ice is drawn.
+    pub sea_ice: bool,
 
     // Clouds
     pub cloud_opacity: f32,
@@ -420,6 +422,7 @@ impl Default for AppConfig {
             spec_intensity: 0.17,
             fresnel_mix: 0.75,
             fresnel_exp: 4.0,
+            sea_ice: true,
             cloud_opacity: 0.85,
             cloud_opacity_night: 0.55,
             cloud_floor: 0.25,
@@ -807,6 +810,7 @@ mod tests {
             spec_intensity: 0.6,
             fresnel_mix: 0.5,
             fresnel_exp: 3.0,
+            sea_ice: false,
             cloud_opacity: 0.6,
             cloud_opacity_night: 0.45,
             cloud_floor: 0.2,
@@ -961,6 +965,7 @@ sky_fov = 111.0
             spec_intensity: 0.8,
             fresnel_mix: 0.7,
             fresnel_exp: 4.0,
+            sea_ice: false,
             cloud_opacity: 0.6,
             cloud_opacity_night: 0.95,
             cloud_floor: 0.15,

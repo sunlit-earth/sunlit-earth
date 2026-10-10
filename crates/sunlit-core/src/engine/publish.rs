@@ -213,15 +213,16 @@ impl Engine {
     }
 
     /// Whether a tile `export`'s render wants in view is on its way, or the
-    /// wanted set in force was computed without it.
+    /// wanted set in force was computed without it, or the sea ice atlas is.
     fn export_pending(&self, export: &WaitingExport) -> bool {
         let Some(surface) = &self.surface else {
             return false;
         };
         let output = tile_output(&self.params, export.width, export.height, true);
-        surface
-            .missing_for(&output, &self.renderer)
-            .is_none_or(|missing| missing > 0)
+        self.renderer.sea_ice_pending()
+            || surface
+                .missing_for(&output, &self.renderer)
+                .is_none_or(|missing| missing > 0)
     }
 
     /// Report a finished publish attempt and settle the debt for it, and for

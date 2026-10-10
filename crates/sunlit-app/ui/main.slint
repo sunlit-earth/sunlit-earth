@@ -43,6 +43,7 @@ export component MainWindow inherits Window {
     out property <length> viewport-height: image-container.height;
     in-out property <float> terminator-width: 0.1;
     in-out property <bool> diffuse-shading: true;
+    in-out property <bool> sea-ice: true;
     in-out property <float> diffuse-floor: 0.70;
     in-out property <float> diffuse-ramp: 0.20;
     in-out property <float> spec-shininess: 100;
@@ -447,6 +448,13 @@ export component MainWindow inherits Window {
                                     model: texture-resolution-options;
                                     current-index <=> root.texture-resolution-index;
                                     selected => { root.texture-resolution-changed(); }
+                                }
+
+                                SettingCheck {
+                                    text: "Sea ice";
+                                    hint: "Draw the sea ice of the date over the polar oceans, from the monthly means of 2010 to 2020.";
+                                    checked <=> root.sea-ice;
+                                    toggled => { root.sliders-changed(); }
                                 }
 
                                 SettingCombo {

@@ -67,7 +67,8 @@ const BUDGET_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 /// The cube surface ([`surface_texture_bytes`]); the cloud overlay, `width` by
 /// `width / 2` of one channel at the setting's own width with a full mip chain,
 /// which is four thirds of its base level; then the two overlays with a width
-/// of their own, one of which the setting moves and one of which it does not.
+/// of their own, one of which the setting moves and one of which it does not;
+/// and the sea ice, which it does not move either.
 /// Saturating, because the renderer takes any width as a cap and a nonsense
 /// one must produce a large budget rather than a panic.
 fn resident_texture_bytes(texture_resolution: u32) -> u64 {
@@ -76,6 +77,7 @@ fn resident_texture_bytes(texture_resolution: u32) -> u64 {
     surface_texture_bytes(texture_resolution)
         .saturating_add(clouds.saturating_mul(4) / 3)
         .saturating_add(MOON_TEXTURE_BYTES)
+        .saturating_add(SEA_ICE_TEXTURE_BYTES)
         .saturating_add(milky_way_texture_bytes(texture_resolution))
 }
 
@@ -132,6 +134,11 @@ fn milky_way_texture_bytes(texture_resolution: u32) -> u64 {
 /// offers, so it is always loaded at its own width and the term does not move
 /// with the setting.
 const MOON_TEXTURE_BYTES: u64 = 6 * 1024 * 1024;
+
+/// Bytes the sea ice costs, at every resolution: its 24 caps of 512 by 512
+/// `R8Unorm` without mips, 6 MiB, and the stand-in of 24 texels the bind
+/// groups hold beside it. The setting does not govern the atlas.
+const SEA_ICE_TEXTURE_BYTES: u64 = 24 * 512 * 512 + 24;
 
 /// Soft budget for committed private memory. Crossing it emits a `warn!`.
 ///
@@ -582,6 +589,7 @@ mod tests {
                 + if width >= 4096 { array } else { 0.0 }
                 + chain(width, width / 2, 1.0)
                 + MOON_TEXTURE_BYTES as f64
+                + SEA_ICE_TEXTURE_BYTES as f64
                 + chain(width.min(4096), width.min(4096) / 2, 4.0);
             approx::assert_relative_eq!(
                 resident_texture_bytes(width) as f64,

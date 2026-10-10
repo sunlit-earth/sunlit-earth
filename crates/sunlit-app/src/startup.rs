@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::info;
+use tracing::{info, warn};
 
 use sunlit_core::assets::cloud_fetcher;
 use sunlit_core::assets::cloud_source::HttpCloudSource;
@@ -33,14 +33,15 @@ const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 
 /// What the textures directory holds for the engine.
 pub(crate) struct ResolvedTextures {
-    /// The Moon's and the Milky Way's paths, in slot order after the grid.
+    /// The Moon's, the Milky Way's and the sea ice atlas's paths, in slot
+    /// order after the grid.
     pub(crate) paths: Vec<Option<PathBuf>>,
     /// The cube faces, which the globe is drawn from when every one is there.
     pub(crate) cube: CubeTextures,
 }
 
-/// Resolve the Moon's and the Milky Way's paths and the cube faces from the
-/// textures directory.
+/// Resolve the Moon's, the Milky Way's and the sea ice atlas's paths and the
+/// cube faces from the textures directory.
 ///
 /// The paths are in slot order after the grid, which is what the renderer's
 /// `SlotLayout` expects: a path missing from disk is `None` and its slot stays
@@ -55,6 +56,7 @@ pub(crate) fn resolve_textures(cli_dir: Option<&std::path::Path>) -> ResolvedTex
     let paths = vec![
         pick("lroc_color_poles_1k.jxl"),
         pick("milkyway_2020_4k.jxl"),
+        pick("sea_ice_2010_2020.jxl"),
     ];
     let cube = dir
         .as_deref()
@@ -64,10 +66,14 @@ pub(crate) fn resolve_textures(cli_dir: Option<&std::path::Path>) -> ResolvedTex
         textures_dir = ?dir,
         moon = ?paths[0],
         milky_way = ?paths[1],
+        sea_ice = ?paths[2],
         cube_files = cube.found(),
         cube_complete = cube.is_complete(),
         "resolved texture paths"
     );
+    if paths[2].is_none() {
+        warn!("no sea ice atlas in the textures directory; the globe is drawn without sea ice");
+    }
     ResolvedTextures { paths, cube }
 }
 

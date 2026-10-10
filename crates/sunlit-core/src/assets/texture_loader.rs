@@ -151,6 +151,23 @@ pub fn load_capped(path: &Path, max_width: u32) -> Result<DecodedImage, String> 
     Ok(img)
 }
 
+/// Load and decode a one-channel image exactly as the file stores it: no
+/// halving and no orientation, for a map that is not equirectangular.
+///
+/// A color image is reduced to its luma, which for the gray images this is
+/// meant for is the gray itself.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
+pub fn load_red(path: &Path) -> Result<DecodedImage, String> {
+    let img = open(path)?.into_luma8();
+    let (width, height) = img.dimensions();
+    Ok(DecodedImage {
+        pixels: Pixels::new(img.into_raw()),
+        width,
+        height,
+        channels: Channels::Red,
+    })
+}
+
 /// How many halvings take `width` down to at most `target`.
 ///
 /// Zero when the source is already small enough. A target of zero stops at
@@ -167,14 +184,7 @@ fn halvings_to(width: u32, target: u32) -> u32 {
 
 /// Decode an image file to RGBA8 exactly as the file stores it.
 fn decode(path: &Path) -> Result<DecodedImage, String> {
-    let mut reader = image::ImageReader::open(path)
-        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
-    reader.no_limits();
-    let img = reader
-        .decode()
-        .map_err(|e| format!("Failed to decode {}: {e}", path.display()))?
-        .into_rgba8();
-
+    let img = open(path)?.into_rgba8();
     let (width, height) = img.dimensions();
     Ok(DecodedImage {
         pixels: Pixels::new(img.into_raw()),
@@ -182,6 +192,16 @@ fn decode(path: &Path) -> Result<DecodedImage, String> {
         height,
         channels: Channels::Rgba,
     })
+}
+
+/// Decode an image file in whatever layout it stores.
+fn open(path: &Path) -> Result<image::DynamicImage, String> {
+    let mut reader = image::ImageReader::open(path)
+        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    reader.no_limits();
+    reader
+        .decode()
+        .map_err(|e| format!("Failed to decode {}: {e}", path.display()))
 }
 
 /// Turn a standard equirectangular map into the sphere's UV layout.

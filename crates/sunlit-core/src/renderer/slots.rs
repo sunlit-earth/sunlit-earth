@@ -8,6 +8,9 @@
 const MOON_SLOT: usize = 1;
 /// Texture slot index for the Milky Way panorama (JXL).
 const MILKY_WAY_SLOT: usize = 2;
+/// Texture slot index for the sea ice atlas (JXL), which the renderer holds as
+/// an array of caps rather than as one flat texture.
+const SEA_ICE_SLOT: usize = 3;
 
 /// Display names of the texture modes, in combo box order. The index into this
 /// array is `SceneParams::texture_index`.
@@ -45,8 +48,8 @@ impl TextureMode {
 /// Where each texture sits in `texture_slots`.
 ///
 /// Slot 0 is the procedural grid, always loaded; then one slot per file-backed
-/// path, in the order the paths arrive, the Moon and the Milky Way; then the
-/// cloud overlay, which comes from the fetcher rather than from a file and is
+/// path, in the order the paths arrive, the Moon, the Milky Way and the sea
+/// ice; then the cloud overlay, which comes from the fetcher rather than from a file and is
 /// therefore last. Deriving the cloud slot from the number of paths rather than
 /// naming a constant is what lets a file-backed texture be added without moving
 /// it.
@@ -80,6 +83,11 @@ impl SlotLayout {
         self.overlay(MILKY_WAY_SLOT)
     }
 
+    /// The sea ice atlas's slot, in a layout that has one.
+    pub fn sea_ice(self) -> Option<usize> {
+        self.overlay(SEA_ICE_SLOT)
+    }
+
     /// An overlay's own file-backed slot, when this layout reaches that far.
     ///
     /// A configuration with fewer file-backed paths than production's is a
@@ -97,7 +105,12 @@ impl SlotLayout {
 /// The allocator report the memory report is built from names allocations by
 /// their GPU label, so a row that reads `moon_texture` is worth more than one
 /// that reads `texture_slot_1`.
-pub(super) const SLOT_LABELS: [&str; 3] = ["grid_texture", "moon_texture", "milky_way_texture"];
+pub(super) const SLOT_LABELS: [&str; 4] = [
+    "grid_texture",
+    "moon_texture",
+    "milky_way_texture",
+    "sea_ice_texture",
+];
 
 #[cfg(test)]
 mod tests {
@@ -133,27 +146,32 @@ mod tests {
         }
     }
 
-    /// Production's layout: the grid, the Moon, the Milky Way, and the cloud
-    /// overlay last.
+    /// Production's layout: the grid, the Moon, the Milky Way, the sea ice,
+    /// and the cloud overlay last.
     #[test]
     fn the_production_layout_puts_the_clouds_after_the_overlays() {
-        let layout = SlotLayout::new(2);
-        assert_eq!(layout.count(), 4);
-        assert_eq!(layout.clouds(), 3);
+        let layout = SlotLayout::new(3);
+        assert_eq!(layout.count(), 5);
+        assert_eq!(layout.clouds(), 4);
         assert_eq!(layout.moon(), Some(MOON_SLOT));
         assert_eq!(layout.milky_way(), Some(MILKY_WAY_SLOT));
+        assert_eq!(layout.sea_ice(), Some(SEA_ICE_SLOT));
     }
 
     /// A layout too short for an overlay reports no slot for it rather than
     /// one that belongs to something else.
     #[test]
     fn a_layout_without_an_overlay_says_so() {
+        assert_eq!(SlotLayout::new(2).sea_ice(), None);
         assert_eq!(SlotLayout::new(1).milky_way(), None);
         assert_eq!(SlotLayout::new(1).moon(), Some(MOON_SLOT));
         assert_eq!(SlotLayout::new(0).moon(), None);
         for file_backed in 0..7 {
             let layout = SlotLayout::new(file_backed);
-            for slot in [layout.moon(), layout.milky_way()].into_iter().flatten() {
+            for slot in [layout.moon(), layout.milky_way(), layout.sea_ice()]
+                .into_iter()
+                .flatten()
+            {
                 assert!(
                     slot < layout.clouds(),
                     "{file_backed} paths: overlay slot {slot} is the cloud slot"

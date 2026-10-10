@@ -663,7 +663,8 @@ impl Engine {
     }
 
     /// Derive the month in force from the date, as the sky state is, and move
-    /// the surface to it when it changed.
+    /// the surface to it when it changed; and the sea ice's two months, which
+    /// the frame state compares on its own.
     ///
     /// Outside the digest like the sun direction: the month is not a
     /// parameter anyone sets but a consequence of the date. A floor that
@@ -673,10 +674,12 @@ impl Engine {
     /// draws the new month and asks for its tiles; a publish that is owed
     /// and still waiting returns without drawing, and nothing else would.
     fn sync_month(&mut self) {
+        let (date, now) = (&self.params.datetime, self.clock.now_utc());
+        self.renderer
+            .set_ice_blend(crate::scene::sea_ice::ice_blend(date, now));
         let Some(surface) = &mut self.surface else {
             return;
         };
-        let (date, now) = (&self.params.datetime, self.clock.now_utc());
         let month = crate::scene::month::month_in_force(date, now);
         let ahead = crate::scene::month::month_ahead(date, now);
         if surface.set_month(month, ahead, &mut self.renderer) {

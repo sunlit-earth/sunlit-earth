@@ -11,7 +11,7 @@
 use super::datetime::{self, hour_float_to_hms};
 use super::sun::DateTimeInput;
 
-const SECONDS_PER_DAY: f64 = 86_400.0;
+pub(super) const SECONDS_PER_DAY: f64 = 86_400.0;
 
 /// How near a hand-over the date has to be for the month across it to be read
 /// ahead, in seconds: a day.
@@ -68,13 +68,21 @@ impl CivilTime {
 }
 
 /// The days in `month` (1 to 12) of `year`.
-fn days_in_month(year: i32, month: u8) -> u8 {
+pub(super) fn days_in_month(year: i32, month: u8) -> u8 {
     match month {
         2 if datetime::is_leap_year(year) => 29,
         2 => 28,
         4 | 6 | 9 | 11 => 30,
         _ => 31,
     }
+}
+
+/// How far into its calendar month `at` is, in seconds.
+pub(super) fn seconds_into_month(at: &CivilTime) -> f64 {
+    f64::from(at.day.max(1) - 1) * SECONDS_PER_DAY
+        + f64::from(at.hour) * 3600.0
+        + f64::from(at.minute) * 60.0
+        + at.second
 }
 
 /// Half the length of calendar month `month` (1 to 12) of `year`, in seconds,
@@ -96,10 +104,7 @@ struct HandOvers {
 impl HandOvers {
     fn around(at: &CivilTime) -> Self {
         let month = at.month.clamp(1, 12);
-        let into_month = f64::from(at.day.max(1) - 1) * SECONDS_PER_DAY
-            + f64::from(at.hour) * 3600.0
-            + f64::from(at.minute) * 60.0
-            + at.second;
+        let into_month = seconds_into_month(at);
         let length = f64::from(days_in_month(at.year, month)) * SECONDS_PER_DAY;
         let half = length / 2.0;
         let (previous_year, previous) = if month == 1 {

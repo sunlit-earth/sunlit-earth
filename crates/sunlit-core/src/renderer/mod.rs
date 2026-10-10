@@ -8,6 +8,7 @@ mod frame;
 mod gpu_setup;
 mod render_pass;
 pub mod residency;
+mod sea_ice;
 mod sizing;
 mod slots;
 mod surface;
@@ -33,6 +34,7 @@ use crate::assets::mailbox::TextureMailbox;
 use crate::assets::tiles::{Geometry, Pack, PackKind};
 use crate::memory_report::{ExpectedTexture, MemoryReport};
 use crate::params::SceneParams;
+use crate::scene::sea_ice::IceBlend;
 use crate::scene::sky::{PlanetKind, SkyState};
 
 use frame::{FrameState, build_frame_state};
@@ -63,7 +65,7 @@ pub(crate) struct RendererConfig {
     pub width: u32,
     pub height: u32,
     /// One entry per file-backed texture slot, in slot order after the grid:
-    /// the Moon, then the Milky Way.
+    /// the Moon, the Milky Way, then the sea ice atlas.
     pub texture_paths: Vec<Option<PathBuf>>,
     /// Width the file-backed textures are loaded at, as a cap: a source
     /// narrower than this is loaded as it is.
@@ -154,6 +156,16 @@ pub(crate) struct Renderer {
     /// surface's: one black layer, and one cell per face that draws the floor.
     dummy_tile_view: wgpu::TextureView,
     dummy_page_view: wgpu::TextureView,
+    /// The 24 layers of no ice binding 9 holds in every group but the
+    /// surface's, and in the surface's until the atlas is resident.
+    dummy_sea_ice_view: wgpu::TextureView,
+    /// The sea ice caps, once the atlas is resident.
+    sea_ice_view: Option<wgpu::TextureView>,
+    /// The two monthly means of the ice the date falls between.
+    ice_blend: IceBlend,
+    /// Whether the last frame wanted the sea ice: the setting is on and the
+    /// mode draws the day side of the cube surface.
+    sea_ice_wanted: bool,
     /// Bind group for the cloud texture (populated after async load completes).
     cloud_bind_group: Option<wgpu::BindGroup>,
     /// Stored texture view for the cloud texture, used to rebuild the bind group.
@@ -286,6 +298,7 @@ impl Renderer {
             ("dummy_cube", 6, COLOR_FORMAT),
             ("dummy_tile_array", 1, wgpu::TextureFormat::Rgba8Unorm),
             ("dummy_page_table", 6, wgpu::TextureFormat::R32Uint),
+            ("dummy_sea_ice", sea_ice::LAYERS, sea_ice::FORMAT),
         ] {
             expected.push(ExpectedTexture {
                 label: label.to_owned(),
@@ -361,15 +374,27 @@ impl Renderer {
 
     /// Whether every texture the current mode needs is resident or has failed
     /// for good: its cubes, the floor of the month in force, the night floor,
-    /// the mask. The clouds, the Moon and the Milky Way are excluded: they are
-    /// overlays, not requirements. Without the cube surface only the grid is
-    /// ever ready.
+    /// the mask, and the sea ice while it is wanted. The clouds, the Moon and
+    /// the Milky Way are excluded: they are overlays, not requirements.
+    /// Without the cube surface only the grid is ever ready.
     pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
         let mode = TextureMode::from_index(texture_index);
         self.surface
             .as_ref()
             .map_or(mode == TextureMode::Grid, |surface| {
                 surface.readiness(mode).0
+            })
+            && !self.sea_ice_pending()
+    }
+
+    /// Whether the sea ice is wanted and its atlas may still come: it has a
+    /// file, it is not resident, and its decode has not failed. An export
+    /// waits for it as it does for its tiles.
+    pub(crate) fn sea_ice_pending(&self) -> bool {
+        self.sea_ice_wanted
+            && self.layout().sea_ice().is_some_and(|slot| {
+                let slot = &self.texture_slots[slot];
+                slot.source_path.is_some() && slot.texture.is_none()
             })
     }
 
@@ -382,6 +407,7 @@ impl Renderer {
         self.surface
             .as_ref()
             .is_some_and(|surface| surface.readiness(mode).1)
+            || self.sea_ice_pending()
     }
 
     /// Make `month`, January 0, the month in force: its floor is what
@@ -403,6 +429,12 @@ impl Renderer {
         if floor || table {
             self.texture_dirty = true;
         }
+    }
+
+    /// Draw the sea ice between the two monthly means `blend` names. Outside
+    /// the digest, like the month: the frame state compares it.
+    pub(crate) fn set_ice_blend(&mut self, blend: IceBlend) {
+        self.ice_blend = blend;
     }
 
     /// Make `layer` resident from its pack, beside the floors of the other
@@ -574,6 +606,9 @@ impl Renderer {
     /// the night floor each alone, and the two with the mask for blend mode,
     /// with the dummy cube for a mask that is not there, each with the page
     /// table and the tile array, or the array's dummy until the first tile.
+    /// The day floor alone has the mask too, which is where its sea ice may
+    /// be drawn, and both groups that draw the day have the sea ice caps once
+    /// they are resident.
     fn rebuild_surface_groups(&mut self) {
         let Some(surface) = &self.surface else {
             return;
@@ -591,12 +626,22 @@ impl Renderer {
         let day = surface.drawn_day().map(|cube| &cube.view);
         let night = surface.night.as_ref().map(|cube| &cube.view);
         let mask = surface.mask.as_ref().map_or(dummy, |cube| &cube.view);
-        let group = |cubes, label| self.cube_bind_group(cubes, tiles, label);
-        let day_group = day.map(|day| group([day, dummy, dummy], "surface_day"));
-        let night_group = night.map(|night| group([night, dummy, dummy], "surface_night"));
+        let sea_ice = self
+            .sea_ice_view
+            .as_ref()
+            .unwrap_or(&self.dummy_sea_ice_view);
+        let group = |cubes, sea_ice, label| self.cube_bind_group(cubes, tiles, sea_ice, label);
+        let day_group = day.map(|day| group([day, dummy, mask], sea_ice, "surface_day"));
+        let night_group = night.map(|night| {
+            group(
+                [night, dummy, dummy],
+                &self.dummy_sea_ice_view,
+                "surface_night",
+            )
+        });
         let blend_group = day
             .zip(night)
-            .map(|(day, night)| group([day, night, mask], "surface_blend"));
+            .map(|(day, night)| group([day, night, mask], sea_ice, "surface_blend"));
         let surface = self.surface.as_mut().expect("checked above");
         surface.day_group = day_group;
         surface.night_group = night_group;
@@ -615,17 +660,19 @@ impl Renderer {
                 sampler: &self.sampler,
                 cubes: [dummy, dummy, dummy],
                 tiles: [&self.dummy_tile_view, &self.dummy_page_view],
+                sea_ice: &self.dummy_sea_ice_view,
             },
             label,
         )
     }
 
     /// A bind group that draws the globe from `cubes`, refined through `tiles`,
-    /// the tile array and the page table.
+    /// the tile array and the page table, with `sea_ice`'s caps.
     fn cube_bind_group(
         &self,
         cubes: [&wgpu::TextureView; 3],
         tiles: [&wgpu::TextureView; 2],
+        sea_ice: &wgpu::TextureView,
         label: &str,
     ) -> wgpu::BindGroup {
         create_bind_group(
@@ -637,6 +684,7 @@ impl Renderer {
                 sampler: &self.surface_sampler,
                 cubes,
                 tiles,
+                sea_ice,
             },
             label,
         )
@@ -677,16 +725,26 @@ impl Renderer {
         }
 
         let received_any = std::mem::take(&mut self.texture_dirty);
-        let current_state = build_frame_state(params, self.render_width, self.render_height, sky);
+        let current_state = build_frame_state(
+            params,
+            self.render_width,
+            self.render_height,
+            sky,
+            self.ice_blend,
+        );
 
-        let (resolved, use_blend) =
-            texture_routing::resolve_textures(self, TextureMode::from_index(params.texture_index));
+        let mode = TextureMode::from_index(params.texture_index);
+        let (resolved, use_blend) = texture_routing::resolve_textures(self, mode);
+        self.sea_ice_wanted = params.sea_ice
+            && self.surface.is_some()
+            && matches!(mode, TextureMode::Day | TextureMode::Blend);
 
         // An overlay's texture is loaded when the overlay is wanted and not
         // before, which is what keeps a switched-off one from costing a decode.
         for slot in [
             (params.moon_brightness > 0.0).then(|| self.layout().moon()),
             (params.milky_way_intensity > 0.0).then(|| self.layout().milky_way()),
+            self.sea_ice_wanted.then(|| self.layout().sea_ice()),
         ] {
             if let Some(Some(slot)) = slot {
                 maybe_spawn_texture_load(self, slot);
@@ -702,6 +760,10 @@ impl Renderer {
             use_blend,
             night_alone: resolved.draws_the_night_alone(),
             tiles: self.tile_uniforms(),
+            ice: render_pass::IceInputs {
+                drawn: self.sea_ice_view.is_some() && resolved.draws_the_day_surface(),
+                blend: self.ice_blend,
+            },
         });
         self.last_resolved = Some(resolved);
         self.update_planets(sky);

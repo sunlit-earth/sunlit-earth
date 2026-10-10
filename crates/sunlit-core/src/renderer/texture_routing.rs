@@ -15,6 +15,12 @@ impl ResolvedTexture {
     pub(super) fn draws_the_night_alone(&self) -> bool {
         matches!(self, Self::Surface(SurfaceGroup::Night))
     }
+
+    /// Whether the bind group draws the day side of the cube surface, which is
+    /// where the sea ice is drawn.
+    pub(super) fn draws_the_day_surface(&self) -> bool {
+        matches!(self, Self::Surface(SurfaceGroup::Day | SurfaceGroup::Blend))
+    }
 }
 
 /// Determine the bind group and blend mode for the current frame.

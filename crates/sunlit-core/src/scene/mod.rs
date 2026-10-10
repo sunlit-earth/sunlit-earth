@@ -4,6 +4,7 @@ pub mod disk_occlusion;
 pub mod limb_extinction;
 pub mod month;
 pub mod moon;
+pub mod sea_ice;
 pub mod sky;
 pub mod sky_lens;
 pub mod sun;

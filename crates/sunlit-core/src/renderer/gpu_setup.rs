@@ -5,6 +5,7 @@ use crate::assets::stars;
 use crate::geometry::grid_texture;
 use crate::geometry::sphere::{self, Vertex};
 
+use super::sea_ice;
 use super::slots::SLOT_LABELS;
 use super::surface::{self, SurfaceFormats, SurfaceSet};
 use super::textures::{Bindings, TextureSlot, create_bind_group};
@@ -206,6 +207,7 @@ pub(super) fn create_renderer(
                 },
                 count: None,
             },
+            texture_entry(9, wgpu::TextureViewDimension::D2Array),
         ],
     });
 
@@ -252,6 +254,7 @@ pub(super) fn create_renderer(
     );
     let dummy_texture_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let [dummy_tile_view, dummy_page_view] = dummy_tiles(&device, &queue);
+    let dummy_sea_ice_view = sea_ice::stand_in(&device, &queue);
 
     // The grid, always loaded at slot 0, is a cube the globe reads through the
     // same direction and sampler as the surface.
@@ -276,6 +279,7 @@ pub(super) fn create_renderer(
             sampler: &surface_sampler,
             cubes: [&grid_tex_view, &dummy_cube_view, &dummy_cube_view],
             tiles: [&dummy_tile_view, &dummy_page_view],
+            sea_ice: &dummy_sea_ice_view,
         },
         "grid_bind_group",
     );
@@ -383,6 +387,14 @@ pub(super) fn create_renderer(
         dummy_cube_view,
         dummy_tile_view,
         dummy_page_view,
+        dummy_sea_ice_view,
+        sea_ice_view: None,
+        ice_blend: crate::scene::sea_ice::IceBlend {
+            month_a: 0,
+            month_b: 1,
+            weight: 0.0,
+        },
+        sea_ice_wanted: false,
         cloud_bind_group: None,
         cloud_texture_view: None,
     }

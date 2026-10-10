@@ -49,6 +49,10 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
             continue;
         }
         applied_any = true;
+        if Some(msg.slot_index) == res.layout().sea_ice() {
+            install_sea_ice(res, msg.slot_index, msg.result);
+            continue;
+        }
         match msg.result {
             Ok(img) => {
                 let tex = create_mipmapped_texture(
@@ -94,6 +98,43 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
     applied_any
 }
 
+/// Make the decoded sea ice atlas resident as its array of caps, and put it in
+/// the surface's bind groups.
+///
+/// The decoded atlas is dropped here, once its layers are uploaded.
+fn install_sea_ice(
+    res: &mut super::Renderer,
+    slot_index: usize,
+    result: Result<texture_loader::DecodedImage, String>,
+) {
+    let texture = result.and_then(|atlas| {
+        super::sea_ice::array_from_atlas(
+            &res.device,
+            &res.queue,
+            &res.slot_label(slot_index),
+            &atlas,
+        )
+    });
+    let slot = &mut res.texture_slots[slot_index];
+    slot.loading = false;
+    match texture {
+        Ok(texture) => {
+            let _ = res.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+            info!(slot = slot_index, "sea ice resident");
+            res.sea_ice_view = Some(super::sea_ice::array_view(&texture));
+            slot.texture = Some(texture);
+            res.rebuild_surface_groups();
+        }
+        Err(e) => {
+            error!(slot = slot_index, error = %e, "sea ice atlas failed to load");
+            slot.source_path = None;
+        }
+    }
+}
+
 /// Whether a decoded texture is still wanted.
 ///
 /// A post with no generation is from a producer the resolution setting does not
@@ -121,8 +162,9 @@ pub(super) fn purge_file_backed_slots(res: &mut super::Renderer) {
     res.last_resolved = None;
     res.last_state = None;
 
-    for slot in &mut res.texture_slots {
-        if slot.source_path.is_none() {
+    let sea_ice = res.layout().sea_ice();
+    for (index, slot) in res.texture_slots.iter_mut().enumerate() {
+        if slot.source_path.is_none() || Some(index) == sea_ice {
             continue;
         }
         slot.bind_group = None;
@@ -155,7 +197,7 @@ pub(super) fn maybe_create_cloud_bind_group(res: &mut super::Renderer) {
 pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: usize) {
     let slot = &res.texture_slots[slot_index];
 
-    if slot.bind_group.is_some() || slot.loading || slot.source_path.is_none() {
+    if slot.texture.is_some() || slot.loading || slot.source_path.is_none() {
         return;
     }
 
@@ -169,11 +211,17 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
     let notify = std::sync::Arc::clone(&res.notify);
     let target_width = res.texture_resolution;
     let generation = res.texture_generation;
+    let atlas = Some(slot_index) == res.layout().sea_ice();
 
     std::thread::spawn(move || {
         texture_loader::register_jxl_hook();
         let start = std::time::Instant::now();
-        let result = texture_loader::load_capped(&path, target_width).inspect(|img| {
+        let result = if atlas {
+            texture_loader::load_red(&path)
+        } else {
+            texture_loader::load_capped(&path, target_width)
+        };
+        let result = result.inspect(|img| {
             info!(
                 width = img.width,
                 height = img.height,
@@ -267,7 +315,7 @@ pub(super) fn create_mipmapped_texture(
 /// globe from a cube, the grid's or the surface's, has the dummy 1x1 texture as
 /// its flat texture and the surface sampler. Every group but the surface's has
 /// the dummy tile array and the dummy page table, which draws the floor
-/// everywhere.
+/// everywhere, and the sea ice's stand-in.
 pub(super) struct Bindings<'a> {
     /// Binding 1.
     pub texture: &'a wgpu::TextureView,
@@ -277,6 +325,8 @@ pub(super) struct Bindings<'a> {
     pub cubes: [&'a wgpu::TextureView; 3],
     /// Bindings 7 and 8: the tile array and the page table.
     pub tiles: [&'a wgpu::TextureView; 2],
+    /// Binding 9: the sea ice caps, or their stand-in.
+    pub sea_ice: &'a wgpu::TextureView,
 }
 
 /// Create a bind group of the shared layout.
@@ -325,6 +375,10 @@ pub(super) fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 8,
                 resource: view(page_table),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: view(bindings.sea_ice),
             },
         ],
     })

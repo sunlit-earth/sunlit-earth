@@ -2,7 +2,7 @@ struct Uniforms {
     mvp: mat4x4<f32>,              // 64 bytes, offset 0
     sun_dir: vec3<f32>,            // 12 bytes, offset 64
     terminator_width: f32,         // 4 bytes, offset 76
-    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 2: night alone)
+    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 2: night alone, bit 3: sea ice)
     diffuse_floor: f32,            // 4 bytes, offset 84
     diffuse_ramp: f32,             // 4 bytes, offset 88
     _pad: f32,                     // 4 bytes, offset 92
@@ -70,8 +70,12 @@ struct Uniforms {
     night_ocean: u32,                 // 4 bytes, offset 540
     tile_texels: f32,                 // 4 bytes, offset 544
     tile_gutter: f32,                 // 4 bytes, offset 548
-    _pad9: f32,                       // 4 bytes, offset 552
-    _pad10: f32,                      // 4 bytes, offset 556
+    ice_months: u32,                  // 4 bytes, offset 552
+    ice_weight: f32,                  // 4 bytes, offset 556
+    ice_north: u32,                   // 4 bytes, offset 560
+    ice_south: u32,                   // 4 bytes, offset 564
+    _pad9: f32,                       // 4 bytes, offset 568
+    _pad10: f32,                      // 4 bytes, offset 572
 };
 
 @group(0) @binding(0)
@@ -105,6 +109,12 @@ var tile_array: texture_2d_array<f32>;
 
 @group(0) @binding(8)
 var page_table: texture_2d_array<u32>;
+
+// The sea ice concentration of each month and hemisphere, 0 to 1: layer
+// `2 * month + cap`, January 0 and cap 0 the north's, each a polar cap of the
+// spherical Lambert azimuthal equal-area projection (`sea_ice_cap`).
+@group(0) @binding(9)
+var sea_ice_caps: texture_2d_array<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -464,6 +474,220 @@ fn refined(entry: u32, base: vec3<f32>, ocean: u32, at: FacePoint) -> vec3<f32> 
     ).rgb;
 }
 
+// ---------------------------------------------------------------------------
+// Sea ice
+//
+// The monthly mean concentration is a 25 km field. It is read smoothly, mixed
+// between the two months the date falls between, and thresholded against a
+// fixed cellular noise, so the coarse field reads as floes and leads whose
+// area matches the data where the floes are resolved, and as a hard edge
+// where they are not. `docs/rendering.md` has the reasoning and the tuning.
+// ---------------------------------------------------------------------------
+
+/// Bit 3 of `uniforms.flags`: the sea ice is drawn.
+const FLAG_SEA_ICE: u32 = 8u;
+
+/// Half the side of a cap in sphere radii, `scene::sea_ice::RHO_MAX`.
+const ICE_RHO_MAX: f32 = 0.923497;
+
+/// The sine of the lowest latitude the caps are read at, 33 degrees, south of
+/// the Bohai Sea's ice.
+const ICE_LOWEST_SINE: f32 = 0.55;
+
+/// The concentration below which nothing is ice, the products' 15%.
+const ICE_THRESHOLD: f32 = 0.15;
+
+/// The remapped concentration the edge of the pack is drawn at where no floe
+/// is resolved.
+const ICE_EDGE_CONTOUR: f32 = 0.1;
+
+/// How bright ice of the lowest concentration drawn is against close pack,
+/// which is a little darker for being thinner and wetter.
+const ICE_THIN_SHADE: f32 = 0.9;
+
+/// The spacing of the two octaves' cells, in kilometers.
+const ICE_FLOE_KM: f32 = 25.0;
+const ICE_FLOE_SMALL_KM: f32 = 5.0;
+
+/// The large octave's share of the threshold where the ice is loose and where
+/// it is close; the small one has the rest.
+const ICE_LARGE_SHARE_OPEN: f32 = 0.8;
+const ICE_LARGE_SHARE_CLOSE: f32 = 0.3;
+
+/// Where a unit normal falls on the caps: the layer offset of its cap, 0 the
+/// north's, and its coordinates 0 to 1 across the cap. Mirrored by
+/// `scene::sea_ice::cap_coordinates`.
+struct IceCap {
+    cap: u32,
+    uv: vec2<f32>,
+}
+
+fn sea_ice_cap(n: vec3<f32>) -> IceCap {
+    let south = n.y < 0.0;
+    let k = sqrt(2.0 / (1.0 + abs(n.y)));
+    let p = vec2<f32>(k * n.x, select(-k * n.z, k * n.z, south));
+    return IceCap(
+        select(0u, 1u, south),
+        vec2<f32>(0.5 + p.x / (2.0 * ICE_RHO_MAX), 0.5 - p.y / (2.0 * ICE_RHO_MAX)),
+    );
+}
+
+/// One layer read through a cubic B-spline, built from four bilinear taps.
+/// `textureSampleLevel` is what lets the cap's choice be made per fragment.
+fn ice_bspline(uv: vec2<f32>, layer: u32) -> f32 {
+    let size = vec2<f32>(textureDimensions(sea_ice_caps));
+    let t = uv * size - 0.5;
+    let i = floor(t);
+    let f = t - i;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let c0 = (i - 0.5 + w1 / g0) / size;
+    let c1 = (i + 1.5 + w3 / g1) / size;
+    let s00 = textureSampleLevel(sea_ice_caps, sphere_sampler, vec2<f32>(c0.x, c0.y), layer, 0.0).r;
+    let s10 = textureSampleLevel(sea_ice_caps, sphere_sampler, vec2<f32>(c1.x, c0.y), layer, 0.0).r;
+    let s01 = textureSampleLevel(sea_ice_caps, sphere_sampler, vec2<f32>(c0.x, c1.y), layer, 0.0).r;
+    let s11 = textureSampleLevel(sea_ice_caps, sphere_sampler, vec2<f32>(c1.x, c1.y), layer, 0.0).r;
+    return g0.y * (g0.x * s00 + g1.x * s10) + g1.y * (g0.x * s01 + g1.x * s11);
+}
+
+/// The concentration at a normal, mixed between the date's two months and
+/// remapped so that the products' 15% is 0.
+fn ice_concentration(n: vec3<f32>) -> f32 {
+    if abs(n.y) < ICE_LOWEST_SINE {
+        return 0.0;
+    }
+    let at = sea_ice_cap(n);
+    let month_a = uniforms.ice_months & 0xFFFFu;
+    let month_b = uniforms.ice_months >> 16u;
+    let a = ice_bspline(at.uv, 2u * month_a + at.cap);
+    let b = ice_bspline(at.uv, 2u * month_b + at.cap);
+    let c = mix(a, b, uniforms.ice_weight);
+    return saturate((c - ICE_THRESHOLD) / (1.0 - ICE_THRESHOLD));
+}
+
+/// The PCG2D hash of Jarzynski and Olano.
+fn ice_hash(cell: vec2<i32>) -> vec2<u32> {
+    var v = bitcast<vec2<u32>>(cell) * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v ^= v >> vec2<u32>(16u);
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v ^= v >> vec2<u32>(16u);
+    return v;
+}
+
+/// One octave of cellular noise at `p`, in cells: the uniform random values of
+/// the nearest feature point's cell and of the second nearest's, and how far
+/// `p` is from the edge between the two, in cells.
+struct IceCells {
+    near: f32,
+    far: f32,
+    edge: f32,
+}
+
+fn ice_cells(p: vec2<f32>) -> IceCells {
+    let base = vec2<i32>(floor(p));
+    var f1 = 8.0;
+    var f2 = 8.0;
+    var near = 0.0;
+    var far = 0.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let cell = base + vec2<i32>(x, y);
+            let h = ice_hash(cell);
+            let jitter = vec2<f32>(h >> vec2<u32>(16u)) / 65536.0;
+            let value = f32((h.x & 0xFFFFu) | ((h.y & 0xFFu) << 16u)) / 16777216.0;
+            let d = length(vec2<f32>(cell) + jitter - p);
+            if d < f1 {
+                f2 = f1;
+                far = near;
+                f1 = d;
+                near = value;
+            } else if d < f2 {
+                f2 = d;
+                far = value;
+            }
+        }
+    }
+    return IceCells(near, far, 0.5 * (f2 - f1));
+}
+
+/// The distribution of `a * u + b * v` for two independent uniforms with
+/// `a >= b` and `a + b = 1`, which takes the mix of two octaves back to a
+/// uniform value.
+fn ice_uniform_mix(x: f32, a: f32) -> f32 {
+    let b = 1.0 - a;
+    if x < b {
+        return x * x / (2.0 * a * b);
+    }
+    if x <= a {
+        return (x - 0.5 * b) / a;
+    }
+    let r = 1.0 - x;
+    return 1.0 - r * r / (2.0 * a * b);
+}
+
+/// How much of a fragment is sea ice: `c` the remapped concentration,
+/// `c_width` its own footprint, and `pixel_km` the fragment's size on the
+/// ground.
+///
+/// Every cell of the noise has a uniform random threshold, and a fragment is
+/// ice where the concentration is above its cell's, so whole floes come and go
+/// as the concentration falls and the area that is ice is the concentration.
+/// Each octave fades to `ICE_EDGE_CONTOUR` as its cells shrink below a few
+/// pixels, so with neither resolved the ice is a step at that contour,
+/// antialiased over the larger of the two widths.
+fn sea_ice(plane_km: vec2<f32>, c: f32, c_width: f32, pixel_km: f32) -> f32 {
+    if c <= 0.0 {
+        return 0.0;
+    }
+    let large = saturate((ICE_FLOE_KM / pixel_km - 2.0) * 0.5);
+    let small = saturate((ICE_FLOE_SMALL_KM / pixel_km - 2.0) * 0.5);
+    let f = max(c_width, 1e-4);
+    if large <= 0.0 {
+        return smoothstep(ICE_EDGE_CONTOUR - f, ICE_EDGE_CONTOUR + f, c);
+    }
+    let big = ice_cells(plane_km / ICE_FLOE_KM);
+    // Across a cell edge the two cells' answers are mixed over a pixel.
+    let big_side = saturate(0.5 + big.edge * ICE_FLOE_KM / pixel_km);
+    var fine = IceCells(ICE_EDGE_CONTOUR, ICE_EDGE_CONTOUR, 1.0);
+    if small > 0.0 {
+        fine = ice_cells(plane_km / ICE_FLOE_SMALL_KM + vec2<f32>(17.0));
+    }
+    let small_side = saturate(0.5 + fine.edge * ICE_FLOE_SMALL_KM / pixel_km);
+    let fine_near = mix(ICE_EDGE_CONTOUR, fine.near, small);
+    let fine_far = mix(ICE_EDGE_CONTOUR, fine.far, small);
+    // Loose floes are the large cells and the leads in close pack the small
+    // ones; any share keeps the mix uniform.
+    let a = mix(ICE_LARGE_SHARE_OPEN, ICE_LARGE_SHARE_CLOSE, c);
+    let b = 1.0 - a;
+    let resolved = vec4<f32>(
+        ice_uniform_mix(a * big.near + b * fine_near, max(a, b)),
+        ice_uniform_mix(a * big.near + b * fine_far, max(a, b)),
+        ice_uniform_mix(a * big.far + b * fine_near, max(a, b)),
+        ice_uniform_mix(a * big.far + b * fine_far, max(a, b)),
+    );
+    let t = mix(vec4<f32>(ICE_EDGE_CONTOUR), resolved, large);
+    let ice = smoothstep(t - f, t + f, vec4<f32>(c));
+    return mix(
+        mix(ice.w, ice.z, small_side),
+        mix(ice.y, ice.x, small_side),
+        big_side,
+    );
+}
+
+/// The ice's color at a normal, the hemisphere's for the date.
+fn sea_ice_color(n: vec3<f32>) -> vec3<f32> {
+    return unpack4x8unorm(select(uniforms.ice_north, uniforms.ice_south, n.y < 0.0)).rgb;
+}
+
 /// The cubes are read with `textureSample`, whose implicit derivatives are the
 /// screen derivatives of `w`, and never with `textureSampleGrad`: naga's MSL
 /// writer passes every explicit gradient as `metal::gradient2d`, which Metal
@@ -471,6 +695,9 @@ fn refined(entry: u32, base: vec3<f32>, ocean: u32, at: FacePoint) -> vec3<f32> 
 /// samples and the derivatives stay in the uniform control flow they need;
 /// the page table's choice between the floor and a tile is made per fragment
 /// after them, and a tile is read with explicit gradients from a 2D array.
+///
+/// The day floor drawn alone reads the mask too while the sea ice is drawn,
+/// which is the one thing it uses it for.
 fn globe_surface(in: VertexOutput) -> Surface {
     let single = uniforms.terminator_width < 0.0;
     let w = equi_angular(normalize(in.world_normal));
@@ -481,6 +708,8 @@ fn globe_surface(in: VertexOutput) -> Surface {
     var water = 0.0;
     if !single {
         night_floor = textureSample(night_cube, sphere_sampler, w).rgb;
+    }
+    if !single || (uniforms.flags & FLAG_SEA_ICE) != 0u {
         water = textureSample(water_cube, sphere_sampler, w).r;
     }
 
@@ -492,7 +721,7 @@ fn globe_surface(in: VertexOutput) -> Surface {
         let night_alone = (uniforms.flags & FLAG_NIGHT_ALONE) != 0u;
         let half = select(entry & 0xFFFFu, entry >> 16u, night_alone);
         let ocean = select(uniforms.day_ocean, uniforms.night_ocean, night_alone);
-        return Surface(refined(half, day_floor, ocean, at), vec3<f32>(0.0), 0.0);
+        return Surface(refined(half, day_floor, ocean, at), vec3<f32>(0.0), water);
     }
     return Surface(
         refined(entry & 0xFFFFu, day_floor, uniforms.day_ocean, at),
@@ -504,8 +733,30 @@ fn globe_surface(in: VertexOutput) -> Surface {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let surface = globe_surface(in);
+    let n = normalize(in.world_normal);
+    let n_dx = dpdx(n);
+    let n_dy = dpdy(n);
 
-    var day_rgb = apply_gamma(surface.day, uniforms.day_gamma);
+    // The ice covers what the mask calls water, before the day's color
+    // corrections, so it is lit and corrected like the land around it, and it
+    // takes its share of the water away from the glint and the Fresnel term.
+    var day = surface.day;
+    var water = surface.water;
+    if (uniforms.flags & FLAG_SEA_ICE) != 0u {
+        let c = ice_concentration(n);
+        let c_width = fwidth(c);
+        let pixel_km = max(length(n_dx), length(n_dy)) * EARTH_RADIUS_KM;
+        var ice = 0.0;
+        if c > 0.0 && surface.water > 0.0 {
+            let plane = sea_ice_cap(n).uv * (2.0 * ICE_RHO_MAX);
+            ice = sea_ice(plane * EARTH_RADIUS_KM, c, c_width, pixel_km);
+        }
+        let shade = mix(ICE_THIN_SHADE, 1.0, c);
+        day = mix(day, sea_ice_color(n) * shade, ice * surface.water);
+        water = surface.water * (1.0 - ice);
+    }
+
+    var day_rgb = apply_gamma(day, uniforms.day_gamma);
     day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
 
     // If terminator_width is negative, we're in single-texture mode
@@ -517,7 +768,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var night_rgb = apply_gamma(surface.night, uniforms.night_gamma);
     night_rgb = adjust_saturation(night_rgb, uniforms.night_saturation);
 
-    let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
 
     let result = blend_fragment(
@@ -530,7 +780,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    let water = surface.water;
     if water > 0.0 {
         let v = normalize(uniforms.eye_pos - in.world_normal);
         let n_dot_v = max(dot(n, v), 0.0);

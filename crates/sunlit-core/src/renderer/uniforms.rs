@@ -20,7 +20,7 @@ macro_rules! uniform_block {
     ) => {
         /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
         ///
-        /// Total: 560 bytes (must be a multiple of 16 for uniform alignment).
+        /// Total: 576 bytes (must be a multiple of 16 for uniform alignment).
         #[repr(C)]
         #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
         #[expect(
@@ -53,7 +53,7 @@ uniform_block! {
     sun_dir: [f32; 3] as vec3,
     terminator_width: f32 as f32,
     /// Bit 0 is diffuse shading; bit 2 says the cube drawn alone is the night
-    /// floor.
+    /// floor; bit 3 draws the sea ice.
     flags: u32 as u32,
     diffuse_floor: f32 as f32,
     diffuse_ramp: f32 as f32,
@@ -157,11 +157,19 @@ uniform_block! {
     /// texels of the tile's finest level.
     tile_texels: f32 as f32,
     tile_gutter: f32 as f32,
+    /// The two monthly means of the sea ice the date falls between, January
+    /// 0, the first in the low 16 bits; and how far the date is from the
+    /// first to the second.
+    ice_months: u32 as u32,
+    ice_weight: f32 as f32,
+    /// The sea ice's color in the north and in the south, RGBA8.
+    ice_north: u32 as u32,
+    ice_south: u32 as u32,
     _pad9: f32 as f32,
     _pad10: f32 as f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 560);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 576);
 
 #[cfg(test)]
 mod tests {

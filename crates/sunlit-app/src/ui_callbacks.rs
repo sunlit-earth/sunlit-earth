@@ -468,6 +468,7 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_camera_fov(cam.fov_deg);
     window.set_terminator_width(params.terminator_width);
     window.set_diffuse_shading(params.diffuse_shading);
+    window.set_sea_ice(params.sea_ice);
     window.set_diffuse_floor(params.diffuse_floor);
     window.set_diffuse_ramp(params.diffuse_ramp);
     window.set_spec_shininess(params.spec_shininess);
@@ -544,6 +545,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         sample_count: aa_counts.get(aa_index).copied().unwrap_or(1),
         terminator_width: window.get_terminator_width(),
         diffuse_shading: window.get_diffuse_shading(),
+        sea_ice: window.get_sea_ice(),
         diffuse_floor: window.get_diffuse_floor(),
         diffuse_ramp: window.get_diffuse_ramp(),
         spec_shininess: window.get_spec_shininess(),

@@ -39,13 +39,17 @@ pub struct HostArtifacts {
     pub textures: Option<PathBuf>,
 }
 
-/// The flat texture files the app resolves, the Moon and the Milky Way, and
-/// therefore the ones the guest needs beside the cube.
+/// The flat texture files the app resolves, the Moon, the Milky Way and the
+/// sea ice atlas, and therefore the ones the guest needs beside the cube.
 ///
-/// `resolve_textures` in the app names these two, and nothing else connects
+/// `resolve_textures` in the app names these three, and nothing else connects
 /// the two crates, so `the_staged_textures_are_the_ones_the_app_asks_for`
-/// reads that function and asserts both are still spelled this way.
-pub const TEXTURE_FILES: [&str; 2] = ["lroc_color_poles_1k.jxl", "milkyway_2020_4k.jxl"];
+/// reads that function and asserts all are still spelled this way.
+pub const TEXTURE_FILES: [&str; 3] = [
+    "lroc_color_poles_1k.jxl",
+    "milkyway_2020_4k.jxl",
+    "sea_ice_2010_2020.jxl",
+];
 
 /// What an empty texture file is: not a pointer, which has a few hundred bytes
 /// to say what it stands for, but a copy that stopped before it wrote anything.
@@ -66,7 +70,7 @@ const TEXTURE_MIN_BYTES: u64 = 64 * 1024;
 /// only asks whether the file exists is concerned. Staging those would be worse
 /// than staging nothing: the app would fail to decode them, and a failed decode
 /// leaves the slot without a texture for the rest of the run. Size is what
-/// tells the two apart, since the smaller of the two real assets is over
+/// tells the two apart, since the smallest of the real assets is over
 /// 250 KiB.
 pub fn textures_verdict(sizes: [Option<u64>; TEXTURE_FILES.len()]) -> Result<(), String> {
     for (name, size) in TEXTURE_FILES.iter().zip(sizes) {
@@ -96,7 +100,7 @@ pub fn cube_texture_files() -> Vec<String> {
     cube_names::all_files()
 }
 
-/// Everything a bundle carries under `textures/`: the two flat maps and the
+/// Everything a bundle carries under `textures/`: the three flat maps and the
 /// cube.
 pub fn bundle_texture_files() -> Vec<String> {
     TEXTURE_FILES
@@ -153,7 +157,7 @@ pub fn host_textures(repo: &Path) -> Option<PathBuf> {
 }
 
 /// The same question without the commentary, for a caller with its own to make:
-/// the two flat maps and every cube face.
+/// the three flat maps and every cube face.
 ///
 /// `dist` and `bundle` ask it about the release bundle rather than about
 /// staging, and what they have to say when the answer is no is decision 33's
@@ -1208,8 +1212,8 @@ mod tests {
 
     #[test]
     fn a_git_lfs_pointer_is_not_mistaken_for_a_texture() {
-        // All real: the sizes of the two flat assets in this repository.
-        let real = [Some(285_458), Some(501_115)];
+        // All real: the sizes of the three flat assets in this repository.
+        let real = [Some(285_458), Some(501_115), Some(340_437)];
         assert_eq!(textures_verdict(real), Ok(()));
 
         // A pointer file is a few hundred bytes and is otherwise a file like

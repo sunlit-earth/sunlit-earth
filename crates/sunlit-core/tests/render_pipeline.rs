@@ -66,6 +66,8 @@ struct RenderContext {
     /// A one-layer black tile array and a page table of one cell per face that
     /// draws the floor, for every case that draws no tile.
     dummy_tiles: [wgpu::TextureView; 2],
+    /// The sea ice's 24 layers of no ice, for every case that draws none.
+    no_sea_ice: wgpu::TextureView,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -157,10 +159,21 @@ fn create_render_context() -> RenderContext {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
     let dummy_cube = create_solid_cube(&device, &queue, [[0, 0, 0, 255]; 6]);
     let dummy_tiles = create_dummy_tiles(&device, &queue);
+    let no_sea_ice = create_sea_ice(&device, &queue, 1, |_, _, _| 0);
     let surface_sampler = device.create_sampler(
         &sunlit_core::renderer::surface_sampler_descriptor(ctx.cpu_adapter),
     );
@@ -234,6 +247,7 @@ fn create_render_context() -> RenderContext {
         surface_sampler,
         dummy_cube,
         dummy_tiles,
+        no_sea_ice,
     }
 }
 
@@ -438,6 +452,19 @@ fn bind_group_with(
     cubes: [&wgpu::TextureView; 3],
     tiles: [&wgpu::TextureView; 2],
 ) -> wgpu::BindGroup {
+    bind_group_with_ice(ctx, flat, sampler, cubes, tiles, &ctx.no_sea_ice)
+}
+
+/// A bind group of the production layout, with `tiles` and the sea ice caps
+/// `sea_ice`.
+fn bind_group_with_ice(
+    ctx: &RenderContext,
+    flat: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    cubes: [&wgpu::TextureView; 3],
+    tiles: [&wgpu::TextureView; 2],
+    sea_ice: &wgpu::TextureView,
+) -> wgpu::BindGroup {
     let view = wgpu::BindingResource::TextureView;
     ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test_bind_group"),
@@ -475,8 +502,54 @@ fn bind_group_with(
                 binding: 8,
                 resource: view(tiles[1]),
             },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: view(sea_ice),
+            },
         ],
     })
+}
+
+/// An array of 24 sea ice caps of `size` texels a side, each texel's byte
+/// from `texel(layer, row, column)`.
+fn create_sea_ice(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    texel: impl Fn(u32, u32, u32) -> u8,
+) -> wgpu::TextureView {
+    let mut data = Vec::with_capacity((24 * size * size) as usize);
+    for layer in 0..24 {
+        for row in 0..size {
+            for column in 0..size {
+                data.push(texel(layer, row, column));
+            }
+        }
+    }
+    device
+        .create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("test_sea_ice"),
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 24,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &data,
+        )
+        .create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        })
 }
 
 /// Render a frame from a solid day color and a solid night color and return
@@ -732,6 +805,10 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         night_ocean: 0,
         tile_texels: 0.0,
         tile_gutter: 0.0,
+        ice_months: 0,
+        ice_weight: 0.0,
+        ice_north: 0,
+        ice_south: 0,
         _pad9: 0.0,
         _pad10: 0.0,
     }
@@ -937,6 +1014,10 @@ fn uniform_readback() {
     output[76] = f32(uniforms.night_ocean);
     output[77] = uniforms.tile_texels;
     output[78] = uniforms.tile_gutter;
+    output[79] = f32(uniforms.ice_months);
+    output[80] = uniforms.ice_weight;
+    output[81] = f32(uniforms.ice_north);
+    output[82] = f32(uniforms.ice_south);
 }
 ";
 
@@ -945,7 +1026,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 79] = [
+const PROBED_FIELDS: [(f32, &str); 83] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -1025,6 +1106,10 @@ const PROBED_FIELDS: [(f32, &str); 79] = [
     (984_325.0, "night_ocean"),
     (128.0, "tile_texels"),
     (8.0, "tile_gutter"),
+    (131_073.0, "ice_months"),
+    (0.25, "ice_weight"),
+    (15_655_644.0, "ice_north"),
+    (14_538_706.0, "ice_south"),
 ];
 
 #[allow(clippy::too_many_lines)]
@@ -1136,6 +1221,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         night_ocean: 0x000F_0505,
         tile_texels: 128.0,
         tile_gutter: 8.0,
+        ice_months: 0x0002_0001,
+        ice_weight: 0.25,
+        ice_north: 0x00EE_E2DC,
+        ice_south: 0x00DD_D7D2,
         _pad9: 0.0,
         _pad10: 0.0,
     };
@@ -4241,5 +4330,456 @@ fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
     assert!(
         capped == from_floor,
         "a cap at the floor draws the floor wherever tiles are resident"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sea ice
+// ---------------------------------------------------------------------------
+
+/// Bit 3 of `Uniforms::flags`: the sea ice is drawn.
+const FLAG_SEA_ICE: u32 = 8;
+
+/// Two compute entry points appended to the production shaders: `sea_ice` of
+/// a plane point, a concentration, its width and a pixel's size, and the same
+/// with the concentration read through `ice_concentration` at a normal.
+const ICE_PROBE: &str = "
+@group(0) @binding(20) var<storage, read_write> ice_out: array<f32>;
+@group(0) @binding(21) var<storage, read> ice_in: array<vec4<f32>>;
+
+@compute @workgroup_size(64)
+fn ice_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= arrayLength(&ice_out) {
+        return;
+    }
+    let a = ice_in[2u * i];
+    let b = ice_in[2u * i + 1u];
+    ice_out[i] = sea_ice(a.xy, a.z, a.w, b.x);
+}
+
+@compute @workgroup_size(64)
+fn ice_cover_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= arrayLength(&ice_out) {
+        return;
+    }
+    let n = normalize(ice_in[2u * i].xyz);
+    let pixel_km = ice_in[2u * i + 1u].x;
+    let plane = sea_ice_cap(n).uv * (2.0 * ICE_RHO_MAX);
+    ice_out[i] = sea_ice(plane * EARTH_RADIUS_KM, ice_concentration(n), 0.0, pixel_km);
+}
+";
+
+/// The two ice probes compiled once, and the uniform buffer the second reads.
+struct IceProbe {
+    direct: wgpu::ComputePipeline,
+    cover: wgpu::ComputePipeline,
+    uniforms: wgpu::Buffer,
+}
+
+impl IceProbe {
+    fn new(ctx: &RenderContext) -> Self {
+        let shader = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("ice_probe"),
+                source: wgpu::ShaderSource::Wgsl(production_shaders(ICE_PROBE).into()),
+            });
+        let pipeline = |entry: &str| {
+            ctx.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                })
+        };
+        Self {
+            direct: pipeline("ice_probe"),
+            cover: pipeline("ice_cover_probe"),
+            uniforms: ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("ice_probe_uniforms"),
+                size: std::mem::size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+        }
+    }
+
+    /// `sea_ice` at each `[x_km, y_km, c, c_width]` with its pixel size.
+    fn direct(&self, ctx: &RenderContext, inputs: &[([f32; 4], f32)]) -> Vec<f32> {
+        let packed: Vec<[f32; 4]> = inputs
+            .iter()
+            .flat_map(|&(a, pixel_km)| [a, [pixel_km, 0.0, 0.0, 0.0]])
+            .collect();
+        self.dispatch(ctx, &self.direct, &packed, None)
+    }
+
+    /// The ice drawn at each normal with its pixel size, from `caps` under
+    /// `uniforms`.
+    fn cover(
+        &self,
+        ctx: &RenderContext,
+        uniforms: &Uniforms,
+        caps: &wgpu::TextureView,
+        inputs: &[([f32; 3], f32)],
+    ) -> Vec<f32> {
+        ctx.queue
+            .write_buffer(&self.uniforms, 0, bytemuck::cast_slice(&[*uniforms]));
+        let packed: Vec<[f32; 4]> = inputs
+            .iter()
+            .flat_map(|&([x, y, z], pixel_km)| [[x, y, z, 0.0], [pixel_km, 0.0, 0.0, 0.0]])
+            .collect();
+        self.dispatch(ctx, &self.cover, &packed, Some(caps))
+    }
+
+    fn dispatch(
+        &self,
+        ctx: &RenderContext,
+        pipeline: &wgpu::ComputePipeline,
+        packed: &[[f32; 4]],
+        caps: Option<&wgpu::TextureView>,
+    ) -> Vec<f32> {
+        let count = packed.len() / 2;
+        let output_size = (count * std::mem::size_of::<f32>()) as u64;
+        let output = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ice_probe_output"),
+            size: output_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let input = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("ice_probe_input"),
+                contents: bytemuck::cast_slice(packed),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 20,
+                resource: output.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 21,
+                resource: input.as_entire_binding(),
+            },
+        ];
+        if let Some(caps) = caps {
+            entries.extend([
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&ctx.surface_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(caps),
+                },
+            ]);
+        }
+        let group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &entries,
+        });
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(
+                u32::try_from(count.div_ceil(64)).expect("a few workgroups"),
+                1,
+                1,
+            );
+        }
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        let data = common::read_buffer(&ctx.device, &ctx.queue, &output, output_size);
+        bytemuck::cast_slice::<u8, f32>(&data).to_vec()
+    }
+}
+
+/// The mean of a probe's answers.
+#[expect(clippy::cast_precision_loss, reason = "a few thousand samples")]
+fn mean_of(values: &[f32]) -> f32 {
+    values.iter().sum::<f32>() / values.len() as f32
+}
+
+/// Plane points spread over a square of 3000 km a side by a low-discrepancy
+/// sequence, far more cells than points, so the points are independent draws
+/// of the noise.
+#[expect(clippy::cast_precision_loss, reason = "small indices")]
+fn scattered_points(count: usize) -> Vec<[f32; 2]> {
+    (0..count)
+        .map(|i| {
+            let i = i as f32 + 0.5;
+            [
+                ((i * 0.618_034).fract() - 0.5) * 3000.0,
+                ((i * 0.754_877_7).fract() - 0.5) * 3000.0,
+            ]
+        })
+        .collect()
+}
+
+/// Criterion 4: where the floes are resolved, the share drawn is the
+/// remapped concentration, and nothing at or below the products' 15% is ice
+/// at any pixel size.
+#[test]
+fn resolved_floes_cover_the_concentration() {
+    let ctx = render_ctx();
+    let probe = IceProbe::new(&ctx);
+    let points = scattered_points(8192);
+    for step in 0..=10_u8 {
+        let c = f32::from(step) / 10.0;
+        let inputs: Vec<_> = points.iter().map(|&[x, y]| ([x, y, c, 0.0], 0.5)).collect();
+        let mean = mean_of(&probe.direct(&ctx, &inputs));
+        assert!(
+            (mean - c).abs() < 0.05,
+            "concentration {c}: {mean} of the closest view is drawn as ice"
+        );
+    }
+    for pixel_km in [0.5, 3.0, 12.0, 40.0, 150.0] {
+        for c in [0.0, -0.05, -1.0] {
+            let inputs: Vec<_> = points
+                .iter()
+                .take(512)
+                .map(|&[x, y]| ([x, y, c, 0.01], pixel_km))
+                .collect();
+            let ice = probe.direct(&ctx, &inputs);
+            assert!(
+                ice.iter().all(|&ice| ice == 0.0),
+                "concentration {c} at {pixel_km} km a pixel draws ice"
+            );
+        }
+    }
+}
+
+/// Criterion 5: where nothing is resolved the edge of the pack is a line: a
+/// ramp of the concentration goes from open water to ice within two pixels.
+#[test]
+fn the_far_edge_is_a_line_two_pixels_wide() {
+    let ctx = render_ctx();
+    let probe = IceProbe::new(&ctx);
+    for per_pixel in [0.004_f32, 0.02, 0.08] {
+        for offset in [0.0_f32, 0.3, 0.71] {
+            #[expect(clippy::cast_precision_loss, reason = "a short row")]
+            let inputs: Vec<_> = (0..200)
+                .map(|i| {
+                    let c = (i as f32 - 100.0 + offset) * per_pixel + 0.1;
+                    ([i as f32 * 150.0, 0.0, c, per_pixel], 150.0)
+                })
+                .collect();
+            let ice = probe.direct(&ctx, &inputs);
+            let between = ice.iter().filter(|&&v| (0.1..=0.9).contains(&v)).count();
+            assert!(
+                between <= 2,
+                "{between} pixels between water and ice at {per_pixel} a pixel"
+            );
+            assert!(
+                ice.windows(2).all(|pair| pair[1] >= pair[0]),
+                "the edge is not one step at {per_pixel} a pixel: {ice:?}"
+            );
+            assert!(ice[0] < 0.1 && ice[199] > 0.9);
+        }
+    }
+}
+
+/// The raw concentration of each month, January first, in both caps: a year
+/// with a step between every two months.
+const MONTHLY_RAW: [u8; 12] = [250, 255, 250, 200, 140, 90, 50, 30, 60, 120, 190, 230];
+
+/// Criterion 3: the ice of a fixed patch moves with the date without a jump.
+/// No day's coverage is further from the day before's than the steepest change
+/// between two neighboring monthly means, per day of the shortest span between
+/// two anchors, and a tolerance.
+#[test]
+fn the_ice_moves_continuously_with_the_date() {
+    use sunlit_core::scene::sea_ice::ice_blend;
+    use sunlit_core::scene::sun::DateTimeInput;
+
+    let ctx = render_ctx();
+    let probe = IceProbe::new(&ctx);
+    let caps = create_sea_ice(&ctx.device, &ctx.queue, 8, |layer, _, _| {
+        MONTHLY_RAW[(layer / 2) as usize]
+    });
+    let patch: Vec<([f32; 3], f32)> = scattered_points(2048)
+        .iter()
+        .map(|&[x, y]| {
+            let n = glam::Vec3::new(x / 20_000.0, 1.0, y / 20_000.0).normalize();
+            (n.to_array(), 0.5)
+        })
+        .collect();
+    let cover = |months: u32, weight: f32| {
+        let uniforms = Uniforms {
+            ice_months: months,
+            ice_weight: weight,
+            ..default_test_uniforms(64)
+        };
+        mean_of(&probe.cover(&ctx, &uniforms, &caps, &patch))
+    };
+    let anchors: Vec<f32> = (0..12_u32).map(|m| cover(m * 0x0001_0001, 0.0)).collect();
+    let steepest = (0..12)
+        .map(|m| (anchors[(m + 1) % 12] - anchors[m]).abs() / 28.0)
+        .fold(0.0_f32, f32::max);
+    assert!(
+        steepest > 0.005,
+        "the synthetic year hardly changes the ice"
+    );
+    let on_day = |day: u16| {
+        let blend = ice_blend(
+            &DateTimeInput {
+                use_custom: true,
+                custom_hour: 12.0,
+                custom_day_of_year: day,
+                custom_year: 2025,
+            },
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
+        cover(blend.packed_months(), blend.weight)
+    };
+    let mut before = on_day(365);
+    for day in 1..=365 {
+        let today = on_day(day);
+        assert!(
+            (today - before).abs() <= steepest + 0.01,
+            "day {day} moved the ice by {} against a steepest rate of {steepest}",
+            today - before
+        );
+        before = today;
+    }
+}
+
+/// An eye above the north pole looking down at it, the Sun behind the eye.
+fn polar_uniforms(size: u32) -> Uniforms {
+    let eye = glam::Vec3::new(0.0, 3.5, 0.0);
+    let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Z);
+    let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
+    Uniforms {
+        mvp: (proj * view).to_cols_array(),
+        eye_pos: eye.into(),
+        sun_dir: [0.0, 1.0, 0.0],
+        terminator_width: 0.1,
+        flags: 1,
+        spec_intensity: 2.0,
+        spec_shininess: 20.0,
+        fresnel_mix: 0.75,
+        ice_months: 0x0003_0002,
+        ice_weight: 0.5,
+        ice_north: u32::from_le_bytes([220, 226, 232, 255]),
+        ice_south: u32::from_le_bytes([220, 226, 232, 255]),
+        ..default_test_uniforms(size)
+    }
+}
+
+/// The pole from above, over a sea whose mask is `water` everywhere, with the
+/// caps `caps`.
+fn render_polar(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    water: u8,
+    caps: &wgpu::TextureView,
+) -> Vec<u8> {
+    let day = create_cube(&ctx.device, &ctx.queue, 8, |face| {
+        (0..64_usize)
+            .flat_map(|i| {
+                let shade = u8::try_from(40 + face * 20 + i % 7).expect("a byte");
+                [shade, 90, 30, 255]
+            })
+            .collect()
+    });
+    let night = create_solid_cube(&ctx.device, &ctx.queue, [[5, 5, 10, 255]; 6]);
+    let mask = create_solid_cube(&ctx.device, &ctx.queue, [[water, 0, 0, 255]; 6]);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let [tiles, pages] = &ctx.dummy_tiles;
+    let group = bind_group_with_ice(
+        ctx,
+        &flat,
+        &ctx.surface_sampler,
+        [&day, &night, &mask],
+        [tiles, pages],
+        caps,
+    );
+    render_with(ctx, uniforms, &group, 64, 64)
+}
+
+/// Criterion 2: the ice changes nothing over land, in blend mode and with the
+/// day drawn alone, and with the setting off the caps do not reach the frame.
+#[test]
+fn ice_leaves_land_and_a_switched_off_frame_alone() {
+    let ctx = render_ctx();
+    let full = create_sea_ice(&ctx.device, &ctx.queue, 8, |_, _, _| 255);
+    let blend = polar_uniforms(64);
+    let day_alone = Uniforms {
+        terminator_width: -1.0,
+        flags: 0,
+        ..blend
+    };
+    for off in [blend, day_alone] {
+        let on = Uniforms {
+            flags: off.flags | FLAG_SEA_ICE,
+            ..off
+        };
+        assert_eq!(
+            render_polar(&ctx, &on, 0, &full),
+            render_polar(&ctx, &off, 0, &full),
+            "the ice moved land at terminator width {}",
+            off.terminator_width
+        );
+        assert_eq!(
+            render_polar(&ctx, &off, 254, &full),
+            render_polar(&ctx, &off, 254, &ctx.no_sea_ice),
+            "with the setting off the caps reach the sea at terminator width {}",
+            off.terminator_width
+        );
+        assert_ne!(
+            render_polar(&ctx, &on, 254, &full),
+            render_polar(&ctx, &off, 254, &full),
+            "no ice is drawn over the sea at terminator width {}",
+            off.terminator_width
+        );
+    }
+}
+
+/// Criterion 6: with the Sun's reflection on a fully covered sea, the frame is
+/// the diffusely lit ice alone: neither the glint nor the Fresnel term reach
+/// it.
+#[test]
+fn covered_sea_has_no_glint() {
+    let ctx = render_ctx();
+    let full = create_sea_ice(&ctx.device, &ctx.queue, 8, |_, _, _| 255);
+    let shiny = Uniforms {
+        flags: 1 | FLAG_SEA_ICE,
+        ..polar_uniforms(64)
+    };
+    let matte = Uniforms {
+        spec_intensity: 0.0,
+        fresnel_mix: 0.0,
+        ..shiny
+    };
+    let open = |uniforms: &Uniforms| Uniforms {
+        flags: 1,
+        ..*uniforms
+    };
+    assert_ne!(
+        render_polar(&ctx, &open(&shiny), 254, &full),
+        render_polar(&ctx, &open(&matte), 254, &full),
+        "the open sea shows no glint to take away"
+    );
+    assert_eq!(
+        render_polar(&ctx, &shiny, 254, &full),
+        render_polar(&ctx, &matte, 254, &full),
+        "the glint or the Fresnel term reach the ice"
     );
 }

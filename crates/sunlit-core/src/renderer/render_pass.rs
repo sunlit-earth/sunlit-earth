@@ -6,6 +6,7 @@ use crate::params::{
 };
 use crate::scene::camera::OrbitalCamera;
 use crate::scene::moon;
+use crate::scene::sea_ice::{IceBlend, ice_color};
 use crate::scene::sky::SkyState;
 use crate::scene::sun_occlusion;
 
@@ -23,6 +24,16 @@ pub(super) struct FrameInputs {
     /// table refines it.
     pub night_alone: bool,
     pub tiles: TileUniforms,
+    pub ice: IceInputs,
+}
+
+/// What the sea ice needs of a frame: whether the bind group holds its caps
+/// and draws the day surface they are drawn on, and the months the date falls
+/// between.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct IceInputs {
+    pub drawn: bool,
+    pub blend: IceBlend,
 }
 
 /// The constant ocean colors of the day and the night, RGBA8, and a tile's
@@ -38,6 +49,8 @@ pub(super) struct TileUniforms {
 const FLAG_DIFFUSE: u32 = 1;
 /// Bit 2 of `Uniforms::flags`: the cube drawn alone is the night floor.
 const FLAG_NIGHT_ALONE: u32 = 4;
+/// Bit 3 of `Uniforms::flags`: the sea ice is drawn.
+const FLAG_SEA_ICE: u32 = 8;
 
 /// Texture views to render into. Decouples render pass encoding from
 /// which textures are used (preview vs export).
@@ -160,6 +173,10 @@ pub(super) fn write_uniforms<'a>(
             FLAG_NIGHT_ALONE
         } else {
             0
+        } | if inputs.ice.drawn && params.sea_ice {
+            FLAG_SEA_ICE
+        } else {
+            0
         },
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
@@ -232,6 +249,10 @@ pub(super) fn write_uniforms<'a>(
         night_ocean: u32::from_le_bytes(inputs.tiles.ocean[1]),
         tile_texels: inputs.tiles.tile as f32,
         tile_gutter: inputs.tiles.gutter as f32,
+        ice_months: inputs.ice.blend.packed_months(),
+        ice_weight: inputs.ice.blend.weight,
+        ice_north: u32::from_le_bytes(ice_color(inputs.ice.blend, false)),
+        ice_south: u32::from_le_bytes(ice_color(inputs.ice.blend, true)),
         _pad9: 0.0,
         _pad10: 0.0,
     };

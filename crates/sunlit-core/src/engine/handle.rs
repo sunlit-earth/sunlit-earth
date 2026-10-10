@@ -29,7 +29,7 @@ pub struct EngineConfig {
     /// Force the CPU adapter.
     pub force_software: bool,
     /// One entry per file-backed texture slot, in slot order after the grid:
-    /// the Moon, then the Milky Way.
+    /// the Moon, the Milky Way, then the sea ice atlas.
     pub texture_paths: Vec<Option<PathBuf>>,
     /// Initial preview size; quantized by the engine.
     pub preview_size: (u32, u32),
@@ -109,9 +109,10 @@ impl EngineConfig {
     pub fn headless(preview_size: (u32, u32)) -> Self {
         Self {
             force_software: true,
-            // Two file-backed slots (the Moon, the Milky Way) so the slot
-            // layout matches production even when no texture files are present.
-            texture_paths: vec![None, None],
+            // Three file-backed slots (the Moon, the Milky Way, the sea ice)
+            // so the slot layout matches production even when no texture files
+            // are present.
+            texture_paths: vec![None, None, None],
             preview_size,
             preview_enabled: true,
             params: SceneParams::default(),

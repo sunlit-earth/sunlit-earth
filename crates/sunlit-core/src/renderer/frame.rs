@@ -1,4 +1,5 @@
 use crate::params::{ParamsDigest, SceneParams, quantize_direction};
+use crate::scene::sea_ice::IceBlend;
 use crate::scene::sky::SkyState;
 
 /// Snapshot of everything that affects the rendered image.
@@ -17,6 +18,8 @@ pub(crate) struct FrameState {
     pub sky_basis_x: [i32; 3],
     /// Second sky rotation basis vector, quantized to integer milliradians.
     pub sky_basis_y: [i32; 3],
+    /// The sea ice's two months and the weight between them, to 1/256.
+    pub ice: [u16; 3],
 }
 
 /// Build a `FrameState` for dirty-check comparison.
@@ -25,6 +28,7 @@ pub(crate) fn build_frame_state(
     render_width: u32,
     render_height: u32,
     sky: &SkyState,
+    ice: IceBlend,
 ) -> FrameState {
     FrameState {
         params: params.digest(),
@@ -33,6 +37,7 @@ pub(crate) fn build_frame_state(
         sun_direction: quantize_direction(sky.sun_direction),
         sky_basis_x: quantize_direction(sky.world_from_eqj.x_axis),
         sky_basis_y: quantize_direction(sky.world_from_eqj.y_axis),
+        ice: ice.quantized(),
     }
 }
 
@@ -57,8 +62,14 @@ mod tests {
         }
     }
 
+    const ICE: IceBlend = IceBlend {
+        month_a: 2,
+        month_b: 3,
+        weight: 0.25,
+    };
+
     fn state(width: u32, height: u32, sun: glam::Vec3) -> FrameState {
-        build_frame_state(&SceneParams::default(), width, height, &sky(sun))
+        build_frame_state(&SceneParams::default(), width, height, &sky(sun), ICE)
     }
 
     const SUN: glam::Vec3 = glam::Vec3::new(0.1234, -0.5678, 0.9012);
@@ -98,7 +109,27 @@ mod tests {
         };
         assert_ne!(
             state(1920, 1080, SUN),
-            build_frame_state(&changed, 1920, 1080, &sky(SUN))
+            build_frame_state(&changed, 1920, 1080, &sky(SUN), ICE)
+        );
+    }
+
+    #[test]
+    fn a_date_that_moves_the_ice_triggers_dirty() {
+        let moved = IceBlend {
+            weight: 0.26,
+            ..ICE
+        };
+        assert_ne!(
+            state(1920, 1080, SUN),
+            build_frame_state(&SceneParams::default(), 1920, 1080, &sky(SUN), moved)
+        );
+        let jitter = IceBlend {
+            weight: 0.2501,
+            ..ICE
+        };
+        assert_eq!(
+            state(1920, 1080, SUN),
+            build_frame_state(&SceneParams::default(), 1920, 1080, &sky(SUN), jitter)
         );
     }
 
@@ -108,7 +139,7 @@ mod tests {
         moved.world_from_eqj = glam::Mat3::from_rotation_y(0.01);
         assert_ne!(
             state(1920, 1080, SUN),
-            build_frame_state(&SceneParams::default(), 1920, 1080, &moved)
+            build_frame_state(&SceneParams::default(), 1920, 1080, &moved, ICE)
         );
     }
 }

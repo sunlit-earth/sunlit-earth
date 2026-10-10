@@ -51,7 +51,7 @@ The icon bake writes `assets/icon/baked/`; the review option produces a contact 
 
 Two standalone Python tools under `tools/` use uv and are separate from the Rust build:
 
-- [texture-pipeline](../tools/texture-pipeline/README.md) bakes the Earth's cube faces from the monthly Blue Marble maps, the Black Marble night map and an ocean shapefile (`cube`), converts surface maps (`earth`) and prepares the Milky Way panorama (`milky-way`), all as JPEG XL.
+- [texture-pipeline](../tools/texture-pipeline/README.md) bakes the Earth's cube faces from the monthly Blue Marble maps, the Black Marble night map and an ocean shapefile (`cube`), converts surface maps (`earth`), prepares the Milky Way panorama (`milky-way`), and bakes the monthly sea ice climatology from EUMETSAT OSI SAF's OSI-450-a1 into the polar caps the globe draws its ice from (`sea-ice`, with `--fetch` to download the 264 monthly files one at a time), all as JPEG XL. `textures/PROVENANCE.md` records each bake's sources, checksums and command.
 - [cloud-fetch](../tools/cloud-fetch/README.md) fetches and processes cloud imagery from the Matteason composite or NOAA GMGSI.
 
 ## Licenses and attribution

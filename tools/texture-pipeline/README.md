@@ -1,12 +1,13 @@
 # texture-pipeline
 
-A CLI tool that turns source imagery into the JPEG XL textures the app ships. It has three commands:
+A CLI tool that turns source imagery into the JPEG XL textures the app ships. It has four commands:
 
 - `earth` converts NASA Blue Marble and Black Marble style surface maps to JPEG XL at one or more widths.
 - `cube` bakes the twelve monthly Blue Marble maps, the Black Marble night map and an ocean shapefile into the equi-angular cube faces the globe samples.
 - `milky-way` turns a NASA SVS Deep Star Maps 2020 EXR into the denoised sky panorama.
+- `sea-ice` averages EUMETSAT OSI SAF's OSI-450-a1 monthly sea ice concentration over 2010 to 2020 and bakes it into the polar caps the globe draws its ice from.
 
-All three take equirectangular sources with an exact 2:1 aspect ratio and refuse to upscale.
+The first three take equirectangular sources with an exact 2:1 aspect ratio and refuse to upscale.
 
 ## Requirements
 
@@ -201,3 +202,17 @@ The OpenEXR wheel is a bare extension module carrying no type information, so `s
 ### Memory note
 
 The full-resolution NASA Blue Marble (21600 x 10800) requires roughly 1.75 GB of RAM when loaded into Pillow. The 16k star map is 16384 x 8192 half floats, which is 1.6 GB once it is float32 RGB, and the pipeline holds a second copy of it while it clips and scales. Both are expected for an offline tool. The `cube` command reads the twelve 21600 maps one at a time and resamples in bands of 256 rows, so its peak is the ocean raster at twice the source size: 3.0 GiB working set for the full bake of the app's textures, which took about ten minutes on 16 logical cores (`textures/PROVENANCE.md` has the stages).
+
+## `sea-ice`
+
+```bash
+uv run texture-pipeline sea-ice --input /path/to/osi450a1 --output ../../textures/sea_ice_2010_2020.jxl --fetch
+```
+
+`--input`, `-i`: the directory holding the 264 monthly files of 2010 to 2020, `ice_conc_{nh,sh}_ease2-250_cdr-v3p1_YYYYMM.nc`. `--fetch` downloads whatever of them is missing from THREDDS over HTTPS, one at a time as the server asks, and writes their SHA-256 into `SHA256SUMS` beside them; without it the command stops if a file is missing.
+
+`--output`, `-o`: the atlas, a lossless single-channel JPEG XL of 12 by 2 caps, the months across and the north above the south.
+
+`--cap-size` (default 512) and `--effort` (default 7).
+
+Per hemisphere it checks that every file has the same land cells, averages each calendar month over the eleven years, extends the field three cells into land from the nearest ocean cell, resamples it into the spherical polar Lambert azimuthal equal-area cap the app's shader computes (reaching 35 degrees of latitude on the cap's axes) through PROJ's ellipsoidal EASE2, quantizes it to bytes with a zero outer ring, and prints each month's extent at 15% against the source's. `src/texture_pipeline/sea_ice.py` holds the projection and the steps; `textures/PROVENANCE.md` records the shipped bake. Set `TEXTURE_PIPELINE_OSI_DIR` to the files' directory to run the tests that compare the shipped atlas with a fresh bake.

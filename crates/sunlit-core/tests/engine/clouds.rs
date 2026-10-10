@@ -622,3 +622,96 @@ fn a_drawn_cloud_layer_holds_a_day_publish_for_the_mask() {
 
 /// How long the held publish is watched for, on the wall clock.
 const HELD: Duration = Duration::from_secs(3);
+
+/// The banded fixture map, with every fetch held until the case lets it
+/// through, as a slow download would be.
+struct HeldClouds {
+    inner: support::FixtureClouds,
+    held: std::sync::Mutex<bool>,
+    released: std::sync::Condvar,
+    entered: AtomicU64,
+}
+
+impl HeldClouds {
+    fn new() -> Self {
+        Self {
+            inner: support::FixtureClouds::bands(),
+            held: std::sync::Mutex::new(true),
+            released: std::sync::Condvar::new(),
+            entered: AtomicU64::new(0),
+        }
+    }
+
+    fn release(&self) {
+        *self.held.lock().expect("the hold") = false;
+        self.released.notify_all();
+    }
+
+    fn wait_for_entered(&self, count: u64, what: &str) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while self.entered.load(Ordering::SeqCst) < count {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: no fetch {count}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl CloudSource for HeldClouds {
+    fn fetch_if_changed(&self, known_etag: Option<&str>) -> Result<Option<CloudImage>, String> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        let mut held = self.held.lock().expect("the hold");
+        while *held {
+            held = self.released.wait(held).expect("the hold");
+        }
+        drop(held);
+        self.inner.fetch_if_changed(known_etag)
+    }
+
+    fn describe(&self) -> String {
+        "held cloud fixture".to_owned()
+    }
+}
+
+/// A download that comes back after the layer was switched off is dropped
+/// undecoded: no map reaches the GPU while the layer is off, and switching it
+/// back on downloads the map again and draws it.
+#[test]
+fn a_download_that_returns_after_the_switch_is_not_decoded() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let bands = source.inner.serve_bands();
+    let harness = Harness::start(|config| {
+        config.params = switched(true);
+        config.cloud = Some(Arc::clone(&source) as Arc<dyn CloudSource>);
+    });
+    source.wait_for_entered(1, "the first poll");
+
+    harness.settle_at(&switched(false));
+    source.release();
+    let until = std::time::Instant::now() + QUIET;
+    while std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !has_cloud_texture(&harness),
+        "a map downloaded while the layer was off was decoded and uploaded"
+    );
+    assert!(
+        clouds_settled(&harness).is_empty(),
+        "a dropped download is not the layer's first answer"
+    );
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(switched(true))));
+    wait_for_cloud_size(&harness, bands, "switched back on");
+    assert_eq!(
+        source.entered.load(Ordering::SeqCst),
+        2,
+        "switching on downloads the map again"
+    );
+    assert_eq!(clouds_settled(&harness), [true]);
+}

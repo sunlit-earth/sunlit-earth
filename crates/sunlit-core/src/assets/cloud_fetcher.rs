@@ -13,6 +13,7 @@ use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -261,6 +262,9 @@ pub(crate) enum PollOutcome {
     Unchanged,
     /// The fetch or the decode failed; the caller decides about backoff.
     Failed,
+    /// A new image was downloaded after the gate closed, and was dropped
+    /// undecoded with nothing written, so the next poll downloads it again.
+    Abandoned,
 }
 
 /// The two mailbox slots every cloud map is posted to: the map's, and its
@@ -298,6 +302,9 @@ pub(crate) struct CloudUpdater {
     /// the network. A cell because posting reads the updater and changes
     /// nothing else.
     posted: Cell<bool>,
+    /// Whether a download that has come back is still wanted, read between the
+    /// download and its decode. `None` wants every one.
+    gate: Option<Arc<AtomicBool>>,
 }
 
 /// What a cache entry is named after.
@@ -360,6 +367,7 @@ impl CloudUpdater {
             meta_path,
             cached_meta,
             posted: Cell::new(false),
+            gate: None,
         }
     }
 
@@ -405,6 +413,12 @@ impl CloudUpdater {
         self.cached_meta = self.meta_path.as_ref().and_then(|p| load_cache_meta(p));
         self.post_cached();
         true
+    }
+
+    /// Drop every download that comes back while `gate` reads false, before it
+    /// is decoded or anything of it is written.
+    pub fn set_gate(&mut self, gate: Arc<AtomicBool>) {
+        self.gate = Some(gate);
     }
 
     /// Whether a map has been posted since construction.
@@ -454,6 +468,21 @@ impl CloudUpdater {
                 return PollOutcome::Failed;
             }
         };
+
+        // Before the decode and before the cache: the bytes are dropped with
+        // no image, sidecar or ETag written, so the next poll is a download
+        // rather than a 304 with nothing to post.
+        if self
+            .gate
+            .as_ref()
+            .is_some_and(|gate| !gate.load(Ordering::SeqCst))
+        {
+            info!(
+                bytes = fetched.bytes.len(),
+                "the cloud layer was switched off during the download, dropping it"
+            );
+            return PollOutcome::Abandoned;
+        }
 
         info!(
             bytes = fetched.bytes.len(),
@@ -1077,6 +1106,35 @@ mod tests {
         assert_eq!(second.poll_once(), PollOutcome::Unchanged);
         assert_eq!(source.fetches(), 1);
         assert!(second.post_cached(), "the cached JPEG should decode");
+        assert_eq!(maps_posted(&mailbox), 1);
+    }
+
+    /// A download that comes back while the gate is closed is dropped with
+    /// nothing decoded, posted or written, so the next poll with the gate open
+    /// downloads it again rather than revalidating into a 304.
+    #[test]
+    fn a_download_returning_through_a_closed_gate_leaves_nothing_behind() {
+        let scratch = ScratchDir::new("cloud_updater_gate");
+        let dir = scratch.path();
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut updater = cached_updater(&source, &mailbox, dir, DEFAULT_TEXTURE_RESOLUTION);
+        updater.set_gate(Arc::clone(&gate));
+
+        assert_eq!(updater.poll_once(), PollOutcome::Abandoned);
+        assert_eq!(source.fetches(), 1);
+        assert!(mailbox.take_all().is_empty(), "something was posted");
+        assert!(!updater.has_posted());
+        assert_eq!(
+            std::fs::read_dir(dir).expect("the cache directory").count(),
+            0,
+            "something was written to the cache"
+        );
+
+        gate.store(true, Ordering::SeqCst);
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        assert_eq!(source.fetches(), 2, "the open gate downloads again");
         assert_eq!(maps_posted(&mailbox), 1);
     }
 

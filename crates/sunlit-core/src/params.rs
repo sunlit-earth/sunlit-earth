@@ -53,9 +53,9 @@ pub struct SceneParams {
     pub fresnel_exp: f32,
 
     // Clouds
-    /// Whether the cloud layer is shown. Off, it is not drawn, and no download
-    /// or decode starts for it: a poll already under way when it goes off runs
-    /// to its end, and a failed one makes no further attempt.
+    /// Whether the cloud layer is shown. Off, it is not drawn, no new download
+    /// starts and nothing is decoded: a transfer already under way when it goes
+    /// off is not interrupted, and what it brings back is dropped undecoded.
     pub clouds_enabled: bool,
     /// Opacity of a cloud on the day hemisphere, a straight multiplier on the
     /// source's own coverage.

@@ -155,6 +155,7 @@ pub(super) fn spawn_cloud_worker(
                 cache_dir,
                 texture_resolution,
             );
+            updater.set_gate(Arc::clone(&worker_enabled));
             let mut backoff = RetryBackoff::new();
             let mut first = true;
             let give_up = || {
@@ -183,8 +184,9 @@ pub(super) fn spawn_cloud_worker(
                 // this runs (the worker is busy) and retried on the next tick.
                 loop {
                     // Before every attempt, so a layer switched off during an
-                    // outage makes no further one; a poll already under way
-                    // runs to its end and posts.
+                    // outage makes no further one. A download already under
+                    // way is not interrupted; the updater drops what it
+                    // brings back undecoded.
                     if !worker_enabled.load(Ordering::SeqCst) {
                         give_up();
                         break;
@@ -195,7 +197,9 @@ pub(super) fn spawn_cloud_worker(
                     // attempt asks for rather than wait its turn.
                     updater.set_resolution(worker_target.load(Ordering::SeqCst));
                     let outcome = updater.poll_once();
-                    if worker_answer.load(Ordering::SeqCst) == FirstAnswer::Pending as u8 {
+                    if outcome != PollOutcome::Abandoned
+                        && worker_answer.load(Ordering::SeqCst) == FirstAnswer::Pending as u8
+                    {
                         let answer = if updater.has_posted() {
                             FirstAnswer::Posted
                         } else {
@@ -211,6 +215,10 @@ pub(super) fn spawn_cloud_worker(
                         }
                         PollOutcome::Unchanged => {
                             backoff.reset();
+                            break;
+                        }
+                        PollOutcome::Abandoned => {
+                            give_up();
                             break;
                         }
                         PollOutcome::Failed => {

@@ -120,10 +120,16 @@ const CURRENT: Versions = Versions {
     decoder: DECODER_VERSIONS,
 };
 
-/// The versions of `jxl-oxide` and `image` the faces are decoded with. A
-/// test compares them with the lockfile, because a lossy face may decode to
-/// other texels in another version and the cache key has to notice.
-const DECODER_VERSIONS: &str = "jxl-oxide 0.12.5 image 0.25.9";
+/// The versions of every `jxl-*` crate and of `image`, which the faces are
+/// decoded with. A test compares them with the lockfile, because a lossy face
+/// may decode to other texels in another version of any of them, the
+/// subcrates that do the decoding included, and the cache key has to notice.
+const DECODER_VERSIONS: &str = concat!(
+    "jxl-bitstream 1.1.0 jxl-coding 1.0.1 jxl-color 0.11.0 jxl-frame 0.13.3 ",
+    "jxl-grid 0.6.1 jxl-image 0.13.0 jxl-jbr 0.2.1 jxl-modular 0.11.2 ",
+    "jxl-oxide 0.12.5 jxl-oxide-common 1.0.0 jxl-render 0.12.3 ",
+    "jxl-threadpool 1.0.0 jxl-vardct 0.11.1 image 0.25.9",
+);
 
 /// What a source file looked like: size and modification time. Hashing 84
 /// files on every start would cost more than it could catch, since they only
@@ -1489,17 +1495,27 @@ mod tests {
         );
     }
 
-    /// The version of `name` the lockfile holds, which has to be one.
-    fn locked(name: &str) -> String {
+    /// Every package the lockfile holds, as its name and version.
+    fn lockfile_packages() -> Vec<(String, String)> {
         let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
             .expect("read Cargo.lock");
-        let versions: Vec<String> = lock
-            .split("[[package]]")
-            .filter(|block| block.contains(&format!("\nname = \"{name}\"\n")))
+        lock.split("[[package]]")
             .filter_map(|block| {
-                let rest = block.split("\nversion = \"").nth(1)?;
-                Some(rest.split('"').next()?.to_owned())
+                let field = |key: &str| {
+                    let rest = block.split(&format!("\n{key} = \"")).nth(1)?;
+                    Some(rest.split('"').next()?.to_owned())
+                };
+                Some((field("name")?, field("version")?))
             })
+            .collect()
+    }
+
+    /// The version of `name` the lockfile holds, which has to be one.
+    fn locked(name: &str) -> String {
+        let versions: Vec<String> = lockfile_packages()
+            .into_iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, version)| version)
             .collect();
         assert_eq!(versions.len(), 1, "{name} is locked once: {versions:?}");
         versions[0].clone()
@@ -1512,13 +1528,20 @@ mod tests {
 
     #[test]
     fn the_decoder_versions_in_the_key_are_the_ones_the_lockfile_holds() {
-        assert_eq!(
-            DECODER_VERSIONS,
-            format!(
-                "jxl-oxide {} image {}",
-                locked("jxl-oxide"),
-                locked("image")
-            )
+        let mut jxl: Vec<(String, String)> = lockfile_packages()
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("jxl-"))
+            .collect();
+        jxl.sort();
+        assert!(
+            jxl.iter().any(|(name, _)| name == "jxl-oxide"),
+            "jxl-oxide is in the lockfile"
         );
+        let mut expected: Vec<String> = jxl
+            .iter()
+            .map(|(name, version)| format!("{name} {version}"))
+            .collect();
+        expected.push(format!("image {}", locked("image")));
+        assert_eq!(DECODER_VERSIONS, expected.join(" "));
     }
 }

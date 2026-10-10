@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,30 @@ use crate::assets::texture_loader;
 
 /// The suffix of a pack that is not finished yet.
 pub(super) const UNFINISHED_SUFFIX: &str = "~";
+
+/// A pack being written under its temporary name, which is removed when this
+/// is dropped before it is put in place, by an error or by a panic unwinding
+/// past it. The name is this writer's alone, so once the pack is in place
+/// the removal finds nothing.
+struct Unfinished(PathBuf);
+
+impl Unfinished {
+    fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    fn rename_to(self, path: &Path) -> Result<(), BuildError> {
+        fs::rename(&self.0, path).map_err(|e| {
+            BuildError::Failed(format!("could not put {} in place: {e}", path.display()))
+        })
+    }
+}
+
+impl Drop for Unfinished {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 
 /// The mask value of open water.
 const OPEN_WATER: u8 = 255;
@@ -428,35 +452,19 @@ fn build(
         ocean,
         key,
     };
-    let tmp = crate::files::unfinished(path, UNFINISHED_SUFFIX);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let tmp = Unfinished::new(crate::files::unfinished(path, UNFINISHED_SUFFIX));
+    let bytes = write_pack(&tmp.0, &header, &jobs, &levels, geometry, cancel)?;
     // Checked before the rename, so a pack whose sources moved under the
     // decode is never put where a reader would open it.
-    let written = write_pack(&tmp, &header, &jobs, &levels, geometry, cancel).and_then(|bytes| {
-        if stamps(sources)? == before {
-            Ok(bytes)
-        } else {
-            Err(BuildError::Failed(
-                "a source changed while its pack was built".to_owned(),
-            ))
-        }
-    });
-    let bytes = match written {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            return Err(e);
-        }
-    };
-    if let Err(e) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(BuildError::Failed(format!(
-            "could not put {} in place: {e}",
-            path.display()
-        )));
+    if stamps(sources)? != before {
+        return Err(BuildError::Failed(
+            "a source changed while its pack was built".to_owned(),
+        ));
     }
+    tmp.rename_to(path)?;
     crate::files::sweep_unfinished(path, UNFINISHED_SUFFIX);
 
     let tiles: Vec<_> = jobs
@@ -1131,6 +1139,31 @@ mod tests {
         let result = ensure_pack(&setup.cache(), kind, &setup.textures, &FIXTURE, &cancel);
         assert!(matches!(result, Err(BuildError::Cancelled)), "{result:?}");
         assert!(AFTER_CREATE.with_borrow(Option::is_none), "the hook ran");
+        let names: Vec<_> = fs::read_dir(setup.cache().join(CACHE_SUBDIR))
+            .expect("list")
+            .flatten()
+            .collect();
+        assert!(names.is_empty(), "{names:?}");
+    }
+
+    #[test]
+    fn a_panic_while_the_pack_is_being_written_removes_the_unfinished_file() {
+        let setup = Setup::new("panic_writing");
+        AFTER_CREATE.set(Some(Box::new(|tmp: &Path| {
+            assert!(tmp.exists(), "the unfinished file is there");
+            panic!("the encoder panicked");
+        })));
+
+        let result = std::panic::catch_unwind(|| {
+            ensure_pack(
+                &setup.cache(),
+                PackKind::Day(0),
+                &setup.textures,
+                &FIXTURE,
+                &AtomicBool::new(false),
+            )
+        });
+        assert!(result.is_err(), "the panic reached the caller");
         let names: Vec<_> = fs::read_dir(setup.cache().join(CACHE_SUBDIR))
             .expect("list")
             .flatten()

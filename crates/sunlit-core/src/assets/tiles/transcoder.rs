@@ -31,7 +31,9 @@
 //! objects, builds nothing at all. Dropping the handle cancels the pack in
 //! progress and joins the thread; a pack is written under a temporary name and
 //! renamed into place, so a cancel or a killed process leaves the previous pack
-//! or none, and the next start sweeps what a killed one left, whether or not that pack needs a build.
+//! or none, a failed or panicking build removes its temporary file, and the
+//! next start sweeps what a killed one left, whether or not that pack needs a
+//! build.
 
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};
@@ -44,6 +46,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use tracing::{error, info, warn};
 
+use super::build::UNFINISHED_SUFFIX;
 use super::{BuildError, Ensured, GEOMETRY, Geometry, Pack, PackKind, ensure_pack, expected_key};
 use crate::assets::cube_layout::{CubeTextures, MONTHS};
 use crate::thread_priority;
@@ -537,6 +540,10 @@ impl Worker {
                 return;
             }
             if self.is_current(kind) {
+                crate::files::sweep_unfinished(
+                    &super::pack_path(&self.config.cache_dir, kind),
+                    UNFINISHED_SUFFIX,
+                );
                 let mut state = self.shared.lock();
                 self.land(&mut state, kind);
                 drop(self.publish(state));
@@ -628,7 +635,6 @@ mod tests {
     use crossbeam_channel::{Receiver, Sender};
 
     use super::*;
-    use crate::assets::tiles::build::UNFINISHED_SUFFIX;
     use crate::assets::tiles::{CACHE_SUBDIR, FIXTURE, pack_path};
     use crate::test_support::{ScratchDir, write_cube_fixture};
 
@@ -1158,6 +1164,25 @@ mod tests {
         let status = settled(&setup.start(2, &Probe::new()));
         assert_eq!(status.ready, order(2));
         assert_eq!(setup.files(), file_names(&order(2)), "the orphan is swept");
+    }
+
+    #[test]
+    fn a_current_pack_has_what_a_killed_build_left_swept_at_the_check() {
+        let setup = Setup::new("sweep_current");
+        let status = settled(&setup.start(2, &Probe::new()));
+        assert_eq!(status.ready.len(), PACKS);
+        let orphan =
+            crate::files::unfinished(&pack_path(&setup.cache(), Day(2)), UNFINISHED_SUFFIX);
+        fs::write(&orphan, b"half a pack").expect("write the orphan");
+
+        let probe = Probe::new();
+        let status = settled(&setup.start(2, &probe));
+        assert_eq!(status.ready.len(), PACKS);
+        assert_eq!(probe.builds(Day(2)), 0, "nothing was built");
+        assert!(
+            !orphan.exists(),
+            "the orphan beside a current pack is there"
+        );
     }
 
     #[test]

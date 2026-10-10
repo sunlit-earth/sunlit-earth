@@ -218,6 +218,24 @@ impl OrbitalCamera {
         }
     }
 
+    /// The camera a frame is drawn with. `write_uniforms` builds the frame's
+    /// view and projection from it, and the residency measures tiles with the
+    /// same one, so the two cannot disagree about what the frame shows.
+    pub fn from_params(params: &CameraParams) -> Self {
+        let mut camera = Self::new(
+            params.longitude,
+            params.latitude,
+            zoom_to_distance(params.zoom),
+        );
+        camera.offset_x = params.offset_x;
+        camera.offset_y = params.offset_y;
+        camera.tilt_deg = params.tilt_deg;
+        camera.yaw_deg = params.yaw_deg;
+        camera.pitch_deg = params.pitch_deg;
+        camera.fov_deg = params.fov_deg;
+        camera
+    }
+
     /// Compute the camera's position in world space.
     pub fn eye_position(&self) -> glam::Vec3 {
         let lon = self.longitude_deg.to_radians();

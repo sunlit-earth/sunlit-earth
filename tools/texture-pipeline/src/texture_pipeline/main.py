@@ -1,10 +1,13 @@
 """CLI interface for the texture pipeline."""
 
+import os
 import signal
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import typer
 from PIL import Image
 from rich.progress import (
@@ -15,7 +18,12 @@ from rich.progress import (
     TextColumn,
 )
 
-from texture_pipeline.discovery import compute_output_path, discover_images
+from texture_pipeline.cube import FACES, area_average, reproject_face, working_size
+from texture_pipeline.discovery import (
+    compute_output_path,
+    discover_images,
+    discover_months,
+)
 from texture_pipeline.exr import read_exr_rgb
 from texture_pipeline.milky_way import MilkyWayParams, flux_gain, process
 from texture_pipeline.processing import downscale, encode_jxl, sharpen
@@ -375,6 +383,359 @@ def earth(
         ocean_preserve_ice=ocean_preserve_ice,
         ocean_ice_luminance=ocean_ice_luminance,
         ocean_ice_latitude=ocean_ice_latitude,
+    )
+
+
+def _open_rgb(path: Path) -> Image.Image:
+    image = Image.open(path)
+    return image if image.mode == "RGB" else image.convert("RGB")
+
+
+def _cube_source_size(path: Path, face_size: int) -> tuple[int, int]:
+    with Image.open(path) as image:
+        width, height = image.size
+    if width != height * 2:
+        msg = f"{path.name} is {width}x{height}, not 2:1."
+        raise typer.BadParameter(msg)
+    if width // 4 < face_size:
+        msg = (
+            f"{path.name} is {width} wide; a face of {face_size} needs a source "
+            f"at least {face_size * 4} wide."
+        )
+        raise typer.BadParameter(msg)
+    return width, height
+
+
+def _write_face(pixels: np.ndarray, path: Path, quality: int, effort: int) -> int:
+    encode_jxl(Image.fromarray(pixels), path, quality=quality, effort=effort)
+    return path.stat().st_size
+
+
+def run_cube(
+    *,
+    input_dir: Path,
+    night_path: Path,
+    ocean_shapefile: Path,
+    output_dir: Path,
+    face_size: int,
+    quality: int,
+    effort: int,
+    ocean_color: tuple[int, int, int],
+    ocean_supersample: int,
+    ocean_coast_offset: int,
+    ocean_preserve_ice: bool,
+    ocean_ice_luminance: int,
+    ocean_ice_latitude: float,
+    workers: int,
+) -> None:
+    """Bake the monthly day cubes, the night cube and the water mask cube.
+
+    One water mask serves every month. It is rasterized once from the
+    shapefile at the day maps' size, less the ice the detector finds in any
+    month, and resampled once to the working size. Each month is resampled at
+    that size, flattened through the mask with the fill color, and
+    area-averaged down to the face size; the mask faces are the same average
+    of the same mask. The night is resampled and averaged the same way from its
+    own source, without flattening.
+
+    :param input_dir: Directory of monthly day maps carrying ``.YYYYMM.`` stamps.
+    :param night_path: The equirectangular night map.
+    :param ocean_shapefile: Path to the ocean shapefile.
+    :param output_dir: Root of ``day/YYYYMM``, ``night`` and ``mask``.
+    :param face_size: Edge length of every face written.
+    :param quality: JPEG XL quality of the day and night faces (1--100).
+    :param effort: JPEG XL encoding effort (1--9).
+    :param ocean_color: RGB fill color for ocean regions.
+    :param ocean_supersample: Supersampling factor for mask anti-aliasing.
+    :param ocean_coast_offset: Signed coastline shift in pixels.
+    :param ocean_preserve_ice: Whether to keep detected polar ice as land.
+    :param ocean_ice_luminance: Seed luminance threshold for ice detection.
+    :param ocean_ice_latitude: Minimum absolute latitude for polar gate.
+    :param workers: Threads that resample the bands of a face.
+    :raises typer.BadParameter: If the sources are missing, not 2:1, of
+        different sizes, or too small for the face size.
+    """
+    from texture_pipeline.ocean_masking import (
+        apply_ocean_mask,
+        clear_mask_cache,
+        detect_ice_regions,
+        get_or_create_mask,
+        reduce_mask_for_ice,
+    )
+
+    started = time.monotonic()
+    try:
+        months = discover_months(input_dir)
+    except ValueError as err:
+        raise typer.BadParameter(str(err)) from err
+    if not months:
+        msg = f"No monthly maps in {input_dir}."
+        raise typer.BadParameter(msg)
+    sizes = {_cube_source_size(path, face_size) for path in months.values()}
+    if len(sizes) > 1:
+        msg = f"The monthly maps differ in size: {sorted(sizes)}."
+        raise typer.BadParameter(msg)
+    ((width, height),) = sizes
+    night_width, _ = _cube_source_size(night_path, face_size)
+    work = working_size(width, face_size)
+    written = {"day": 0, "night": 0, "mask": 0}
+    typer.echo(
+        f"Sources: {len(months)} months at {width}x{height}, resampled at {work} "
+        f"and averaged to {face_size}"
+    )
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        stage = time.monotonic()
+        mask = get_or_create_mask(
+            ocean_shapefile,
+            width,
+            height,
+            supersample=ocean_supersample,
+            coast_offset=ocean_coast_offset,
+        )
+        clear_mask_cache()
+        typer.echo(f"Ocean:   rasterized in {time.monotonic() - stage:.1f}s")
+
+        if ocean_preserve_ice:
+            stage = time.monotonic()
+            ice = np.zeros_like(mask)
+            for path in months.values():
+                found = detect_ice_regions(
+                    _open_rgb(path),
+                    mask,
+                    latitude_threshold=ocean_ice_latitude,
+                    seed_luminance=ocean_ice_luminance,
+                )
+                np.maximum(ice, found, out=ice)
+                del found
+            kept = np.count_nonzero(np.minimum(ice, mask))
+            mask = reduce_mask_for_ice(mask, ice)
+            del ice
+            typer.echo(
+                f"Ice:     {kept} source pixels kept as land, "
+                f"{time.monotonic() - stage:.1f}s"
+            )
+
+        stage = time.monotonic()
+        water = {face: reproject_face(mask, face, work, pool) for face in FACES}
+        del mask
+        for face in FACES:
+            written["mask"] += _write_face(
+                area_average(water[face], face_size),
+                output_dir / "mask" / f"{face}.jxl",
+                quality=100,
+                effort=effort,
+            )
+        typer.echo(
+            f"Mask:    {written['mask']:,} bytes, {time.monotonic() - stage:.1f}s"
+        )
+
+        for stamp, path in months.items():
+            stage = time.monotonic()
+            source = np.asarray(_open_rgb(path))
+            month_bytes = 0
+            for face in FACES:
+                flat = apply_ocean_mask(
+                    Image.fromarray(reproject_face(source, face, work, pool)),
+                    water[face],
+                    color=ocean_color,
+                )
+                month_bytes += _write_face(
+                    area_average(np.asarray(flat), face_size),
+                    output_dir / "day" / stamp / f"{face}.jxl",
+                    quality=quality,
+                    effort=effort,
+                )
+            del source
+            written["day"] += month_bytes
+            typer.echo(
+                f"Day:     {stamp} {month_bytes:,} bytes, "
+                f"{time.monotonic() - stage:.1f}s"
+            )
+
+        stage = time.monotonic()
+        source = np.asarray(_open_rgb(night_path))
+        night_work = working_size(night_width, face_size)
+        for face in FACES:
+            written["night"] += _write_face(
+                area_average(reproject_face(source, face, night_work, pool), face_size),
+                output_dir / "night" / f"{face}.jxl",
+                quality=quality,
+                effort=effort,
+            )
+        del source
+        typer.echo(
+            f"Night:   {written['night']:,} bytes, {time.monotonic() - stage:.1f}s"
+        )
+
+    files = len(FACES) * (len(months) + 2)
+    typer.echo(f"Output:  {files} files, {sum(written.values()):,} bytes")
+    typer.echo(f"Elapsed: {time.monotonic() - started:.1f}s")
+
+
+def _validate_face_size(value: int) -> int:
+    if value < 1:
+        raise typer.BadParameter("Face size must be a positive integer.")
+    return value
+
+
+def _validate_workers(value: int) -> int:
+    if value < 1:
+        raise typer.BadParameter("Workers must be at least 1.")
+    return value
+
+
+def _parse_ocean_color(value: str) -> tuple[int, int, int]:
+    red, green, blue = (int(part) for part in value.split(","))
+    return red, green, blue
+
+
+@app.command("cube")
+def cube(
+    input_dir: Annotated[
+        Path,
+        typer.Option(
+            "--input",
+            "-i",
+            help="Directory of monthly day maps named with a .YYYYMM. stamp.",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ],
+    night_path: Annotated[
+        Path,
+        typer.Option(
+            "--night",
+            help="Equirectangular night map.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ],
+    ocean_mask: Annotated[
+        Path,
+        typer.Option(
+            "--ocean-mask",
+            help="Path to ocean shapefile (.shp) for the water mask.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Directory that receives day/YYYYMM, night and mask.",
+            resolve_path=True,
+        ),
+    ],
+    face_size: Annotated[
+        int,
+        typer.Option(
+            "--face-size",
+            help="Edge length of each face in pixels.",
+            callback=_validate_face_size,
+        ),
+    ] = 2048,
+    quality: Annotated[
+        int,
+        typer.Option(
+            "--quality",
+            "-q",
+            help="JPEG XL quality of the day and night faces (1-100).",
+            callback=_validate_quality,
+        ),
+    ] = 85,
+    effort: Annotated[
+        int,
+        typer.Option(
+            "--effort",
+            "-e",
+            help="JPEG XL encoding effort (1-9). Higher = smaller file, slower.",
+            callback=_validate_effort,
+        ),
+    ] = 7,
+    ocean_color: Annotated[
+        str,
+        typer.Option(
+            "--ocean-color",
+            help="Ocean fill color as R,G,B (e.g. '10,30,60').",
+            callback=_validate_ocean_color,
+        ),
+    ] = "10,30,60",
+    ocean_supersample: Annotated[
+        int,
+        typer.Option(
+            "--ocean-supersample",
+            help="Supersampling factor for ocean mask anti-aliasing (minimum 1).",
+            callback=_validate_ocean_supersample,
+        ),
+    ] = 2,
+    ocean_coast_offset: Annotated[
+        int,
+        typer.Option(
+            "--ocean-coast-offset",
+            help="Shift coastline by N px (source res). + = expand, - = erode.",
+            callback=_validate_ocean_coast_offset,
+        ),
+    ] = 0,
+    ocean_preserve_ice: Annotated[
+        bool,
+        typer.Option(
+            "--ocean-preserve-ice/--no-ocean-preserve-ice",
+            help="Keep ice found in the polar ocean of any month as land.",
+        ),
+    ] = True,
+    ocean_ice_luminance: Annotated[
+        int,
+        typer.Option(
+            "--ocean-ice-luminance",
+            help="Seed luminance threshold for ice detection (0-255).",
+            callback=_validate_ocean_ice_luminance,
+        ),
+    ] = 200,
+    ocean_ice_latitude: Annotated[
+        float,
+        typer.Option(
+            "--ocean-ice-latitude",
+            help="Minimum absolute latitude for polar ice gate (0-90).",
+            callback=_validate_ocean_ice_latitude,
+        ),
+    ] = 60.0,
+    workers: Annotated[
+        int,
+        typer.Option(
+            "--workers",
+            help="Threads that resample a face.",
+            callback=_validate_workers,
+        ),
+    ] = min(4, os.cpu_count() or 1),
+) -> None:
+    """Bake equi-angular cube faces of the Earth's surface as JPEG XL.
+
+    Writes day/YYYYMM/<face>.jxl for every monthly map, night/<face>.jxl and a
+    lossless single-channel mask/<face>.jxl, with faces px, nx, py, ny, pz, nz.
+    A mask texel is the water fraction: 255 is open water, 0 is land or ice.
+    """
+    run_cube(
+        input_dir=input_dir,
+        night_path=night_path,
+        ocean_shapefile=ocean_mask,
+        output_dir=output_dir,
+        face_size=face_size,
+        quality=quality,
+        effort=effort,
+        ocean_color=_parse_ocean_color(ocean_color),
+        ocean_supersample=ocean_supersample,
+        ocean_coast_offset=ocean_coast_offset,
+        ocean_preserve_ice=ocean_preserve_ice,
+        ocean_ice_luminance=ocean_ice_luminance,
+        ocean_ice_latitude=ocean_ice_latitude,
+        workers=workers,
     )
 
 

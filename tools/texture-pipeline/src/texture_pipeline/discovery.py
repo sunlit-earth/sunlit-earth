@@ -1,5 +1,6 @@
 """File discovery and output path construction for the texture pipeline."""
 
+import re
 from pathlib import Path
 
 SUPPORTED_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -39,3 +40,34 @@ def compute_output_path(
     """
     relative = source_path.relative_to(input_root)
     return output_root / str(width) / relative.with_suffix(".jxl")
+
+
+def discover_months(input_dir: Path) -> dict[str, Path]:
+    """Find the monthly maps in *input_dir*, keyed by their ``YYYYMM`` stamp.
+
+    The stamp is the six-digit component between dots that NASA's names carry,
+    as in ``world.topo.200405.3x21600x10800.jpg``. The directory is not
+    searched recursively.
+
+    :param input_dir: Directory holding one image per month.
+    :returns: Paths keyed by stamp, in stamp order.
+    :raises ValueError: If an image carries no stamp, a stamp names no month,
+        or two images carry the same stamp.
+    """
+    months: dict[str, Path] = {}
+    for path in sorted(input_dir.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        match = re.search(r"\.(\d{4})(\d{2})\.", path.name)
+        if match is None:
+            msg = f"{path.name} carries no month stamp such as .200405."
+            raise ValueError(msg)
+        if not 1 <= int(match[2]) <= 12:
+            msg = f"{path.name}: {match[2]} is not a month"
+            raise ValueError(msg)
+        stamp = match[1] + match[2]
+        if stamp in months:
+            msg = f"{months[stamp].name} and {path.name} both carry {stamp}"
+            raise ValueError(msg)
+        months[stamp] = path
+    return dict(sorted(months.items()))

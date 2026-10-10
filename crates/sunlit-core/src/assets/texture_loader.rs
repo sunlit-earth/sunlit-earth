@@ -1,6 +1,7 @@
 //! Load equirectangular texture images from disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Register the JPEG-XL decoding hook with the `image` crate.
 ///
@@ -10,32 +11,162 @@ pub fn register_jxl_hook() {
     jxl_oxide::integration::register_image_decoding_hook();
 }
 
-/// Decoded RGBA8 image data.
-pub struct DecodedImage {
-    pub pixels: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
+/// What each pixel of a [`DecodedImage`] holds, a byte per channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channels {
+    /// Red, green, blue and alpha.
+    Rgba,
+    /// The red channel alone, for a map the shader reads one channel of.
+    Red,
 }
 
-/// Load and decode an image file into pixels the sphere can sample.
+impl Channels {
+    /// Bytes per pixel.
+    pub const fn count(self) -> usize {
+        match self {
+            Self::Rgba => 4,
+            Self::Red => 1,
+        }
+    }
+}
+
+/// Decoded 8-bit image data, row 0 first.
+pub struct DecodedImage {
+    pub pixels: Pixels,
+    pub width: u32,
+    pub height: u32,
+    pub channels: Channels,
+}
+
+/// The decoded pixel buffers of this process, as [`decoded_pixels`] counts
+/// them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DecodedCount {
+    /// Buffers alive now.
+    pub frames: u64,
+    /// Bytes the live buffers hold.
+    pub bytes: u64,
+    /// Buffers made since the process started, alive or not.
+    pub made: u64,
+}
+
+static LIVE_FRAMES: AtomicU64 = AtomicU64::new(0);
+static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
+static MADE_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// The [`Pixels`] alive in this process, and how many there have been.
+///
+/// Every decoded image is made to be uploaded and dropped, so between loads
+/// the live count is zero, and a frame that stays alive is one parked in a
+/// queue, a cache or a long-lived struct. `made` is what lets a caller tell
+/// "uploaded" from "not decoded yet": a count that is zero after `made` moved
+/// past a frame is that frame gone.
+pub fn decoded_pixels() -> DecodedCount {
+    DecodedCount {
+        made: MADE_FRAMES.load(Ordering::SeqCst),
+        frames: LIVE_FRAMES.load(Ordering::SeqCst),
+        bytes: LIVE_BYTES.load(Ordering::SeqCst),
+    }
+}
+
+/// The pixels of a [`DecodedImage`], counted in [`decoded_pixels`] for as long
+/// as they exist.
+///
+/// A frame is counted on creation and uncounted on drop. [`Pixels::replace`]
+/// swaps the buffer of a frame that changes size, a halving or the next mip
+/// level, so a frame stays one frame from its decode until its last level is
+/// gone.
+pub struct Pixels(Vec<u8>);
+
+/// Bytes a buffer holds, as the counter counts them.
+fn held(bytes: &Vec<u8>) -> u64 {
+    bytes.capacity() as u64
+}
+
+impl Pixels {
+    /// Count `bytes` as one decoded frame.
+    pub fn new(bytes: Vec<u8>) -> Self {
+        LIVE_BYTES.fetch_add(held(&bytes), Ordering::SeqCst);
+        LIVE_FRAMES.fetch_add(1, Ordering::SeqCst);
+        MADE_FRAMES.fetch_add(1, Ordering::SeqCst);
+        Self(bytes)
+    }
+
+    /// Hold `bytes` in place of the buffer this frame held, which is dropped.
+    pub fn replace(&mut self, bytes: Vec<u8>) {
+        LIVE_BYTES.fetch_add(held(&bytes), Ordering::SeqCst);
+        let old = std::mem::replace(&mut self.0, bytes);
+        LIVE_BYTES.fetch_sub(held(&old), Ordering::SeqCst);
+    }
+}
+
+impl Drop for Pixels {
+    fn drop(&mut self) {
+        LIVE_BYTES.fetch_sub(held(&self.0), Ordering::SeqCst);
+        LIVE_FRAMES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl std::ops::Deref for Pixels {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Pixels {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl std::fmt::Debug for Pixels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Load and decode an image file into pixels the sphere can sample, at a
+/// width of at most `max_width`.
+///
+/// The source is halved with the box filter until it fits, before
+/// [`orient`], so a source at or under `max_width` is loaded as it is: the
+/// resolution setting is a cap, not a resize.
 ///
 /// The format comes from the file extension, not from the content, because
 /// that is what `ImageReader::open` reads it from. JXL is one of them once the
 /// decoding hook has been registered through [`register_jxl_hook`].
-#[tracing::instrument(skip_all, fields(path = %path.display()))]
-pub fn load(path: &Path) -> Result<DecodedImage, String> {
+#[tracing::instrument(skip_all, fields(path = %path.display(), max_width))]
+pub fn load_capped(path: &Path, max_width: u32) -> Result<DecodedImage, String> {
     let mut img = decode(path)?;
+    for _ in 0..halvings_to(img.width, max_width) {
+        let halved =
+            downsample_2x_channels(&img.pixels, img.width, img.height, img.channels.count());
+        img.pixels.replace(halved);
+        img.width = (img.width / 2).max(1);
+        img.height = (img.height / 2).max(1);
+    }
     orient(&mut img);
     Ok(img)
 }
 
-/// Decode an image file to RGBA8 exactly as the file stores it.
+/// How many halvings take `width` down to at most `target`.
 ///
-/// This is the half of [`load`] the texture cache needs: a cached downscale is
-/// written in the source's own orientation, so that reading one back through
-/// `load` is correct and a human opening the file sees the map the right way
-/// round.
-pub(crate) fn decode(path: &Path) -> Result<DecodedImage, String> {
+/// Zero when the source is already small enough. A target of zero stops at
+/// one pixel rather than looping.
+fn halvings_to(width: u32, target: u32) -> u32 {
+    let mut steps = 0;
+    let mut w = width;
+    while w > target && w >= 2 {
+        w /= 2;
+        steps += 1;
+    }
+    steps
+}
+
+/// Decode an image file to RGBA8 exactly as the file stores it.
+fn decode(path: &Path) -> Result<DecodedImage, String> {
     let mut reader = image::ImageReader::open(path)
         .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
     reader.no_limits();
@@ -46,9 +177,10 @@ pub(crate) fn decode(path: &Path) -> Result<DecodedImage, String> {
 
     let (width, height) = img.dimensions();
     Ok(DecodedImage {
-        pixels: img.into_raw(),
+        pixels: Pixels::new(img.into_raw()),
         width,
         height,
+        channels: Channels::Rgba,
     })
 }
 
@@ -60,20 +192,19 @@ pub(crate) fn decode(path: &Path) -> Result<DecodedImage, String> {
 /// - Horizontal shift left by 1/4 width: aligns the prime meridian with u=0
 ///   in our sphere's UV mapping.
 pub(crate) fn orient(img: &mut DecodedImage) {
-    flip_horizontal(&mut img.pixels, img.width, img.height);
-    shift_horizontal(&mut img.pixels, img.width, img.height);
+    let channels = img.channels.count();
+    flip_horizontal(&mut img.pixels, img.width, img.height, channels);
+    shift_horizontal(&mut img.pixels, img.width, img.height, channels);
 }
 
 /// Mirror every row, so east ends up where the sphere's winding expects it.
-fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
-    let w = width as usize;
-    let row_bytes = w * 4;
-    for y in 0..height as usize {
-        let row = &mut pixels[y * row_bytes..(y + 1) * row_bytes];
-        for x in 0..w / 2 {
-            let (left, right) = (x * 4, (w - 1 - x) * 4);
-            for c in 0..4 {
-                row.swap(left + c, right + c);
+fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32, channels: usize) {
+    let row_bytes = width as usize * channels;
+    for row in pixels.chunks_exact_mut(row_bytes).take(height as usize) {
+        row.reverse();
+        if channels > 1 {
+            for pixel in row.chunks_exact_mut(channels) {
+                pixel.reverse();
             }
         }
     }
@@ -81,10 +212,10 @@ fn flip_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 
 /// Shift all rows left by 1/4 width (wrapping), aligning the prime meridian
 /// with the sphere's u=0.
-fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
+fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32, channels: usize) {
     let w = width as usize;
-    let row_bytes = w * 4;
-    let shift_bytes = w * 3; // 3/4 width in bytes (each pixel is 4 bytes)
+    let row_bytes = w * channels;
+    let shift_bytes = w * 3 * channels / 4;
 
     for y in 0..height as usize {
         let row = &mut pixels[y * row_bytes..(y + 1) * row_bytes];
@@ -93,15 +224,11 @@ fn shift_horizontal(pixels: &mut [u8], width: u32, height: u32) {
 }
 
 /// Box-filter downsample: average each 2x2 block of RGBA pixels.
-///
-/// Used for both mip generation in the renderer and the on-disk downscales the
-/// texture cache writes, which is why it lives with the pixel handling rather
-/// than with either caller.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the mean of four bytes is a byte, and a pixel count indexes a buffer that already holds those pixels"
 )]
-pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
+pub fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
     let dst_w = (src_w / 2).max(1) as usize;
     let dst_h = (src_h / 2).max(1) as usize;
     let sw = src_w as usize;
@@ -125,6 +252,63 @@ pub(crate) fn downsample_2x(src: &[u8], src_w: u32, src_h: u32) -> Vec<u8> {
     }
 
     dst
+}
+
+/// [`downsample_2x`] for pixels of `channels` bytes each.
+///
+/// Used for both mip generation in the renderer and the halving of
+/// [`load_capped`], which is why it lives with the pixel handling rather than
+/// with either caller.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the mean of four bytes is a byte"
+)]
+pub fn downsample_2x_channels(src: &[u8], src_w: u32, src_h: u32, channels: usize) -> Vec<u8> {
+    if channels == 4 {
+        return downsample_2x(src, src_w, src_h);
+    }
+    let dst_w = (src_w / 2).max(1) as usize;
+    let dst_h = (src_h / 2).max(1) as usize;
+    let sw = src_w as usize;
+    let sh = src_h as usize;
+    let row = sw * channels;
+    let mut dst = vec![0u8; dst_w * dst_h * channels];
+    for (y, out) in dst.chunks_exact_mut(dst_w * channels).enumerate() {
+        let top = &src[y * 2 * row..][..row];
+        let bottom = &src[(y * 2 + 1).min(sh - 1) * row..][..row];
+        for x in 0..dst_w {
+            let left = x * 2 * channels;
+            let right = (x * 2 + 1).min(sw - 1) * channels;
+            for c in 0..channels {
+                let sum = u16::from(top[left + c])
+                    + u16::from(top[right + c])
+                    + u16::from(bottom[left + c])
+                    + u16::from(bottom[right + c]);
+                out[x * channels + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    dst
+}
+
+/// Where earlier versions kept halved copies of the flat surface maps, under
+/// the app's cache directory.
+const RETIRED_DOWNSCALES: &str = "texture_cache";
+
+/// Remove the halved copies earlier versions wrote under `cache_dir`, which
+/// nothing reads any more.
+///
+/// A directory that is not there is the usual case and says nothing; one that
+/// cannot be removed is left for the next start.
+pub(crate) fn remove_retired_downscales(cache_dir: &Path) {
+    let dir = cache_dir.join(RETIRED_DOWNSCALES);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => tracing::info!(path = %dir.display(), "removed the retired texture downscales"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(path = %dir.display(), error = %e, "could not remove the retired texture downscales");
+        }
+    }
 }
 
 /// Resolve the textures directory using the fallback chain:
@@ -202,7 +386,7 @@ mod tests {
                 .map(|i| [(i * 10) as u8, (i * 10 + 1) as u8, (i * 10 + 2) as u8, 255])
                 .collect();
             let mut buf = pixels_from(&px);
-            shift_horizontal(&mut buf, width as u32, 1);
+            shift_horizontal(&mut buf, width as u32, 1, 4);
 
             let shift = width * 3 / 4;
             for (i, pixel) in px.iter().enumerate() {
@@ -216,7 +400,7 @@ mod tests {
 
         let mut uniform = [128, 64, 32, 255].repeat(4);
         let original = uniform.clone();
-        shift_horizontal(&mut uniform, 4, 1);
+        shift_horizontal(&mut uniform, 4, 1, 4);
         assert_eq!(uniform, original, "a row of one colour cannot rotate");
     }
 
@@ -235,7 +419,7 @@ mod tests {
             [29, 30, 31, 32],
         ];
         let mut buf = pixels_from(&[row1.as_slice(), row2.as_slice()].concat());
-        shift_horizontal(&mut buf, 4, 2);
+        shift_horizontal(&mut buf, 4, 2, 4);
         // Row 0: rotate_right by 3 -> [B, C, D, A]
         assert_eq!(pixel_at(&buf, 0), row1[1]);
         assert_eq!(pixel_at(&buf, 1), row1[2]);
@@ -246,6 +430,71 @@ mod tests {
         assert_eq!(pixel_at(&buf, 5), row2[2]);
         assert_eq!(pixel_at(&buf, 6), row2[3]);
         assert_eq!(pixel_at(&buf, 7), row2[0]);
+    }
+
+    /// The setting is a cap, so a source at or under the target is left alone
+    /// and one above it is halved until it fits. A target of zero has no width
+    /// to reach, so the halving stops at one pixel instead of looping.
+    #[test]
+    fn a_source_is_halved_until_it_fits_the_target() {
+        for (source, target, halvings) in [
+            (8192, 8192, 0),
+            (8192, 4096, 1),
+            (8192, 2048, 2),
+            (4096, 2048, 1),
+            (2048, 8192, 0),
+            (1, 8192, 0),
+            (8, 0, 3),
+        ] {
+            assert_eq!(
+                halvings_to(source, target),
+                halvings,
+                "{source} down to {target}"
+            );
+        }
+    }
+
+    /// A capped load is the halved source, oriented as a full-width load is,
+    /// and one under the cap is the full-width load itself.
+    #[test]
+    fn a_capped_load_halves_before_it_orients() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_capped");
+        let path = scratch.join("source.png");
+        let (width, height) = (32_u32, 16_u32);
+        let source = fixture(width, height, 7);
+        image::RgbaImage::from_raw(width, height, source.clone())
+            .expect("buffer fits")
+            .save(&path)
+            .expect("write the source");
+
+        let capped = load_capped(&path, 8).expect("a capped load");
+        let mut expected = DecodedImage {
+            pixels: Pixels::new(downsample_2x(
+                &downsample_2x(&source, width, height),
+                width / 2,
+                height / 2,
+            )),
+            width: width / 4,
+            height: height / 4,
+            channels: Channels::Rgba,
+        };
+        orient(&mut expected);
+        assert_eq!((capped.width, capped.height), (8, 4));
+        assert_eq!(*capped.pixels, *expected.pixels);
+
+        let whole = load_capped(&path, width).expect("an uncapped load");
+        let mut oriented = decode(&path).expect("a decode");
+        orient(&mut oriented);
+        assert_eq!(*whole.pixels, *oriented.pixels);
+    }
+
+    #[test]
+    fn a_missing_source_is_an_error_rather_than_a_panic() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_missing");
+        let Err(err) = load_capped(&scratch.join("absent.png"), 8) else {
+            panic!("a missing source cannot load");
+        };
+        assert!(err.contains("absent.png"), "{err}");
     }
 
     // -----------------------------------------------------------------------
@@ -264,7 +513,7 @@ mod tests {
             .into_raw();
 
             let mut ours = pixels;
-            flip_horizontal(&mut ours, w, h);
+            flip_horizontal(&mut ours, w, h, 4);
             assert_eq!(ours, expected, "differed at {w}x{h}");
         }
     }
@@ -312,6 +561,44 @@ mod tests {
         }
     }
 
+    /// The red channel of an RGBA image.
+    fn red(rgba: &[u8]) -> Vec<u8> {
+        rgba.chunks(4).map(|pixel| pixel[0]).collect()
+    }
+
+    /// A one-channel image is halved and oriented to the red channel of the
+    /// RGBA image it came from, which is what lets the clouds keep one channel
+    /// without the overlay moving or blurring differently.
+    #[test]
+    fn one_channel_is_halved_and_oriented_as_its_rgba_red_channel() {
+        for (w, h) in [(6_u32, 4_u32), (8, 8), (5, 3), (16, 2)] {
+            let rgba = fixture(w, h, 3);
+            assert_eq!(
+                downsample_2x_channels(&red(&rgba), w, h, 1),
+                red(&downsample_2x(&rgba, w, h)),
+                "halving {w}x{h}"
+            );
+        }
+        for (w, h) in [(4_u32, 2_u32), (8, 8), (16, 3)] {
+            let rgba = fixture(w, h, 5);
+            let mut whole = DecodedImage {
+                pixels: Pixels::new(rgba.clone()),
+                width: w,
+                height: h,
+                channels: Channels::Rgba,
+            };
+            let mut one = DecodedImage {
+                pixels: Pixels::new(red(&rgba)),
+                width: w,
+                height: h,
+                channels: Channels::Red,
+            };
+            orient(&mut whole);
+            orient(&mut one);
+            assert_eq!(*one.pixels, *red(&whole.pixels), "orienting {w}x{h}");
+        }
+    }
+
     /// An image of `width` by `height` filled from `seed`.
     ///
     /// Derived from the dimensions rather than generated beside them, so no
@@ -333,8 +620,8 @@ mod tests {
             let original = fixture(width, height, seed);
             let mut buf = original.clone();
 
-            flip_horizontal(&mut buf, width, height);
-            flip_horizontal(&mut buf, width, height);
+            flip_horizontal(&mut buf, width, height, 4);
+            flip_horizontal(&mut buf, width, height, 4);
             proptest::prop_assert_eq!(buf, original);
         }
     }
@@ -351,10 +638,27 @@ mod tests {
 
             // Four shifts of 3/4 width = 3 full rotations = identity
             for _ in 0..4 {
-                shift_horizontal(&mut buf, width, height);
+                shift_horizontal(&mut buf, width, height, 4);
             }
             proptest::prop_assert_eq!(buf, original);
         }
+    }
+
+    #[test]
+    fn the_retired_downscales_are_removed_and_their_neighbors_kept() {
+        let scratch = crate::test_support::ScratchDir::new("texture_loader_retired");
+        let retired = scratch.join(RETIRED_DOWNSCALES);
+        std::fs::create_dir_all(&retired).expect("the retired directory");
+        std::fs::write(retired.join("world.topo.200405.2048.png"), b"a downscale")
+            .expect("a retired file");
+        std::fs::write(scratch.join("clouds.jpg"), b"a neighbor").expect("a neighbor");
+
+        remove_retired_downscales(scratch.path());
+        assert!(!retired.exists());
+        assert!(scratch.join("clouds.jpg").exists());
+
+        remove_retired_downscales(scratch.path());
+        assert!(!retired.exists(), "a second start finds nothing to do");
     }
 
     /// The `.app`'s `Contents/Resources/textures`, which the plain candidate

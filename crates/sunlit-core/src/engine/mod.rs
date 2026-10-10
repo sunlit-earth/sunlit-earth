@@ -9,9 +9,12 @@
 pub mod clock;
 mod cloud_worker;
 mod handle;
+mod loading;
 mod protocol;
 mod publish;
 mod schedule;
+mod surface;
+mod tile_loader;
 pub mod wallpaper_sink;
 
 use std::sync::Arc;
@@ -21,11 +24,13 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use tracing::{debug, info, warn};
 
 use crate::assets::mailbox::TextureMailbox;
+use crate::assets::tiles::TranscoderConfig;
 use crate::config::QualityTier;
 use crate::params::SceneParams;
+use crate::renderer::residency::{Output, surfaces_for};
 use crate::renderer::{
-    RenderOutcome, Renderer, RendererConfig, SlotLayout, quantize_to_granularity,
-    resolve_sample_count,
+    RenderOutcome, Renderer, RendererConfig, SlotLayout, SurfaceFormats, quantize_to_granularity,
+    resolve_sample_count, surface_sampler_descriptor,
 };
 use crate::scene::sky::{self, SkyState};
 
@@ -33,8 +38,12 @@ use clock::Clock;
 use cloud_worker::{CloudWorker, spawn_cloud_worker};
 use handle::AdapterReport;
 pub use handle::{EngineConfig, EngineHandle, start};
+pub use loading::TILES_NAMED_AFTER;
 pub use protocol::{EngineCommand, EngineEvent};
 use schedule::Schedule;
+use surface::SurfaceFeed;
+use tile_loader::{LoaderConfig, View};
+pub use tile_loader::{TileGate, TileReport};
 use wallpaper_sink::WallpaperSink;
 
 /// How long the loop blocks on the command channel before re-checking the
@@ -69,6 +78,14 @@ const METRICS_INTERVAL: Duration = Duration::from_mins(10);
 /// stepping over anything.
 pub const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 
+/// How long an export waits for the tiles its frame wants, on the injected
+/// clock, before it is made with what is resident in their place: their
+/// resident ancestors, or the floor. A wallpaper made that way is made again
+/// once the tiles are resident.
+///
+/// Public because the integration tests step over it.
+pub const TILE_WAIT: Duration = Duration::from_secs(5);
+
 /// The engine's own state, private to its thread.
 ///
 /// The bools are independent latches on a private struct rather than
@@ -97,6 +114,19 @@ struct Engine {
     /// A wallpaper update was asked for while a texture was still on its way,
     /// and happens as soon as it arrives.
     wallpaper_owed: bool,
+    /// The renders the wallpaper owed, or to be made again, is made of, whose
+    /// tiles join the wanted set until it is made from them.
+    wallpaper_shots: Vec<publish::Shot>,
+    /// When the wallpaper owed began to wait for its tiles alone, the cubes
+    /// being resident, which is what [`TILE_WAIT`] counts from, and how many
+    /// packs had been opened for their tiles then: one opened since starts
+    /// the count over.
+    tiles_awaited_since: Option<(Duration, u64)>,
+    /// A wallpaper went out after [`TILE_WAIT`] with tiles missing, and is
+    /// made again when they are resident.
+    reexport: bool,
+    /// `RenderToFile` and `ExportPixels` requests waiting for their tiles.
+    exports: Vec<publish::WaitingExport>,
     /// A client asked for a wallpaper update. The publish happens in `tick`, so
     /// several requests drained together cost one native-resolution render
     /// rather than one each.
@@ -129,6 +159,9 @@ struct Engine {
     metrics: Option<Schedule>,
     auto_refresh: Option<Schedule>,
     cloud: Option<CloudWorker>,
+    /// The transcoder and the month in force, when the globe is drawn from the
+    /// cube surface.
+    surface: Option<SurfaceFeed>,
 }
 
 /// Whether preview frames are wanted, and whether one is owed right now.
@@ -146,6 +179,10 @@ struct PreviewState {
 }
 
 impl Engine {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear setup sequence, most of it the state's fields one per line"
+    )]
     fn new(
         config: EngineConfig,
         rx: Receiver<EngineCommand>,
@@ -171,19 +208,59 @@ impl Engine {
             on_event,
             record_metrics,
             mailbox,
+            cube_textures,
+            tile_geometry,
+            tile_layers,
+            tile_gate,
+            build_gate,
+            every_floor,
         } = config;
 
         let slots = SlotLayout::new(texture_paths.len());
         let mailbox = checked_mailbox(mailbox, slots, texture_paths.len());
         let gpu = open_gpu(force_software, ready)?;
+        if let Some(dir) = &cache_dir {
+            crate::assets::texture_loader::remove_retired_downscales(dir);
+        }
 
         // Every background producer wakes the engine loop through the same
         // command channel, so there is exactly one place that decides what to
-        // do about new work.
+        // do about new work. The channel is unbounded, so the send never
+        // blocks, which the transcoder's notify callback relies on: it runs on
+        // a thread that dropping the transcoder joins.
         let poke_tx = command_tx.clone();
         let notify: crate::assets::cloud_fetcher::NotifyFn = Arc::new(move || {
             let _ = poke_tx.send(EngineCommand::Poke);
         });
+
+        let now = clock.elapsed();
+        let month = crate::scene::month::month_in_force(&params.datetime, clock.now_utc());
+        let cpu_adapter = gpu.device_type == wgpu::DeviceType::Cpu;
+        let formats = SurfaceFormats::for_adapter(
+            gpu.device
+                .features()
+                .contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
+            cpu_adapter,
+        );
+        let mut surface = start_surface(
+            cache_dir.as_ref(),
+            TranscoderConfig {
+                geometry: tile_geometry,
+                gate: build_gate,
+                ..TranscoderConfig::new(std::path::PathBuf::new(), cube_textures, month)
+            },
+            now,
+            &notify,
+            &LoaderConfig {
+                decode: formats.color == wgpu::TextureFormat::Rgba8Unorm,
+                anisotropy: surface_sampler_descriptor(cpu_adapter).anisotropy_clamp,
+                workers: crate::assets::tiles::default_threads(),
+                gate: tile_gate,
+            },
+        );
+        if let Some(surface) = &mut surface {
+            surface.keep_every_floor(every_floor.unwrap_or(!cpu_adapter));
+        }
 
         let requested_sample_count = params.sample_count;
         params.sample_count = resolve_and_warn(
@@ -203,13 +280,15 @@ impl Engine {
                 height,
                 texture_paths,
                 texture_resolution,
-                texture_cache_dir: cache_dir.clone(),
                 mailbox: mailbox.clone(),
                 notify: Arc::clone(&notify),
+                cube_month: surface.as_ref().map(|_| month),
+                cpu_adapter,
+                tile_geometry,
+                tile_layers,
             },
         );
 
-        let now = clock.elapsed();
         let cloud = cloud.map(|source| {
             spawn_cloud_worker(
                 source,
@@ -240,6 +319,10 @@ impl Engine {
                 readback_failed: false,
             },
             wallpaper_owed: false,
+            wallpaper_shots: Vec::new(),
+            tiles_awaited_since: None,
+            reexport: false,
+            exports: Vec::new(),
             publish_asked: false,
             display_mode,
             anchor_monitor,
@@ -255,6 +338,7 @@ impl Engine {
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
+            surface,
         })
     }
 
@@ -321,6 +405,9 @@ impl Engine {
                 if enabled && !self.preview.enabled {
                     self.preview.owed = true;
                 }
+                if !enabled {
+                    self.renderer.release_preview_readback();
+                }
                 self.preview.enabled = enabled;
             }
             EngineCommand::RenderWallpaperNow => self.publish_asked = true,
@@ -333,21 +420,25 @@ impl Engine {
                 width,
                 height,
                 reply,
-            } => {
-                let result = self.render_to_file(&path, width, height);
-                let _ = reply.send(result);
-            }
+            } => self.export(width, height, publish::ExportReply::File { path, reply }),
             EngineCommand::ExportPixels {
                 width,
                 height,
                 reply,
-            } => {
-                self.prepare_export();
-                let _ = reply.send(self.renderer.export_image(width, height));
-            }
+            } => self.export(width, height, publish::ExportReply::Pixels(reply)),
             EngineCommand::SetTextureResolution(width) => self.set_texture_resolution(width),
-            EngineCommand::ReportMemory { reply } => {
+            EngineCommand::ReportMemory { reply, settled } => {
+                if settled {
+                    self.renderer.flush_and_wait();
+                }
                 let _ = reply.send(Box::new(self.renderer.memory_report(&self.adapter_key)));
+            }
+            EngineCommand::ReportTiles { reply } => {
+                let report = self
+                    .surface
+                    .as_ref()
+                    .map(|surface| surface.tile_report(&self.renderer));
+                let _ = reply.send(report.map(Box::new));
             }
             EngineCommand::SetAutoRefresh { enabled, interval } => {
                 self.set_auto_refresh(enabled, interval);
@@ -368,11 +459,20 @@ impl Engine {
                 self.drain.next = Duration::ZERO;
             }
             EngineCommand::Shutdown => {
-                // A publish asked for in the same drain batch as the shutdown
-                // is still someone's request, and there is no tick left to do
-                // it in.
-                if std::mem::take(&mut self.publish_asked) {
-                    self.publish_wallpaper();
+                // A publish asked for in the same drain batch as the shutdown,
+                // or one still waiting for its tiles, is still someone's
+                // request, and there is no tick left to do it in or to wait
+                // in.
+                if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
+                    self.publish_wallpaper_at_exit();
+                }
+                // A caller waiting on an export is answered with what is
+                // resident rather than with a closed channel.
+                if !self.exports.is_empty() {
+                    self.prepare_export();
+                    for export in std::mem::take(&mut self.exports) {
+                        self.answer(export);
+                    }
                 }
                 return false;
             }
@@ -384,6 +484,12 @@ impl Engine {
     fn set_texture_resolution(&mut self, width: u32) {
         if self.renderer.set_texture_resolution(width) {
             info!(texture_resolution = width, "surface texture resolution");
+            // The tiles of the old cap go, the floors stay, and the next draw
+            // asks for the tiles the new one allows.
+            if let Some(surface) = &mut self.surface {
+                surface.purge_tiles(&mut self.renderer);
+                self.restart_export_waits();
+            }
             // The textures the current mode needs are gone until the
             // reload lands, so the readiness latch has to reopen or
             // clients would never hear about the new ones.
@@ -430,6 +536,27 @@ impl Engine {
             self.dirty = true;
         }
 
+        // Every tick rather than on the drain's schedule: a pack that landed is
+        // one cheap check away, and the first frame of a first run waits on it.
+        // A pack opened for its tiles that changes nothing drawn, the month
+        // ahead's, has its tiles asked for without a frame.
+        let mut opened = false;
+        if let Some(surface) = &mut self.surface {
+            let before = surface.packs_opened();
+            if surface.drain(&mut self.renderer) {
+                self.dirty = true;
+            }
+            opened = surface.packs_opened() != before;
+        }
+        if opened && !self.dirty {
+            self.want_now();
+        }
+        // A pack that fails changes nothing drawn but can complete what the
+        // latch waits for, and the latch is judged after a draw.
+        if !self.textures_ready && !self.dirty && self.textures_ready() {
+            self.dirty = true;
+        }
+
         if let Some(cloud) = &mut self.cloud {
             if cloud.schedule.due(now) {
                 cloud.owed = true;
@@ -452,6 +579,12 @@ impl Engine {
             && metrics.due(now)
         {
             crate::memory::record_metrics_sample(self.renderer.texture_resolution());
+        }
+
+        if let Some(surface) = &mut self.surface
+            && surface.settle_drag(&self.params.camera, now)
+        {
+            self.dirty = true;
         }
 
         if let Some(schedule) = &mut self.auto_refresh
@@ -491,7 +624,23 @@ impl Engine {
         // Wallpaper", or the tray and IPC arriving together, are one wallpaper.
         if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
             self.publish_wallpaper();
+        } else if self.reexport
+            && !self.renderer.textures_pending(self.params.texture_index)
+            && !self.shots_pending()
+        {
+            info!("the tiles a wallpaper went out without are resident; making it again");
+            self.publish_wallpaper();
         }
+        self.settle_exports();
+
+        // Last, so that the gate opens only when nothing in this tick drew,
+        // and so that a drag's pause counts from the end of the frame's work,
+        // its readback included, which on a software adapter is most of it.
+        if let Some(surface) = &mut self.surface {
+            surface.relax(now);
+            surface.end_tick(self.clock.elapsed());
+        }
+        self.note_status();
     }
 
     /// Replace the requested MSAA count with one [`resolve_and_warn`] allows,
@@ -513,32 +662,165 @@ impl Engine {
         sky::compute_sky_state_at(&self.params.datetime, self.clock.now_utc())
     }
 
+    /// Derive the month in force from the date, as the sky state is, and move
+    /// the surface to it when it changed.
+    ///
+    /// Outside the digest like the sun direction: the month is not a
+    /// parameter anyone sets but a consequence of the date. A floor that
+    /// is not resident yet reopens the readiness latch, so clients hear
+    /// `TexturesReady` again when it lands. A change marks the frame dirty
+    /// whichever path saw it first, a draw or a publish, so the next tick
+    /// draws the new month and asks for its tiles; a publish that is owed
+    /// and still waiting returns without drawing, and nothing else would.
+    fn sync_month(&mut self) {
+        let Some(surface) = &mut self.surface else {
+            return;
+        };
+        let (date, now) = (&self.params.datetime, self.clock.now_utc());
+        let month = crate::scene::month::month_in_force(date, now);
+        let ahead = crate::scene::month::month_ahead(date, now);
+        if surface.set_month(month, ahead, &mut self.renderer) {
+            self.dirty = true;
+        }
+        if !self.renderer.textures_ready(self.params.texture_index) {
+            self.textures_ready = false;
+        }
+    }
+
+    /// Whether everything the frame needs is resident: the cubes the mode
+    /// needs, and every tile it wants in view at the 1 px threshold, a failed
+    /// one counting as there (plan decision 10).
+    fn textures_ready(&self) -> bool {
+        self.renderer.textures_ready(self.params.texture_index)
+            && self
+                .surface
+                .as_ref()
+                .is_none_or(|surface| surface.tiles_complete(&self.renderer))
+    }
+
+    /// The engine is about to draw, or has just drawn: the transcoder's pause
+    /// gate closes now and stays closed for a while.
+    fn mark_busy(&mut self) {
+        let now = self.clock.elapsed();
+        if let Some(surface) = &mut self.surface {
+            surface.mark_busy(now);
+        }
+    }
+
+    /// Draw the scene as it stands, for the preview or for an export, and hand
+    /// back the sky it was drawn under.
+    ///
+    /// Every path that draws comes through here first, the preview's and each
+    /// export's, so that the pause gate closes before any of them draws: a
+    /// build of the rest of the year gives way at its next check rather than
+    /// running through the frame.
+    fn draw(&mut self) -> (RenderOutcome, SkyState) {
+        self.sync_month();
+        self.mark_busy();
+        let sky = self.sky_state();
+        self.want_tiles(&sky);
+        let outcome = self.renderer.render(&self.params, &sky);
+        self.note_readiness();
+        (outcome, sky)
+    }
+
+    /// Tell clients what is loading, and when everything the frame needs has
+    /// become resident.
+    ///
+    /// After every draw, the preview's and an export's alike, so that
+    /// `TexturesReady` goes out before a wallpaper drawn from what it
+    /// announces. The latch follows readiness both ways, so new tiles wanted,
+    /// a drag, a month or a resolution switch each reopen it, and clients hear
+    /// it again when what they want is there.
+    fn note_readiness(&mut self) {
+        self.note_status();
+        let ready = self.textures_ready();
+        if ready && !self.textures_ready {
+            debug!("textures ready");
+            self.dump_memory_report();
+            self.emit(EngineEvent::TexturesReady);
+        }
+        self.textures_ready = ready;
+    }
+
+    /// Tell clients what the loading line says now, when it changed: the pack
+    /// the transcoder is preparing, and otherwise the surfaces the frame
+    /// waits for, a cube the mode needs or, once they have been on their way
+    /// for a moment, the tiles in view.
+    ///
+    /// After every draw and at the end of every tick, since the transcoder
+    /// prepares the rest of the year while nothing is drawn.
+    fn note_status(&mut self) {
+        let (mut day, mut night) = self.renderer.cubes_waiting(self.params.texture_index);
+        let mut preparing = None;
+        if let Some(surface) = &mut self.surface {
+            preparing = surface.preparing();
+            let tiles = surface.tiles_waiting(&self.renderer, self.clock.elapsed());
+            day |= tiles.0;
+            night |= tiles.1;
+        }
+        let status = loading::text(preparing, day, night);
+        if status != self.last_status {
+            self.last_status.clone_from(&status);
+            self.emit(EngineEvent::Status(status));
+        }
+    }
+
+    /// Ask the tile loader for the tiles the preview wants under `sky`, and
+    /// every export waiting for its tiles, before the frame is drawn, so the
+    /// page table it draws with is held to the preview's cap.
+    fn want_tiles(&mut self, sky: &SkyState) {
+        let Some(surface) = &mut self.surface else {
+            return;
+        };
+        let (width, height) = self.renderer.size();
+        let mut outputs = vec![tile_output(&self.params, width, height, false)];
+        outputs.extend(self.wallpaper_shots.iter().map(|shot| {
+            tile_output(
+                &shot.framing.applied_to(&self.params),
+                shot.width,
+                shot.height,
+                true,
+            )
+        }));
+        outputs.extend(
+            self.exports
+                .iter()
+                .map(|export| tile_output(&self.params, export.width, export.height, true)),
+        );
+        let view = View {
+            outputs: &outputs,
+            month: surface.month(),
+            ahead: surface.ahead(),
+            surfaces: surfaces_for(&self.params, sky.sun_direction),
+            texture_resolution: self.renderer.texture_resolution(),
+            drag: surface.drag(&self.params.camera, self.clock.elapsed()),
+        };
+        surface.want_tiles(&view, &mut self.renderer);
+    }
+
+    /// Bring the wanted set up to date with the outputs as they stand,
+    /// without drawing: for renders planned while a cube is still on its
+    /// way, whose tiles are read ahead of it.
+    fn want_now(&mut self) {
+        let sky = self.sky_state();
+        self.want_tiles(&sky);
+    }
+
     /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that
     /// a tick asks the preview target for its pixels once however it got here.
     fn render_if_dirty(&mut self) -> bool {
         if !self.dirty {
             return false;
         }
-        let sky = self.sky_state();
-        let outcome = self.renderer.render(&self.params, &sky);
+        let (outcome, _) = self.draw();
         self.dirty = false;
         if matches!(outcome, RenderOutcome::Rendered { first_frame: true }) {
             info!("first frame rendered");
         }
-
-        let status = self.renderer.loading_text(self.params.texture_index);
-        if status != self.last_status {
-            self.last_status.clone_from(&status);
-            self.emit(EngineEvent::Status(status));
+        if matches!(outcome, RenderOutcome::Rendered { .. }) {
+            self.mark_busy();
         }
-
-        if !self.textures_ready && self.renderer.textures_ready(self.params.texture_index) {
-            self.textures_ready = true;
-            debug!("textures ready");
-            self.dump_memory_report();
-            self.emit(EngineEvent::TexturesReady);
-        }
-
         matches!(outcome, RenderOutcome::Rendered { .. })
     }
 
@@ -592,27 +874,16 @@ impl Engine {
     /// window can be hours.
     fn prepare_export(&mut self) {
         self.renderer.drain_texture_updates();
-        let sky = self.sky_state();
-        if matches!(
-            self.renderer.render(&self.params, &sky),
-            RenderOutcome::Skipped
-        ) {
+        if let Some(surface) = &mut self.surface {
+            surface.drain(&mut self.renderer);
+        }
+        let (outcome, sky) = self.draw();
+        if matches!(outcome, RenderOutcome::Skipped) {
             // A skipped frame kept the sky the last render was drawn with, and
             // for a hidden window that can be hours old. A rendered one is
             // already holding this one.
             self.renderer.set_sky_state(sky);
         }
-    }
-
-    fn render_to_file(
-        &mut self,
-        path: &std::path::Path,
-        width: u32,
-        height: u32,
-    ) -> Result<(), String> {
-        self.prepare_export();
-        let pixels = self.renderer.export_image(width, height)?;
-        save_png(path, width, height, &pixels)
     }
 
     fn emit(&self, event: EngineEvent) {
@@ -644,6 +915,40 @@ fn checked_mailbox(
         );
     }
     mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()))
+}
+
+/// One output of the wanted set: `framed` is the scene with the output's
+/// framing applied, as the render takes it (`Framing::applied_to`), so the
+/// tiles and the picture cannot disagree on what is in the frame.
+fn tile_output(framed: &SceneParams, width: u32, height: u32, export: bool) -> Output {
+    Output {
+        camera: framed.camera,
+        width,
+        height,
+        export,
+    }
+}
+
+/// Start feeding the cube surface, when every face is there and there is a
+/// cache directory to build its packs in.
+fn start_surface(
+    cache_dir: Option<&std::path::PathBuf>,
+    mut transcoder: TranscoderConfig,
+    now: Duration,
+    wake: &crate::assets::cloud_fetcher::NotifyFn,
+    tiles: &LoaderConfig,
+) -> Option<SurfaceFeed> {
+    if !transcoder.textures.is_complete() {
+        return None;
+    }
+    let Some(dir) = cache_dir else {
+        warn!(
+            "the cube faces are there but no cache directory is, so the tile packs cannot be built"
+        );
+        return None;
+    };
+    transcoder.cache_dir.clone_from(dir);
+    Some(SurfaceFeed::start(transcoder, now, Arc::clone(wake), tiles))
 }
 
 /// Open the GPU and tell `start` what was opened, or why nothing was.

@@ -242,6 +242,20 @@ pub struct Framing {
     pub offset_y: f32,
 }
 
+impl Framing {
+    /// `params` with this framing in place of its own: what the render of one
+    /// output draws, and what the wanted set of its tiles is computed from.
+    #[must_use]
+    pub fn applied_to(&self, params: &crate::params::SceneParams) -> crate::params::SceneParams {
+        let mut framed = *params;
+        framed.camera.fov_deg = self.camera_fov;
+        framed.sky_fov = self.sky_fov;
+        framed.camera.offset_x = self.offset_x;
+        framed.camera.offset_y = self.offset_y;
+        framed
+    }
+}
+
 impl From<&crate::params::SceneParams> for Framing {
     /// The four values a render takes from the settings, read in one place.
     ///

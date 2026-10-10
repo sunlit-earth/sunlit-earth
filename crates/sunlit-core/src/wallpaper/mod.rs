@@ -300,7 +300,7 @@ impl Publication {
     /// directory and then renamed onto its final name, so a reader watching the
     /// destination sees the whole file or no file, never a truncated one. The
     /// temporary name carries the process id and a counter, the discipline
-    /// [`crate::assets::texture_cache`] uses for the same reason, and it is
+    /// the tile packs use for the same reason, and it is
     /// removed if the encode fails. The destination is a name no publish has used
     /// before, so the rename creates it rather than replacing a file some shell
     /// may hold open.

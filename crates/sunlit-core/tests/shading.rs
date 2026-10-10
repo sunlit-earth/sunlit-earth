@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::sync::{LazyLock, Mutex, mpsc};
+use std::sync::{LazyLock, Mutex, PoisonError, mpsc};
 
 use wgpu::util::DeviceExt;
 
@@ -127,21 +127,23 @@ fn create_blend_context(force_software: bool) -> BlendGpuContext {
         pipeline,
     }
 }
+struct Gpus {
+    primary: BlendGpuContext,
+    /// The second implementation `software_adapter_produces_correct_results`
+    /// cross-checks against, so a run on a discrete GPU still says something
+    /// about what CI sees on a software rasterizer. `None` where the platform
+    /// has no software adapter, which is macOS.
+    software: Option<BlendGpuContext>,
+}
 
-static GPU: LazyLock<Mutex<BlendGpuContext>> =
-    LazyLock::new(|| Mutex::new(create_blend_context(false)));
-
-/// The second implementation `software_adapter_produces_correct_results`
-/// cross-checks against.
-///
-/// A `LazyLock` rather than a context per call, because the project's
-/// one-device rule is really a rule against creating devices per test: this is
-/// the one place in the suite that holds a second device at all, and it exists
-/// so a run on a discrete GPU still says something about what CI sees on a
-/// software rasterizer. `None` where the platform has no software adapter,
-/// which is macOS.
-static SOFTWARE_GPU: LazyLock<Option<Mutex<BlendGpuContext>>> = LazyLock::new(|| {
-    common::software_adapter_available().then(|| Mutex::new(create_blend_context(true)))
+/// Both contexts behind one lock, created one after the other inside it, so
+/// the suite never has two threads asking wgpu for an adapter or a device at
+/// once (on Linux that makes the GL backend's EGL `make_current` fail with
+/// `BadAccess`) and never dispatches to two devices at once.
+static GPUS: LazyLock<Mutex<Gpus>> = LazyLock::new(|| {
+    let primary = create_blend_context(false);
+    let software = common::software_adapter_available().then(|| create_blend_context(true));
+    Mutex::new(Gpus { primary, software })
 });
 
 // ---------------------------------------------------------------------------
@@ -149,8 +151,8 @@ static SOFTWARE_GPU: LazyLock<Option<Mutex<BlendGpuContext>>> = LazyLock::new(||
 // ---------------------------------------------------------------------------
 
 fn run_on_gpu(cases: &[TestCase]) -> Vec<TestResult> {
-    let gpu = GPU.lock().unwrap();
-    dispatch(&gpu, cases)
+    let gpus = GPUS.lock().unwrap_or_else(PoisonError::into_inner);
+    dispatch(&gpus.primary, cases)
 }
 
 fn dispatch(gpu: &BlendGpuContext, cases: &[TestCase]) -> Vec<TestResult> {
@@ -507,20 +509,20 @@ fn software_adapter_produces_correct_results() {
     // reason to stop checking the platforms that do have one, so the absence is
     // only tolerated on macOS: on Windows (WARP) and Linux (lavapipe) a missing
     // software adapter means the environment is broken and this fails.
+    let gpus = GPUS.lock().unwrap_or_else(PoisonError::into_inner);
     assert!(
-        SOFTWARE_GPU.is_some() || cfg!(target_os = "macos"),
+        gpus.software.is_some() || cfg!(target_os = "macos"),
         "no software adapter: Windows has WARP and Linux has lavapipe, so this is a \
          broken environment rather than a platform without one"
     );
-    let Some(software) = SOFTWARE_GPU.as_ref() else {
+    let Some(software) = gpus.software.as_ref() else {
         eprintln!("no software adapter on this platform, skipping");
         return;
     };
-    let gpu = software.lock().unwrap();
 
     let mut cases = sweep(OCEAN_DAY, OCEAN_NIGHT, 500, W, true, FLOOR, RAMP);
     cases.extend(sweep(NYC_DAY, NYC_NIGHT, 500, W, true, FLOOR, RAMP));
-    let results = dispatch(&gpu, &cases);
+    let results = dispatch(software, &cases);
 
     // Ocean sweep (first 501 results): monotonic, never below night
     let ocean = &results[..501];

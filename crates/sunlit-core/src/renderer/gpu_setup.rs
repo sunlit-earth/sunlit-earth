@@ -6,7 +6,9 @@ use crate::geometry::grid_texture;
 use crate::geometry::sphere::{self, Vertex};
 
 use super::slots::SLOT_LABELS;
-use super::textures::{TextureSlot, create_bind_group, create_mipmapped_texture};
+use super::surface::{self, SurfaceFormats, SurfaceSet};
+use super::textures::{Bindings, TextureSlot, create_bind_group};
+use super::tiles::{CPU_TILE_LAYER_BUDGET, SurfaceTiles, TILE_LAYER_BUDGET};
 use super::uniforms::Uniforms;
 use super::{Renderer, RendererConfig};
 
@@ -29,8 +31,76 @@ pub(super) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8U
 /// asked what they are.
 pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-const GRID_TEX_WIDTH: u32 = 2048;
-const GRID_TEX_HEIGHT: u32 = 1024;
+/// The width of a face of the grid's cube: as many texels per degree at a face
+/// center as the equator of the 2048 px equirectangular grid it replaced had.
+const GRID_FACE: u32 = 512;
+
+/// A filterable float texture of `dimension`, visible to the fragment stage.
+const fn texture_entry(
+    binding: u32,
+    dimension: wgpu::TextureViewDimension,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: dimension,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// The tile array and the page table every group but the surface's binds: one
+/// black RGBA8 layer, and a page table of one cell per face that draws the
+/// floor.
+fn dummy_tiles(device: &wgpu::Device, queue: &wgpu::Queue) -> [wgpu::TextureView; 2] {
+    let tiles = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("dummy_tile_array"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[0, 0, 0, 255],
+    );
+    let pages = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("dummy_page_table"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[0; 6 * 4],
+    );
+    [tiles, pages].map(|texture| {
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        })
+    })
+}
 
 #[expect(
     clippy::too_many_lines,
@@ -48,11 +118,14 @@ pub(super) fn create_renderer(
         height,
         texture_paths,
         texture_resolution,
-        texture_cache_dir,
         mailbox: texture_mailbox,
         notify,
+        cube_month,
+        cpu_adapter,
+        tile_geometry,
+        tile_layers,
     } = config;
-    let mesh = sphere::generate_uv_sphere(64, 64);
+    let mesh = sphere::generate_uv_sphere(sphere::GLOBE_STACKS, sphere::GLOBE_SECTORS);
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("sphere_vertices"),
@@ -97,6 +170,8 @@ pub(super) fn create_renderer(
         ..Default::default()
     });
 
+    let surface_sampler = device.create_sampler(&surface::surface_sampler_descriptor(cpu_adapter));
+
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("bind_group_layout"),
         entries: &[
@@ -110,28 +185,23 @@ pub(super) fn create_renderer(
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
+            texture_entry(1, wgpu::TextureViewDimension::D2),
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            texture_entry(4, wgpu::TextureViewDimension::Cube),
+            texture_entry(5, wgpu::TextureViewDimension::Cube),
+            texture_entry(6, wgpu::TextureViewDimension::Cube),
+            texture_entry(7, wgpu::TextureViewDimension::D2Array),
             wgpu::BindGroupLayoutEntry {
-                binding: 3,
+                binding: 8,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
                     multisampled: false,
                 },
                 count: None,
@@ -139,8 +209,14 @@ pub(super) fn create_renderer(
         ],
     });
 
-    // 1x1 black placeholder at binding 3 for every bind group that reads one
-    // texture.
+    // 1x1 black placeholders: the flat one at binding 1 for every group that
+    // draws from a cube, the cube one wherever a group has no cube to put.
+    let dummy_cube =
+        surface::mipmapped_cube(&device, &queue, "dummy_cube", 1, |_| vec![0, 0, 0, 255]);
+    let dummy_cube_view = dummy_cube.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    });
     let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("dummy_1x1"),
         size: wgpu::Extent3d {
@@ -175,47 +251,70 @@ pub(super) fn create_renderer(
         },
     );
     let dummy_texture_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let [dummy_tile_view, dummy_page_view] = dummy_tiles(&device, &queue);
 
-    // Grid texture (always loaded at slot 0)
-    let grid_tex = create_mipmapped_texture(
-        &device,
-        &queue,
-        SLOT_LABELS[0],
-        GRID_TEX_WIDTH,
-        GRID_TEX_HEIGHT,
-        grid_texture::generate(GRID_TEX_WIDTH, GRID_TEX_HEIGHT),
-    );
+    // The grid, always loaded at slot 0, is a cube the globe reads through the
+    // same direction and sampler as the surface.
+    let grid_tex = surface::mipmapped_cube(&device, &queue, SLOT_LABELS[0], GRID_FACE, |face| {
+        grid_texture::generate_cube_face(face, GRID_FACE)
+    });
     let _ = device.poll(wgpu::PollType::Wait {
         submission_index: None,
         timeout: None,
     });
-    let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let grid_tex_view = grid_tex.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    });
 
     let grid_bind_group = create_bind_group(
         &device,
         &bind_group_layout,
         &uniform_buffer,
-        &grid_tex_view,
-        &sampler,
-        &dummy_texture_view,
+        &Bindings {
+            texture: &dummy_texture_view,
+            sampler: &surface_sampler,
+            cubes: [&grid_tex_view, &dummy_cube_view, &dummy_cube_view],
+            tiles: [&dummy_tile_view, &dummy_page_view],
+        },
         "grid_bind_group",
     );
 
-    // Build texture slots: slot 0 = Grid (always loaded), slots 1+ = lazy from paths
+    // Build texture slots: slot 0 = Grid (always loaded), slots 1+ = lazy from
+    // paths.
     let mut texture_slots = vec![TextureSlot {
         bind_group: Some(grid_bind_group),
         texture: Some(grid_tex),
         source_path: None,
         loading: false,
     }];
-    for path in &texture_paths {
-        texture_slots.push(TextureSlot {
-            bind_group: None,
-            texture: None,
-            source_path: path.clone(),
-            loading: false,
+    texture_slots.extend(texture_paths.into_iter().map(|source_path| TextureSlot {
+        bind_group: None,
+        texture: None,
+        source_path,
+        loading: false,
+    }));
+    let surface = cube_month.map(|month| {
+        let block_compression = device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        let formats = SurfaceFormats::for_adapter(block_compression, cpu_adapter);
+        let budget = tile_layers.unwrap_or(if cpu_adapter {
+            CPU_TILE_LAYER_BUDGET
+        } else {
+            TILE_LAYER_BUDGET
         });
-    }
+        let layers = budget.min(device.limits().max_texture_array_layers);
+        debug!(
+            ?formats,
+            cpu_adapter, layers, "the globe is drawn from the cube surface"
+        );
+        let mut set = SurfaceSet::new(formats, month);
+        let mut tiles = SurfaceTiles::new(&device, tile_geometry, formats.color, layers);
+        tiles.set_month(&queue, month);
+        set.tiles = Some(tiles);
+        set
+    });
     // The cloud overlay, always last because it comes from the fetcher rather
     // than from a file. `SlotLayout::clouds` names its index.
     texture_slots.push(TextureSlot {
@@ -231,14 +330,9 @@ pub(super) fn create_renderer(
         immediate_size: 0,
     });
 
-    let wgsl_source = format!(
-        "{}\n{}",
-        include_str!("../../shaders/blend.wgsl"),
-        include_str!("../../shaders/sphere.wgsl"),
-    );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("sphere_shader"),
-        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+        source: wgpu::ShaderSource::Wgsl(sphere_shader_source().into()),
     });
 
     let (render_texture, depth_texture, msaa_texture_view, msaa_depth_view) =
@@ -262,20 +356,20 @@ pub(super) fn create_renderer(
         uniform_buffer,
         bind_group_layout,
         sampler,
+        surface_sampler,
         texture_slots,
+        surface,
         texture_resolution,
         texture_generation: 0,
-        texture_cache_dir,
-        last_rendered_index: 0,
         depth_texture,
         render_texture,
+        preview_readback: None,
         msaa_texture_view,
         msaa_depth_view,
         sample_count,
         render_width: width,
         render_height: height,
         last_state: None,
-        last_params: None,
         last_inputs: None,
         last_resolved: None,
         shader,
@@ -286,9 +380,9 @@ pub(super) fn create_renderer(
         texture_dirty: false,
         notify,
         dummy_texture_view,
-        composite_bind_group: None,
-        day_texture_view: None,
-        night_texture_view: None,
+        dummy_cube_view,
+        dummy_tile_view,
+        dummy_page_view,
         cloud_bind_group: None,
         cloud_texture_view: None,
     }
@@ -510,6 +604,16 @@ const STAR_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     },
 ];
 
+/// The globe's shader as the renderer compiles it: the blend functions, then
+/// everything else.
+fn sphere_shader_source() -> String {
+    format!(
+        "{}\n{}",
+        include_str!("../../shaders/blend.wgsl"),
+        include_str!("../../shaders/sphere.wgsl"),
+    )
+}
+
 fn create_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
@@ -677,6 +781,7 @@ pub(super) fn rebuild_msaa_resources(res: &mut Renderer, sample_count: u32) {
 pub(super) fn rebuild_render_textures(res: &mut Renderer, width: u32, height: u32) {
     debug!(width, height, "rebuilding render textures");
     replace_render_textures(res, width, height, res.sample_count);
+    res.preview_readback = None;
     res.render_width = width;
     res.render_height = height;
 }
@@ -692,4 +797,67 @@ fn replace_render_textures(res: &mut Renderer, width: u32, height: u32, sample_c
     res.depth_texture = depth_texture;
     res.msaa_texture_view = msaa_texture_view;
     res.msaa_depth_view = msaa_depth_view;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sphere_shader_source;
+
+    /// The names naga's MSL writer gives the cube textures a translation
+    /// declares, each as it appears in front of `.sample(`.
+    fn cube_names(msl: &str) -> Vec<String> {
+        msl.split("texturecube<")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('>'))
+            .map(|(_, after)| {
+                after
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    /// The globe's shader translates to Metal without asking a cube for an
+    /// explicit gradient.
+    ///
+    /// naga's MSL writer turns every `textureSampleGrad` into a sample with
+    /// `metal::gradient2d`, which Metal accepts from a 2D texture or a 2D array
+    /// and refuses from a cube, so the pipeline fails to build on macOS alone.
+    /// This is the one place off a Mac that sees it.
+    #[test]
+    fn metal_is_never_asked_for_a_cube_gradient() {
+        let module = naga::front::wgsl::parse_str(&sphere_shader_source())
+            .unwrap_or_else(|e| panic!("the shader parses: {e}"));
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("the shader validates: {e:?}"));
+        let (msl, _) = naga::back::msl::write_string(
+            &module,
+            &info,
+            &naga::back::msl::Options::default(),
+            &naga::back::msl::PipelineOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("the shader translates to MSL: {e}"));
+
+        let cubes = cube_names(&msl);
+        assert!(
+            !cubes.is_empty(),
+            "the translation declares no cube, so this case checks nothing"
+        );
+        for line in msl.lines().filter(|line| line.contains("gradient2d")) {
+            for cube in &cubes {
+                assert!(
+                    !line.contains(&format!("{cube}.sample(")),
+                    "Metal refuses a cube sampled with explicit gradients:\n{}",
+                    line.trim()
+                );
+            }
+        }
+    }
 }

@@ -33,10 +33,46 @@ Install the Linux dependencies inside the distribution. When using a checkout un
 For example, from Windows, adapting the distribution name and checkout path:
 
 ```powershell
-wsl -d Ubuntu-22.04 -- bash -lc 'cd /mnt/c/path/to/sunlit-earth && CARGO_TARGET_DIR=$HOME/sunlit-target cargo test --workspace'
+wsl -d Ubuntu-22.04 -- bash -lc 'cd /mnt/c/path/to/sunlit-earth/.worktrees/<worktree> && CARGO_TARGET_DIR=$HOME/sunlit-target-<worktree> cargo test --workspace'
 ```
 
 WSL may expose a host GPU through a GL passthrough adapter. Install lavapipe for the software rendering path used by the headless tests; see [testing.md](testing.md) for adapter requirements and [roadmap.md](roadmap.md) for known WSL test issues.
+
+### Keeping the distribution small
+
+Cargo never deletes stale artifacts, and a Linux target directory of this tree grows to tens of gigabytes. The distribution's virtual disk only grows, so unbounded directories once took it to 185 GB. These rules keep the total near 40 GB.
+
+- One target directory per worktree: `CARGO_TARGET_DIR=$HOME/sunlit-target-<worktree>`, named after the worktree directory (`main` for the main checkout) and reused for every build of that worktree. Do not invent other names. A single directory shared by all worktrees does not work (cargo issue 12516).
+- The only other directory is `~/sunlit-target`, which `cargo xtask` builds the Linux guest's binaries into.
+- Removing a worktree removes its target directory with it, from Windows:
+
+```powershell
+wsl -d Ubuntu-22.04 -- rm -rf /home/<user>/sunlit-target-<worktree>
+```
+
+- At the end of any session that built in WSL, bound the directories with cargo-sweep (`cargo install cargo-sweep`). It finds a target directory through `cargo metadata`, so point `CARGO_TARGET_DIR` at each one and give it any checkout. This caps every directory at 8 GB by deleting the oldest artifacts first:
+
+```bash
+for d in "$HOME"/sunlit-target-*; do [ -d "$d" ] || continue; CARGO_TARGET_DIR=$d cargo sweep --maxsize 8GB /mnt/c/path/to/sunlit-earth; done
+[ -d "$HOME/sunlit-target" ] && CARGO_TARGET_DIR=$HOME/sunlit-target cargo sweep --maxsize 10GB /mnt/c/path/to/sunlit-earth
+```
+
+`--dry-run` reports without deleting, and `--time 7` removes what nothing has used for a week instead of capping by size. The flags are exclusive, so run them one at a time.
+- Temporary files of any kind live only in the session's scratchpad or run directory, in `.worktrees/`, or in these named target directories, never loose in the distribution's home.
+
+### Reclaiming the disk space
+
+Deleting files inside the distribution frees space there but does not shrink `ext4.vhdx` on the host. This is an occasional manual step, needed after a large cleanup. It stops every WSL distribution, including podman's, and needs an elevated PowerShell:
+
+```powershell
+wsl -d Ubuntu-22.04 -u root fstrim -v /
+wsl --shutdown
+Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss | ForEach-Object { Get-ItemProperty $_.PSPath } | Select-Object DistributionName, BasePath
+Optimize-VHD -Path <BasePath>\ext4.vhdx -Mode Full
+(Get-Item <BasePath>\ext4.vhdx).Length / 1GB
+```
+
+Sparse VHD (`wsl --manage --set-sparse`) is not an option: WSL puts it behind `--allow-unsafe` because of data corruption risk.
 
 ## Local builds and launch overrides
 

@@ -255,7 +255,7 @@ impl Report {
 
 /// A temporary name for a file being written, carrying this process's id.
 ///
-/// The discipline `assets::texture_cache` already uses: an interrupted pull
+/// The discipline the core's `files::unfinished` already uses: an interrupted pull
 /// cannot leave a truncated archive for the next build to read, and two writers
 /// of one entry cannot truncate each other.
 pub fn temp_path(final_path: &Path) -> PathBuf {

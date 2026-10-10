@@ -4,7 +4,7 @@ use crate::params::{
     CLOUD_SPHERE_RADIUS, CLOUD_TERMINATOR_WIDTH, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS,
     RAYLEIGH_RADIUS, SceneParams,
 };
-use crate::scene::camera::{OrbitalCamera, zoom_to_distance};
+use crate::scene::camera::OrbitalCamera;
 use crate::scene::moon;
 use crate::scene::sky::SkyState;
 use crate::scene::sun_occlusion;
@@ -13,13 +13,31 @@ use super::Renderer;
 use super::uniforms::Uniforms;
 
 /// The per-frame values that are not part of `SceneParams`: astronomy derived
-/// from the clock, and whether the resolved bind group carries both a day and
-/// a night texture.
+/// from the clock, whether the resolved bind group carries both a day and a
+/// night texture, and what the cube's tiles need beyond their bindings.
 #[derive(Clone)]
 pub(super) struct FrameInputs {
     pub sky: SkyState,
     pub use_blend: bool,
+    /// The cube drawn alone is the night floor, so the night half of the page
+    /// table refines it.
+    pub night_alone: bool,
+    pub tiles: TileUniforms,
 }
+
+/// The constant ocean colors of the day and the night, RGBA8, and a tile's
+/// width and gutter in texels. Zero where the globe has no tiles.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TileUniforms {
+    pub ocean: [[u8; 4]; 2],
+    pub tile: u32,
+    pub gutter: u32,
+}
+
+/// Bit 0 of `Uniforms::flags`: diffuse shading.
+const FLAG_DIFFUSE: u32 = 1;
+/// Bit 2 of `Uniforms::flags`: the cube drawn alone is the night floor.
+const FLAG_NIGHT_ALONE: u32 = 4;
 
 /// Texture views to render into. Decouples render pass encoding from
 /// which textures are used (preview vs export).
@@ -80,13 +98,7 @@ pub(super) fn write_uniforms<'a>(
 ) -> Option<Moon<'a>> {
     let aspect = viewport_width as f32 / viewport_height as f32;
     let cam = &params.camera;
-    let mut camera = OrbitalCamera::new(cam.longitude, cam.latitude, zoom_to_distance(cam.zoom));
-    camera.offset_x = cam.offset_x;
-    camera.offset_y = cam.offset_y;
-    camera.tilt_deg = cam.tilt_deg;
-    camera.yaw_deg = cam.yaw_deg;
-    camera.pitch_deg = cam.pitch_deg;
-    camera.fov_deg = cam.fov_deg;
+    let camera = OrbitalCamera::from_params(cam);
     let mvp = camera.mvp_matrix(aspect);
     let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();
@@ -140,7 +152,15 @@ pub(super) fn write_uniforms<'a>(
         } else {
             -1.0
         },
-        flags: u32::from(inputs.use_blend && params.diffuse_shading),
+        flags: if inputs.use_blend && params.diffuse_shading {
+            FLAG_DIFFUSE
+        } else {
+            0
+        } | if inputs.night_alone {
+            FLAG_NIGHT_ALONE
+        } else {
+            0
+        },
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,
@@ -208,8 +228,12 @@ pub(super) fn write_uniforms<'a>(
         atmo_sunrise_glow: params.atmo_sunrise_glow,
         atmo_sunrise_g: sun_occlusion::henyey_greenstein_asymmetry(params.atmo_sunrise_width),
         sun_flux: sun.flux,
-        _pad7: 0.0,
-        _pad8: 0.0,
+        day_ocean: u32::from_le_bytes(inputs.tiles.ocean[0]),
+        night_ocean: u32::from_le_bytes(inputs.tiles.ocean[1]),
+        tile_texels: inputs.tiles.tile as f32,
+        tile_gutter: inputs.tiles.gutter as f32,
+        _pad9: 0.0,
+        _pad10: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn
@@ -593,15 +617,8 @@ impl<'a> Overlays<'a> {
     }
 }
 
-/// Read back a 2D `Rgba8Unorm` texture as raw RGBA8 pixel data.
-///
-/// Creates a staging buffer with 256-byte row alignment, copies the texture
-/// into it, maps the buffer synchronously, and strips any row padding.
-///
-/// Losing the device mid-readback is an ordinary event on Windows, where a
-/// driver update or a reset takes it out from under a running process. This is
-/// the wallpaper export and the preview readback, so it fails one frame rather
-/// than the engine thread.
+/// Read back a 2D `Rgba8Unorm` texture as raw RGBA8 pixel data, through a
+/// staging buffer made for this one read.
 pub fn read_texture_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -609,17 +626,45 @@ pub fn read_texture_rgba8(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, String> {
-    // bytes_per_row must be aligned to 256 for buffer-texture copies
-    let bytes_per_row_unaligned = width * 4;
-    let bytes_per_row = (bytes_per_row_unaligned + 255) & !255;
-    let buffer_size = u64::from(bytes_per_row) * u64::from(height);
+    let readback = readback_buffer(device, width, height);
+    read_texture_rgba8_into(device, queue, texture, width, height, &readback)
+}
 
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+/// Bytes a row of a `width` wide RGBA8 texture takes in a staging buffer,
+/// which a buffer-texture copy aligns to 256.
+fn padded_row_bytes(width: u32) -> u32 {
+    (width * 4).next_multiple_of(256)
+}
+
+/// A staging buffer [`read_texture_rgba8_into`] can read a `width` by `height`
+/// RGBA8 texture into, as many times as it likes.
+pub(super) fn readback_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
-        size: buffer_size,
+        size: u64::from(padded_row_bytes(width)) * u64::from(height),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
-    });
+    })
+}
+
+/// Read back a 2D `Rgba8Unorm` texture through `readback`, a buffer from
+/// [`readback_buffer`] for the same size: copy the texture into it, map it
+/// synchronously, strip the row padding, and unmap it again.
+///
+/// Losing the device mid-readback is an ordinary event on Windows, where a
+/// driver update or a reset takes it out from under a running process. This is
+/// the wallpaper export and the preview readback, so it fails one frame rather
+/// than the engine thread. A buffer whose read failed may be left mapped or
+/// waiting on a map, so a caller that keeps one lets it go on an error.
+pub(super) fn read_texture_rgba8_into(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    readback: &wgpu::Buffer,
+) -> Result<Vec<u8>, String> {
+    let bytes_per_row = padded_row_bytes(width);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     encoder.copy_texture_to_buffer(
@@ -630,7 +675,7 @@ pub fn read_texture_rgba8(
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
+            buffer: readback,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),

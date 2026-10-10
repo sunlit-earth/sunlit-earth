@@ -119,9 +119,10 @@ mod tests {
         DecodedTextureMessage {
             slot_index,
             result: Ok(texture_loader::DecodedImage {
-                pixels: vec![0; 4],
+                pixels: texture_loader::Pixels::new(vec![0; 4]),
                 width,
                 height: 1,
+                channels: texture_loader::Channels::Rgba,
             }),
             generation: None,
         }

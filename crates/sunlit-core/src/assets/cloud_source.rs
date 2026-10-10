@@ -4,15 +4,78 @@
 //! can publish frames on a simulated schedule without a network or a server.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tracing::info;
 
 /// One fetched cloud image plus the freshness metadata that came with it.
 pub struct CloudImage {
-    pub bytes: Vec<u8>,
+    pub bytes: Download,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+}
+
+/// The downloaded cloud images of this process, as [`downloads`] counts them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DownloadCount {
+    /// Buffers alive now.
+    pub buffers: u64,
+    /// Bytes the live buffers hold.
+    pub bytes: u64,
+    /// Buffers made since the process started, alive or not.
+    pub made: u64,
+}
+
+static LIVE_BUFFERS: AtomicU64 = AtomicU64::new(0);
+static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
+static MADE_BUFFERS: AtomicU64 = AtomicU64::new(0);
+
+/// The [`Download`]s alive in this process, and how many there have been.
+///
+/// A download lives only through the poll that fetched it, or the cache read
+/// that loaded it, while it is decoded, and for a poll written to the cache, so between
+/// updates the live count is zero, and a buffer that stays alive is a download
+/// parked in a queue, a cache or a long-lived struct. `made` tells "dropped"
+/// from "not fetched yet", as it does for the decoded frames.
+pub fn downloads() -> DownloadCount {
+    DownloadCount {
+        made: MADE_BUFFERS.load(Ordering::SeqCst),
+        buffers: LIVE_BUFFERS.load(Ordering::SeqCst),
+        bytes: LIVE_BYTES.load(Ordering::SeqCst),
+    }
+}
+
+/// The body of a cloud image as it came over the wire, or back off the disk
+/// cache, counted in [`downloads`] for as long as it exists.
+///
+/// Counted on creation and uncounted on drop, on the buffer rather than as
+/// `Drop` on [`CloudImage`], whose freshness fields the updater moves out.
+pub struct Download(Vec<u8>);
+
+impl Download {
+    /// Count `bytes` as one download.
+    pub fn new(bytes: Vec<u8>) -> Self {
+        LIVE_BYTES.fetch_add(bytes.capacity() as u64, Ordering::SeqCst);
+        LIVE_BUFFERS.fetch_add(1, Ordering::SeqCst);
+        MADE_BUFFERS.fetch_add(1, Ordering::SeqCst);
+        Self(bytes)
+    }
+}
+
+impl Drop for Download {
+    fn drop(&mut self) {
+        LIVE_BYTES.fetch_sub(self.0.capacity() as u64, Ordering::SeqCst);
+        LIVE_BUFFERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl std::ops::Deref for Download {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 /// A source of equirectangular cloud imagery.
@@ -117,7 +180,7 @@ impl HttpCloudSource {
             .map_err(|e| format!("Failed to read cloud image body: {e}"))?;
 
         Ok(CloudImage {
-            bytes,
+            bytes: Download::new(bytes),
             etag,
             last_modified,
         })

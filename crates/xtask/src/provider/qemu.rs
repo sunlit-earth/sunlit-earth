@@ -1324,14 +1324,23 @@ mod tests {
 
     #[test]
     fn a_free_port_is_taken_as_it_is() {
-        // An OS-assigned port, freed the moment before it is asked about, so
-        // the test never depends on what else this machine runs.
-        let free = std::net::TcpListener::bind(("127.0.0.1", 0))
-            .expect("bind")
-            .local_addr()
-            .expect("addr")
-            .port();
-        assert_eq!(free_port_from(free), Ok(free));
+        // An OS-assigned port, freed the moment before it is asked about. Another
+        // process can take it in between, which says nothing about the function,
+        // so a lost draw is drawn again; a function that walked past free ports
+        // would still fail every one of the attempts.
+        let attempts = 50;
+        let taken_as_it_is = (0..attempts).any(|_| {
+            let free = std::net::TcpListener::bind(("127.0.0.1", 0))
+                .expect("bind")
+                .local_addr()
+                .expect("addr")
+                .port();
+            free_port_from(free) == Ok(free)
+        });
+        assert!(
+            taken_as_it_is,
+            "no free port was taken as it was in {attempts} draws"
+        );
     }
 
     #[test]

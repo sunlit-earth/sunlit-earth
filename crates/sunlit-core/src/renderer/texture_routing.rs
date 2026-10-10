@@ -1,67 +1,52 @@
 use super::Renderer;
 use super::slots::TextureMode;
-use super::textures::{maybe_spawn_texture_load, resolve_render_index};
+use super::surface::{LayerState, SurfaceGroup, SurfaceLayer};
 
 /// Result of texture resolution: identifies which bind group to use.
 pub(super) enum ResolvedTexture {
-    /// Use the composite (day+night) bind group in blend mode.
-    Composite,
-    /// Use a single-texture slot bind group. The `usize` is the slot index.
-    Slot(usize),
+    /// The procedural grid, slot 0.
+    Grid,
+    /// One of the cube surface's bind groups.
+    Surface(SurfaceGroup),
+}
+
+impl ResolvedTexture {
+    /// Whether the cube this bind group draws alone is the night floor.
+    pub(super) fn draws_the_night_alone(&self) -> bool {
+        matches!(self, Self::Surface(SurfaceGroup::Night))
+    }
 }
 
 /// Determine the bind group and blend mode for the current frame.
 ///
-/// Spawns background texture loads as needed, resolves which bind group to use,
-/// and returns a `ResolvedTexture` indicating the bind group along with whether
-/// blend uniforms should be active.
-pub(super) fn resolve_textures(res: &mut Renderer, mode: TextureMode) -> (ResolvedTexture, bool) {
-    let layout = res.layout();
-    let day_slot = layout.globe(TextureMode::Day);
-    let night_slot = layout.globe(TextureMode::Night);
-
-    // Kick off background loading if needed
-    if mode == TextureMode::Blend {
-        maybe_spawn_texture_load(res, day_slot);
-        maybe_spawn_texture_load(res, night_slot);
-    } else {
-        maybe_spawn_texture_load(res, layout.globe(mode));
-    }
-
-    // Cloud texture is populated by the cloud fetcher thread, not by
-    // file-based texture loading. No need to call maybe_spawn_texture_load.
-
-    // Resolve which bind group to use
-    if mode == TextureMode::Blend {
-        if res.composite_bind_group.is_some() {
-            (ResolvedTexture::Composite, true)
-        } else {
-            let fallback_index = resolve_render_index(res, day_slot);
-            (ResolvedTexture::Slot(fallback_index), false)
-        }
-    } else {
-        let render_index = resolve_render_index(res, layout.globe(mode));
-        (ResolvedTexture::Slot(render_index), false)
-    }
+/// The surface's group for `mode` once what it draws is resident, and the grid
+/// until then, in grid mode, and without a cube surface.
+pub(super) fn resolve_textures(res: &Renderer, mode: TextureMode) -> (ResolvedTexture, bool) {
+    res.surface
+        .as_ref()
+        .and_then(|surface| surface.route(mode))
+        .map_or((ResolvedTexture::Grid, false), |(group, use_blend)| {
+            (ResolvedTexture::Surface(group), use_blend)
+        })
 }
 
-/// The loading indicator text for the current texture selection.
-pub(super) fn loading_text(res: &Renderer, mode: TextureMode) -> String {
-    let layout = res.layout();
-    let slot_index = layout.globe(mode);
-
-    if mode == TextureMode::Blend {
-        let day_loading = res.texture_slots[layout.globe(TextureMode::Day)].loading;
-        let night_loading = res.texture_slots[layout.globe(TextureMode::Night)].loading;
-        match (day_loading, night_loading) {
-            (true, true) => "Loading Day and Night...".to_owned(),
-            (true, false) => "Loading Day...".to_owned(),
-            (false, true) => "Loading Night...".to_owned(),
-            (false, false) => String::new(),
-        }
-    } else if res.texture_slots[slot_index].loading {
-        format!("Loading {}...", mode.label())
-    } else {
-        String::new()
+/// Whether a cube the frame needs for `mode` is on its way, the day side's
+/// and the night side's.
+///
+/// The day side counts the mask too in blend mode, the one mode that reads
+/// it. Without a cube surface nothing is on its way.
+pub(super) fn cubes_waiting(res: &Renderer, mode: TextureMode) -> (bool, bool) {
+    let Some(surface) = &res.surface else {
+        return (false, false);
+    };
+    let waiting = |layer| surface.state(layer) == LayerState::Waiting;
+    let day = waiting(SurfaceLayer::Day(surface.month))
+        || (mode == TextureMode::Blend && waiting(SurfaceLayer::Mask));
+    let night = waiting(SurfaceLayer::Night);
+    match mode {
+        TextureMode::Grid => (false, false),
+        TextureMode::Day => (day, false),
+        TextureMode::Night => (false, night),
+        TextureMode::Blend => (day, night),
     }
 }

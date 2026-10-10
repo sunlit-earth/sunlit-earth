@@ -1,9 +1,10 @@
 //! Where the process's memory actually is, expected next to measured.
 //!
-//! [`MemoryReport`] is four short sections: the process counters, wgpu's own
-//! internal counters, the backend allocator's live allocations, and the table
-//! of what the renderer believes it owns. The point is the last two side by
-//! side: the day the columns disagree is the day there is a leak.
+//! [`MemoryReport`] is six short sections: the process counters, the decoded
+//! pixel buffers and the downloaded cloud images alive in the process, wgpu's
+//! own internal counters, the backend allocator's live allocations, and the
+//! table of what the renderer believes it owns. The point is the last two side
+//! by side: the day the columns disagree is the day there is a leak.
 //!
 //! The report is short on purpose. Everything below `REPORT_FLOOR_BYTES` is
 //! rolled into one line, and only the `TOP_N` largest allocation groups are
@@ -13,16 +14,21 @@
 //! line, and the row layout are free to change; nothing parses this, unlike the
 //! single `query-memory` line the e2e suite reads.
 //!
-//! Two of the four sections can be absent, and say so rather than vanishing.
+//! Two of the six sections can be absent, and say so rather than vanishing.
 //! `Device::generate_allocator_report` is implemented for D3D12 and Vulkan and
 //! returns `None` everywhere else, so Metal has no allocation section; the
 //! process snapshot is absent only on a platform `memory::snapshot` does not
 //! cover. The counters read zero on a backend that does not maintain them,
-//! which is a number rather than an absence, so that section is always printed.
+//! which is a number rather than an absence, so that section is always printed:
+//! in wgpu 28 the byte counters are kept by D3D12 and Vulkan and not by Metal,
+//! the object counts by D3D12 and Metal, the buffer count by Vulkan, whose
+//! texture count only ever goes down, and the allocation count by none.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::assets::cloud_source::{self, DownloadCount};
+use crate::assets::texture_loader::{self, DecodedCount};
 use crate::memory::{mib, mib_signed};
 
 /// Allocations and textures below this are rolled up rather than listed.
@@ -49,6 +55,10 @@ pub struct CounterSection {
     pub texture_bytes: i64,
     pub buffer_bytes: i64,
     pub allocations: i64,
+    /// Live texture objects.
+    pub textures: i64,
+    /// Live buffer objects.
+    pub buffers: i64,
 }
 
 /// Live allocations sharing one label, which is how the report names a texture.
@@ -78,13 +88,15 @@ pub struct ExpectedTexture {
     pub label: String,
     pub width: u32,
     pub height: u32,
+    /// Array layers: six for a cube, one for everything else.
+    pub layers: u32,
     pub format: wgpu::TextureFormat,
     pub mip_levels: u32,
     pub sample_count: u32,
 }
 
 impl ExpectedTexture {
-    /// Bytes this texture occupies: every mip level, every sample.
+    /// Bytes this texture occupies: every layer, every mip level, every sample.
     pub fn bytes(&self) -> u64 {
         texture_bytes(
             self.width,
@@ -92,14 +104,16 @@ impl ExpectedTexture {
             self.format,
             self.mip_levels,
             self.sample_count,
-        )
+        ) * u64::from(self.layers.max(1))
     }
 }
 
-/// Bytes a texture of this shape occupies, mip chain and samples included.
+/// Bytes one layer of a texture of this shape occupies, mip chain and samples
+/// included.
 ///
-/// A format with no fixed texel size contributes nothing rather than a guess;
-/// the two this renderer uses (`Rgba8Unorm` and `Depth32Float`) both have one.
+/// A block-compressed format costs its whole blocks, so a level narrower than
+/// a block still takes one. A format with no fixed block size contributes
+/// nothing rather than a guess; every one this renderer uses has one.
 fn texture_bytes(
     width: u32,
     height: u32,
@@ -107,14 +121,15 @@ fn texture_bytes(
     mip_levels: u32,
     sample_count: u32,
 ) -> u64 {
-    let Some(bytes_per_texel) = format.block_copy_size(None).map(u64::from) else {
+    let Some(bytes_per_block) = format.block_copy_size(None).map(u64::from) else {
         return 0;
     };
+    let (block_width, block_height) = format.block_dimensions();
     let mut total = 0u64;
     for level in 0..mip_levels {
-        let w = u64::from(width >> level).max(1);
-        let h = u64::from(height >> level).max(1);
-        total += w * h * bytes_per_texel;
+        let w = (width >> level).max(1).div_ceil(block_width);
+        let h = (height >> level).max(1).div_ceil(block_height);
+        total += u64::from(w) * u64::from(h) * bytes_per_block;
     }
     total * u64::from(sample_count.max(1))
 }
@@ -126,6 +141,10 @@ pub struct MemoryReport {
     /// on a software rasterizer, and mostly do not on a real GPU.
     pub adapter: String,
     pub process: Option<ProcessSection>,
+    /// The decoded pixel buffers alive when the report was taken.
+    pub decoded: DecodedCount,
+    /// The downloaded cloud images alive when the report was taken.
+    pub downloads: DownloadCount,
     pub counters: CounterSection,
     pub allocator: Option<AllocatorSection>,
     /// Every texture the renderer owns, including ones under the floor. The
@@ -161,10 +180,14 @@ pub(crate) fn collect(
             peak_rss_bytes: snap.peak_rss_bytes,
             private_bytes: snap.private_bytes,
         }),
+        decoded: texture_loader::decoded_pixels(),
+        downloads: cloud_source::downloads(),
         counters: CounterSection {
             texture_bytes: counter(counters.hal.texture_memory.read()),
             buffer_bytes: counter(counters.hal.buffer_memory.read()),
             allocations: counter(counters.hal.memory_allocations.read()),
+            textures: counter(counters.hal.textures.read()),
+            buffers: counter(counters.hal.buffers.read()),
         },
         allocator: device
             .generate_allocator_report()
@@ -259,9 +282,27 @@ impl fmt::Display for MemoryReport {
 
         writeln!(
             f,
-            "wgpu counters: textures {:.1} MiB, buffers {:.1} MiB, {} allocations",
+            "decoded pixels: {} frames alive, {:.1} MiB, {} decoded since start",
+            self.decoded.frames,
+            mib(self.decoded.bytes),
+            self.decoded.made
+        )?;
+
+        writeln!(
+            f,
+            "cloud downloads: {} alive, {:.1} MiB, {} since start",
+            self.downloads.buffers,
+            mib(self.downloads.bytes),
+            self.downloads.made
+        )?;
+
+        writeln!(
+            f,
+            "wgpu counters: textures {:.1} MiB in {}, buffers {:.1} MiB in {}, {} allocations",
             mib_signed(self.counters.texture_bytes),
+            self.counters.textures,
             mib_signed(self.counters.buffer_bytes),
+            self.counters.buffers,
             self.counters.allocations
         )?;
 
@@ -480,6 +521,31 @@ mod tests {
         );
     }
 
+    /// A 512 px BC7 cube with its chain is a byte a texel and four thirds of
+    /// its base, the last levels taking a whole block each.
+    #[test]
+    fn a_block_compressed_cube_costs_its_blocks_on_every_face() {
+        let cube = ExpectedTexture {
+            label: "day_floor".to_owned(),
+            width: 512,
+            height: 512,
+            layers: 6,
+            format: wgpu::TextureFormat::Bc7RgbaUnorm,
+            mip_levels: 10,
+            sample_count: 1,
+        };
+        let face: u64 = [512_u64, 256, 128, 64, 32, 16, 8, 4]
+            .iter()
+            .map(|size| size * size)
+            .sum::<u64>()
+            + 2 * 16;
+        assert_eq!(cube.bytes(), 6 * face);
+        assert_eq!(
+            texture_bytes(1024, 1024, wgpu::TextureFormat::Bc4RUnorm, 1, 1),
+            1024 * 1024 / 2
+        );
+    }
+
     #[test]
     fn mip_levels_past_a_dimension_clamp_to_one() {
         // 4x1 with three levels: 4x1, 2x1, 1x1.
@@ -498,6 +564,7 @@ mod tests {
             label: label.to_owned(),
             width,
             height,
+            layers: 1,
             format: wgpu::TextureFormat::Rgba8Unorm,
             mip_levels: 1,
             sample_count: 1,
@@ -517,10 +584,22 @@ mod tests {
                 peak_rss_bytes: 200 * MIB,
                 private_bytes: 300 * MIB,
             }),
+            decoded: DecodedCount {
+                frames: 1,
+                bytes: 2 * MIB,
+                made: 3,
+            },
+            downloads: DownloadCount {
+                buffers: 1,
+                bytes: MIB,
+                made: 3,
+            },
             counters: CounterSection {
                 texture_bytes: counter_mib(90),
                 buffer_bytes: counter_mib(1),
                 allocations: 7,
+                textures: 4,
+                buffers: 2,
             },
             allocator: Some(grouped(&pairs(&[
                 ("day_texture", 40 * MIB),
@@ -535,20 +614,22 @@ mod tests {
         }
     }
 
-    /// Four sections and nothing else: one header line each, plus the rows the
+    /// Six sections and nothing else: one header line each, plus the rows the
     /// allocation and expected sections are made of.
     #[test]
-    fn the_report_has_exactly_four_sections() {
+    fn the_report_has_exactly_six_sections() {
         let text = fabricated().to_string();
         let headers: Vec<&str> = text
             .lines()
             .filter(|line| !line.starts_with(' ') && !line.starts_with("memory report"))
             .collect();
-        assert_eq!(headers.len(), 4, "unexpected sections in:\n{text}");
+        assert_eq!(headers.len(), 6, "unexpected sections in:\n{text}");
         assert!(headers[0].starts_with("process:"));
-        assert!(headers[1].starts_with("wgpu counters:"));
-        assert!(headers[2].starts_with("gpu allocations:"));
-        assert!(headers[3].starts_with("expected:"));
+        assert!(headers[1].starts_with("decoded pixels:"));
+        assert!(headers[2].starts_with("cloud downloads:"));
+        assert!(headers[3].starts_with("wgpu counters:"));
+        assert!(headers[4].starts_with("gpu allocations:"));
+        assert!(headers[5].starts_with("expected:"));
     }
 
     #[test]
@@ -586,7 +667,7 @@ mod tests {
             text.lines()
                 .filter(|line| !line.starts_with(' ') && !line.starts_with("memory report"))
                 .count(),
-            4
+            6
         );
     }
 

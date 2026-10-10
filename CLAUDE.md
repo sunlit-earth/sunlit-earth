@@ -31,7 +31,7 @@ Public beta, with breaking changes still expected. Every release ships Windows (
 cargo build                        # debug; --release for LTO and stripped
 cargo test                         # everything in the workspace
 cargo unit                         # unit tests only (~1 s): no integration targets, no doc tests
-cargo test -p sunlit-core --test engine    # one integration target; also soak, golden, shading, render_pipeline
+cargo test -p sunlit-core --test engine    # one integration target; also soak, golden, shading, render_pipeline, bc7
 cargo test -p sunlit-earth --test slint_ui
 cargo clippy --all-targets         # pedantic on; not run in CI, so it is on you
 cargo fmt --check                  # CI gate
@@ -41,7 +41,7 @@ cargo run -- displays              # the monitors this session has and the plan 
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden   # regenerate goldens for this adapter
 ```
 
-Building the Linux port from Windows goes through WSL with `CARGO_TARGET_DIR` pointed into the distribution, or `target/` ends up holding two platforms' worth of artifacts; `sunlit-app`'s build script refuses a directory another platform has claimed, and the command is in README under "Linux from Windows (WSL)".
+Building the Linux port from Windows goes through WSL, and every WSL build uses `CARGO_TARGET_DIR=$HOME/sunlit-target-<worktree>`, named after the worktree directory (`main` for the main checkout) and reused for every build of that worktree; `~/sunlit-target` belongs to the xtask and nothing else gets a directory. Remove a worktree's directory with the worktree, run `cargo sweep --maxsize 8GB` over the rest at the end of any session that built in WSL, and keep temporary files out of the distribution's home. `sunlit-app`'s build script refuses a directory another platform has claimed. The commands, the cargo-sweep loop and the occasional vhdx compaction are in `docs/building.md` under "Building through WSL"; README has its own shorter note under "Linux from Windows (WSL)".
 
 ### The desktop e2e suite and the VMs
 
@@ -80,7 +80,7 @@ cargo xtask dist [--target <windows|linux|all>] [--keep] [--no-verify] [--no-cac
 cargo xtask bundle --platform <windows|linux|macos> --exe <path> [--out <dir>] [--verify]
 ```
 
-`dist` builds `sunlit-earth` in release mode inside a pristine builder guest from a `git archive` of `HEAD`, then boots the desktop guest of the same target to prove the bundle runs and finds its textures. Four to six minutes per target plus two boots; output under `target/dist/<target>/`. A dirty working tree is refused without `--allow-dirty`.
+`dist` builds `sunlit-earth` in release mode inside a pristine builder guest from a `git archive` of `HEAD`, then boots the desktop guest of the same target to prove the bundle runs and finds its textures. Six to ten minutes per target plus two boots; output under `target/dist/<target>/`. A dirty working tree is refused without `--allow-dirty`.
 
 `bundle` is the second half of that on its own: it wraps a binary somebody else already built in the archive its platform's users open, writes `build-info.json` beside it, and with `--verify` unpacks the archive and renders from it twice to prove the textures are found. No VM and no hypervisor, which is what lets the GitHub release runners call it; `dist` calls the same functions. `--verify` runs the binary, so it needs a host of the platform being bundled. macOS is a platform here and not a `dist` target, because there is no macOS guest to build one in.
 
@@ -112,7 +112,8 @@ crates/sunlit-core/   headless: engine thread, wgpu renderer, WGSL shaders, scen
 crates/sunlit-app/    Slint shell: window, tray, IPC, CLI. Package name sunlit-earth.
 crates/xtask/         VM orchestration, release builds, the icon and star bakes
 assets/               icon sources and bake, the Linux desktop entry
-textures/             the four JXL assets, Git LFS; a checkout without the objects holds pointer files
+textures/             the Moon, the Milky Way and the 84 cube-map faces (day by month, night, mask), Git LFS;
+                      a checkout without the objects holds pointer files
 vm/                   templates and guest scripts, one directory per image slug
 docs/                 see the table above
 ```
@@ -124,7 +125,7 @@ docs/                 see the table above
 - `SceneParams` is the single description of what to draw. Exactly two translation points: `ui_callbacks::read_params_from_window` / `apply_params_to_window` in the app, and `renderer::render_pass::write_uniforms` in core. `ParamsDigest` is the quantized dirty check; `datetime` is not in it, the derived sun direction is compared separately.
 - Adding a shader parameter is fourteen edits in seven files: the `.slint` property and its `SettingRow`; `apply_params_to_window` and `read_params_from_window`; the `AppConfig` field and its default; in `params.rs` the `SceneParams` field, `from_config`, `write_to_config` and one line of the `scene_digest!` list; one line of `uniforms.rs`'s `uniform_block!` list; `write_uniforms`; and in `sphere.wgsl` the `Uniforms` field with its offset comment and the use. Those two macro lists carry the rest: a `SceneParams` field in no `scene_digest!` group does not compile, and `ParamsDigest`, `digest()` and the mutation table the tests walk are all generated from that one entry.
 - A setting that is not a shader parameter gets its own `EngineCommand` and callback and stays out of `SceneParams`: `texture_resolution` through `SetTextureResolution`, and the display mode and anchor screen through `SetDisplayPlan`.
-- Texture slots: grid 0, then one per file-backed path in order (day 1, night 2, moon 3, Milky Way 4), clouds last. `SlotLayout` is the one place that says so.
+- Texture slots: grid 0, then one per file-backed path in order (Moon 1, Milky Way 2), clouds last. `SlotLayout` is the one place that says so. The cube surface (the day floors, every month's on a GPU and the month in force's and the month ahead's on a CPU adapter, the night floor, the water mask, and the tile array and page table that refine the floors, `renderer::tiles`) is one unit beside the slots, `renderer::surface::SurfaceSet`, made resident from the tile packs on the engine thread.
 - Preview frames cross to the UI as RGBA pixel buffers through a latest-value mailbox, never as shared GPU textures. Slint has no wgpu feature and shares no device.
 - Every queue that crosses a thread is bounded, latest-value, or unbounded with the reasoning at the declaration. Decoded pixel buffers are never parked in queues, caches or long-lived structs. Every background producer names its consumer and the condition under which it runs, and that condition is "always".
 - `query-memory`'s single `SIGNAL:memory ...` IPC line is a parsing contract the e2e suite depends on; `memory-report` is a separate command for that reason.
@@ -147,7 +148,7 @@ docs/                 see the table above
 - Test behavior, not constants: changing a preset or a default must not break a test.
 - Float comparisons use `approx::assert_relative_eq!`. GPU tests assert invariants (monotonicity, bounds, visibility), not exact pixels.
 - Golden images run on the software adapter with per-adapter references under `tests/golden/<adapter>/`, listed in `GENERATED_ADAPTERS`; tolerance is a mean channel difference under 2/255 with at most 1% of pixels off by more than 24. A missing case fails; a companion test keeps every pair of references distinguishable.
-- A test that needs the real 8K assets checks their size (LFS pointers exist) and skips with a printed reason without them. Everything else uses generated fixtures.
+- A test that needs the real assets (the cube faces, the Moon, the Milky Way) checks that they are not LFS pointers (by size for the Moon and the Milky Way, by pointer prefix for the cube faces), and skips with a printed reason without them. Everything else uses generated fixtures.
 - The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three OSes and runs by hand, on the desktop or in a VM. Cases that need a tray, a wallpaper setter, or Win32 gate themselves at runtime and print why they skipped.
 - `the_docs_spell_out_every_flag_dist_takes` and its `bundle` twin in the xtask read the `cargo xtask dist [...]` line in this file and in `docs/vm-setup.md`, and the `cargo xtask bundle ...` line in this file; keep both complete usage lines.
 

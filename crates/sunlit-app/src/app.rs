@@ -171,7 +171,7 @@ fn init_ui(
     displays::apply_diagram_to_window(window, &monitors, config.anchor().as_deref());
 
     ui_callbacks::apply_config_to_window(window, config);
-    ui_callbacks::defer_combobox_indices(
+    ui_callbacks::set_combobox_indices(
         &window.as_weak(),
         ui_callbacks::ComboIndices::of(
             config,
@@ -486,7 +486,7 @@ fn start_engine(
     }));
 
     let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
-    let (aa_labels, aa_counts, _) =
+    let (aa_labels, aa_counts) =
         renderer::build_aa_options(engine.supported_sample_counts(), quality.max_sample_count());
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
     // The window is about to show the override, and a save must not write it.
@@ -542,7 +542,7 @@ fn install_tray_and_geometry(
 ///
 /// After the engine, whose event callback owns the other end of
 /// `first_refresh`. Without the wait the first publish of a run would be the
-/// procedural grid, since the engine is ready long before an 8K decode is.
+/// procedural grid, since the engine is ready long before the surface is.
 fn start_startup_refresh_timer(
     link: &EngineLink,
     first_refresh: Option<crossbeam_channel::Receiver<()>>,

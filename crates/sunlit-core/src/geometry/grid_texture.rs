@@ -1,8 +1,17 @@
-//! Generate an equirectangular grid texture as RGBA8 pixel data.
+//! Generate the procedural grid the globe shows without a surface texture, as
+//! RGBA8 cube faces.
 //!
-//! The texture maps longitude (0–360°) along the X axis and latitude (0–180°)
-//! along the Y axis. Grid lines are drawn every `spacing` degrees, with
-//! thicker highlighted lines at the equator and prime meridian.
+//! The grid is laid out on the equirectangular coordinates the sphere mesh
+//! carries: longitude 0 to 360 degrees along them, colatitude 0 to 180 degrees
+//! down them. Grid lines are drawn every `GRID_SPACING` degrees, with thicker
+//! highlighted lines at the equator and at the mesh's longitude 0. Each cube
+//! texel takes the color of the place its direction has on the mesh, so the
+//! globe looks the way it did when the mesh's coordinates sampled a flat grid,
+//! except at the poles, which are now ordinary points.
+
+use std::f64::consts::{PI, TAU};
+
+use super::cube;
 
 const GRID_SPACING: f32 = 15.0;
 const LINE_WIDTH: f32 = 0.5; // degrees
@@ -14,50 +23,65 @@ const LAND_GREEN: [u8; 3] = [80, 170, 110];
 const GRID_WHITE: [u8; 3] = [204, 204, 204];
 const MAJOR_YELLOW: [u8; 3] = [255, 230, 77];
 
+/// The grid's color at mesh longitude `lon_deg` (0 to 360) and colatitude
+/// `lat_deg` (0 at the north pole, 180 at the south), for a texel `texel_deg`
+/// degrees of arc wide.
+///
+/// A line covers a texel in proportion to how far into it the line reaches,
+/// over a ramp one texel wide. The lines cross the cube's texel grid at every
+/// angle, so a texel that is either on a line or off it would draw them as
+/// staircases where the flat grid's lines ran along its rows and columns.
+fn color_at(lon_deg: f32, lat_deg: f32, texel_deg: f32) -> [u8; 3] {
+    // A degree of longitude is sin(colatitude) degrees of arc.
+    let lon_texel = (texel_deg / lat_deg.to_radians().sin().max(1e-3)).min(360.0);
+    let covered = |distance: f32, half_width: f32, texel: f32| {
+        ((half_width - distance) / texel + 0.5).clamp(0.0, 1.0)
+    };
+
+    let lon_dist = lon_deg % GRID_SPACING;
+    let lon_line = lon_dist.min(GRID_SPACING - lon_dist);
+    let lat_dist = lat_deg % GRID_SPACING;
+    let lat_line = lat_dist.min(GRID_SPACING - lat_dist);
+    let minor =
+        covered(lon_line, LINE_WIDTH, lon_texel).max(covered(lat_line, LINE_WIDTH, texel_deg));
+
+    let equator_dist = (lat_deg - 90.0).abs();
+    let pm_dist = lon_deg.min((lon_deg - 360.0).abs());
+    let major = covered(equator_dist, MAJOR_LINE_WIDTH, texel_deg).max(covered(
+        pm_dist,
+        MAJOR_LINE_WIDTH,
+        lon_texel,
+    ));
+
+    // Between the lines, a blend of ocean and land by latitude, greener to
+    // the north.
+    let base = lerp_color(OCEAN_BLUE, LAND_GREEN, (1.0 - lat_deg / 180.0) * 0.5 + 0.25);
+    lerp_color(lerp_color(base, GRID_WHITE, minor), MAJOR_YELLOW, major)
+}
+
+/// Face `face` of the grid, `size` texels wide, row 0 first, in cube layer
+/// order and at the texel centers the surface faces use.
 #[expect(
+    clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    reason = "a texture axis is far inside the f32 mantissa"
+    reason = "angles in degrees are far inside the f32 range, and a face width inside its mantissa"
 )]
-pub(crate) fn generate(width: u32, height: u32) -> Vec<u8> {
-    let mut pixels = vec![0u8; (width * height * 4) as usize];
-
-    for y in 0..height {
-        let lat_deg = (y as f32 / height as f32) * 180.0;
-        let latitude_factor = 1.0 - lat_deg / 180.0;
-
-        for x in 0..width {
-            let lon_deg = (x as f32 / width as f32) * 360.0;
-
-            // Distance to nearest grid line
-            let lon_dist = lon_deg % GRID_SPACING;
-            let lon_line = lon_dist.min(GRID_SPACING - lon_dist);
-            let lat_dist = lat_deg % GRID_SPACING;
-            let lat_line = lat_dist.min(GRID_SPACING - lat_dist);
-
-            let is_grid = lon_line < LINE_WIDTH || lat_line < LINE_WIDTH;
-
-            // Major lines: equator (lat=90°) and prime meridian (lon=0°/360°)
-            let equator_dist = (lat_deg - 90.0).abs();
-            let pm_dist = lon_deg.min((lon_deg - 360.0).abs());
-            let is_major = equator_dist < MAJOR_LINE_WIDTH || pm_dist < MAJOR_LINE_WIDTH;
-
-            // Base color: blend between ocean and land by latitude
-            let t = latitude_factor * 0.5 + 0.25;
-            let base = lerp_color(OCEAN_BLUE, LAND_GREEN, t);
-
-            let color = if is_major {
-                MAJOR_YELLOW
-            } else if is_grid {
-                GRID_WHITE
-            } else {
-                base
-            };
-
-            let idx = ((y * width + x) * 4) as usize;
-            pixels[idx..idx + 4].copy_from_slice(&[color[0], color[1], color[2], 255]);
+pub(crate) fn generate_cube_face(face: usize, size: u32) -> Vec<u8> {
+    // An equi-angular face spans 90 degrees along each axis in even steps.
+    let texel_deg = 90.0 / size as f32;
+    let mut pixels = Vec::with_capacity(size as usize * size as usize * 4);
+    for row in 0..i64::from(size) {
+        let t = cube::texel_center(row, size);
+        for col in 0..i64::from(size) {
+            let dir = cube::direction(face, cube::texel_center(col, size), t).normalize();
+            // The sphere mesh's own coordinates: `u` turns from +X toward +Z,
+            // `v` runs from the north pole down.
+            let lon = dir.z.atan2(dir.x).rem_euclid(TAU) / TAU * 360.0;
+            let lat = dir.y.clamp(-1.0, 1.0).acos() / PI * 180.0;
+            let [r, g, b] = color_at(lon as f32, lat as f32, texel_deg);
+            pixels.extend_from_slice(&[r, g, b, 255]);
         }
     }
-
     pixels
 }
 
@@ -82,82 +106,82 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn output_has_correct_size() {
-        let pixels = generate(64, 32);
-        assert_eq!(pixels.len(), 64 * 32 * 4);
+    /// A texel far narrower than a line.
+    const FINE: f32 = 0.01;
+
+    /// The color of the texel at `(row, col)` of a face.
+    fn texel(pixels: &[u8], size: u32, row: u32, col: u32) -> [u8; 4] {
+        let at = ((row * size + col) * 4) as usize;
+        pixels[at..at + 4].try_into().expect("four bytes")
     }
 
     #[test]
-    fn all_pixels_are_opaque() {
-        let pixels = generate(64, 32);
-        for chunk in pixels.chunks(4) {
-            assert_eq!(chunk[3], 255, "alpha should be 255");
+    fn a_face_is_square_and_opaque() {
+        for face in 0..cube::FACES {
+            let pixels = generate_cube_face(face, 16);
+            assert_eq!(pixels.len(), 16 * 16 * 4);
+            assert!(pixels.chunks(4).all(|texel| texel[3] == 255), "face {face}");
         }
     }
 
+    /// The mesh's longitude 0 runs through +X, so the major meridian crosses
+    /// the middle of +X and the equator crosses it too, at the width a face of
+    /// the shipped size draws them.
     #[test]
-    fn contains_grid_lines() {
-        // At lon=0° (x=0) we should see the prime meridian (major yellow)
-        let width = 360;
-        let height = 180;
-        let pixels = generate(width, height);
-        // Check pixel at (0, 90) — prime meridian at equator
-        let idx = (90 * width * 4) as usize;
-        assert_eq!(pixels[idx], MAJOR_YELLOW[0]);
-        assert_eq!(pixels[idx + 1], MAJOR_YELLOW[1]);
-        assert_eq!(pixels[idx + 2], MAJOR_YELLOW[2]);
-    }
-
-    /// Helper: get the RGB color of a pixel at (x, y) in a 360x180 grid.
-    fn pixel_rgb(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
-        let idx = ((y * width + x) * 4) as usize;
-        [pixels[idx], pixels[idx + 1], pixels[idx + 2]]
+    fn the_major_lines_cross_at_the_middle_of_the_x_face() {
+        let size = 512;
+        let pixels = generate_cube_face(0, size);
+        let rgb = |row, col| texel(&pixels, size, row, col)[..3].to_vec();
+        assert_eq!(rgb(size / 2, size / 2), MAJOR_YELLOW, "the crossing");
+        assert_eq!(rgb(4, size / 2), MAJOR_YELLOW, "the meridian, north");
+        assert_eq!(rgb(size / 2, 4), MAJOR_YELLOW, "the equator, west");
     }
 
     #[test]
-    fn equator_is_major_yellow() {
-        // 360x180: equator is at lat_deg=90, so y=90
-        let pixels = generate(360, 180);
-        // Pick a pixel on the equator away from the prime meridian
-        // x=180 -> lon_deg=180, which is not a major line
-        let color = pixel_rgb(&pixels, 360, 180, 90);
-        assert_eq!(color, MAJOR_YELLOW, "Equator should be MAJOR_YELLOW");
-    }
-
-    #[test]
-    fn prime_meridian_is_major_yellow() {
-        // x=0 -> lon_deg=0 (prime meridian)
-        // y=45 -> away from equator
-        let pixels = generate(360, 180);
-        let color = pixel_rgb(&pixels, 360, 0, 45);
-        assert_eq!(color, MAJOR_YELLOW, "Prime meridian should be MAJOR_YELLOW");
-    }
-
-    #[test]
-    fn minor_grid_line_is_white() {
-        let pixels = generate(360, 180);
-        // x=15 -> lon_deg=15 (minor), y=60 -> lat_deg=60 (minor)
-        // This pixel is at a grid line intersection.
-        let color = pixel_rgb(&pixels, 360, 15, 60);
+    fn the_major_lines_are_yellow_and_the_minor_ones_white() {
+        assert_eq!(color_at(0.0, 45.0, FINE), MAJOR_YELLOW, "the meridian");
+        assert_eq!(color_at(180.0, 90.0, FINE), MAJOR_YELLOW, "the equator");
         assert_eq!(
-            color, GRID_WHITE,
-            "15-degree grid line should be GRID_WHITE"
+            color_at(15.0, 60.0, FINE),
+            GRID_WHITE,
+            "a crossing of minor lines"
         );
+        let between = color_at(100.0, 50.0, FINE);
+        assert_ne!(between, MAJOR_YELLOW);
+        assert_ne!(between, GRID_WHITE);
     }
 
+    /// A texel astride a line's edge takes part of the line's color, which is
+    /// what keeps an edge that crosses the texel grid at an angle smooth.
     #[test]
-    fn pixel_between_grid_lines_is_base_color() {
-        // Pick a pixel clearly between grid lines
-        // x=100 -> lon_deg=100 (100%15=10, not near a line)
-        // y=50 -> lat_deg=50 (50%15=5, not near a line)
-        let pixels = generate(360, 180);
-        let color = pixel_rgb(&pixels, 360, 100, 50);
-        assert_ne!(color, MAJOR_YELLOW, "Should not be major yellow");
-        assert_ne!(color, GRID_WHITE, "Should not be grid white");
-        // Should be a blend of OCEAN_BLUE and LAND_GREEN — not a grid line color
-        // Verify the pixel alpha is 255 (opaque)
-        let idx = ((50 * 360 + 100) * 4) as usize;
-        assert_eq!(pixels[idx + 3], 255);
+    fn a_texel_on_a_lines_edge_is_partly_the_line() {
+        let texel = 0.2;
+        let edge = color_at(100.0, 60.0 + LINE_WIDTH, texel);
+        let inside = color_at(100.0, 60.0, texel);
+        let outside = color_at(100.0, 60.0 + LINE_WIDTH + texel, texel);
+        assert_eq!(inside, GRID_WHITE);
+        assert_ne!(outside, GRID_WHITE);
+        for channel in 0..3 {
+            let (low, high) = (
+                inside[channel].min(outside[channel]),
+                inside[channel].max(outside[channel]),
+            );
+            assert!(
+                edge[channel] > low && edge[channel] < high,
+                "channel {channel}: the edge {edge:?} is not between {inside:?} and {outside:?}"
+            );
+        }
+    }
+
+    /// Between the lines the grid is greener to the north, which is what tells
+    /// the poles apart at a glance.
+    #[test]
+    fn the_north_is_greener_than_the_south() {
+        // Ten degrees from each pole, between two meridians.
+        let (size, row, col) = (32, 19, 17);
+        let north = texel(&generate_cube_face(2, size), size, row, col);
+        let south = texel(&generate_cube_face(3, size), size, row, col);
+        assert!(north[1] > south[1], "north {north:?}, south {south:?}");
+        assert!(north[2] < south[2], "north {north:?}, south {south:?}");
     }
 }

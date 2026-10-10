@@ -217,22 +217,6 @@ impl Harness {
         panic!("{what}: no TexturesReady within {TIMEOUT:?}");
     }
 
-    /// Block until a status event whose text `matches`, or panic on timeout.
-    ///
-    /// The status is the loading indicator, so this is how a test observes that
-    /// a background decode has started or finished without guessing at a sleep.
-    pub(crate) fn wait_for_status(&self, matches: impl Fn(&str) -> bool, what: &str) {
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        while let Ok(event) = self.events.recv_deadline(deadline) {
-            if let EngineEvent::Status(text) = event
-                && matches(&text)
-            {
-                return;
-            }
-        }
-        panic!("{what}: no matching status within {TIMEOUT:?}");
-    }
-
     /// Block until an overlay's texture has reached the GPU, by its GPU label.
     ///
     /// `TexturesReady` deliberately excludes the overlays, because nothing in

@@ -6,12 +6,11 @@
 use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
-use std::time::Duration;
-#[cfg(windows)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use image::GenericImageView;
 use serial_test::serial;
+use sunlit_core::assets::tiles::{PackKind, pack_path};
 use sunlit_earth::ipc::{DisplaysSignal, Windowing};
 
 mod common;
@@ -23,11 +22,11 @@ use common::pixels::{
 };
 use common::process::{
     ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY, Spawn,
-    StderrWatcher, StdoutWatcher, TempDirGuard, WALLPAPER_OPT_IN, WALLPAPER_PLATFORM,
-    assert_no_error_lines, binary, fixture, isolated_config_path, isolated_state_dir,
-    memory_report, mib, parse_memory_entries, query_memory, quit_and_expect_clean_exit,
-    send_ipc_command, skip_case, tray_supported, unique_socket_name, wait_with_timeout,
-    wallpaper_supported,
+    StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
+    WALLPAPER_PLATFORM, assert_no_error_lines, binary, fixture, isolated_config_path,
+    isolated_state_dir, memory_report, mib, parse_memory_entries, query_memory,
+    quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
+    wait_with_timeout, wallpaper_supported,
 };
 
 #[cfg(target_os = "linux")]
@@ -95,16 +94,17 @@ fn test_binary_exists() {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_render_and_exit() {
-    /// A cold-cache 800x800 render, surface texture decode included, on the
-    /// software adapter of a guest.
+    /// A cold-cache 800x800 render, the first frame's tile packs built
+    /// included, on the software adapter of a guest.
     const RENDER: Duration = Duration::from_mins(1);
 
     let temp_dir = TempDirGuard::new();
     let output_path = temp_dir.path().join("render.png");
     let config_path = fixture("e2e_config.toml");
-    // A cache directory of its own, so this case pays the texture decode rather
-    // than inheriting a warm cache from whichever case ran first. The memory
-    // profile asserted on below is the profile of a run that decodes.
+    // A cache directory of its own, so this case builds the first frame's tile
+    // packs rather than inheriting a warm cache from whichever case ran first.
+    // The memory profile asserted on below is the profile of a run that builds
+    // them.
     let cache_dir = temp_dir.path().join("cache");
 
     // The render subcommand is the one start with no socket to answer on, so it
@@ -120,6 +120,8 @@ fn test_render_and_exit() {
             .args([
                 "--log-level",
                 "debug",
+                "--texture-resolution",
+                TEXTURE_RESOLUTION,
                 "render",
                 "--output",
                 output_path.to_str().expect("non-UTF-8 temp path"),
@@ -206,15 +208,20 @@ fn test_render_and_exit() {
     }
 
     let peak = mem.iter().map(|e| e.peak_rss_mb).fold(0.0f64, f64::max);
+    let exit = mem.iter().rev().find(|e| e.context == "before exit");
+    println!(
+        "render: peak RSS {peak:.0} MB, RSS at exit {} MB",
+        exit.map_or_else(|| "unknown".to_owned(), |e| format!("{:.0}", e.rss_mb))
+    );
     assert!(
-        peak < 3000.0,
-        "peak RSS too high: {peak:.0} MB (expected < 3000 MB)"
+        peak < 800.0,
+        "peak RSS too high: {peak:.0} MB (expected < 800 MB)"
     );
 
-    if let Some(entry) = mem.iter().rev().find(|e| e.context == "before exit") {
+    if let Some(entry) = exit {
         assert!(
-            entry.rss_mb < 1000.0,
-            "exit memory too high: {:.0} MB (expected < 1000 MB)",
+            entry.rss_mb < 800.0,
+            "exit memory too high: {:.0} MB (expected < 800 MB)",
             entry.rss_mb
         );
         // Only where there was something to settle. `peak_rss_mb` is this
@@ -508,26 +515,40 @@ fn test_gpu_persistence_after_hide() {
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }
 
-/// Cloud updates arriving while the window is hidden must not grow process
-/// memory without bound.
+/// Cloud updates arriving while the window is hidden must reach the GPU and
+/// leave no decoded frame or download behind.
 ///
-/// Decoded cloud frames reach the GPU through a channel drained from
-/// `BeforeRendering`, which stops firing once the window is hidden. The case
-/// points the fetcher at a local stub server, hides the window, publishes 15
-/// updates, and asserts both that private bytes stay bounded and that the
-/// updates still reach the GPU while hidden.
+/// The case points the fetcher at a local stub server, hides the window,
+/// publishes `WARMUP_UPDATES` updates and then `UPDATES` more, and asserts
+/// that no decoded frame and no download is alive once each batch has landed,
+/// that the updates still reach the GPU while hidden, and that private bytes
+/// stay within a coarse limit across the later batch.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 #[allow(clippy::too_many_lines)]
 fn test_hidden_window_cloud_updates_do_not_grow_memory() {
-    /// Decoded size is 2048 * 1024 * 4 = 8 MiB per frame.
+    /// A decoded frame is one channel, 2 MiB, and the cloud texture made from
+    /// it 2.67 MiB with its mips.
     const FIXTURE_WIDTH: u32 = 2048;
     const FIXTURE_HEIGHT: u32 = 1024;
+    /// Hidden updates before the baseline, which the allocators grow through
+    /// once: glibc raises its mmap threshold to a decoded frame's size when
+    /// the first one is freed, so the next decode lands in an arena and stays
+    /// there, and the GPU allocator's blocks are touched up to two cloud
+    /// textures and a staging buffer. On lavapipe both settle by the third
+    /// update; what the case bounds is the growth after that.
+    const WARMUP_UPDATES: u64 = 4;
     const UPDATES: u64 = 15;
+    /// A backstop for what the two counts do not see, such as GPU memory or
+    /// host memory outside a decoded frame and a download. The counts are the
+    /// exact checks.
     const GROWTH_LIMIT_BYTES: u64 = 40 * 1024 * 1024;
     /// Long enough for at least one tick of the 5 s drain timer.
     const SETTLE: Duration = Duration::from_secs(8);
+    /// How much longer than `SETTLE` a decoded frame or a download may stay
+    /// alive before it counts as parked: two more ticks of the drain timer.
+    const FRAME_DEADLINE: Duration = Duration::from_secs(10);
     /// One image served by the local stub, which is polled once a second.
     const DOWNLOAD: Duration = Duration::from_secs(15);
 
@@ -565,22 +586,38 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     wait_for_downloads(&stub, 1, READY);
     stderr_watcher.wait_for_log("GPU texture created", READY);
 
-    // From here on `BeforeRendering` no longer fires.
     send_ipc_command(&socket_name, "hide-window");
     stdout_watcher.wait_for_signal("window_hidden", SIGNAL_REPLY);
 
-    std::thread::sleep(SETTLE);
-    let baseline = query_memory(&socket_name, &stdout_watcher);
+    let publish = |count: u64| {
+        for _ in 0..count {
+            let target = stub.gets.load(Ordering::SeqCst) + 1;
+            stub.version.fetch_add(1, Ordering::SeqCst);
+            wait_for_downloads(&stub, target, DOWNLOAD);
+        }
+    };
+
+    // Once the last download has had its drain tick, asked until no decoded
+    // frame and no download is alive or `FRAME_DEADLINE` has passed.
+    let settled = || {
+        std::thread::sleep(SETTLE);
+        let deadline = Instant::now() + FRAME_DEADLINE;
+        loop {
+            let memory = query_memory(&socket_name, &stdout_watcher);
+            let alive = memory.decoded_frames + memory.downloads;
+            if alive == 0 || Instant::now() >= deadline {
+                return memory;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    };
+
+    publish(WARMUP_UPDATES);
+    let baseline = settled();
     let stderr_cursor = stderr_watcher.line_count();
 
-    for _ in 0..UPDATES {
-        let target = stub.gets.load(Ordering::SeqCst) + 1;
-        stub.version.fetch_add(1, Ordering::SeqCst);
-        wait_for_downloads(&stub, target, DOWNLOAD);
-    }
-
-    std::thread::sleep(SETTLE);
-    let end = query_memory(&socket_name, &stdout_watcher);
+    publish(UPDATES);
+    let end = settled();
 
     send_ipc_command(&socket_name, "export-test");
     stdout_watcher.wait_for_signal("export_test_ok", SIGNAL_REPLY);
@@ -603,15 +640,21 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         .count();
 
     println!(
-        "baseline: rss={:.1} MiB private={:.1} MiB",
+        "baseline after {WARMUP_UPDATES} hidden cloud updates: rss={:.1} MiB private={:.1} MiB \
+         decoded frames={} downloads={}",
         mib(baseline.rss_bytes),
-        mib(baseline.private_bytes)
+        mib(baseline.private_bytes),
+        baseline.decoded_frames,
+        baseline.downloads
     );
     println!(
-        "after {UPDATES} hidden cloud updates: rss={:.1} MiB private={:.1} MiB peak_rss={:.1} MiB",
+        "after {UPDATES} more: rss={:.1} MiB private={:.1} MiB peak_rss={:.1} MiB \
+         decoded frames={} downloads={}",
         mib(end.rss_bytes),
         mib(end.private_bytes),
-        mib(end.peak_rss_bytes)
+        mib(end.peak_rss_bytes),
+        end.decoded_frames,
+        end.downloads
     );
     println!(
         "growth: private={:.1} MiB rss={:.1} MiB (limit {:.0} MiB), \
@@ -620,6 +663,30 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
         mib(rss_growth),
         mib(GROWTH_LIMIT_BYTES)
     );
+
+    for (when, memory) in [
+        (format!("after {WARMUP_UPDATES} updates"), &baseline),
+        (format!("after {UPDATES} more"), &end),
+    ] {
+        assert!(
+            memory.decoded_frames == 0 && memory.decoded_bytes == 0,
+            "{} decoded frames ({:.1} MiB) still alive {when} with the window hidden, {:?} \
+             after the last download: a frame that outlives its upload is a decoded pixel \
+             buffer parked in a queue, a cache or a long-lived struct",
+            memory.decoded_frames,
+            mib(memory.decoded_bytes),
+            SETTLE + FRAME_DEADLINE
+        );
+        assert!(
+            memory.downloads == 0 && memory.download_bytes == 0,
+            "{} cloud downloads ({:.1} MiB) still alive {when} with the window hidden, {:?} \
+             after the last download: a download that outlives its poll is parked in a \
+             queue, a cache or a long-lived struct",
+            memory.downloads,
+            mib(memory.download_bytes),
+            SETTLE + FRAME_DEADLINE
+        );
+    }
 
     // Private bytes (commit charge) rather than RSS, because working-set
     // trimming can hide heap growth from RSS.
@@ -646,7 +713,7 @@ fn test_hidden_window_cloud_updates_do_not_grow_memory() {
     assert_no_error_lines(&stderr_watcher.lines());
 }
 
-/// Verify that `memory-report` answers with the four sections, and print what
+/// Verify that `memory-report` answers with the six sections, and print what
 /// it said.
 ///
 /// The printing is the point as much as the assertions are: this is the one
@@ -697,6 +764,171 @@ fn test_memory_report() {
         report.iter().any(|line| line.contains("render_texture")),
         "the expected table should list the preview render target:\n{}",
         report.join("\n")
+    );
+}
+
+/// Verify that a fresh install builds its tile packs once and a second start
+/// builds nothing.
+///
+/// The first start has an empty cache directory, so the transcoder runs from
+/// nothing: the case waits for every pack to land, reads the loading line the
+/// settings window would show from the `loading_text` signals, and checks that
+/// it named the packs on the way. The second start has the cache the first left
+/// behind and must neither name a pack nor touch one.
+///
+/// Skipped where the real cube is not present, since there is then nothing to
+/// transcode.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+#[allow(clippy::too_many_lines)]
+fn test_a_fresh_install_builds_its_packs_once() {
+    /// Twelve months, the night and the mask, on a software adapter at below
+    /// normal priority while the first frames draw.
+    const FIRST_RUN: Duration = Duration::from_mins(15);
+    /// Long enough for a second start to have begun a build, if it were going
+    /// to.
+    const SECOND_RUN: Duration = Duration::from_secs(20);
+
+    let Some(textures) = sunlit_core::assets::texture_loader::resolve_textures_dir(None) else {
+        skip_case(
+            "test_a_fresh_install_builds_its_packs_once",
+            "no textures directory",
+        );
+        return;
+    };
+    let real = sunlit_core::assets::cube_names::all_files()
+        .iter()
+        .all(|name| fs::metadata(textures.join(name)).is_ok_and(|meta| meta.len() > 1024));
+    if !real {
+        skip_case(
+            "test_a_fresh_install_builds_its_packs_once",
+            "the cube faces are not all present, or are Git LFS pointers",
+        );
+        return;
+    }
+
+    let socket_name = unique_socket_name();
+    let temp_dir = TempDirGuard::new();
+    let cache_dir = temp_dir.path().join("cache");
+    let packs: Vec<(PackKind, std::path::PathBuf)> = PackKind::all()
+        .map(|kind| (kind, pack_path(&cache_dir, kind)))
+        .collect();
+    let loading_lines = |watcher: &StdoutWatcher| -> Vec<String> {
+        watcher
+            .lines()
+            .iter()
+            .filter_map(|line| line.split_once("SIGNAL:loading_text "))
+            .map(|(_, text)| text.trim().to_owned())
+            .collect()
+    };
+
+    let started = std::time::Instant::now();
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name)
+        .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
+        .ready(Ready::Listener)
+        .start();
+    stdout_watcher.wait_for_signal("loading_text Preparing", READY);
+    let mask_path = pack_path(&cache_dir, PackKind::Mask);
+    let mask_first = mask_path.is_file();
+    while !packs.iter().all(|(_, path)| path.is_file()) {
+        assert!(
+            started.elapsed() < FIRST_RUN,
+            "after {:.0} s the packs still missing are {:?}; the loading line said:\n{}",
+            started.elapsed().as_secs_f64(),
+            packs
+                .iter()
+                .filter(|(_, path)| !path.is_file())
+                .map(|(kind, _)| kind.file_name())
+                .collect::<Vec<_>>(),
+            loading_lines(&stdout_watcher).join("\n")
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let built_in = started.elapsed();
+    let settled = std::time::Instant::now();
+    while loading_lines(&stdout_watcher)
+        .last()
+        .is_none_or(|last| !last.is_empty())
+    {
+        assert!(
+            settled.elapsed() < SIGNAL_REPLY,
+            "the loading line never cleared: {:?}",
+            loading_lines(&stdout_watcher)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let lines = loading_lines(&stdout_watcher);
+    println!(
+        "first run: every pack landed after {:.0} s; loading line: {lines:?}",
+        built_in.as_secs_f64()
+    );
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+
+    let months: Vec<usize> = lines
+        .iter()
+        .filter_map(|line| {
+            let (_, place) = line.strip_prefix("Preparing ")?.split_once(", ")?;
+            place.strip_suffix(" of 12")?.parse().ok()
+        })
+        .collect();
+    assert!(
+        !months.is_empty(),
+        "the loading line never named a month: {lines:?}"
+    );
+    assert!(
+        months.windows(2).all(|pair| pair[0] <= pair[1]),
+        "the months were counted out of order: {months:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == "Preparing Night"),
+        "the loading line never named the night: {lines:?}"
+    );
+    assert!(
+        mask_first || lines.iter().any(|line| line == "Preparing Oceans"),
+        "the loading line never named the oceans: {lines:?}"
+    );
+
+    let stamp = |path: &std::path::Path| {
+        let meta = fs::metadata(path).expect("a pack's metadata");
+        (meta.len(), meta.modified().expect("a pack's mtime"))
+    };
+    let before: Vec<_> = packs.iter().map(|(_, path)| stamp(path)).collect();
+    let listing = |dir: &std::path::Path| {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .expect("the pack directory")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    let pack_dir = cache_dir.join(sunlit_core::assets::tiles::CACHE_SUBDIR);
+    let names_before = listing(&pack_dir);
+
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name)
+        .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
+        .start();
+    std::thread::sleep(SECOND_RUN);
+    let lines = loading_lines(&stdout_watcher);
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+
+    assert!(
+        lines.iter().all(|line| !line.starts_with("Preparing")),
+        "the second start prepared something: {lines:?}"
+    );
+    let after: Vec<_> = packs.iter().map(|(_, path)| stamp(path)).collect();
+    assert_eq!(before, after, "the second start rewrote a pack");
+    assert_eq!(
+        names_before,
+        listing(&pack_dir),
+        "the second start left or removed files in the pack directory"
     );
 }
 

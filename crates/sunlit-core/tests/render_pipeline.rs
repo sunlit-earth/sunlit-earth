@@ -5,11 +5,15 @@
 
 mod common;
 
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use wgpu::util::DeviceExt;
 
+use sunlit_core::assets::tiles::{Geometry, PackKind, TileKey};
 use sunlit_core::geometry::sphere::{Vertex, generate_uv_sphere};
+use sunlit_core::renderer::tiles::{
+    CellLevels, PageEntry, PageSurface, PageTable, TileId, TileLayers,
+};
 use sunlit_core::renderer::uniforms::Uniforms;
 
 /// Build a perspective MVP matrix looking at the origin from distance 3.5.
@@ -55,6 +59,13 @@ struct RenderContext {
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    /// The renderer's own surface sampler, which the cube path reads through.
+    surface_sampler: wgpu::Sampler,
+    /// A 1x1 black cube for every cube place a case leaves empty.
+    dummy_cube: wgpu::TextureView,
+    /// A one-layer black tile array and a page table of one cell per face that
+    /// draws the floor, for every case that draws no tile.
+    dummy_tiles: [wgpu::TextureView; 2],
 }
 
 #[allow(clippy::too_many_lines)]
@@ -123,18 +134,36 @@ fn create_render_context() -> RenderContext {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            cube_entry(4),
+            cube_entry(5),
+            cube_entry(6),
             wgpu::BindGroupLayoutEntry {
-                binding: 3,
+                binding: 7,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
                     multisampled: false,
                 },
                 count: None,
             },
         ],
     });
+    let dummy_cube = create_solid_cube(&device, &queue, [[0, 0, 0, 255]; 6]);
+    let dummy_tiles = create_dummy_tiles(&device, &queue);
+    let surface_sampler = device.create_sampler(
+        &sunlit_core::renderer::surface_sampler_descriptor(ctx.cpu_adapter),
+    );
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("test_pipeline_layout"),
@@ -202,11 +231,62 @@ fn create_render_context() -> RenderContext {
         index_count,
         uniform_buffer,
         sampler,
+        surface_sampler,
+        dummy_cube,
+        dummy_tiles,
     }
+}
+
+/// A one-layer black tile array and a page table of one floor cell per face.
+fn create_dummy_tiles(device: &wgpu::Device, queue: &wgpu::Queue) -> [wgpu::TextureView; 2] {
+    let texture = |label, format, layers, data: &[u8]| {
+        device
+            .create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: layers,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                data,
+            )
+            .create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            })
+    };
+    [
+        texture(
+            "dummy_tile_array",
+            wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            &[0, 0, 0, 255],
+        ),
+        texture(
+            "dummy_page_table",
+            wgpu::TextureFormat::R32Uint,
+            6,
+            &[0; 24],
+        ),
+    ]
 }
 
 static RENDER_CTX: LazyLock<Mutex<RenderContext>> =
     LazyLock::new(|| Mutex::new(create_render_context()));
+
+fn render_ctx() -> MutexGuard<'static, RenderContext> {
+    RENDER_CTX.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -262,19 +342,104 @@ fn create_solid_texture(
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Render a frame and return the RGBA8 pixel data.
-fn render_frame(
-    ctx: &RenderContext,
-    uniforms: &Uniforms,
-    day_texture: &wgpu::TextureView,
-    night_texture: &wgpu::TextureView,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    ctx.queue
-        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
+/// A cube texture binding of the production layout.
+fn cube_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::Cube,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
 
-    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+/// An RGBA8 cube `size` texels wide with one level, face `f` from
+/// `texels(f)`, in cube layer order.
+fn create_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    texels: impl Fn(usize) -> Vec<u8>,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_cube"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for face in 0..6_u32 {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: face,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &texels(face as usize),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * size),
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+/// A 1x1 cube with one solid color per face.
+fn create_solid_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    faces: [[u8; 4]; 6],
+) -> wgpu::TextureView {
+    create_cube(device, queue, 1, |face| faces[face].to_vec())
+}
+
+/// A bind group of the production layout, with no tiles.
+fn test_bind_group(
+    ctx: &RenderContext,
+    flat: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    cubes: [&wgpu::TextureView; 3],
+) -> wgpu::BindGroup {
+    let [tiles, pages] = &ctx.dummy_tiles;
+    bind_group_with(ctx, flat, sampler, cubes, [tiles, pages])
+}
+
+/// A bind group of the production layout, with the tile array and the page
+/// table `tiles`.
+fn bind_group_with(
+    ctx: &RenderContext,
+    flat: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    cubes: [&wgpu::TextureView; 3],
+    tiles: [&wgpu::TextureView; 2],
+) -> wgpu::BindGroup {
+    let view = wgpu::BindingResource::TextureView;
+    ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test_bind_group"),
         layout: &ctx.bind_group_layout,
         entries: &[
@@ -284,18 +449,87 @@ fn render_frame(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(day_texture),
+                resource: view(flat),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::Sampler(&ctx.sampler),
+                resource: wgpu::BindingResource::Sampler(sampler),
             },
             wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(night_texture),
+                binding: 4,
+                resource: view(cubes[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: view(cubes[1]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: view(cubes[2]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: view(tiles[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: view(tiles[1]),
             },
         ],
-    });
+    })
+}
+
+/// Render a frame from a solid day color and a solid night color and return
+/// the RGBA8 pixel data.
+///
+/// The day color's alpha is the water: 255 is land and 128 open water, as the
+/// shader reads a water cube of 254, so a case states a surface in one color
+/// apiece.
+fn render_frame(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    day: [u8; 4],
+    night: [u8; 4],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let water = u8::try_from((255 - u16::from(day[3])) * 2).unwrap_or(u8::MAX);
+    let day_cube = create_solid_cube(&ctx.device, &ctx.queue, [[day[0], day[1], day[2], 255]; 6]);
+    let night_cube = create_solid_cube(&ctx.device, &ctx.queue, [night; 6]);
+    let water_cube = create_solid_cube(&ctx.device, &ctx.queue, [[water, 0, 0, 255]; 6]);
+    render_cube_frame(
+        ctx,
+        uniforms,
+        [&day_cube, &night_cube, &water_cube],
+        width,
+        height,
+    )
+}
+
+/// Render a frame from the day, night and water cubes through the surface
+/// sampler and return the RGBA8 pixel data.
+fn render_cube_frame(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    cubes: [&wgpu::TextureView; 3],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let bind_group = test_bind_group(ctx, &flat, &ctx.surface_sampler, cubes);
+    render_with(ctx, uniforms, &bind_group, width, height)
+}
+
+/// Render the globe with `bind_group` and return the RGBA8 pixel data.
+fn render_with(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    bind_group: &wgpu::BindGroup,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    ctx.queue
+        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
 
     let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_render_target"),
@@ -358,7 +592,7 @@ fn render_frame(
         });
 
         pass.set_pipeline(&ctx.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
         pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..ctx.index_count, 0, 0..1);
@@ -494,8 +728,12 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         atmo_sunrise_glow: 0.0,
         atmo_sunrise_g: 0.5,
         sun_flux: 1.0,
-        _pad7: 0.0,
-        _pad8: 0.0,
+        day_ocean: 0,
+        night_ocean: 0,
+        tile_texels: 0.0,
+        tile_gutter: 0.0,
+        _pad9: 0.0,
+        _pad10: 0.0,
     }
 }
 
@@ -512,15 +750,15 @@ const MOON_MODEL_IDENTITY: [f32; 16] = [
 
 #[test]
 fn sphere_renders_visible_pixels() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let white = [255, 255, 255, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms = default_test_uniforms(size);
 
-    let pixels = render_frame(&ctx, &uniforms, &white, &black, size, size);
+    let pixels = render_frame(&ctx, &uniforms, white, black, size, size);
     let visible = count_non_clear_pixels(&pixels);
 
     assert!(
@@ -531,11 +769,11 @@ fn sphere_renders_visible_pixels() {
 
 #[test]
 fn day_side_brighter_than_night_side() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let white = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-    let dark_gray = create_solid_texture(&ctx.device, &ctx.queue, [30, 30, 30, 255]);
+    let white = [255, 255, 255, 255];
+    let dark_gray = [30, 30, 30, 255];
 
     let uniforms = Uniforms {
         terminator_width: 0.15,
@@ -543,7 +781,7 @@ fn day_side_brighter_than_night_side() {
         ..default_test_uniforms(size)
     };
 
-    let pixels = render_frame(&ctx, &uniforms, &white, &dark_gray, size, size);
+    let pixels = render_frame(&ctx, &uniforms, white, dark_gray, size, size);
 
     // The sphere faces the camera (along +Z). Sun is also along +Z.
     // Center of the image should be brightly lit.
@@ -564,24 +802,24 @@ fn day_side_brighter_than_night_side() {
 
 #[test]
 fn single_texture_mode_ignores_the_night_side() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
-    let green = create_solid_texture(&ctx.device, &ctx.queue, [0, 255, 0, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let red = [255, 0, 0, 255];
+    let green = [0, 255, 0, 255];
+    let black = [0, 0, 0, 255];
 
     // A negative terminator width is single-texture mode, where the fragment
     // shader returns before it reaches the night binding.
     let uniforms = default_test_uniforms(size);
-    let pixels_green_night = render_frame(&ctx, &uniforms, &red, &green, size, size);
+    let pixels_green_night = render_frame(&ctx, &uniforms, red, green, size, size);
 
     let extreme = Uniforms {
         night_gamma: 0.3,
         night_saturation: 0.0,
         ..uniforms
     };
-    let pixels_black_night = render_frame(&ctx, &extreme, &red, &black, size, size);
+    let pixels_black_night = render_frame(&ctx, &extreme, red, black, size, size);
 
     assert_eq!(
         pixels_green_night, pixels_black_night,
@@ -694,6 +932,11 @@ fn uniform_readback() {
     output[72] = uniforms.atmo_sunrise_glow;
     output[73] = uniforms.atmo_sunrise_g;
     output[74] = uniforms.sun_flux;
+    // the tiles
+    output[75] = f32(uniforms.day_ocean);
+    output[76] = f32(uniforms.night_ocean);
+    output[77] = uniforms.tile_texels;
+    output[78] = uniforms.tile_gutter;
 }
 ";
 
@@ -702,7 +945,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 75] = [
+const PROBED_FIELDS: [(f32, &str); 79] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -778,12 +1021,16 @@ const PROBED_FIELDS: [(f32, &str); 75] = [
     (1.85, "atmo_sunrise_glow"),
     (0.62, "atmo_sunrise_g"),
     (0.72, "sun_flux"),
+    (3_939_850.0, "day_ocean"),
+    (984_325.0, "night_ocean"),
+    (128.0, "tile_texels"),
+    (8.0, "tile_gutter"),
 ];
 
 #[allow(clippy::too_many_lines)]
 #[test]
 fn uniform_buffer_field_offsets_match_wgsl() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
 
     let shader = ctx
         .device
@@ -885,8 +1132,12 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         atmo_sunrise_glow: 1.85,
         atmo_sunrise_g: 0.62,
         sun_flux: 0.72,
-        _pad7: 0.0,
-        _pad8: 0.0,
+        day_ocean: 0x003C_1E0A,
+        night_ocean: 0x000F_0505,
+        tile_texels: 128.0,
+        tile_gutter: 8.0,
+        _pad9: 0.0,
+        _pad10: 0.0,
     };
 
     let uniform_buf = ctx
@@ -1005,7 +1256,7 @@ const RULE_REDDENINGS: [f32; 3] = [0.0, 1.0, 2.0];
 #[test]
 #[allow(clippy::too_many_lines)]
 fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
 
     let shader = ctx
         .device
@@ -1182,7 +1433,7 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
     /// `docs/rendering.md`.
     const TOLERANCE: f32 = 1.0e-3;
 
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
 
     let shader = ctx
         .device
@@ -1396,12 +1647,12 @@ fn avg_luminance_non_clear(pixels: &[u8]) -> f64 {
 
 #[test]
 fn the_water_effects_are_inert_while_their_gates_are_zero() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     // All-water texture (alpha=128): RGB can be ocean-like
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     // Both gates are zero here, so neither the glint's exponent nor the
     // diffuse shift's Fresnel exponent may reach the frame.
@@ -1415,8 +1666,8 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
         fresnel_exp: 1.0,
         ..closed
     };
-    let pixels_closed = render_frame(&ctx, &closed, &water, &night, size, size);
-    let pixels_varied = render_frame(&ctx, &varied, &water, &night, size, size);
+    let pixels_closed = render_frame(&ctx, &closed, water, night, size, size);
+    let pixels_varied = render_frame(&ctx, &varied, water, night, size, size);
     assert_eq!(
         pixels_closed, pixels_varied,
         "spec_intensity and fresnel_mix at zero should skip both blocks, \
@@ -1430,7 +1681,7 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
         fresnel_mix: 0.5,
         ..varied
     };
-    let pixels_open = render_frame(&ctx, &open, &water, &night, size, size);
+    let pixels_open = render_frame(&ctx, &open, water, night, size, size);
     assert_ne!(
         pixels_closed, pixels_open,
         "opening both gates should change the frame"
@@ -1439,11 +1690,11 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
 
 #[test]
 fn fresnel_specular_brighter_at_grazing() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     // The brightest pixel the glint adds, which is the highlight itself: the
     // two cameras see different amounts of the night side, so an average over
@@ -1461,8 +1712,8 @@ fn fresnel_specular_brighter_at_grazing() {
             spec_intensity: 0.1,
             ..dark
         };
-        let pixels_dark = render_frame(&ctx, &dark, &water, &night, size, size);
-        let pixels_lit = render_frame(&ctx, &lit, &water, &night, size, size);
+        let pixels_dark = render_frame(&ctx, &dark, water, night, size, size);
+        let pixels_lit = render_frame(&ctx, &lit, water, night, size, size);
         let luminance = |px: &[u8]| {
             0.2126 * f64::from(px[0]) + 0.7152 * f64::from(px[1]) + 0.0722 * f64::from(px[2])
         };
@@ -1498,18 +1749,18 @@ fn fresnel_specular_brighter_at_grazing() {
 
 #[test]
 fn fresnel_diffuse_shift_brightens_grazing_water() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     let uniforms_no_shift = Uniforms {
         terminator_width: 0.15,
         flags: 1,
         ..default_test_uniforms(size)
     };
-    let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, &water, &night, size, size);
+    let pixels_no_shift = render_frame(&ctx, &uniforms_no_shift, water, night, size, size);
     let lum_no_shift = avg_luminance_non_clear(&pixels_no_shift);
 
     // With Fresnel diffuse shift (the sky color is brighter than the ocean)
@@ -1517,7 +1768,7 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
         fresnel_mix: 0.5,
         ..uniforms_no_shift
     };
-    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &water, &night, size, size);
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, water, night, size, size);
     let lum_with_shift = avg_luminance_non_clear(&pixels_with_shift);
 
     // The diffuse color shift mixes toward a brighter sky color,
@@ -1531,12 +1782,12 @@ fn fresnel_diffuse_shift_brightens_grazing_water() {
 
 #[test]
 fn fresnel_diffuse_shift_absent_on_land() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     // All-land texture (alpha=255)
-    let land = create_solid_texture(&ctx.device, &ctx.queue, [50, 120, 50, 255]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 255]);
+    let land = [50, 120, 50, 255];
+    let night = [5, 5, 10, 255];
 
     // Without Fresnel diffuse shift
     let uniforms_base = Uniforms {
@@ -1544,14 +1795,14 @@ fn fresnel_diffuse_shift_absent_on_land() {
         flags: 1,
         ..default_test_uniforms(size)
     };
-    let pixels_base = render_frame(&ctx, &uniforms_base, &land, &night, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, land, night, size, size);
 
     // With Fresnel diffuse shift — should have no effect on land
     let uniforms_with_shift = Uniforms {
         fresnel_mix: 0.5,
         ..uniforms_base
     };
-    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &land, &night, size, size);
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, land, night, size, size);
 
     // Pixel-for-pixel comparison: land should be completely unaffected
     assert_eq!(
@@ -1562,11 +1813,11 @@ fn fresnel_diffuse_shift_absent_on_land() {
 
 #[test]
 fn fresnel_diffuse_shift_absent_at_night() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let water = create_solid_texture(&ctx.device, &ctx.queue, [10, 30, 60, 128]);
-    let night = create_solid_texture(&ctx.device, &ctx.queue, [5, 5, 10, 128]);
+    let water = [10, 30, 60, 128];
+    let night = [5, 5, 10, 128];
 
     // Sun pointing away from camera (night side faces camera)
     let uniforms_base = Uniforms {
@@ -1575,7 +1826,7 @@ fn fresnel_diffuse_shift_absent_at_night() {
         flags: 1,
         ..default_test_uniforms(size)
     };
-    let pixels_base = render_frame(&ctx, &uniforms_base, &water, &night, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, water, night, size, size);
 
     // With Fresnel diffuse shift — should have no effect on night side
     // because sky_color * result.blend = sky_color * 0 = 0
@@ -1583,7 +1834,7 @@ fn fresnel_diffuse_shift_absent_at_night() {
         fresnel_mix: 0.5,
         ..uniforms_base
     };
-    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, &water, &night, size, size);
+    let pixels_with_shift = render_frame(&ctx, &uniforms_with_shift, water, night, size, size);
 
     // Night side: result.blend is 0, so sky_color * 0 = black.
     // The mix should be toward black which shouldn't change the dark night pixels.
@@ -1608,7 +1859,7 @@ fn fresnel_diffuse_shift_absent_at_night() {
 #[allow(clippy::too_many_lines)]
 #[test]
 fn cloud_pipeline_renders_with_alpha() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 64;
 
     let pipeline_layout = ctx
@@ -1663,7 +1914,6 @@ fn cloud_pipeline_renders_with_alpha() {
         });
 
     let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-    let dummy = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
 
     let uniforms = Uniforms {
         terminator_width: 0.15,
@@ -1674,28 +1924,13 @@ fn cloud_pipeline_renders_with_alpha() {
     ctx.queue
         .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
-    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("test_cloud_bind_group"),
-        layout: &ctx.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: ctx.uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&cloud_tex),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(&ctx.sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(&dummy),
-            },
-        ],
-    });
+    let dummy_cube = &ctx.dummy_cube;
+    let bind_group = test_bind_group(
+        &ctx,
+        &cloud_tex,
+        &ctx.sampler,
+        [dummy_cube, dummy_cube, dummy_cube],
+    );
 
     let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_cloud_render_target"),
@@ -1780,28 +2015,28 @@ fn cloud_pipeline_renders_with_alpha() {
 
 #[test]
 fn gamma_moves_midtones_in_both_directions() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let mid_gray = [128, 128, 128, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms_base = default_test_uniforms(size);
-    let pixels_base = render_frame(&ctx, &uniforms_base, &mid_gray, &black, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, mid_gray, black, size, size);
     let lum_base = avg_luminance_non_clear(&pixels_base);
 
     let uniforms_bright = Uniforms {
         day_gamma: 2.0,
         ..uniforms_base
     };
-    let pixels_bright = render_frame(&ctx, &uniforms_bright, &mid_gray, &black, size, size);
+    let pixels_bright = render_frame(&ctx, &uniforms_bright, mid_gray, black, size, size);
     let lum_bright = avg_luminance_non_clear(&pixels_bright);
 
     let uniforms_dark = Uniforms {
         day_gamma: 0.5,
         ..uniforms_base
     };
-    let pixels_dark = render_frame(&ctx, &uniforms_dark, &mid_gray, &black, size, size);
+    let pixels_dark = render_frame(&ctx, &uniforms_dark, mid_gray, black, size, size);
     let lum_dark = avg_luminance_non_clear(&pixels_dark);
 
     assert!(
@@ -1816,16 +2051,16 @@ fn gamma_moves_midtones_in_both_directions() {
 
 #[test]
 fn consecutive_renders_are_identical() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let colorful = [200, 100, 50, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms = default_test_uniforms(size);
 
-    let pixels_a = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
-    let pixels_b = render_frame(&ctx, &uniforms, &colorful, &black, size, size);
+    let pixels_a = render_frame(&ctx, &uniforms, colorful, black, size, size);
+    let pixels_b = render_frame(&ctx, &uniforms, colorful, black, size, size);
 
     assert_eq!(
         pixels_a, pixels_b,
@@ -1840,18 +2075,18 @@ fn consecutive_renders_are_identical() {
 
 #[test]
 fn saturation_zero_produces_greyscale() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let red = create_solid_texture(&ctx.device, &ctx.queue, [255, 0, 0, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let red = [255, 0, 0, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms = Uniforms {
         day_saturation: 0.0,
         ..default_test_uniforms(size)
     };
 
-    let pixels = render_frame(&ctx, &uniforms, &red, &black, size, size);
+    let pixels = render_frame(&ctx, &uniforms, red, black, size, size);
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
@@ -1882,20 +2117,20 @@ fn saturation_zero_produces_greyscale() {
 
 #[test]
 fn saturation_above_one_increases_chroma() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
-    let colorful = create_solid_texture(&ctx.device, &ctx.queue, [200, 100, 50, 255]);
-    let black = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let colorful = [200, 100, 50, 255];
+    let black = [0, 0, 0, 255];
 
     let uniforms_base = default_test_uniforms(size);
-    let pixels_base = render_frame(&ctx, &uniforms_base, &colorful, &black, size, size);
+    let pixels_base = render_frame(&ctx, &uniforms_base, colorful, black, size, size);
 
     let uniforms_saturated = Uniforms {
         day_saturation: 2.0,
         ..uniforms_base
     };
-    let pixels_saturated = render_frame(&ctx, &uniforms_saturated, &colorful, &black, size, size);
+    let pixels_saturated = render_frame(&ctx, &uniforms_saturated, colorful, black, size, size);
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let clear_r = (CLEAR_COLOR.r * 255.0) as u8;
@@ -1942,13 +2177,13 @@ fn saturation_above_one_increases_chroma() {
 
 #[test]
 fn day_and_night_corrections_independent() {
-    let ctx = RENDER_CTX.lock().unwrap();
+    let ctx = render_ctx();
     let size = 128;
 
     // Use mid-tones so gamma correction produces a visible difference
     // (pure white and pure black are fixed points of pow)
-    let mid_gray = create_solid_texture(&ctx.device, &ctx.queue, [128, 128, 128, 255]);
-    let dark_gray = create_solid_texture(&ctx.device, &ctx.queue, [64, 64, 64, 255]);
+    let mid_gray = [128, 128, 128, 255];
+    let dark_gray = [64, 64, 64, 255];
 
     let uniforms_day_bright = Uniforms {
         terminator_width: 0.15,
@@ -1956,14 +2191,8 @@ fn day_and_night_corrections_independent() {
         day_gamma: 2.0,
         ..default_test_uniforms(size)
     };
-    let pixels_day_bright = render_frame(
-        &ctx,
-        &uniforms_day_bright,
-        &mid_gray,
-        &dark_gray,
-        size,
-        size,
-    );
+    let pixels_day_bright =
+        render_frame(&ctx, &uniforms_day_bright, mid_gray, dark_gray, size, size);
 
     let uniforms_night_bright = Uniforms {
         day_gamma: 1.0,
@@ -1973,8 +2202,8 @@ fn day_and_night_corrections_independent() {
     let pixels_night_bright = render_frame(
         &ctx,
         &uniforms_night_bright,
-        &mid_gray,
-        &dark_gray,
+        mid_gray,
+        dark_gray,
         size,
         size,
     );
@@ -1982,5 +2211,2035 @@ fn day_and_night_corrections_independent() {
     assert_ne!(
         pixels_day_bright, pixels_night_bright,
         "Day and night corrections should produce different output when targeting different textures"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The cube surface
+// ---------------------------------------------------------------------------
+
+/// The six axes in cube layer order, +X, -X, +Y, -Y, +Z, -Z.
+const AXES: [glam::Vec3; 6] = [
+    glam::Vec3::X,
+    glam::Vec3::NEG_X,
+    glam::Vec3::Y,
+    glam::Vec3::NEG_Y,
+    glam::Vec3::Z,
+    glam::Vec3::NEG_Z,
+];
+
+/// Uniforms for a square frame looking at the globe's center from along
+/// `axis`, the day surface alone.
+fn looking_along(size: u32, axis: glam::Vec3) -> Uniforms {
+    looking_along_from(size, axis, 3.5)
+}
+
+/// [`looking_along`] from `distance` radii away.
+fn looking_along_from(size: u32, axis: glam::Vec3, distance: f32) -> Uniforms {
+    let eye = axis * distance;
+    let up = if axis.y.abs() > 0.5 {
+        glam::Vec3::Z
+    } else {
+        glam::Vec3::Y
+    };
+    let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, up);
+    let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
+    Uniforms {
+        mvp: (proj * view).to_cols_array(),
+        eye_pos: eye.into(),
+        ..default_test_uniforms(size)
+    }
+}
+
+/// The RGB of the pixel at the middle of a square frame.
+fn middle_pixel(pixels: &[u8], size: u32) -> [u8; 3] {
+    let at = (((size / 2) * size + size / 2) * 4) as usize;
+    [pixels[at], pixels[at + 1], pixels[at + 2]]
+}
+
+/// Whether two colors agree within `tolerance` on every channel.
+fn close(a: [u8; 3], b: [u8; 3], tolerance: u8) -> bool {
+    a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= tolerance)
+}
+
+/// The globe read through the warped direction shows each face where the
+/// camera looks along that face's axis, which is what the shader and the
+/// hardware's cube table agree on.
+#[test]
+fn the_cube_path_shows_each_face_where_its_axis_points() {
+    let ctx = render_ctx();
+    let size = 64;
+    let colors: [[u8; 4]; 6] = [
+        [220, 40, 40, 255],
+        [40, 220, 40, 255],
+        [40, 40, 220, 255],
+        [220, 220, 40, 255],
+        [220, 40, 220, 255],
+        [40, 220, 220, 255],
+    ];
+    // Four texels a face rather than one: the middle pixel sits half a pixel
+    // off the face's center, where a one-texel face's filter already reaches
+    // across the edges into its neighbors, three steps' worth on WARP.
+    let day = create_cube(&ctx.device, &ctx.queue, 4, |face| colors[face].repeat(16));
+    let dummy = &ctx.dummy_cube;
+    for (face, axis) in AXES.into_iter().enumerate() {
+        let pixels = render_cube_frame(
+            &ctx,
+            &looking_along(size, axis),
+            [&day, dummy, dummy],
+            size,
+            size,
+        );
+        let [r, g, b, _] = colors[face];
+        let seen = middle_pixel(&pixels, size);
+        assert!(
+            close(seen, [r, g, b], 2),
+            "looking along {axis:?}: {seen:?}, the face holds {:?}",
+            colors[face]
+        );
+    }
+}
+
+/// The water cube, not the day surface's alpha, is what the water effects
+/// read on the cube path: the same day and night with open water everywhere
+/// are brighter at the grazing edge than with land everywhere.
+#[test]
+fn the_water_cube_drives_the_water_effects() {
+    let ctx = render_ctx();
+    let size = 128;
+    let day = create_solid_cube(&ctx.device, &ctx.queue, [[10, 30, 60, 255]; 6]);
+    let night = create_solid_cube(&ctx.device, &ctx.queue, [[5, 5, 10, 255]; 6]);
+    let open_water = create_solid_cube(&ctx.device, &ctx.queue, [[255, 255, 255, 255]; 6]);
+    let land = create_solid_cube(&ctx.device, &ctx.queue, [[0, 0, 0, 255]; 6]);
+    let uniforms = Uniforms {
+        terminator_width: 0.15,
+        flags: 1,
+        fresnel_mix: 0.5,
+        ..default_test_uniforms(size)
+    };
+
+    let over_water = avg_luminance_non_clear(&render_cube_frame(
+        &ctx,
+        &uniforms,
+        [&day, &night, &open_water],
+        size,
+        size,
+    ));
+    let over_land = avg_luminance_non_clear(&render_cube_frame(
+        &ctx,
+        &uniforms,
+        [&day, &night, &land],
+        size,
+        size,
+    ));
+    assert!(
+        over_water > over_land + 1.0,
+        "open water {over_water:.1} should read brighter than land {over_land:.1}"
+    );
+}
+
+/// A day pack's floor, uploaded face by face in the pack's order, shows each
+/// face's own texels where that face's axis points: the order the pack keeps
+/// its faces in is the cube's layer order.
+#[test]
+fn a_packs_floor_faces_land_where_their_axes_point() {
+    use std::sync::atomic::AtomicBool;
+
+    use sunlit_core::assets::cube_layout::CubeTextures;
+    use sunlit_core::assets::tiles::{self, PackKind};
+
+    let scratch = common::test_support::ScratchDir::new("render_pipeline_floor");
+    common::test_support::write_cube_fixture(&scratch.join("textures"));
+    let textures = CubeTextures::resolve(&scratch.join("textures"));
+    let cache = scratch.join("cache");
+    tiles::ensure_pack(
+        &cache,
+        PackKind::Day(0),
+        &textures,
+        &tiles::FIXTURE,
+        &AtomicBool::new(false),
+    )
+    .expect("build the fixture's January pack");
+    let pack = tiles::Pack::open(&tiles::pack_path(&cache, PackKind::Day(0))).expect("open it");
+
+    let faces: Vec<_> = pack.entries().iter().filter(|e| e.whole_face).collect();
+    assert_eq!(faces.len(), 6, "a floor has six faces");
+    let floor = 1_u32 << faces[0].key.level;
+    let decoded: Vec<Vec<u8>> = faces
+        .iter()
+        .map(|entry| {
+            let blob = pack.read(entry).expect("read a floor face");
+            let finest = pack.mips(entry)[0];
+            tiles::decode_bc7(
+                &blob[finest.offset..finest.offset + finest.len],
+                floor,
+                floor,
+            )
+            .expect("decode a floor face")
+        })
+        .collect();
+    for (face, entry) in faces.iter().enumerate() {
+        assert_eq!(
+            usize::from(entry.key.face),
+            face,
+            "the pack keeps its faces in order"
+        );
+    }
+
+    let ctx = render_ctx();
+    let size = 64;
+    let cube = create_cube(&ctx.device, &ctx.queue, floor, |face| decoded[face].clone());
+    let dummy = &ctx.dummy_cube;
+    for (face, axis) in AXES.into_iter().enumerate() {
+        let pixels = render_cube_frame(
+            &ctx,
+            &looking_along(size, axis),
+            [&cube, dummy, dummy],
+            size,
+            size,
+        );
+        // The middle of a face is the corner its four middle texels share, so
+        // a bilinear read there is their mean.
+        let texel = |row: u32, col: u32, channel: usize| {
+            u32::from(decoded[face][((row * floor + col) * 4) as usize + channel])
+        };
+        let (lo, hi) = (floor / 2 - 1, floor / 2);
+        let expected: [u8; 3] = std::array::from_fn(|channel| {
+            let sum = texel(lo, lo, channel)
+                + texel(lo, hi, channel)
+                + texel(hi, lo, channel)
+                + texel(hi, hi, channel);
+            u8::try_from((sum + 2) / 4).expect("a mean of bytes")
+        });
+        let seen = middle_pixel(&pixels, size);
+        assert!(
+            close(seen, expected, 3),
+            "face {face}: {seen:?} where the floor's middle is {expected:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The warped direction across the face edges and through the poles
+// ---------------------------------------------------------------------------
+
+/// Texels along a face of the direction-coded cube.
+const CODED_FACE: u32 = 32;
+
+/// The color the direction-coded cube stands for at a direction: each
+/// component of the unit direction taken from -1 to 1 onto 0 to 1.
+fn coded_color(direction: glam::DVec3) -> glam::DVec3 {
+    direction.normalize() * 0.5 + 0.5
+}
+
+/// The direction a coded color stands for, not normalized.
+fn coded_direction(color: glam::DVec3) -> glam::DVec3 {
+    color * 2.0 - 1.0
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a coded color is inside 0 to 1"
+)]
+fn to_byte(value: f64) -> u8 {
+    (value * 255.0).round() as u8
+}
+
+/// One face of the direction-coded cube: every texel holds the coded color of
+/// the direction through its center, placed by the geometry the bake and the
+/// tile cutter place texels with.
+fn coded_face(face: usize, size: u32) -> Vec<u8> {
+    use sunlit_core::geometry::cube;
+    let mut texels = Vec::with_capacity((size * size * 4) as usize);
+    for row in 0..i64::from(size) {
+        for col in 0..i64::from(size) {
+            let direction = cube::direction(
+                face,
+                cube::texel_center(col, size),
+                cube::texel_center(row, size),
+            );
+            let color = coded_color(direction);
+            texels.extend([to_byte(color.x), to_byte(color.y), to_byte(color.z), 255]);
+        }
+    }
+    texels
+}
+
+/// The face a warped direction selects, in cube layer order: its largest
+/// component, and that component's sign.
+fn face_of(w: glam::DVec3) -> usize {
+    let a = w.abs();
+    let (axis, value) = if a.x >= a.y && a.x >= a.z {
+        (0, w.x)
+    } else if a.y >= a.z {
+        (1, w.y)
+    } else {
+        (2, w.z)
+    };
+    2 * axis + usize::from(value < 0.0)
+}
+
+/// The face whose center is `axis` scaled by `sign`.
+fn face_along(axis: usize, sign: f64) -> usize {
+    2 * axis + usize::from(sign < 0.0)
+}
+
+/// How much a component of the warped direction may change per radian the
+/// normal turns. `atan(n / m) * 4 / pi` with `m` the largest component, which
+/// is at least `1 / sqrt(3)`, changes by at most `8 sqrt(3) / pi`, about 4.4.
+const WARP_LIPSCHITZ: f64 = 4.5;
+
+/// A compute entry point appended to the production shaders: the warped
+/// direction `equi_angular` gives each normal, and what the day cube holds
+/// there through the globe's sampler at the finest level.
+const CUBE_PROBE: &str = "
+@group(1) @binding(0) var<storage, read> probe_normals: array<vec4<f32>>;
+@group(1) @binding(1) var<storage, read_write> probe_results: array<vec4<f32>>;
+
+@compute @workgroup_size(64)
+fn cube_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let index = id.x;
+    if index >= arrayLength(&probe_normals) {
+        return;
+    }
+    let w = equi_angular(normalize(probe_normals[index].xyz));
+    probe_results[2u * index] = vec4<f32>(w, 0.0);
+    probe_results[2u * index + 1u] = textureSampleLevel(day_cube, sphere_sampler, w, 0.0);
+}
+";
+
+/// What the probe found at one normal.
+#[derive(Clone, Copy)]
+struct Probed {
+    normal: glam::DVec3,
+    warped: glam::DVec3,
+    color: glam::DVec3,
+}
+
+/// Run the probe over `normals`, reading `cube` through the surface sampler.
+fn probe_cube(
+    ctx: &RenderContext,
+    cube: &wgpu::TextureView,
+    normals: &[glam::DVec3],
+) -> Vec<Probed> {
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cube_probe_shader"),
+            source: wgpu::ShaderSource::Wgsl(production_shaders(CUBE_PROBE).into()),
+        });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("cube_probe_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("cube_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a direction handed to the GPU in single precision"
+    )]
+    let input: Vec<[f32; 4]> = normals
+        .iter()
+        .map(|n| [n.x as f32, n.y as f32, n.z as f32, 0.0])
+        .collect();
+    let output_size = 2 * std::mem::size_of_val(input.as_slice()) as u64;
+    let input_buf = ctx
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cube_probe_input"),
+            contents: bytemuck::cast_slice(&input),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+    let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cube_probe_output"),
+        size: output_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let surface_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&ctx.surface_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(cube),
+            },
+        ],
+    });
+    let storage_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: input_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &surface_group, &[]);
+        pass.set_bind_group(1, &storage_group, &[]);
+        let count = u32::try_from(input.len()).expect("a probe of a few thousand normals");
+        pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+    }
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+    let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
+    let results = bytemuck::cast_slice::<u8, [f32; 4]>(&data);
+    let vector = |v: [f32; 4]| glam::Vec3::from_slice(&v[..3]).as_dvec3();
+    normals
+        .iter()
+        .zip(results.chunks_exact(2))
+        .map(|(&normal, pair)| Probed {
+            normal: normal.normalize(),
+            warped: vector(pair[0]),
+            color: vector(pair[1]),
+        })
+        .collect()
+}
+
+/// The largest per-channel difference between two colors, in steps of 255.
+fn color_steps(a: glam::DVec3, b: glam::DVec3) -> f64 {
+    (a - b).abs().max_element() * 255.0
+}
+
+/// The worst of what the probe measured, printed so a CI log carries it.
+#[derive(Default)]
+struct ProbeWorst {
+    /// The largest change of a warped component per radian of the normal.
+    warp_rate: f64,
+    /// The largest color jump between two neighboring normals, in steps.
+    jump: f64,
+    /// The largest distance from the coded color of the normal, in steps.
+    placement: f64,
+}
+
+/// The largest color jump two neighboring probe normals may show, in steps of
+/// 255: the coded color turns by half the angle between them, a fraction of a
+/// step at the spacings used here, and the filter adds its rounding. A face
+/// sampled without its neighbor's texels across an edge jumps by a whole texel,
+/// six steps at this cube's size; a mirrored or rotated face by far more.
+const PROBE_JUMP: f64 = 1.5;
+
+/// How far a sample may sit from the coded color of its normal, in steps of
+/// 255. Inside a face that is the texels' rounding, half a step; where the
+/// filter's footprint straddles an edge the adapters read up to a step and a
+/// third (`docs/testing.md`). A face read through the plain cube coordinates
+/// instead of the warp is several steps off away from its center and edges.
+const PROBE_PLACEMENT: f64 = 2.0;
+
+impl ProbeWorst {
+    /// Check two samples a small turn apart: both where the geometry says they
+    /// are, and nothing between them that the turn does not explain.
+    fn neighbors(&mut self, a: &Probed, b: &Probed, context: &str) {
+        let angle = a.normal.angle_between(b.normal);
+        let warp = (a.warped - b.warped).abs().max_element();
+        self.warp_rate = self.warp_rate.max(warp / angle);
+        assert!(
+            warp <= WARP_LIPSCHITZ * angle + 1.0e-5,
+            "{context}: the warped direction moves {warp:.3e} over a turn of {angle:.3e} rad, \
+             from {:?} to {:?}",
+            a.warped,
+            b.warped
+        );
+        let jump = color_steps(a.color, b.color);
+        self.jump = self.jump.max(jump);
+        assert!(
+            jump <= PROBE_JUMP,
+            "{context}: the sampled color jumps {jump:.2} steps over a turn of {angle:.3e} rad, \
+             from {:?} to {:?}",
+            a.color * 255.0,
+            b.color * 255.0
+        );
+        self.placed(a, context);
+        self.placed(b, context);
+    }
+
+    fn placed(&mut self, sample: &Probed, context: &str) {
+        let off = color_steps(sample.color, coded_color(sample.normal));
+        self.placement = self.placement.max(off);
+        assert!(
+            off <= PROBE_PLACEMENT,
+            "{context}: the cube holds {:?} at {:?}, {off:.2} steps from its coded color {:?}",
+            sample.color * 255.0,
+            sample.normal,
+            coded_color(sample.normal) * 255.0
+        );
+    }
+
+    fn report(&self, what: &str) {
+        println!(
+            "{what}: warp rate up to {:.3} per rad, jumps up to {:.3} steps, placement within {:.3} steps",
+            self.warp_rate, self.jump, self.placement
+        );
+    }
+}
+
+/// The unit vector along axis `index`, X 0, Y 1, Z 2.
+fn unit(index: usize) -> glam::DVec3 {
+    glam::DVec3::AXES[index]
+}
+
+/// How far apart the two normals of a probe pair are, as a fraction of the
+/// edge point's distance from the center.
+const STRADDLE: f64 = 5.0e-4;
+
+/// Points along each edge the probe crosses it at.
+const EDGE_STEPS: u32 = 64;
+
+/// The warped direction, and the cube read through it, are continuous across
+/// every one of the twelve face edges and the eight corners.
+///
+/// Each edge is crossed at 65 points from one corner to the other by a pair of
+/// normals a milliradian apart, one on either face, and each corner by three,
+/// one on each face that meets there. Every sample selects the face the
+/// geometry says it lies on, the warped direction moves no more than its turn
+/// explains, and the direction-coded cube, read at its finest level, shows the
+/// color of the normal itself, on both sides of every edge. A face mirrored or
+/// turned, a face in another's layer, or an edge sampled without the texels
+/// across it breaks one of those at some edge.
+#[test]
+fn the_warped_direction_is_continuous_across_every_face_edge() {
+    let ctx = render_ctx();
+    let cube = create_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+
+    let mut normals = Vec::new();
+    let mut faces = Vec::new();
+    let mut edges = 0;
+    for (a, b, c) in [(0, 1, 2), (0, 2, 1), (1, 2, 0)] {
+        for sa in [1.0, -1.0] {
+            for sb in [1.0, -1.0] {
+                edges += 1;
+                let (on_a, on_b) = (unit(a) * sa, unit(b) * sb);
+                let across = (on_a - on_b) * STRADDLE;
+                for step in 0..=EDGE_STEPS {
+                    let along = -0.98 + 1.96 * f64::from(step) / f64::from(EDGE_STEPS);
+                    let point = on_a + on_b + unit(c) * along;
+                    normals.extend([point + across, point - across]);
+                    faces.extend([face_along(a, sa), face_along(b, sb)]);
+                }
+            }
+        }
+    }
+    let edge_samples = normals.len();
+    for corner in 0..8_u32 {
+        let signs = [0, 1, 2].map(|bit| if corner >> bit & 1 == 0 { 1.0 } else { -1.0 });
+        let point = glam::DVec3::from_array(signs);
+        for (axis, sign) in signs.into_iter().enumerate() {
+            normals.push(point + unit(axis) * sign * STRADDLE);
+            faces.push(face_along(axis, sign));
+        }
+    }
+    assert_eq!(edges, 12, "a cube has twelve edges");
+
+    let probed = probe_cube(&ctx, &cube, &normals);
+    for (sample, &face) in probed.iter().zip(&faces) {
+        assert_eq!(
+            face_of(sample.warped),
+            face,
+            "{:?} warps to {:?}, which is not on face {face}",
+            sample.normal,
+            sample.warped
+        );
+    }
+    let mut worst = ProbeWorst::default();
+    for pair in probed[..edge_samples].chunks_exact(2) {
+        worst.neighbors(&pair[0], &pair[1], "across an edge");
+    }
+    for corner in probed[edge_samples..].chunks_exact(3) {
+        for (i, j) in [(0, 1), (1, 2), (0, 2)] {
+            worst.neighbors(&corner[i], &corner[j], "around a corner");
+        }
+    }
+    worst.report("face edges and corners");
+}
+
+/// Samples along each arc through a pole, either side of it.
+const POLE_STEPS: i32 = 150;
+
+/// The turn between two neighboring samples on an arc through a pole.
+const POLE_STEP_DEGREES: f64 = 0.1;
+
+/// The poles are ordinary points of the surface: the centers of the +Y and -Y
+/// faces, with nothing there that is not everywhere else.
+///
+/// The probe crosses each pole along four great circles, 15 degrees either
+/// side of it in steps of a tenth of a degree, and every neighboring pair is
+/// held to what `the_warped_direction_is_continuous_across_every_face_edge`
+/// holds an edge crossing to. The globe is then drawn looking down on each
+/// pole through the production shader, which is where a singularity would
+/// show: in the screen derivatives of the warped direction, which choose the
+/// level the sampler reads.
+#[test]
+fn the_poles_are_ordinary_points_of_the_cube() {
+    let ctx = render_ctx();
+    let cube = create_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+
+    let mut normals = Vec::new();
+    for pole in [glam::DVec3::Y, glam::DVec3::NEG_Y] {
+        for longitude in [0.0_f64, 45.0, 90.0, 135.0] {
+            let meridian = glam::DVec3::new(
+                longitude.to_radians().sin(),
+                0.0,
+                longitude.to_radians().cos(),
+            );
+            for step in -POLE_STEPS..=POLE_STEPS {
+                let turn = (f64::from(step) * POLE_STEP_DEGREES).to_radians();
+                normals.push(pole * turn.cos() + meridian * turn.sin());
+            }
+        }
+    }
+    let probed = probe_cube(&ctx, &cube, &normals);
+    let arc = usize::try_from(2 * POLE_STEPS + 1).expect("a short arc");
+    let mut worst = ProbeWorst::default();
+    for (index, samples) in probed.chunks_exact(arc).enumerate() {
+        let face = if index < 4 { 2 } else { 3 };
+        for sample in samples {
+            assert_eq!(
+                face_of(sample.warped),
+                face,
+                "{:?} is on the pole's face",
+                sample.normal
+            );
+        }
+        for pair in samples.windows(2) {
+            worst.neighbors(&pair[0], &pair[1], "through a pole");
+        }
+    }
+    worst.report("through the poles");
+
+    let marked = create_marked_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+    for axis in [glam::Vec3::Y, glam::Vec3::NEG_Y] {
+        assert_no_seam_looking_along(&ctx, &marked, axis, 1);
+    }
+}
+
+/// The color every level of the marked cube below the finest holds: mid grey,
+/// which codes no direction at all, so a sample that reads any of it comes
+/// out shorter than a unit direction by the share it read.
+const MIP_MARKER: [u8; 4] = [128, 128, 128, 255];
+
+/// The direction-coded cube with a full mip chain whose every level below the
+/// finest is `MIP_MARKER`.
+fn create_marked_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    texels: impl Fn(usize) -> Vec<u8>,
+) -> wgpu::TextureView {
+    create_cube_by_level(device, queue, size, |face, level, width| {
+        if level == 0 {
+            texels(face)
+        } else {
+            MIP_MARKER.repeat((width * width) as usize)
+        }
+    })
+}
+
+/// A cube `size` texels wide with a full mip chain, each level of each face
+/// given as its texels by `texels(face, level, width)`.
+fn create_cube_by_level(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: u32,
+    texels: impl Fn(usize, u32, u32) -> Vec<u8>,
+) -> wgpu::TextureView {
+    let levels = size.ilog2() + 1;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("marked_cube"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for face in 0..6_u32 {
+        for level in 0..levels {
+            let width = size >> level;
+            let data = texels(face as usize, level, width);
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: face,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(width),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: width,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+/// The width of a frame the seam cases draw. The globe overfills it, and a
+/// texel of the coded cube is several pixels across everywhere in it, so the
+/// sampler reads the finest level wherever the screen derivatives are sound.
+const SEAM_FRAME: u32 = 128;
+
+/// How far a pixel's color may code a direction longer or shorter than a unit
+/// one: the rounding of the texels and of the frame, a hundredth or so. A
+/// pixel that read two percent of `MIP_MARKER` fails it.
+const UNIT_TOLERANCE: f64 = 0.02;
+
+/// The largest step between two neighboring pixels, in steps of 255: twice
+/// what a sound frame shows at this framing (`docs/testing.md`), and a fraction
+/// of what the colors either side of a mirrored or turned face's edge differ by.
+const NEIGHBOR_STEPS: u8 = 4;
+
+/// How far the direction a pixel's color codes may point from the surface
+/// point under the pixel, in degrees: room for the rounding of the texels and
+/// of the frame, and for the mesh's flat facets, across which the rasterizer
+/// interpolates the normal the shader reads while the ray cast meets the
+/// sphere itself. A face sampled through the plain cube coordinates instead of
+/// the warp is four degrees off at 22 degrees from its center.
+const PLACEMENT_DEGREES: f64 = 1.5;
+
+/// The unit normal of the sphere where the ray through the middle of pixel
+/// `(x, y)` of a square frame `size` wide first meets it, for a frame drawn
+/// with the inverse of `inverse`.
+fn normal_under_pixel(inverse: glam::DMat4, size: u32, x: u32, y: u32) -> Option<glam::DVec3> {
+    let ndc_x = (f64::from(x) + 0.5) / f64::from(size) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (f64::from(y) + 0.5) / f64::from(size) * 2.0;
+    let near = inverse.project_point3(glam::DVec3::new(ndc_x, ndc_y, 0.0));
+    let far = inverse.project_point3(glam::DVec3::new(ndc_x, ndc_y, 1.0));
+    let ray = (far - near).normalize();
+    let half_b = near.dot(ray);
+    let discriminant = half_b * half_b - (near.length_squared() - 1.0);
+    (discriminant >= 0.0).then(|| (near + ray * (-half_b - discriminant.sqrt())).normalize())
+}
+
+/// Draw the globe from the marked cube looking along `axis` through the
+/// production shader, and hold the frame to what a sound warp draws: every
+/// pixel a unit direction's color read from the finest level and the
+/// direction of the surface under it, no two neighbors apart by more than the
+/// surface turns between them, and at least `faces` faces in the frame.
+fn assert_no_seam_looking_along(
+    ctx: &RenderContext,
+    cube: &wgpu::TextureView,
+    axis: glam::Vec3,
+    faces: usize,
+) {
+    let dummy = &ctx.dummy_cube;
+    assert_no_seam(axis, faces, |uniforms| {
+        render_cube_frame(ctx, uniforms, [cube, dummy, dummy], SEAM_FRAME, SEAM_FRAME)
+    });
+}
+
+/// [`assert_no_seam_looking_along`] for a frame `render` draws from the
+/// uniforms looking along `axis`, and the surface normal under every pixel.
+fn assert_no_seam(
+    axis: glam::Vec3,
+    faces: usize,
+    render: impl Fn(&Uniforms) -> Vec<u8>,
+) -> Vec<glam::DVec3> {
+    let size = SEAM_FRAME;
+    let uniforms = looking_along(size, axis);
+    let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
+        .as_dmat4()
+        .inverse();
+    let pixels = render(&uniforms);
+    let color_at = |x: u32, y: u32| {
+        let at = ((y * size + x) * 4) as usize;
+        [pixels[at], pixels[at + 1], pixels[at + 2]]
+    };
+    let direction_at = |x: u32, y: u32| {
+        coded_direction(glam::DVec3::from_array(
+            color_at(x, y).map(|c| f64::from(c) / 255.0),
+        ))
+    };
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut worst_unit = 0.0_f64;
+    let mut worst_placement = 0.0_f64;
+    let mut normals = Vec::with_capacity((size * size) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let direction = direction_at(x, y);
+            let off = (direction.length() - 1.0).abs();
+            worst_unit = worst_unit.max(off);
+            assert!(
+                off <= UNIT_TOLERANCE,
+                "looking along {axis:?}, pixel ({x}, {y}) is {:?}, a direction {:.3} long: \
+                 it read a coarser level than the finest",
+                color_at(x, y),
+                direction.length()
+            );
+            let surface = normal_under_pixel(inverse, size, x, y)
+                .unwrap_or_else(|| panic!("the globe overfills the frame, but misses ({x}, {y})"));
+            let apart = direction.angle_between(surface).to_degrees();
+            worst_placement = worst_placement.max(apart);
+            assert!(
+                apart <= PLACEMENT_DEGREES,
+                "looking along {axis:?}, pixel ({x}, {y}) shows {direction:?}, {apart:.2} degrees \
+                 from the surface under it, {surface:?}"
+            );
+            seen.insert(face_of(direction));
+            normals.push(surface);
+        }
+    }
+    let mut worst_step = 0;
+    for y in 0..size {
+        for x in 0..size {
+            let here = color_at(x, y);
+            for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                if nx >= size || ny >= size {
+                    continue;
+                }
+                let there = color_at(nx, ny);
+                let step = here
+                    .iter()
+                    .zip(there)
+                    .map(|(a, b)| a.abs_diff(b))
+                    .max()
+                    .expect("three channels");
+                worst_step = worst_step.max(step);
+                assert!(
+                    step <= NEIGHBOR_STEPS,
+                    "looking along {axis:?}, pixels ({x}, {y}) {here:?} and ({nx}, {ny}) {there:?} \
+                     are {step} steps apart: a seam"
+                );
+            }
+        }
+    }
+    assert!(
+        seen.len() >= faces,
+        "looking along {axis:?}, the frame holds faces {seen:?}, fewer than {faces}"
+    );
+    println!(
+        "looking along {axis:?}: faces {seen:?}, unit within {worst_unit:.4}, \
+         placed within {worst_placement:.3} degrees, neighbors within {worst_step} steps"
+    );
+    normals
+}
+
+/// The globe drawn through the production shader shows no seam where two
+/// faces meet or where three do.
+///
+/// A frame looks straight at the middle of each of the twelve edges and at
+/// each of the eight corners, so the edges run through it. A discontinuity in
+/// the warped direction shows twice here: as a jump between neighboring
+/// pixels, and as a spike in its screen derivatives that sends the sampler to
+/// a coarse level, which the marked cube paints grey.
+#[test]
+fn the_globe_draws_no_seam_where_faces_meet() {
+    let ctx = render_ctx();
+    let cube = create_marked_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+    let axes = |signs: &[f32]| glam::Vec3::from_slice(signs).normalize();
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        for sa in [1.0, -1.0] {
+            for sb in [1.0, -1.0] {
+                let mut signs = [0.0_f32; 3];
+                signs[a] = sa;
+                signs[b] = sb;
+                assert_no_seam_looking_along(&ctx, &cube, axes(&signs), 2);
+            }
+        }
+    }
+    for corner in 0..8_u32 {
+        let signs = [0, 1, 2].map(|bit| if corner >> bit & 1 == 0 { 1.0 } else { -1.0 });
+        assert_no_seam_looking_along(&ctx, &cube, axes(&signs), 3);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The tiles above the floor
+// ---------------------------------------------------------------------------
+
+/// What the direction-coded tiles are cut to: two levels of 16 px tiles with a
+/// 4 px gutter over faces of 64 texels, above a floor of 16.
+const CODED_TILES: Geometry = Geometry {
+    face: 64,
+    levels: 2,
+    tile: 16,
+    gutter: 4,
+    floor: 16,
+    mask: 32,
+};
+
+/// Bit 2 of `Uniforms::flags`: the cube drawn alone is the night floor.
+const FLAG_NIGHT_ALONE: u32 = 4;
+
+/// The uniforms `base` names with the surface drawn from the cube and a tile's
+/// sizes from `geometry`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a tile's sizes are a few texels"
+)]
+fn with_tiles(base: &Uniforms, geometry: &Geometry) -> Uniforms {
+    Uniforms {
+        tile_texels: geometry.tile as f32,
+        tile_gutter: geometry.gutter as f32,
+        ..*base
+    }
+}
+
+/// The layer of the direction-coded tile at `key`: every texel, the gutter's
+/// too, holds the coded color of the direction through its center on the
+/// face's grid extended past the face's edges, which is what the cutter's
+/// gutter samples from the neighboring face.
+fn coded_layer(key: TileKey, geometry: &Geometry) -> Vec<u8> {
+    use sunlit_core::geometry::cube;
+    let size = 1_u32 << key.level;
+    let layer = geometry.layer();
+    let origin =
+        |index: u16| i64::from(u32::from(index) * geometry.tile) - i64::from(geometry.gutter);
+    let (top, left) = (origin(key.row), origin(key.col));
+    let mut texels = Vec::with_capacity((layer * layer * 4) as usize);
+    for y in 0..i64::from(layer) {
+        for x in 0..i64::from(layer) {
+            let direction = cube::direction(
+                usize::from(key.face),
+                cube::texel_center(left + x, size),
+                cube::texel_center(top + y, size),
+            );
+            let color = coded_color(direction);
+            texels.extend([to_byte(color.x), to_byte(color.y), to_byte(color.z), 255]);
+        }
+    }
+    texels
+}
+
+/// An RGBA8 tile array of one layer per entry of `layers`, each of its two
+/// levels given as texels.
+fn create_tile_array(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    geometry: &Geometry,
+    layers: &[[Vec<u8>; 2]],
+) -> wgpu::TextureView {
+    let size = geometry.layer();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_tile_array"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: u32::try_from(layers.len()).expect("a few layers"),
+        },
+        mip_level_count: 2,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (layer, levels) in (0..).zip(layers) {
+        for (level, texels) in (0..).zip(levels) {
+            let width = size >> level;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(width),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: width,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
+}
+
+/// The page table texture `table` describes.
+fn create_page_table(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    table: &PageTable,
+) -> wgpu::TextureView {
+    let cells = table.cells();
+    device
+        .create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("test_page_table"),
+                size: wgpu::Extent3d {
+                    width: cells,
+                    height: cells,
+                    depth_or_array_layers: 6,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            bytemuck::cast_slice(table.entries()),
+        )
+        .create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        })
+}
+
+/// The cell of the finest level the normal `n` lies in, and where within the
+/// cell, 0 to 1 along a row and down a column.
+fn cell_under(n: glam::DVec3, cells: u32) -> (u8, u32, u32, glam::DVec2) {
+    use sunlit_core::geometry::cube;
+    let (face, s, t) = cube::locate(n);
+    let place = glam::DVec2::new(s, t).map(|w| f64::midpoint(w, 1.0) * f64::from(cells));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a coordinate on the face, clamped to its cells"
+    )]
+    let index = |v: f64| (v.floor() as u32).min(cells - 1);
+    let (col, row) = (index(place.x), index(place.y));
+    (
+        u8::try_from(face).expect("six faces"),
+        row,
+        col,
+        place - glam::DVec2::new(f64::from(col), f64::from(row)),
+    )
+}
+
+/// The tiles the coded case makes resident: on every face a checker of the
+/// coarse level, and finest tiles at every third cell, so that its frames meet
+/// every pairing of the floor and the two levels, and meet them across the
+/// face edges too.
+fn coded_resident_set(geometry: &Geometry) -> Vec<TileId> {
+    let finest = Geometry::level_of(geometry.face);
+    let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
+    let mut tiles = Vec::new();
+    for face in 0..6_u8 {
+        let id = |level, row, col| TileId {
+            pack: PackKind::Day(0),
+            key: TileKey {
+                level,
+                face,
+                row,
+                col,
+            },
+        };
+        for row in 0..cells {
+            for col in 0..cells {
+                let (up_row, up_col) = (row / 2, col / 2);
+                if row % 2 == 0 && col % 2 == 0 && (u16::from(face) + up_row + up_col) % 2 == 0 {
+                    tiles.push(id(finest - 1, up_row, up_col));
+                }
+                if (u16::from(face) + row + 2 * col) % 3 == 0 {
+                    tiles.push(id(finest, row, col));
+                }
+            }
+        }
+    }
+    tiles
+}
+
+/// Every frame the seam case draws: along each axis, at the middle of each
+/// edge, and at each corner, with the fewest faces each has to show.
+fn seam_frames() -> Vec<(glam::Vec3, usize)> {
+    let mut frames: Vec<(glam::Vec3, usize)> = AXES.iter().map(|&axis| (axis, 1)).collect();
+    let axes = |signs: &[f32]| glam::Vec3::from_slice(signs).normalize();
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        for sa in [1.0, -1.0] {
+            for sb in [1.0, -1.0] {
+                let mut signs = [0.0_f32; 3];
+                signs[a] = sa;
+                signs[b] = sb;
+                frames.push((axes(&signs), 2));
+            }
+        }
+    }
+    for corner in 0..8_u32 {
+        let signs = [0, 1, 2].map(|bit| if corner >> bit & 1 == 0 { 1.0 } else { -1.0 });
+        frames.push((axes(&signs), 3));
+    }
+    frames
+}
+
+/// The floor and both tiled levels meet without a seam.
+///
+/// The direction-coded floor, marked below its finest level, and
+/// direction-coded tiles, marked below theirs, are drawn through a page table
+/// the production rewrite made from a fixed resident set, and every frame of
+/// the seam case is held to the same placement, finest-level and neighbor
+/// rules. A tile read at the wrong place in its layer, a gutter that does not
+/// continue its neighbor, or gradients that send the sampler to a coarser level
+/// fail it, at a face edge as anywhere else.
+#[test]
+fn the_floor_and_the_two_tile_levels_meet_without_a_seam() {
+    let ctx = render_ctx();
+    let geometry = CODED_TILES;
+    let floor = create_marked_cube(&ctx.device, &ctx.queue, CODED_FACE, |face| {
+        coded_face(face, CODED_FACE)
+    });
+
+    let resident = coded_resident_set(&geometry);
+    let mut layers = TileLayers::new(u32::try_from(resident.len()).expect("a few tiles"));
+    let marker = MIP_MARKER.repeat((geometry.layer() / 2).pow(2) as usize);
+    let mut texels = Vec::new();
+    for &id in &resident {
+        let (layer, _) = layers.claim(id, None).expect("room for every tile");
+        assert_eq!(layer as usize, texels.len(), "layers are taken in order");
+        texels.push([coded_layer(id.key, &geometry), marker.clone()]);
+    }
+    let ocean = std::collections::HashSet::new();
+    let day = PageSurface {
+        pack: PackKind::Day(0),
+        ocean: &ocean,
+    };
+    let mut table = PageTable::new(geometry);
+    table.rewrite([Some(day), None], &layers, &CellLevels::finest(&geometry));
+
+    let tiles = create_tile_array(&ctx.device, &ctx.queue, &geometry, &texels);
+    let pages = create_page_table(&ctx.device, &ctx.queue, &table);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let dummy = &ctx.dummy_cube;
+    let bind_group = bind_group_with(
+        &ctx,
+        &flat,
+        &ctx.surface_sampler,
+        [&floor, dummy, dummy],
+        [&tiles, &pages],
+    );
+    let render = |uniforms: &Uniforms| {
+        render_with(
+            &ctx,
+            &with_tiles(uniforms, &geometry),
+            &bind_group,
+            SEAM_FRAME,
+            SEAM_FRAME,
+        )
+    };
+
+    let mut drawn = std::collections::BTreeMap::new();
+    for (axis, faces) in seam_frames() {
+        for normal in assert_no_seam(axis, faces, render) {
+            let (face, row, col, _) = cell_under(normal, table.cells());
+            let kind = match table.at(face, row, col)[0].expect("an entry") {
+                PageEntry::Floor => "the floor",
+                PageEntry::Ocean => "ocean",
+                PageEntry::Tile { steps: 0, .. } => "a finest tile",
+                PageEntry::Tile { .. } => "a coarse tile",
+            };
+            *drawn.entry(kind).or_insert(0_usize) += 1;
+        }
+    }
+    println!("pixels drawn from each source: {drawn:?}");
+    for kind in ["the floor", "a finest tile", "a coarse tile"] {
+        assert!(
+            drawn.get(kind).copied().unwrap_or(0) > 10_000,
+            "too few pixels were drawn from {kind} for the case to mean anything: {drawn:?}"
+        );
+    }
+}
+
+/// With the night drawn alone, the cube at the day's binding is the night
+/// floor and the page table's night half is what refines it; otherwise the
+/// day half is.
+#[test]
+fn the_night_drawn_alone_reads_the_night_half_of_the_page_table() {
+    let ctx = render_ctx();
+    let geometry = CODED_TILES;
+    let finest = Geometry::level_of(geometry.face);
+    let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
+    let everywhere: std::collections::HashSet<TileKey> = (0..6_u8)
+        .flat_map(|face| {
+            (0..cells).flat_map(move |row| {
+                (0..cells).map(move |col| TileKey {
+                    level: finest,
+                    face,
+                    row,
+                    col,
+                })
+            })
+        })
+        .collect();
+    let mut table = PageTable::new(geometry);
+    table.rewrite(
+        [
+            None,
+            Some(PageSurface {
+                pack: PackKind::Night,
+                ocean: &everywhere,
+            }),
+        ],
+        &TileLayers::new(1),
+        &CellLevels::finest(&geometry),
+    );
+    let pages = create_page_table(&ctx.device, &ctx.queue, &table);
+    let floor = create_solid_cube(&ctx.device, &ctx.queue, [[200, 40, 40, 255]; 6]);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let dummy = &ctx.dummy_cube;
+    let bind_group = bind_group_with(
+        &ctx,
+        &flat,
+        &ctx.surface_sampler,
+        [&floor, dummy, dummy],
+        [&ctx.dummy_tiles[0], &pages],
+    );
+    let size = 64;
+    let night_ocean = [5, 5, 15, 255];
+    let base = Uniforms {
+        day_ocean: u32::from_le_bytes([90, 90, 90, 255]),
+        night_ocean: u32::from_le_bytes(night_ocean),
+        ..with_tiles(&looking_along(size, glam::Vec3::Z), &geometry)
+    };
+
+    let day = middle_pixel(&render_with(&ctx, &base, &bind_group, size, size), size);
+    assert!(
+        close(day, [200, 40, 40], 2),
+        "the day half is all floor: {day:?}"
+    );
+    let night_alone = Uniforms {
+        flags: base.flags | FLAG_NIGHT_ALONE,
+        ..base
+    };
+    let night = middle_pixel(
+        &render_with(&ctx, &night_alone, &bind_group, size, size),
+        size,
+    );
+    let [r, g, b, _] = night_ocean;
+    assert!(
+        close(night, [r, g, b], 1),
+        "the night half is all ocean: {night:?}"
+    );
+}
+
+/// The two levels of a tile coded by level.
+const FINEST_LEVEL: [u8; 4] = [255, 0, 0, 255];
+const SECOND_LEVEL: [u8; 4] = [0, 0, 255, 255];
+
+/// How far away the face-on frames of the minified case look from, in radii:
+/// where the surface faces the camera a texel of the coded tiles' 64 px faces
+/// covers about half a pixel of the seam case's frame, so the footprint asks
+/// for 0.93 to 1 of the way to the second level.
+const FOOTPRINT_DISTANCE: f32 = 18.0;
+
+/// How squarely the surface has to face the camera for a pixel to be held to
+/// its footprint, as the cosine between its normal and the view: within about
+/// 25 degrees, where the footprint is nearly round and runs along the face's
+/// own axes.
+const FACING: f64 = 0.9;
+
+/// How far the level of detail a tile's pixel was read at may lie from the one
+/// its footprint on the face asks for, in steps of 255 in the blue that codes
+/// the second level: half a level. The tiles read within 12.6 steps of it on
+/// the Radeon, and Metal's cube and array part by up to 0.38 of a level, which
+/// the ray cast cannot say which of the two to blame for; gradients left
+/// unscaled into the layer read the finest level, 238 steps or more away.
+const FOOTPRINT_STEPS: f64 = 128.0;
+
+/// How far away the seam case's frames look from when the minified case holds
+/// the face edges: far enough that the sampler reads both levels over most of
+/// the disc.
+const EDGE_DISTANCE: f32 = 8.0;
+
+/// How far one pixel quad across a face edge may read a level of detail
+/// outside the range of the quads beside it inside the faces, in steps of 255
+/// in the blue: 20 at most on the Radeon, WARP and lavapipe and 48.5 on Metal,
+/// and 132 to 177 on the first two with the quotient rule's term for the major
+/// axis left out.
+const EDGE_LEVEL_STEPS: f64 = 96.0;
+
+/// The most those quads may lie outside their neighbors' range on average:
+/// 0.36 to 0.62 steps on the Radeon, WARP and lavapipe, and 4.9 to 23 with
+/// the quotient rule's term left out, which on lavapipe moves no single quad
+/// past 25.
+const EDGE_MEAN_STEPS: f64 = 2.5;
+
+/// A tile read at minification is read at the level of detail its footprint
+/// on the face asks for, and that level runs on across a face edge.
+///
+/// Every finest tile is resident, its first level red and its second blue, so
+/// a pixel's blue says which level of detail it was read at. The level of
+/// detail comes from the gradients alone through the surface sampler's
+/// isotropic form. Where the surface faces the camera in the face-on frames
+/// it is held to the footprint a ray cast of the pixel and its neighbors puts
+/// on the face; a floor cube is no reference, since Metal's cube reads 97
+/// steps from its own array near a face's corner. A pixel quad that straddles
+/// a face edge takes its derivatives across the edge, which is the one place
+/// the quotient rule's term for the major axis is not zero, since the warp
+/// keeps the major component of `w` at one across a face; there the tiles are
+/// held to themselves, the level of detail of such a quad to the range of the
+/// quads beside it inside the faces.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one case, its tiles, and its two comparisons"
+)]
+fn a_minified_tile_is_read_at_the_level_of_detail_its_footprint_asks_for() {
+    use sunlit_core::geometry::cube;
+
+    let ctx = render_ctx();
+    let geometry = CODED_TILES;
+    let solid = |color: [u8; 4], width: u32| color.repeat((width * width) as usize);
+    let finest = Geometry::level_of(geometry.face);
+    let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
+    let mut layers = TileLayers::new(6 * u32::from(cells).pow(2));
+    let mut texels = Vec::new();
+    for face in 0..6_u8 {
+        for row in 0..cells {
+            for col in 0..cells {
+                let id = TileId {
+                    pack: PackKind::Day(0),
+                    key: TileKey {
+                        level: finest,
+                        face,
+                        row,
+                        col,
+                    },
+                };
+                let (layer, _) = layers.claim(id, None).expect("room for every tile");
+                assert_eq!(layer as usize, texels.len(), "layers are taken in order");
+                texels.push([
+                    solid(FINEST_LEVEL, geometry.layer()),
+                    solid(SECOND_LEVEL, geometry.layer() / 2),
+                ]);
+            }
+        }
+    }
+    let ocean = std::collections::HashSet::new();
+    let day = PageSurface {
+        pack: PackKind::Day(0),
+        ocean: &ocean,
+    };
+    let mut table = PageTable::new(geometry);
+    table.rewrite([Some(day), None], &layers, &CellLevels::finest(&geometry));
+    let tiles = create_tile_array(&ctx.device, &ctx.queue, &geometry, &texels);
+    let pages = create_page_table(&ctx.device, &ctx.queue, &table);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let dummy = &ctx.dummy_cube;
+    let isotropic = ctx
+        .device
+        .create_sampler(&sunlit_core::renderer::surface_sampler_descriptor(true));
+    let bind_group = bind_group_with(
+        &ctx,
+        &flat,
+        &isotropic,
+        [dummy, dummy, dummy],
+        [&tiles, &pages],
+    );
+    let size = SEAM_FRAME;
+    let at = |x: u32, y: u32| ((y * size + x) * 4) as usize;
+    let draw = |axis: glam::Vec3, distance: f32| {
+        let uniforms = with_tiles(&looking_along_from(size, axis, distance), &geometry);
+        let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
+            .as_dmat4()
+            .inverse();
+        (
+            render_with(&ctx, &uniforms, &bind_group, size, size),
+            inverse,
+        )
+    };
+
+    let texels_per_unit = f64::from(geometry.face) / 2.0;
+    let (mut held, mut footprint_worst) = (0_usize, (0.0_f64, String::new()));
+    for axis in AXES {
+        let (frame, inverse) = draw(axis, FOOTPRINT_DISTANCE);
+        for y in 0..size - 1 {
+            for x in 0..size - 1 {
+                let normals = [(x, y), (x + 1, y), (x, y + 1)]
+                    .map(|(px, py)| normal_under_pixel(inverse, size, px, py));
+                let [Some(here), Some(right), Some(below)] = normals else {
+                    continue;
+                };
+                if here.dot(axis.as_dvec3()) < FACING {
+                    continue;
+                }
+                let [(face, s, t), (face_x, s_x, t_x), (face_y, s_y, t_y)] =
+                    [here, right, below].map(cube::locate);
+                if face_x != face || face_y != face {
+                    continue;
+                }
+                let rho = (s_x - s).hypot(t_x - t).max((s_y - s).hypot(t_y - t)) * texels_per_unit;
+                let wanted = rho.log2().clamp(0.0, 1.0) * 255.0;
+                let blue = f64::from(frame[at(x, y) + 2]);
+                let off = (blue - wanted).abs();
+                held += 1;
+                if off > footprint_worst.0 {
+                    footprint_worst = (
+                        off,
+                        format!(
+                            "looking along {axis:?}, pixel ({x}, {y}) reads a blue of {blue} from \
+                             its tile where its footprint of {rho:.3} texels asks for {wanted:.1}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    let quads = size / 2;
+    let (mut edges, mut edge_total) = (0_usize, 0.0_f64);
+    let mut edge_worst = (0.0_f64, String::new());
+    for (axis, _) in seam_frames() {
+        let (frame, inverse) = draw(axis, EDGE_DISTANCE);
+        let face_at = |x, y| normal_under_pixel(inverse, size, x, y).map(|n| cube::locate(n).0);
+        // Each quad's faces, and the red and blue of its pixels averaged.
+        let mut quad = Vec::with_capacity((quads * quads) as usize);
+        for qy in 0..quads {
+            for qx in 0..quads {
+                let pixels =
+                    [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(dx, dy)| (2 * qx + dx, 2 * qy + dy));
+                let faces = pixels.map(|(x, y)| face_at(x, y));
+                let mean = |channel: usize| {
+                    pixels
+                        .iter()
+                        .map(|&(x, y)| f64::from(frame[at(x, y) + channel]))
+                        .sum::<f64>()
+                        / 4.0
+                };
+                quad.push((faces, mean(0), mean(2)));
+            }
+        }
+        let inside = |(faces, red, blue): ([Option<usize>; 4], f64, f64)| {
+            faces[0].is_some()
+                && faces.iter().all(|&face| face == faces[0])
+                && red > 3.0
+                && blue > 3.0
+        };
+        for qy in 1..quads - 1 {
+            for qx in 1..quads - 1 {
+                let (faces, _, blue) = quad[(qy * quads + qx) as usize];
+                let mut distinct: Vec<_> = faces.iter().flatten().collect();
+                distinct.sort_unstable();
+                distinct.dedup();
+                // An edge between two faces, the whole quad on the globe.
+                if faces.iter().any(Option::is_none) || distinct.len() != 2 {
+                    continue;
+                }
+                let beside: Vec<f64> = (qy - 1..=qy + 1)
+                    .flat_map(|ny| (qx - 1..=qx + 1).map(move |nx| (ny * quads + nx) as usize))
+                    .map(|index| quad[index])
+                    .filter(|&neighbor| inside(neighbor))
+                    .map(|(_, _, blue)| blue)
+                    .collect();
+                if beside.len() < 2 {
+                    continue;
+                }
+                let low = beside.iter().copied().fold(f64::INFINITY, f64::min);
+                let high = beside.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let outside = (low - blue).max(blue - high).max(0.0);
+                edges += 1;
+                edge_total += outside;
+                if outside > edge_worst.0 {
+                    edge_worst = (
+                        outside,
+                        format!(
+                            "looking along {axis:?}, the quad at ({}, {}) across a face edge reads \
+                             a blue of {blue:.1} from its tiles, outside the {low:.1} to {high:.1} \
+                             of the quads beside it",
+                            2 * qx,
+                            2 * qy
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let edge_mean = edge_total / f64::from(u32::try_from(edges).expect("a few thousand quads"));
+    println!(
+        "minified tiles: {held} pixels facing the camera from {FOOTPRINT_DISTANCE} radii, within \
+         {:.1} steps of their footprints; {edges} quads across an edge from {EDGE_DISTANCE} radii, \
+         within {:.1} steps of their neighbors' range and {edge_mean:.2} on average",
+        footprint_worst.0, edge_worst.0
+    );
+    assert!(
+        held > 1000 && edges > 500,
+        "only {held} pixels face the camera and {edges} quads lie across an edge, too few for \
+         the case to mean anything"
+    );
+    assert!(
+        footprint_worst.0 <= FOOTPRINT_STEPS,
+        "{}: another level of detail, {:.1} steps away",
+        footprint_worst.1,
+        footprint_worst.0
+    );
+    assert!(
+        edge_mean <= EDGE_MEAN_STEPS,
+        "the quads across an edge lie {edge_mean:.2} steps outside their range on average"
+    );
+    assert!(
+        edge_worst.0 <= EDGE_LEVEL_STEPS,
+        "{}: its level of detail jumps at the edge, {:.1} steps",
+        edge_worst.1,
+        edge_worst.0
+    );
+}
+
+/// In blend mode the day half of a cell refines the day floor with the day's
+/// ocean color and the night half the night floor with the night's: over a
+/// table whose day half is the floor and whose night half is ocean, the lit
+/// side shows the day floor and the dark side the night's ocean.
+#[test]
+fn blend_mode_reads_each_half_of_the_page_table_for_its_own_surface() {
+    let ctx = render_ctx();
+    let geometry = CODED_TILES;
+    let finest = Geometry::level_of(geometry.face);
+    let cells = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
+    let everywhere: std::collections::HashSet<TileKey> = (0..6_u8)
+        .flat_map(|face| {
+            (0..cells).flat_map(move |row| {
+                (0..cells).map(move |col| TileKey {
+                    level: finest,
+                    face,
+                    row,
+                    col,
+                })
+            })
+        })
+        .collect();
+    let nowhere = std::collections::HashSet::new();
+    let mut table = PageTable::new(geometry);
+    table.rewrite(
+        [
+            Some(PageSurface {
+                pack: PackKind::Day(0),
+                ocean: &nowhere,
+            }),
+            Some(PageSurface {
+                pack: PackKind::Night,
+                ocean: &everywhere,
+            }),
+        ],
+        &TileLayers::new(1),
+        &CellLevels::finest(&geometry),
+    );
+    let pages = create_page_table(&ctx.device, &ctx.queue, &table);
+    let day_floor = create_solid_cube(&ctx.device, &ctx.queue, [[200, 40, 40, 255]; 6]);
+    let night_floor = create_solid_cube(&ctx.device, &ctx.queue, [[40, 40, 200, 255]; 6]);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let bind_group = bind_group_with(
+        &ctx,
+        &flat,
+        &ctx.surface_sampler,
+        [&day_floor, &night_floor, &ctx.dummy_cube],
+        [&ctx.dummy_tiles[0], &pages],
+    );
+    let size = 64;
+    let night_ocean = [20, 160, 20, 255];
+    let base = Uniforms {
+        terminator_width: 0.2,
+        day_ocean: u32::from_le_bytes([90, 90, 90, 255]),
+        night_ocean: u32::from_le_bytes(night_ocean),
+        ..with_tiles(&looking_along(size, glam::Vec3::Z), &geometry)
+    };
+
+    let lit = Uniforms {
+        sun_dir: [0.0, 0.0, 1.0],
+        ..base
+    };
+    let day = middle_pixel(&render_with(&ctx, &lit, &bind_group, size, size), size);
+    assert!(
+        close(day, [200, 40, 40], 2),
+        "the lit side shows the day floor, which the day half names: {day:?}"
+    );
+    let dark = Uniforms {
+        sun_dir: [0.0, 0.0, -1.0],
+        ..base
+    };
+    let night = middle_pixel(&render_with(&ctx, &dark, &bind_group, size, size), size);
+    let [r, g, b, _] = night_ocean;
+    assert!(
+        close(night, [r, g, b], 1),
+        "the dark side shows the night's ocean, which the night half names: {night:?}"
+    );
+}
+
+/// What the Earth fixture's packs are cut to here, as the golden suite cuts
+/// them: `EARTH_GEOMETRY` in `tests/golden.rs` says how it relates to the
+/// shipped one.
+const EARTH_TILES: Geometry = Geometry {
+    face: 256,
+    levels: 2,
+    tile: 32,
+    gutter: 4,
+    floor: 64,
+    mask: 128,
+};
+
+/// The level 0 texels of a pack entry's blob, decoded, and its width.
+fn decoded_level(
+    pack: &sunlit_core::assets::tiles::Pack,
+    key: TileKey,
+    level: usize,
+) -> (u32, Vec<u8>) {
+    let entry = pack.find(key).expect("the pack indexes every tile");
+    let blob = pack.read(entry).expect("read a blob");
+    let mip = pack.mips(entry)[level];
+    let texels = sunlit_core::assets::tiles::decode_bc7(
+        &blob[mip.offset..mip.offset + mip.len],
+        mip.size,
+        mip.size,
+    )
+    .expect("decode a blob");
+    (mip.size, texels)
+}
+
+/// Face `face` of a surface pack at the tiled level `level` as one plane of
+/// RGBA8, from the interiors of its tiles decoded, a tile the pack flags
+/// constant ocean in the pack's ocean color.
+fn assembled_face(pack: &sunlit_core::assets::tiles::Pack, level: u8, face: u8) -> Vec<u8> {
+    let (tile, gutter) = (pack.tile() as usize, pack.gutter() as usize);
+    let size = 1_usize << level;
+    let per_side = u16::try_from(size / tile).expect("a few tiles");
+    let mut plane = vec![0_u8; size * size * 4];
+    for row in 0..per_side {
+        for col in 0..per_side {
+            let key = TileKey {
+                level,
+                face,
+                row,
+                col,
+            };
+            let entry = pack.find(key).expect("the pack indexes every tile");
+            let layer = tile + 2 * gutter;
+            let texels = if entry.ocean {
+                pack.ocean().repeat(layer * layer)
+            } else {
+                decoded_level(pack, key, 0).1
+            };
+            for y in 0..tile {
+                let from = ((y + gutter) * layer + gutter) * 4;
+                let to = ((usize::from(row) * tile + y) * size + usize::from(col) * tile) * 4;
+                plane[to..to + tile * 4].copy_from_slice(&texels[from..from + tile * 4]);
+            }
+        }
+    }
+    plane
+}
+
+/// A pack's floor as a cube with its full mip chain, decoded.
+fn floor_cube(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pack: &sunlit_core::assets::tiles::Pack,
+) -> wgpu::TextureView {
+    let faces: Vec<_> = pack.entries().iter().filter(|e| e.whole_face).collect();
+    let size = 1_u32 << faces[0].key.level;
+    let levels = u32::try_from(pack.mips(faces[0]).len()).expect("a short chain");
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_floor"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (face, entry) in (0..).zip(&faces) {
+        for level in 0..levels {
+            let (width, texels) = decoded_level(pack, entry.key, level as usize);
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: face,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(width),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: width,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    })
+}
+
+/// A compute entry point appended to the production shaders: every texel of
+/// both levels of one layer of the tile array, the finest level first.
+fn tile_probe(layer: u32, size: u32) -> String {
+    format!(
+        "
+@group(1) @binding(0) var<storage, read_write> probed_texels: array<vec4<f32>>;
+
+@compute @workgroup_size(64)
+fn tile_probe(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let fine = {size}u * {size}u;
+    let coarse = ({size}u / 2u) * ({size}u / 2u);
+    if id.x >= fine + coarse {{
+        return;
+    }}
+    if id.x < fine {{
+        probed_texels[id.x] = textureLoad(tile_array, vec2<u32>(id.x % {size}u, id.x / {size}u), {layer}u, 0);
+    }} else {{
+        let i = id.x - fine;
+        let half = {size}u / 2u;
+        probed_texels[id.x] = textureLoad(tile_array, vec2<u32>(i % half, i / half), {layer}u, 1);
+    }}
+}}
+"
+    )
+}
+
+/// The RGBA8 texels the tile array holds at `layer`, both levels, as bytes.
+fn probe_tile_layer(
+    ctx: &RenderContext,
+    array: &wgpu::TextureView,
+    layer: u32,
+    size: u32,
+) -> Vec<u8> {
+    let shader = ctx
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("tile_probe_shader"),
+            source: wgpu::ShaderSource::Wgsl(production_shaders(&tile_probe(layer, size)).into()),
+        });
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("tile_probe_pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("tile_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+    let count = size * size + (size / 2) * (size / 2);
+    let output_size = u64::from(count) * 16;
+    let output = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("tile_probe_output"),
+        size: output_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let tiles_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 7,
+            resource: wgpu::BindingResource::TextureView(array),
+        }],
+    });
+    let output_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: output.as_entire_binding(),
+        }],
+    });
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &tiles_group, &[]);
+        pass.set_bind_group(1, &output_group, &[]);
+        pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+    }
+    ctx.queue.submit(std::iter::once(encoder.finish()));
+    let data = common::read_buffer(&ctx.device, &ctx.queue, &output, output_size);
+    bytemuck::cast_slice::<u8, f32>(&data)
+        .iter()
+        .map(|&v| to_byte(f64::from(v)))
+        .collect()
+}
+
+/// How far a pixel drawn from a tile may be from the same pixel drawn from a
+/// cube of the texels the tile was cut from, in steps of 255 on any channel:
+/// the two read the same texels through one sampler, so what is left is the
+/// arithmetic that places a sample in a layer rather than on a cube face.
+const TILE_MATCH: u8 = 3;
+
+/// A day pack's tiles, uploaded through the renderer's own upload into an RGBA8
+/// array, which is what a CPU adapter and an adapter without block
+/// compression get, are drawn in their cells as the texels they were cut from.
+///
+/// The Earth fixture is cut to the golden suite's geometry, a fixed set of
+/// tiles of +Z is uploaded, and the globe is drawn looking down on +Z. Each
+/// pixel, by the cell the surface under it lies in, is held to what that cell
+/// names: a cell of a finest tile to a frame drawn from a cube of the finest
+/// level's texels, a cell of a coarse tile to one of the coarse level's, a cell
+/// of constant ocean to the pack's ocean color, and a cell of the floor to a
+/// frame drawn from the floor alone. The layers themselves hold the blocks
+/// decoded, level for level.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one case, its setup and its three comparisons"
+)]
+fn a_packs_tiles_are_drawn_in_their_cells_as_the_texels_they_were_cut_from() {
+    use std::sync::atomic::AtomicBool;
+
+    use sunlit_core::assets::cube_layout::CubeTextures;
+    use sunlit_core::assets::tiles::{self, Pack};
+    use sunlit_core::renderer::tiles::{SurfaceTiles, TileTexels, TileUpload};
+
+    let scratch = common::test_support::ScratchDir::new("render_pipeline_tiles");
+    common::test_support::write_earth_fixture(&scratch.join("textures"));
+    let textures = CubeTextures::resolve(&scratch.join("textures"));
+    let cache = scratch.join("cache");
+    let day = PackKind::Day(6);
+    tiles::ensure_pack(
+        &cache,
+        day,
+        &textures,
+        &EARTH_TILES,
+        &AtomicBool::new(false),
+    )
+    .expect("cut the Earth fixture's July");
+    let pack = Pack::open(&tiles::pack_path(&cache, day)).expect("open it");
+    let geometry = EARTH_TILES;
+    let finest = Geometry::level_of(geometry.face);
+    let face = 4_u8;
+
+    let per_side = u16::try_from(geometry.face / geometry.tile).expect("a few cells");
+    let mut wanted = Vec::new();
+    for row in 0..per_side {
+        for col in 0..per_side {
+            let fine = TileKey {
+                level: finest,
+                face,
+                row,
+                col,
+            };
+            let coarse = TileKey {
+                level: finest - 1,
+                face,
+                row: row / 2,
+                col: col / 2,
+            };
+            if row % 2 == 0 && col % 2 == 0 && (row / 2 + col / 2) % 2 == 0 {
+                wanted.push(coarse);
+            }
+            if (row + 2 * col) % 3 == 0 {
+                wanted.push(fine);
+            }
+        }
+    }
+    let uploads: Vec<TileUpload> = wanted
+        .iter()
+        .filter_map(|&key| {
+            let entry = pack.find(key).expect("the pack indexes every tile");
+            (!entry.ocean).then(|| TileUpload {
+                id: TileId { pack: day, key },
+                texels: TileTexels::Blocks(pack.read(entry).expect("read a tile")),
+                layer: None,
+            })
+        })
+        .collect();
+    let first = uploads[0].id;
+
+    let ctx = render_ctx();
+    let mut surface_tiles =
+        SurfaceTiles::new(&ctx.device, geometry, wgpu::TextureFormat::Rgba8Unorm, 64);
+    surface_tiles
+        .add_pack(&ctx.queue, &pack)
+        .expect("a day pack");
+    assert!(
+        surface_tiles.set_month(&ctx.queue, 6),
+        "the day half names July's tiles once July is the month in force"
+    );
+    let failed = surface_tiles.upload(&ctx.device, &ctx.queue, uploads);
+    assert!(failed.is_empty(), "every tile uploads: {failed:?}");
+    let array = surface_tiles
+        .array_view()
+        .expect("the first tile made the array");
+
+    let layer = surface_tiles.layers().layer_of(first).expect("resident");
+    let probed = probe_tile_layer(&ctx, array, layer, geometry.layer());
+    let (_, fine_texels) = decoded_level(&pack, first.key, 0);
+    let (_, coarse_texels) = decoded_level(&pack, first.key, 1);
+    assert!(
+        probed == [fine_texels, coarse_texels].concat(),
+        "layer {layer} holds {:?} decoded, level for level",
+        first.key
+    );
+
+    let floor = floor_cube(&ctx.device, &ctx.queue, &pack);
+    let reference = |level: u8| {
+        let size = 1_u32 << level;
+        let plane = assembled_face(&pack, level, face);
+        create_cube(&ctx.device, &ctx.queue, size, |f| {
+            if f == usize::from(face) {
+                plane.clone()
+            } else {
+                MIP_MARKER.repeat((size * size) as usize)
+            }
+        })
+    };
+    let (fine_cube, coarse_cube) = (reference(finest), reference(finest - 1));
+    let size = 256;
+    let uniforms = with_tiles(&looking_along(size, glam::Vec3::Z), &geometry);
+    let ocean = pack.ocean();
+    let uniforms = Uniforms {
+        day_ocean: u32::from_le_bytes(ocean),
+        ..uniforms
+    };
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let dummy = &ctx.dummy_cube;
+    let draw = |cube: &wgpu::TextureView, tiles: [&wgpu::TextureView; 2]| {
+        let group = bind_group_with(
+            &ctx,
+            &flat,
+            &ctx.surface_sampler,
+            [cube, dummy, dummy],
+            tiles,
+        );
+        render_with(&ctx, &uniforms, &group, size, size)
+    };
+    let [no_tiles, no_pages] = &ctx.dummy_tiles;
+    let tiled = draw(&floor, [array, surface_tiles.page_view()]);
+    let from_floor = draw(&floor, [no_tiles, no_pages]);
+    let from_fine = draw(&fine_cube, [no_tiles, no_pages]);
+    let from_coarse = draw(&coarse_cube, [no_tiles, no_pages]);
+
+    let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
+        .as_dmat4()
+        .inverse();
+    let pixel = |frame: &[u8], at: usize| [frame[at], frame[at + 1], frame[at + 2]];
+    let apart = |a: [u8; 3], b: [u8; 3]| {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| x.abs_diff(y))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut checked = std::collections::BTreeMap::new();
+    // Summed over the pixels of finest tiles: how far each is from the finest
+    // level's frame, and how far that frame is from the coarse level's.
+    let (mut off_finest, mut levels_apart) = (0_u64, 0_u64);
+    for y in 0..size {
+        for x in 0..size {
+            let normal = normal_under_pixel(inverse, size, x, y).expect("the globe overfills");
+            let (on, row, col, within) = cell_under(normal, surface_tiles.table().cells());
+            assert_eq!(on, face, "the frame shows +Z alone");
+            if within.min_element() < 0.15 || within.max_element() > 0.85 {
+                continue;
+            }
+            let at = ((y * size + x) * 4) as usize;
+            let seen = pixel(&tiled, at);
+            let entry = surface_tiles.table().at(face, row, col)[0].expect("an entry");
+            let (kind, expected, tolerance) = match entry {
+                PageEntry::Tile { steps: 0, .. } => {
+                    off_finest += u64::from(apart(seen, pixel(&from_fine, at)));
+                    levels_apart +=
+                        u64::from(apart(pixel(&from_fine, at), pixel(&from_coarse, at)));
+                    ("a finest tile", pixel(&from_fine, at), TILE_MATCH)
+                }
+                PageEntry::Tile { .. } => ("a coarse tile", pixel(&from_coarse, at), TILE_MATCH),
+                PageEntry::Ocean => ("ocean", [ocean[0], ocean[1], ocean[2]], 1),
+                PageEntry::Floor => ("the floor", pixel(&from_floor, at), 1),
+            };
+            assert!(
+                apart(seen, expected) <= tolerance,
+                "pixel ({x}, {y}) in cell ({row}, {col}), {kind}, is {seen:?}, where {expected:?} was drawn"
+            );
+            *checked.entry(kind).or_insert(0_usize) += 1;
+        }
+    }
+    println!("pixels checked against each source: {checked:?}");
+    for kind in ["a finest tile", "a coarse tile", "ocean", "the floor"] {
+        assert!(
+            checked.get(kind).copied().unwrap_or(0) > 1_000,
+            "too few pixels were drawn from {kind} to mean anything: {checked:?}"
+        );
+    }
+    println!(
+        "finest tiles: {off_finest} steps from the finest level in all, which is {levels_apart} from the coarse"
+    );
+    assert!(
+        levels_apart > 4 * off_finest.max(1),
+        "the two levels are too alike here for a match to the finest to mean anything"
+    );
+
+    // Capped at the floor, the same resident set draws the floor alone.
+    let floor_level = Geometry::level_of(geometry.floor);
+    let capped = CellLevels::uniform(&geometry, floor_level);
+    assert!(surface_tiles.set_cap(&ctx.queue, capped.clone()));
+    assert!(
+        !surface_tiles.set_cap(&ctx.queue, capped),
+        "the same cap again"
+    );
+    let array = surface_tiles.array_view().expect("still there");
+    let capped = draw(&floor, [array, surface_tiles.page_view()]);
+    assert!(
+        capped == from_floor,
+        "a cap at the floor draws the floor wherever tiles are resident"
     );
 }

@@ -27,7 +27,7 @@ export component MainWindow inherits Window {
     in property <[string]> texture-options: ["Grid", "Day", "Night", "Day/Night Blend"];
     in-out property <int> texture-index: 3;
     in property <[string]> texture-resolution-options: ["8192", "4096", "2048"];
-    in-out property <int> texture-resolution-index: 1;
+    in-out property <int> texture-resolution-index: 0;
     in property <string> loading-text;
 
     in-out property <float> camera-longitude: 0;
@@ -443,7 +443,7 @@ export component MainWindow inherits Window {
 
                                 SettingCombo {
                                     label: "Resolution";
-                                    hint: "Width the surface maps are loaded at. Lower costs less memory and takes effect without a restart.";
+                                    hint: "How fine the surface gets: 8192 loads the finest tiles, 4096 the next level, 2048 the base cube alone. Lower costs less memory and takes effect without a restart.";
                                     model: texture-resolution-options;
                                     current-index <=> root.texture-resolution-index;
                                     selected => { root.texture-resolution-changed(); }

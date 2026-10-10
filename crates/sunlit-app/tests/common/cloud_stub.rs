@@ -124,8 +124,9 @@ fn serve_cloud_request(mut stream: TcpStream, jpeg: &[u8], state: &StubState) {
 
 /// Encode a JPEG the stub server can serve as the cloud image.
 ///
-/// The gradient keeps the encoded file small while the decoded RGBA buffer is
-/// `width * height * 4` bytes, which is the allocation the case is watching.
+/// Three components, as the upstream map has, so the fetcher's decode takes
+/// the same path; the gradient keeps the encoded file small. The frame the
+/// fetcher keeps of it is one channel, `width * height` bytes.
 pub(crate) fn cloud_fixture_jpeg(width: u32, height: u32) -> Vec<u8> {
     let mut img = image::RgbImage::new(width, height);
     for (x, y, pixel) in img.enumerate_pixels_mut() {

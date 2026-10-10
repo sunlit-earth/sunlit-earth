@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.3.0-beta.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/sunlit-earth/sunlit-earth"
@@ -13,6 +13,7 @@ slint = "~1.18"
 raw-window-handle = "0.6"
 slint-build = "~1.18"
 wgpu = { version = "28", features = ["counters"] }
+naga = { version = "28", default-features = false }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
@@ -20,6 +21,7 @@ pollster = "0.4"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["image", "rayon"] }
+dds = { version = "0.2", default-features = false }
 astronomy-engine-bindings = "2.1"
 time = { version = "0.3", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
@@ -43,10 +45,12 @@ log = { version = "0.4", features = ["max_level_trace", "release_max_level_warn"
 single-instance = "0.3"
 interprocess = "2"
 crossbeam-channel = "0.5"
+rayon = "1"
 windows-sys = "0.59"
 windows = "0.62"
 winreg = "0.56"
 mach2 = "0.6"
+libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSScreen", "NSCell"] }
 objc2-foundation = { version = "0.3", features = [

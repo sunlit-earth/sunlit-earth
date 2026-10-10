@@ -1,11 +1,11 @@
 //! Writing a file without leaving a half-written one behind.
 //!
 //! The file a reader can come back to is written under a temporary name and
-//! then put in place: the config, the cloud cache sidecar, a cached texture
-//! downscale and a wallpaper frame. What differs between them is the format and
-//! the temporary suffix. The rest is here, so a process killed mid-write leaves
-//! the previous file rather than a truncated one, and so there is one answer to
-//! what a temporary name looks like.
+//! then put in place: the config, the cloud cache sidecar, a tile pack and a
+//! wallpaper frame. What differs between them is
+//! the format and the temporary suffix. The rest is here, so a process killed
+//! mid-write leaves the previous file rather than a truncated one, and so there
+//! is one answer to what a temporary name looks like.
 //!
 //! An exported render is the exception and writes in place: `engine::save_png`
 //! is the end of a `render --output` or a `displays --out`, nothing in this
@@ -27,13 +27,49 @@ use tracing::warn;
 /// file mid-write.
 ///
 /// `suffix` is the caller's, because a sweep that removes the leftovers looks
-/// for it: the texture cache uses `~`, the wallpaper directory `.tmp`.
+/// for it: the tile packs use `~`, the wallpaper directory `.tmp`.
 pub(crate) fn unfinished(path: &Path, suffix: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut name = path.as_os_str().to_os_string();
     name.push(format!(".{}.{nonce}{suffix}", std::process::id()));
     PathBuf::from(name)
+}
+
+/// Delete unfinished versions of `target` that some earlier writer left behind.
+///
+/// A unique temporary name per writer is what stops two of them truncating each
+/// other, and the cost of it is that nothing reuses the name: a process killed
+/// mid-write leaves a file that would otherwise sit in the cache directory
+/// forever, megabytes at a time. Sweeping after a successful write bounds that
+/// to whatever accumulates between two writes of the same entry.
+///
+/// A writer of this same entry that is still working loses its temporary file
+/// here, and its own rename then fails with a warning; the entry it was building
+/// is the one that just landed, so the next run reads that rather than rebuilding
+/// anything. Orphans that never go away is the worse of the two.
+pub(crate) fn sweep_unfinished(target: &Path, suffix: &str) {
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let found = entry.file_name().to_string_lossy().into_owned();
+        if found.starts_with(&prefix) && found.ends_with(suffix) {
+            let path = entry.path();
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    tracing::debug!(path = %path.display(), "removed an unfinished cache file");
+                }
+                Err(e) => {
+                    tracing::debug!(path = %path.display(), error = %e, "could not remove an unfinished cache file");
+                }
+            }
+        }
+    }
 }
 
 /// Encode RGBA8 `pixels` as a PNG at `path`.
@@ -110,8 +146,21 @@ mod tests {
     use super::*;
     use crate::test_support::ScratchDir;
 
-    /// `texture_cache` owns the case for the shape of the name; this is the
-    /// half of it the suffix parameter added.
+    #[test]
+    fn each_unfinished_name_is_the_writers_own() {
+        let target = Path::new("C:/data/tiles/day-01.pack");
+        let first = unfinished(target, "~");
+        let second = unfinished(target, "~");
+
+        assert_ne!(first, second);
+        for name in [&first, &second] {
+            let name = name.to_string_lossy();
+            assert!(name.starts_with(&*target.to_string_lossy()));
+            assert!(name.ends_with('~'), "{name}");
+            assert!(name.contains(&std::process::id().to_string()), "{name}");
+        }
+    }
+
     #[test]
     fn a_suffix_is_the_end_of_the_name_the_sweep_looks_for() {
         let name = unfinished(Path::new("/wallpapers/screen-0.png"), ".tmp");

@@ -1,21 +1,39 @@
 //! Mock-clock soak test.
 //!
-//! Seven simulated days of cloud updates and unattended wallpaper exports,
+//! Two simulated days of cloud updates and unattended wallpaper exports,
 //! compressed into a few seconds by advancing an injected clock instead of
 //! waiting. This is the permanent guard against a background producer whose
 //! consumer only runs under some condition.
 //!
+//! The globe is drawn from the cube surface of the Earth fixture, so the
+//! transcoder, the floors, the tile loader and a change of month at the
+//! middle of January all run under the same clock as the clouds and the
+//! exports.
+//!
+//! The leak checks are exact rather than statistical: after every simulated
+//! hour no decoded pixel buffer and no download is alive, and wgpu's own
+//! counters read the same after every hour once the warm-up is over. Private
+//! bytes are a coarse backstop for what none of those sees.
+//!
 //! Nothing here touches the network, the desktop, or the real clock.
+
+#[path = "../src/test_support.rs"]
+mod test_support;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use sunlit_core::assets::cloud_source::{CloudImage, CloudSource};
+use sunlit_core::assets::cloud_source::{CloudImage, CloudSource, Download, downloads};
+use sunlit_core::assets::cube_layout::CubeTextures;
+use sunlit_core::assets::texture_loader::decoded_pixels;
+use sunlit_core::assets::tiles;
 use sunlit_core::engine::clock::MockClock;
 use sunlit_core::engine::wallpaper_sink::CountingSink;
 use sunlit_core::engine::{EngineCommand, EngineConfig};
+use sunlit_core::memory_report::CounterSection;
 use sunlit_core::params::SceneParams;
+use sunlit_core::scene::camera::CameraParams;
 
 /// Keeps a single engine (and therefore a single wgpu device) alive at a time,
 /// matching the convention in the other GPU test binaries: per-test device
@@ -29,61 +47,67 @@ fn gpu_lock() -> MutexGuard<'static, ()> {
 }
 
 /// One simulated step. Auto-refresh fires once per step.
-///
-/// One hour rather than 30 minutes: the per-step cost is the render and the
-/// engine wake-up rather than the export, so what the step size buys is the
-/// number of steps, and the number of steps is what the wall time is.
 const STEP: Duration = Duration::from_hours(1);
-/// Seven simulated days at one step per hour.
+/// Two simulated days at one step per hour.
 ///
-/// What the assertion needs is enough cloud updates behind it for a per-update
-/// leak to be unmissable, and 56 of them at one decoded frame each would be
-/// 450 MiB against `GROWTH_LIMIT`'s 8.
-const STEPS: u64 = 7 * 24;
+/// What the run has to hold is the schedule: an export every hour, a
+/// publication every three, the change of month at hour 12, and enough of
+/// both after the warm-up for the counters to be compared across many
+/// publications and across midnight, which the second day gives. The leak
+/// checks need no length of their own, since each one is exact after every
+/// step.
+const STEPS: u64 = 2 * 24;
 /// The upstream cloud service publishes every three hours.
 const STEPS_PER_CLOUD_UPDATE: u64 = 3;
-/// Fixture cloud image size: large enough that a leaked frame (8 MiB decoded)
-/// would dominate the noise, small enough to decode hundreds of times.
-const CLOUD_WIDTH: u32 = 2048;
-const CLOUD_HEIGHT: u32 = 1024;
+/// Fixture cloud image size. The checks count frames rather than bytes, so the
+/// size buys nothing but time, and a small image keeps the per-update cost of
+/// the decode, the mips and the first draw that samples them out of the run.
+const CLOUD_WIDTH: u32 = 512;
+const CLOUD_HEIGHT: u32 = 256;
 /// Wallpaper export size.
 ///
 /// Small on purpose, and the test is about the schedule and the memory rather
 /// than the picture: what the export has to do here is go through the publish
-/// path once per simulated hour, which it does at any size. Most of a step is
-/// the round trip rather than the render, so this buys less than it looks like
-/// it should; the measurements are in docs/testing.md.
+/// path once per simulated hour, which it does at any size.
 const EXPORT_SIZE: (u32, u32) = (160, 96);
 
 /// How long to wait for the engine to catch up with one simulated step.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Growth allowed after warm-up: one decoded 2048x1024 frame.
-///
-/// Sized with `STEPS` and `FLOOR_WINDOW` so the sensitivity per update is
-/// fixed: at least 35 publications lie between the last step of the baseline
-/// window and the first step of the end window, against 8 MiB.
-const GROWTH_LIMIT: u64 = 8 * 1024 * 1024;
-/// Steps each memory floor is the minimum over.
-///
-/// One reading is not a level. On `macos-latest` the footprint sits flat and
-/// then reads 8.0 or 10.8 MiB high for a single sample, about one step in
-/// twenty and on steps with no cloud update as often as on steps with one, and
-/// a baseline or end taken from one reading passes or fails by whether it
-/// lands on such a step. A leak raises every reading after it, the lowest
-/// included, so the floor of a window still sees it. Seven publications wide.
-const FLOOR_WINDOW: u64 = STEPS / 8;
-/// Allocation allowed during warm-up: the first cloud texture, its mip chain,
-/// and wgpu's allocator pools.
-const WARMUP_LIMIT: u64 = 192 * 1024 * 1024;
+/// The Earth fixture cut as `tests/golden.rs` cuts it.
+const EARTH: tiles::Geometry = tiles::Geometry {
+    face: 256,
+    levels: 2,
+    tile: 32,
+    gutter: 4,
+    floor: 64,
+    mask: 128,
+};
 
-/// Steps to run before taking the memory baseline.
+/// Days from the Unix epoch to the start of the run, January 16th, half a day
+/// before January hands over to February at its middle, so the change of month
+/// and the floor of the month ahead land inside the warm-up.
+const START_DAY: i64 = 15;
+
+/// Steps before the counters and private bytes are compared: through the
+/// change of month at step 12 and two publications after it. The rest of the
+/// year's packs, the floors and tiles made resident, and the allocator pools
+/// are a one-off cost, and the leak this test guards against is per update.
+const WARMUP_STEPS: u64 = 18;
+
+/// Growth of private bytes allowed from the end of the warm-up to the end of
+/// the run.
 ///
-/// The first cloud texture, its mip chain, and wgpu's allocator pools are a
-/// one-off cost of roughly 85 MiB. Measuring from before that would be
-/// measuring startup, not growth; the leak this test guards against is
-/// per-update, so the interesting window is everything after warm-up.
-const WARMUP_STEPS: u64 = STEPS / 8;
+/// A backstop rather than the test: the exact checks are the decoded frames,
+/// the downloads and wgpu's counters. This one is there for host memory
+/// outside the counted buffers and GPU memory on a backend that keeps no byte
+/// counters, and at this fixture it reaches only so far: the hours it compares,
+/// 18 and 48, are ten publications and thirty exports apart, so it fails a leak
+/// of more than about 6.4 MiB a publication or 2.1 MiB an export, and not one
+/// of the 384 KiB a color decode of the fixture goes through. It is generous
+/// because single readings move: lavapipe's allocator steps by 8 to 12 MiB at a
+/// time, and on `macos-latest` about one reading in twenty is 8 to 11 MiB high.
+const PRIVATE_GROWTH_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// A cloud source that serves a fixed JPEG under an `ETag` the test controls.
 struct FixtureCloud {
@@ -94,13 +118,14 @@ struct FixtureCloud {
 
 impl FixtureCloud {
     fn new(width: u32, height: u32) -> Self {
-        // A gradient rather than a flat color, so the JPEG is a realistic size
-        // and the decode does real work.
+        // A gradient rather than a flat value, so the JPEG is a realistic size
+        // and the decode does real work. Three components, so the decode goes
+        // through the color arm rather than the gray one.
         let mut img = image::RgbImage::new(width, height);
         for (x, y, px) in img.enumerate_pixels_mut() {
             #[allow(clippy::cast_possible_truncation)]
             let v = ((x + y) % 256) as u8;
-            *px = image::Rgb([v, 255 - v, v / 2]);
+            *px = image::Rgb([v, v, v]);
         }
         let mut buf = std::io::Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Jpeg)
@@ -132,7 +157,7 @@ impl CloudSource for FixtureCloud {
         }
         self.fetches.fetch_add(1, Ordering::SeqCst);
         Ok(Some(CloudImage {
-            bytes: self.jpeg.clone(),
+            bytes: Download::new(self.jpeg.clone()),
             etag: Some(current),
             last_modified: None,
         }))
@@ -147,7 +172,7 @@ impl CloudSource for FixtureCloud {
 ///
 /// Mirrors the cfg on `memory::snapshot` itself. It is the difference between
 /// "this platform cannot answer" and "this platform failed to answer", and only
-/// the first of those may skip the growth assertion.
+/// the first of those may skip the private-bytes check.
 fn memory_counters_supported() -> bool {
     cfg!(any(windows, target_os = "linux", target_os = "macos"))
 }
@@ -173,21 +198,175 @@ fn wait_until(what: &str, condition: impl Fn() -> bool) {
     }
 }
 
+/// Wait until every frame the downloads so far were decoded into has been
+/// made and dropped again.
+///
+/// `made` reaching `made_by_now` is what tells "uploaded" from "not decoded
+/// yet": a live count of zero alone would also hold in the moment between a
+/// download and its decode. A frame that is still alive at the deadline is a
+/// decoded pixel buffer parked somewhere, and the failure says so.
+fn wait_for_decoded_frames_to_go(step: u64, made_by_now: u64) {
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    loop {
+        let count = decoded_pixels();
+        if count.made >= made_by_now && count.frames == 0 && count.bytes == 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "simulated hour {step}: {} decoded frames ({:.2} MiB) were still alive {STEP_TIMEOUT:?} \
+             after the hour, with {} of the {made_by_now} frames its downloads need made; a frame \
+             that outlives its upload is a decoded pixel buffer parked in a queue, a cache or a \
+             long-lived struct",
+            count.frames,
+            mib(count.bytes),
+            count.made
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Wait until every download so far has been made and dropped again.
+///
+/// The download outlives its decode by the rest of the poll that fetched it,
+/// writing it to the cache and posting the frame, so it may still be alive for
+/// a moment after its frame has gone. One still alive at the deadline is
+/// parked somewhere, and the failure says so.
+fn wait_for_downloads_to_go(step: u64, made_by_now: u64) {
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    loop {
+        let count = downloads();
+        if count.made >= made_by_now && count.buffers == 0 && count.bytes == 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "simulated hour {step}: {} downloads ({} bytes) were still alive {STEP_TIMEOUT:?} \
+             after the hour, with {} of the {made_by_now} downloads so far made; a download \
+             that outlives its poll is parked in a queue, a cache or a long-lived struct",
+            count.buffers,
+            count.bytes,
+            count.made
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// wgpu's counters, by name, as the memory report reads them.
+fn named_counters(counters: CounterSection) -> [(&'static str, i64); 5] {
+    [
+        ("texture bytes", counters.texture_bytes),
+        ("buffer bytes", counters.buffer_bytes),
+        ("textures", counters.textures),
+        ("buffers", counters.buffers),
+        ("allocations", counters.allocations),
+    ]
+}
+
+/// The counters the backend under each software adapter the suite runs on
+/// keeps in wgpu 28 (research section 28): D3D12 under WARP the bytes and both
+/// object counts, Vulkan under lavapipe the bytes and the buffer count.
+///
+/// On these a counter that reads zero or below is a check gone missing rather
+/// than one the backend never kept, so it fails the test. Any other adapter
+/// has its counters inferred from the readings alone.
+///
+/// The adapter slug does not name the backend: `lavapipe` also stands for
+/// Mesa's llvmpipe under GL, which keeps only the object counts. The memory
+/// report carries no backend, but wgpu-hal implements the allocator report for
+/// D3D12 and Vulkan alone, so `allocator_reported` is what tells those two
+/// from GL and Metal.
+fn kept_counters(adapter: &str, allocator_reported: bool) -> &'static [&'static str] {
+    if !allocator_reported {
+        return &[];
+    }
+    match adapter {
+        "warp" => &["texture bytes", "buffer bytes", "textures", "buffers"],
+        "lavapipe" => &["texture bytes", "buffer bytes", "buffers"],
+        _ => &[],
+    }
+}
+
+/// Hold every counter wgpu maintains on this backend to the value it had at
+/// the first reading, and say which ones it does not maintain.
+///
+/// The readings are every hour's after the warm-up, from settled reports: the
+/// staging buffers of a write or a draw after the hour's export would
+/// otherwise be counted until the next export retires them, which a tile that
+/// lands after the export makes a matter of timing.
+///
+/// A counter that reads zero there is one the backend does not keep, since a
+/// kept one counts at least the textures and buffers every frame uses, and one
+/// that reads below zero is one it keeps half of, counting down on destroy and
+/// never up on create, as Vulkan does with textures in wgpu 28. Neither is
+/// asserted on, except where [`kept_counters`] says the backend keeps it.
+fn check_counters(adapter: &str, allocator_reported: bool, readings: &[(u64, CounterSection)]) {
+    let (_, first) = readings[0];
+    for (index, (name, baseline)) in named_counters(first).into_iter().enumerate() {
+        assert!(
+            baseline > 0 || !kept_counters(adapter, allocator_reported).contains(&name),
+            "wgpu {name} reads {baseline} on {adapter}, whose backend keeps it: the check on it \
+             is lost, through wgpu's `counters` feature left off or a backend that stopped \
+             counting it"
+        );
+        if baseline == 0 {
+            println!("wgpu {name}: reads zero on {adapter}, which does not keep it; not checked");
+            continue;
+        }
+        if baseline < 0 {
+            println!(
+                "wgpu {name}: reads {baseline} on {adapter}, which counts it down and not up; \
+                 not checked"
+            );
+            continue;
+        }
+        let moved: Vec<String> = readings
+            .iter()
+            .filter(|(_, counters)| named_counters(*counters)[index].1 != baseline)
+            .map(|(step, counters)| {
+                format!("{} at hour {step}", named_counters(*counters)[index].1)
+            })
+            .collect();
+        assert!(
+            moved.is_empty(),
+            "wgpu {name} read {baseline} after the warm-up and then {} on {adapter}: something \
+             the engine makes per update or per day is not freed",
+            moved.join(", ")
+        );
+        println!(
+            "wgpu {name}: {baseline} at every one of {} hours after the warm-up",
+            readings.len()
+        );
+    }
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
-fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
+fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
     let _guard = gpu_lock();
 
+    let dir = test_support::ScratchDir::new("soak");
+    test_support::write_earth_fixture(&dir.join("textures"));
     let cloud = Arc::new(FixtureCloud::new(CLOUD_WIDTH, CLOUD_HEIGHT));
     let sink = Arc::new(CountingSink::new(EXPORT_SIZE.0, EXPORT_SIZE.1));
-    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let clock = Arc::new(MockClock::new(
+        time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(START_DAY),
+    ));
 
+    // Blended, over Africa at the zoom where the preview wants tiles of the
+    // coarser level, so day tiles, night tiles and the mask are all read.
     let mut params = SceneParams {
-        texture_index: 0,
+        texture_index: 3,
         sample_count: 1,
+        camera: CameraParams {
+            longitude: 20.0,
+            latitude: 0.0,
+            zoom: 0.55,
+            ..CameraParams::default()
+        },
         ..SceneParams::default()
     };
-    // Live time, so every simulated day really does rotate the Earth and the
+    // Live time, so every simulated hour really does rotate the Earth and the
     // sun-position schedule is exercised too.
     params.datetime.use_custom = false;
 
@@ -198,16 +377,17 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
     config.clock = clock.clone();
     config.cloud = Some(cloud.clone());
     config.cloud_poll_interval = STEP;
-    config.cache_dir = None;
+    config.cache_dir = Some(dir.join("cache"));
+    config.cube_textures = CubeTextures::resolve(&dir.join("textures"));
+    config.tile_geometry = EARTH;
+    config.texture_resolution = 8192;
     config.auto_refresh = Some(STEP);
     config.wallpaper = sink.clone();
 
     let engine = sunlit_core::engine::start(config).expect("the soak test needs a working adapter");
 
-    // The fetch is not the thing to measure from: the decoded image is parked
-    // in the mailbox and reaches the GPU on a later tick, so the baseline has to
-    // be taken after the first cloud texture exists or the warm-up it is
-    // compared against would include that upload.
+    // The decoded image is parked in the mailbox and reaches the GPU on a later
+    // tick, so the run starts once the first cloud texture exists.
     wait_until("the first cloud fetch", || cloud.fetches() >= 1);
     wait_until("the first cloud texture", || {
         engine.send(EngineCommand::Poke);
@@ -218,14 +398,20 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
                 .any(|texture| texture.label == "cloud_texture")
         })
     });
+    // Every download is one decoded frame; the ones before this point are in
+    // `made` already or about to be.
+    let made_before = decoded_pixels().made.saturating_sub(cloud.fetches());
+    let downloaded_before = downloads().made.saturating_sub(cloud.fetches());
 
-    let startup = private_bytes();
     let started = Instant::now();
 
     // The first fetch above consumed version 1; every publication after that
     // must be downloaded too.
     let mut expected_fetches = 1;
-    let mut readings: Vec<Option<u64>> = Vec::new();
+    let mut private: Vec<Option<u64>> = Vec::new();
+    let mut counters: Vec<(u64, CounterSection)> = Vec::new();
+    let mut adapter = String::new();
+    let mut allocator_reported = false;
 
     for step in 1..=STEPS {
         let published = step % STEPS_PER_CLOUD_UPDATE == 0;
@@ -247,21 +433,56 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
             // update rather than coalescing them away.
             wait_until("the cloud download", || cloud.fetches() >= expected_fetches);
         }
+        wait_for_decoded_frames_to_go(step, made_before + cloud.fetches());
+        wait_for_downloads_to_go(step, downloaded_before + cloud.fetches());
 
-        readings.push(private_bytes());
+        private.push(private_bytes());
+        if step > WARMUP_STEPS {
+            let report = engine.settled_memory_report().expect("a memory report");
+            counters.push((step, report.counters));
+            allocator_reported = report.allocator.is_some();
+            adapter = report.adapter;
+        }
     }
 
     let elapsed = started.elapsed();
     let exports = sink.count();
     let fetches = cloud.fetches();
+    let report = engine.memory_report().expect("a memory report");
+    let surface = engine
+        .tile_report()
+        .expect("a tile report")
+        .expect("the engine draws from the cube");
     engine.shutdown();
+
+    // The run was drawn from the cube, not the grid, and crossed into
+    // February, whose floor was made resident on the way.
+    for label in ["day_floor", "night_floor", "water_mask", "tile_array"] {
+        assert!(
+            report.expected.iter().any(|texture| texture.label == label),
+            "no {label} at the end of the run:
+{report}"
+        );
+    }
+    assert!(
+        surface.floors_installed >= 2 && !surface.resident.is_empty(),
+        "{surface:#?}"
+    );
+    assert!(
+        surface
+            .named
+            .iter()
+            .all(|id| id.pack != tiles::PackKind::Day(0)),
+        "January's tiles are still named after the hand-over: {surface:#?}"
+    );
 
     let expected_publications = STEPS / STEPS_PER_CLOUD_UPDATE;
     let expected_fetches = expected_publications + 1;
     let simulated_days = STEPS / 24;
     println!(
         "{simulated_days} simulated days in {:.1}s: {exports} exports, {fetches} cloud fetches \
-         (of {expected_publications} publications)",
+         (of {expected_publications} publications), no decoded frame or download alive after \
+         any hour",
         elapsed.as_secs_f64()
     );
 
@@ -274,86 +495,60 @@ fn a_week_of_simulated_clouds_and_exports_stays_bounded() {
         fetches >= expected_fetches,
         "expected at least {expected_fetches} cloud downloads, got {fetches}"
     );
-    // The point is compression, not a benchmark: seven days in two minutes is
-    // still a ratio of about 8 000 to 1, and the bound is there to catch a
+    // The point is compression, not a benchmark: the bound is there to catch a
     // change that makes a step cost an order of magnitude more rather than to
     // measure the machine. The measurements are in docs/testing.md. If a slower
-    // runner trips this, reduce STEPS (fewer simulated days, proportionally
-    // fewer publications) or shrink the render sizes; do not raise the bound.
+    // runner trips this, shrink the render sizes; do not raise the bound.
     assert!(
-        elapsed < Duration::from_mins(2),
+        elapsed < Duration::from_secs(30),
         "{simulated_days} simulated days took {:.1}s, which defeats the purpose",
         elapsed.as_secs_f64()
     );
 
-    // Memory: the whole point. A hidden path that parked one decoded frame per
-    // update would cost hundreds of megabytes over these updates; this
-    // architecture should add nothing per update at all.
-    for (step, bytes) in (1..).zip(&readings) {
-        if step % FLOOR_WINDOW == 0
-            && let Some(bytes) = bytes
-        {
-            println!("  step {step:>4}: private {:.1} MiB", mib(*bytes));
-        }
-    }
+    check_counters(&adapter, allocator_reported, &counters);
 
-    let floor = |from: u64| -> Option<u64> {
-        let from = usize::try_from(from).expect("step fits in usize");
-        let window = usize::try_from(FLOOR_WINDOW).expect("window fits in usize");
-        readings[from..from + window]
+    for (row, chunk) in private.chunks(12).enumerate() {
+        let values: Vec<String> = chunk
             .iter()
-            .copied()
-            .collect::<Option<Vec<u64>>>()?
-            .into_iter()
-            .min()
-    };
-    let baseline = floor(WARMUP_STEPS);
-    let end = floor(STEPS - FLOOR_WINDOW);
-
-    let (startup, baseline, end) = match (startup, baseline, end) {
-        (Some(startup), Some(baseline), Some(end)) => (startup, baseline, end),
-        // Three independent reads feed this. On a platform `memory::snapshot`
+            .map(|bytes| bytes.map_or_else(|| "-".to_owned(), |b| format!("{:.1}", mib(b))))
+            .collect();
+        println!(
+            "  hours {:>2} to {:>2}, private MiB: {}",
+            row * 12 + 1,
+            row * 12 + chunk.len(),
+            values.join(" ")
+        );
+    }
+    let warm = usize::try_from(WARMUP_STEPS).expect("steps fit in usize") - 1;
+    let (Some(baseline), Some(end)) = (private[warm], private[private.len() - 1]) else {
+        // Independent reads feed this. On a platform `memory::snapshot`
         // implements, a missing sample is a broken counter and not a reason to
         // stop testing: it fails here, the way the software-adapter test fails
         // when the adapter it queried for should have been there.
-        (startup, baseline, end) => {
-            assert!(
-                !memory_counters_supported(),
-                "memory counters are implemented on this platform but a sample was \
-                 missing (startup {startup:?}, baseline {baseline:?}, end {end:?}); \
-                 the growth assertion must not be skipped here"
-            );
-            eprintln!("no memory counters on this platform, skipping the growth assertion");
-            return;
-        }
+        assert!(
+            !memory_counters_supported(),
+            "memory counters are implemented on this platform but a sample was missing \
+             (after the warm-up {:?}, at the end {:?})",
+            private[warm],
+            private[private.len() - 1]
+        );
+        eprintln!("no memory counters on this platform, skipping the private-bytes backstop");
+        return;
     };
-    let warmup = baseline.saturating_sub(startup);
     let growth = end.saturating_sub(baseline);
-    let soaked_days = (STEPS - WARMUP_STEPS) / 24;
     println!(
-        "private bytes: startup {:.1} MiB, floor after warm-up {:.1} MiB (+{:.1}), \
-         floor at the end {:.1} MiB (+{:.1} over {soaked_days} simulated days)",
-        mib(startup),
+        "private bytes: {:.1} MiB after the warm-up, {:.1} MiB at the end (+{:.1}, limit {:.0})",
         mib(baseline),
-        mib(warmup),
         mib(end),
         mib(growth),
+        mib(PRIVATE_GROWTH_LIMIT)
     );
-
     assert!(
-        growth < GROWTH_LIMIT,
-        "private bytes grew by {:.1} MiB over the {soaked_days} simulated days after \
-         warm-up (limit {:.0} MiB, two decoded frames)",
+        growth < PRIVATE_GROWTH_LIMIT,
+        "private bytes grew by {:.1} MiB over the {} simulated hours after the warm-up \
+         (limit {:.0} MiB)",
         mib(growth),
-        mib(GROWTH_LIMIT)
-    );
-
-    // Warm-up is a one-off (the first cloud texture, its mip chain, and wgpu's
-    // allocator pools), but a gross regression in it should not slip through.
-    assert!(
-        warmup < WARMUP_LIMIT,
-        "warm-up allocated {:.1} MiB (limit {:.0} MiB)",
-        mib(warmup),
-        mib(WARMUP_LIMIT)
+        STEPS - WARMUP_STEPS,
+        mib(PRIVATE_GROWTH_LIMIT)
     );
 }

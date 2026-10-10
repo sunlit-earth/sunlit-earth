@@ -200,14 +200,47 @@ pub fn wait_for_session(
             ));
         }
         if start.elapsed() >= timeout {
+            let cause = if target == Target::Windows && password_expired(provider, state) {
+                format!(
+                    " The account `{}` has an expired password, which stops an autologon: \
+                     see Troubleshooting in docs/vm-setup.md.",
+                    state.ssh_user
+                )
+            } else {
+                String::new()
+            };
             return Err(format!(
                 "no desktop session in the guest after {:.0}s; the autologon did not \
-                 complete. `cargo xtask vm view {target}` shows what it is doing.",
+                 complete. `cargo xtask vm view {target}` shows what it is doing.{cause}",
                 timeout.as_secs_f64()
             ));
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// The marker the password probe prints for an account that has expired.
+const PASSWORD_EXPIRED_MARKER: &str = "SUNLIT_PASSWORD_EXPIRED";
+
+/// The script that says whether the guest's account has outlived its password.
+///
+/// Asked of the account rather than of the policy, and by comparing dates, so
+/// the answer does not depend on the guest's language.
+fn password_expiry_script(user: &str) -> String {
+    format!(
+        "$expires = (Get-LocalUser -Name {}).PasswordExpires\n\
+         if ($expires -and $expires -lt (Get-Date)) {{ Write-Output '{PASSWORD_EXPIRED_MARKER}' }}\n",
+        crate::runner::ps_quote(user)
+    )
+}
+
+/// Whether a Windows guest that never reached its desktop has an expired password.
+fn password_expired(provider: &dyn Provider, state: &RunState) -> bool {
+    let command =
+        crate::guest::handover::powershell_command(&password_expiry_script(&state.ssh_user));
+    provider
+        .exec(state, &command)
+        .is_ok_and(|out| out.stdout.contains(PASSWORD_EXPIRED_MARKER))
 }
 
 /// Drop a job into the guest, start it, and wait for its exit code.
@@ -554,6 +587,56 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("stopped before its desktop session"), "{err}");
         assert!(err.contains("qemu has exited: port taken"), "{err}");
+    }
+
+    #[test]
+    fn a_windows_guest_that_never_logs_on_names_an_expired_password() {
+        let runner = FakeRunner::new()
+            .on(SESSION_READY_MARKER, CommandOutput::ok(""))
+            .on(
+                "-EncodedCommand",
+                CommandOutput::ok("SUNLIT_PASSWORD_EXPIRED\n"),
+            );
+        let provider = FakeProvider {
+            runner: &runner,
+            defunct: None,
+        };
+        let err = wait_for_session(
+            &provider,
+            &state(),
+            Target::Windows,
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(err.contains("autologon did not complete"), "{err}");
+        assert!(err.contains("expired password"), "{err}");
+    }
+
+    #[test]
+    fn a_guest_that_never_logs_on_for_another_reason_says_no_more() {
+        let runner = FakeRunner::new()
+            .on(SESSION_READY_MARKER, CommandOutput::ok(""))
+            .on("-EncodedCommand", CommandOutput::ok(""));
+        let provider = FakeProvider {
+            runner: &runner,
+            defunct: None,
+        };
+        let err = wait_for_session(
+            &provider,
+            &state(),
+            Target::Windows,
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(err.contains("autologon did not complete"), "{err}");
+        assert!(!err.contains("expired password"), "{err}");
+    }
+
+    #[test]
+    fn the_password_probe_asks_about_the_guests_own_account() {
+        let script = password_expiry_script("tester");
+        assert!(script.contains("Get-LocalUser -Name 'tester'"), "{script}");
+        assert!(script.contains(PASSWORD_EXPIRED_MARKER), "{script}");
     }
 
     #[test]

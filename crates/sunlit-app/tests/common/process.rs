@@ -384,6 +384,12 @@ pub(crate) fn parse_memory_entries(stderr: &str) -> Vec<MemoryEntry> {
     entries
 }
 
+/// The texture resolution every start of the app under test that loads
+/// textures runs at, through the one-run `--texture-resolution` override
+/// rather than the default, so the suite's memory and its run time in the
+/// guests do not follow a change of default.
+pub(crate) const TEXTURE_RESOLUTION: &str = "4096";
+
 /// Monotonically increasing counter for names that have to be unique within
 /// this process: socket names and throwaway config paths.
 static SOCKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -497,6 +503,7 @@ impl<'a> Spawn<'a> {
         let mut guard = ChildGuard::new(
             command
                 .args(["--log-level", "debug"])
+                .args(["--texture-resolution", TEXTURE_RESOLUTION])
                 .args(&self.args)
                 .args(["--ipc-socket", self.socket_name])
                 .stdout(Stdio::piped())
@@ -677,6 +684,14 @@ impl StdoutWatcher {
         tail[start + 1..start + stop].to_vec()
     }
 
+    /// Every stdout line collected so far.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        self.lines
+            .lock()
+            .expect("stdout watcher lock poisoned")
+            .clone()
+    }
+
     /// Number of stdout lines collected so far. Used as a cursor so repeated
     /// queries do not match the reply to an earlier request.
     pub(crate) fn line_count(&self) -> usize {
@@ -746,8 +761,10 @@ pub(crate) fn mib(bytes: u64) -> f64 {
 
 /// The section headers `memory-report` promises. Only these are a contract;
 /// the numbers on them and the rows beneath them are free to change.
-pub(crate) const REPORT_SECTIONS: [&str; 4] = [
+pub(crate) const REPORT_SECTIONS: [&str; 6] = [
     "process:",
+    "decoded pixels:",
+    "cloud downloads:",
     "wgpu counters:",
     "gpu allocations:",
     "expected:",

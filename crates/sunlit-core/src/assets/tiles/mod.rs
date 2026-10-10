@@ -16,11 +16,12 @@
 //!   chain.
 //!
 //! A pack carries the key it was built under: the stamps of the faces it was
-//! made from, the `dds` version, the preset, the geometry and the format
-//! version. [`ensure_pack`] rebuilds a pack whose key is not the one the
-//! current sources and this build would give it. Packs are written under a
-//! temporary name and renamed into place, so a reader sees a whole pack or
-//! none, and one that holds a pack open keeps reading the one it opened.
+//! made from, the `dds` version, the preset, the decoder versions, the
+//! geometry and the format version. [`ensure_pack`] rebuilds a pack whose key
+//! is not the one the current sources and this build would give it. Packs are
+//! written under a temporary name and renamed into place, so a reader sees a
+//! whole pack or none, and one that holds a pack open keeps reading the one it
+//! opened.
 
 mod build;
 mod codec;

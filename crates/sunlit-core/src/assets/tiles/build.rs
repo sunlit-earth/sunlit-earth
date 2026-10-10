@@ -110,13 +110,20 @@ struct Versions {
     format: u32,
     dds: &'static str,
     preset: &'static str,
+    decoder: &'static str,
 }
 
 const CURRENT: Versions = Versions {
     format: pack::FORMAT_VERSION,
     dds: codec::DDS_VERSION,
     preset: codec::PRESET.1,
+    decoder: DECODER_VERSIONS,
 };
+
+/// The versions of `jxl-oxide` and `image` the faces are decoded with. A
+/// test compares them with the lockfile, because a lossy face may decode to
+/// other texels in another version and the cache key has to notice.
+const DECODER_VERSIONS: &str = "jxl-oxide 0.12.5 image 0.25.9";
 
 /// What a source file looked like: size and modification time. Hashing 84
 /// files on every start would cost more than it could catch, since they only
@@ -196,8 +203,8 @@ fn key_text(
 ) -> String {
     use std::fmt::Write as _;
     let mut key = format!(
-        "sunlit-earth tile pack\nformat {}\ndds {}\npreset {}\n",
-        versions.format, versions.dds, versions.preset
+        "sunlit-earth tile pack\nformat {}\ndds {}\npreset {}\ndecoder {}\n",
+        versions.format, versions.dds, versions.preset, versions.decoder
     );
     let Geometry {
         face,
@@ -930,6 +937,14 @@ mod tests {
                 },
                 FIXTURE,
             ),
+            (
+                "decoder",
+                Versions {
+                    decoder: "jxl-oxide 9.9.9 image 9.9.9",
+                    ..CURRENT
+                },
+                FIXTURE,
+            ),
             ("geometry", CURRENT, other),
         ];
         for (what, versions, geometry) in variants {
@@ -1474,18 +1489,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_dds_version_in_the_key_is_the_one_the_lockfile_holds() {
+    /// The version of `name` the lockfile holds, which has to be one.
+    fn locked(name: &str) -> String {
         let lock = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
             .expect("read Cargo.lock");
-        let entry = lock
+        let versions: Vec<String> = lock
             .split("[[package]]")
-            .find(|block| block.contains("\nname = \"dds\"\n"))
-            .expect("dds is locked");
-        assert!(
-            entry.contains(&format!("\nversion = \"{}\"\n", codec::DDS_VERSION)),
-            "DDS_VERSION is {}, the lockfile says {entry}",
-            codec::DDS_VERSION
+            .filter(|block| block.contains(&format!("\nname = \"{name}\"\n")))
+            .filter_map(|block| {
+                let rest = block.split("\nversion = \"").nth(1)?;
+                Some(rest.split('"').next()?.to_owned())
+            })
+            .collect();
+        assert_eq!(versions.len(), 1, "{name} is locked once: {versions:?}");
+        versions[0].clone()
+    }
+
+    #[test]
+    fn the_dds_version_in_the_key_is_the_one_the_lockfile_holds() {
+        assert_eq!(codec::DDS_VERSION, locked("dds"));
+    }
+
+    #[test]
+    fn the_decoder_versions_in_the_key_are_the_ones_the_lockfile_holds() {
+        assert_eq!(
+            DECODER_VERSIONS,
+            format!(
+                "jxl-oxide {} image {}",
+                locked("jxl-oxide"),
+                locked("image")
+            )
         );
     }
 }

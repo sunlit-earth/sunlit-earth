@@ -162,9 +162,9 @@ jobs:
           SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/smoke-cache
           SUNLIT_EARTH_NO_CLOUDS: "1"
           # Empty on purpose. `textures/**` is Git LFS and checkout does not
-          # fetch it, so the working tree holds pointer files that fail to decode
-          # and leave the engine waiting two minutes for a `TexturesReady` that
-          # cannot arrive.
+          # fetch it; an empty directory keeps the smoke render the procedural
+          # grid by construction rather than by how pointer files are told
+          # apart from the faces they stand for.
           SUNLIT_EARTH_TEXTURES: ${{ github.workspace }}/smoke-textures
         run: |
           set -euo pipefail

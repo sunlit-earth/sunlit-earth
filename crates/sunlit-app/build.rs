@@ -69,10 +69,11 @@ fn refuse_a_foreign_target_directory() {
             eprintln!("  artifact hash, so cargo would write a second complete set beside");
             eprintln!("  the first and never mention it.");
             eprintln!();
-            eprintln!("  Give this build its own directory, the way README's WSL command");
-            eprintln!("  does:");
+            eprintln!("  Give this build its own directory, one per worktree, named after");
+            eprintln!("  the worktree directory (`main` for the main checkout), as");
+            eprintln!("  docs/building.md describes:");
             eprintln!();
-            eprintln!("    CARGO_TARGET_DIR=$HOME/sunlit-target cargo ...");
+            eprintln!("    CARGO_TARGET_DIR=$HOME/sunlit-target-<worktree> cargo ...");
             eprintln!();
             eprintln!("  or hand this one over with `cargo clean`.");
             eprintln!();

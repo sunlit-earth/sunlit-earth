@@ -46,11 +46,11 @@ pub use self::windows::snapshot;
 /// image is resident: the decodes that build the textures, the transcoder's
 /// first packs, wgpu, the driver, and the process itself, none of which
 /// shrinks with the setting. Measured on the cube surface at 772 MiB on this
-/// machine's GPU without a cloud image, and at 829 MiB on WARP once the
-/// textures the budget counts below are taken off its 1140 MiB peak; rounded
-/// up. Not the peak itself, which is what the whole budget, this and the
-/// headroom and the resident textures, has to clear at every resolution
-/// (`docs/testing.md`).
+/// machine's GPU without a cloud image, and at 957 MiB on WARP once the
+/// textures the budget counts below at 8192, 183 MiB, are taken off its
+/// 1140 MiB peak; rounded up. Not the peak itself, which is what the whole
+/// budget, this and the headroom and the resident textures, has to clear at
+/// every resolution (`docs/testing.md`).
 const COLD_START_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Slack above a cold start before the budget is crossed.

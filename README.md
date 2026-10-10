@@ -31,8 +31,8 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 - 📸 Custom camera controls and presets let you choose your view of Earth.
 - 🌍 Sunlight and city lights reflect the current date and time, with automatic wallpaper updates throughout the day.
-- ⛅️ Recent satellite cloud imagery shows changing weather patterns on top of detailed NASA surface textures.
-- ❄️ The surface follows the seasons, with snow cover and vegetation from twelve months of NASA imagery.
+- ❄️ Detailed surface textures based on NASA imagery that change with the seasons.
+- ⛅️ Recent satellite cloud imagery shows changing weather patterns.
 - 🌌 The Sun, Moon, planets, visible stars, and Milky Way are rendered at their astronomically correct positions.
 - 🖥 Wallpapers fit your monitor layout, with support for mirrored views or continuous panoramas.
 - ⚙️ Everything is adjustable: camera position, lighting, atmospheric effects, apparent size and brightness of celestial objects, etc.

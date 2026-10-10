@@ -11,7 +11,7 @@ use tracing::{info, warn};
 /// One step from the version at its index in [`MIGRATIONS`] to the next.
 type Migration = fn(&mut Table, &mut ChangeLog);
 
-const MIGRATIONS: [Migration; 1] = [v0_to_v1];
+const MIGRATIONS: [Migration; 2] = [v0_to_v1, v1_to_v2];
 
 /// The version this build writes, and the one a file reaches after loading.
 #[expect(
@@ -33,6 +33,65 @@ fn v0_to_v1(earth: &mut Table, log: &mut ChangeLog) {
     override_value(earth, "sample_count", Value::Integer(2), log);
 }
 
+/// The defaults the cloud map's one floor and one gamma had before they became
+/// a land and an ocean value each.
+const OLD_CLOUD_FLOOR: f64 = 0.25;
+const OLD_CLOUD_GAMMA: f64 = 0.65;
+
+/// Haze removal, and the cloud floor and gamma split into land and ocean.
+///
+/// A file at both old defaults takes the new defaults, haze removal on, by
+/// losing the two keys. Any other file keeps its picture: its floor and gamma
+/// go to both surfaces and haze removal is off. A missing key counts as its
+/// old default.
+fn v1_to_v2(earth: &mut Table, log: &mut ChangeLog) {
+    let floor = earth.get("cloud_floor").cloned();
+    let gamma = earth.get("cloud_gamma").cloned();
+    let untouched = is_or_missing(floor.as_ref(), OLD_CLOUD_FLOOR)
+        && is_or_missing(gamma.as_ref(), OLD_CLOUD_GAMMA);
+    if !untouched {
+        let floor = floor.unwrap_or(Value::Float(OLD_CLOUD_FLOOR));
+        let gamma = gamma.unwrap_or(Value::Float(OLD_CLOUD_GAMMA));
+        for surface in ["land", "ocean"] {
+            override_value(earth, &format!("cloud_floor_{surface}"), floor.clone(), log);
+            override_value(earth, &format!("cloud_gamma_{surface}"), gamma.clone(), log);
+            override_value(
+                earth,
+                &format!("cloud_haze_{surface}"),
+                Value::Float(0.0),
+                log,
+            );
+        }
+    }
+    remove_key(earth, "cloud_floor", log);
+    remove_key(earth, "cloud_gamma", log);
+}
+
+/// Whether `value` is missing or reads as `default` once it is the `f32` the
+/// field was written from.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the field the value was written from is an f32"
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "a default written by this program reads back as exactly itself"
+)]
+fn is_or_missing(value: Option<&Value>, default: f64) -> bool {
+    match value {
+        None => true,
+        Some(Value::Float(float)) => *float as f32 == default as f32,
+        Some(_) => false,
+    }
+}
+
+/// Take `key` out of the file, when it is there.
+fn remove_key(earth: &mut Table, key: &str, log: &mut ChangeLog) {
+    if let Some(previous) = earth.remove(key) {
+        log.record(key, Some(previous), None);
+    }
+}
+
 /// One value a step replaced or inserted.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Change {
@@ -41,7 +100,8 @@ pub(super) struct Change {
     pub key: String,
     /// `None` when the file did not hold the key.
     pub from: Option<Value>,
-    pub to: Value,
+    /// `None` when the step removed the key.
+    pub to: Option<Value>,
 }
 
 /// Where the steps record what they change, stamped with the running step's
@@ -52,7 +112,7 @@ pub(super) struct ChangeLog<'a> {
 }
 
 impl ChangeLog<'_> {
-    fn record(&mut self, key: &str, from: Option<Value>, to: Value) {
+    fn record(&mut self, key: &str, from: Option<Value>, to: Option<Value>) {
         self.changes.push(Change {
             from_version: self.from_version,
             key: key.to_owned(),
@@ -72,7 +132,7 @@ impl ChangeLog<'_> {
 fn change_default(earth: &mut Table, key: &str, old: Value, new: Value, log: &mut ChangeLog) {
     if earth.get(key) == Some(&old) {
         earth.insert(key.to_owned(), new.clone());
-        log.record(key, Some(old), new);
+        log.record(key, Some(old), Some(new));
     }
 }
 
@@ -80,7 +140,7 @@ fn change_default(earth: &mut Table, key: &str, old: Value, new: Value, log: &mu
 fn override_value(earth: &mut Table, key: &str, new: Value, log: &mut ChangeLog) {
     let previous = earth.insert(key.to_owned(), new.clone());
     if previous.as_ref() != Some(&new) {
-        log.record(key, previous, new);
+        log.record(key, previous, Some(new));
     }
 }
 
@@ -130,16 +190,16 @@ impl Migrated {
             to = CONFIG_VERSION,
             "migrated the config file"
         );
+        let shown =
+            |value: Option<&Value>| value.map_or_else(|| "missing".to_owned(), ToString::to_string);
         for change in &self.changes {
-            let from = change
-                .from
-                .as_ref()
-                .map_or_else(|| "missing".to_owned(), ToString::to_string);
+            let from = shown(change.from.as_ref());
+            let to = shown(change.to.as_ref());
             info!(
                 step = change.from_version,
                 key = change.key,
                 from,
-                to = %change.to,
+                to,
                 "config value migrated"
             );
         }
@@ -244,7 +304,7 @@ mod tests {
                 from_version: 0,
                 key: "texture_resolution".to_owned(),
                 from: Some(Value::Integer(4096)),
-                to: Value::Integer(8192),
+                to: Some(Value::Integer(8192)),
             }]
         );
     }
@@ -288,7 +348,7 @@ mod tests {
                     from_version: 0,
                     key: "sample_count".to_owned(),
                     from,
-                    to: Value::Integer(2),
+                    to: Some(Value::Integer(2)),
                 }],
                 "{source}"
             );
@@ -300,6 +360,116 @@ mod tests {
         let mut table = earth("sample_count = 2");
         assert!(apply(override_to_2, &mut table).is_empty());
         assert_eq!(table, earth("sample_count = 2"));
+    }
+
+    // --- v1_to_v2 ---
+
+    const SPLIT_KEYS: [&str; 6] = [
+        "cloud_floor_land",
+        "cloud_gamma_land",
+        "cloud_haze_land",
+        "cloud_floor_ocean",
+        "cloud_gamma_ocean",
+        "cloud_haze_ocean",
+    ];
+
+    #[test]
+    fn the_old_cloud_defaults_go_and_leave_the_new_ones_to_serde() {
+        let mut table = earth("cloud_floor = 0.25\ncloud_gamma = 0.65\ncloud_opacity = 0.5\n");
+        let changes = apply(v1_to_v2, &mut table);
+        assert_eq!(table, earth("cloud_opacity = 0.5"));
+        assert_eq!(
+            changes,
+            [
+                Change {
+                    from_version: 0,
+                    key: "cloud_floor".to_owned(),
+                    from: Some(Value::Float(0.25)),
+                    to: None,
+                },
+                Change {
+                    from_version: 0,
+                    key: "cloud_gamma".to_owned(),
+                    from: Some(Value::Float(0.65)),
+                    to: None,
+                },
+            ]
+        );
+    }
+
+    /// The defaults as an `f32` field writes them, which is not the shortest
+    /// decimal of either.
+    #[test]
+    fn the_old_cloud_defaults_are_recognized_as_written_from_an_f32() {
+        let written = format!(
+            "cloud_floor = {}\ncloud_gamma = {}\n",
+            f64::from(OLD_CLOUD_FLOOR as f32),
+            f64::from(OLD_CLOUD_GAMMA as f32)
+        );
+        let mut table = earth(&written);
+        apply(v1_to_v2, &mut table);
+        assert!(table.is_empty(), "{written} left {table:?}");
+    }
+
+    #[test]
+    fn a_customized_cloud_floor_or_gamma_keeps_its_picture() {
+        for (source, floor, gamma) in [
+            ("cloud_floor = 0.4\ncloud_gamma = 1.2\n", 0.4, 1.2),
+            ("cloud_floor = 0.4\ncloud_gamma = 0.65\n", 0.4, 0.65),
+            ("cloud_floor = 0.25\ncloud_gamma = 1.2\n", 0.25, 1.2),
+            ("cloud_gamma = 1.2\n", 0.25, 1.2),
+            ("cloud_floor = 0.4\n", 0.4, 0.65),
+        ] {
+            let mut table = earth(source);
+            let changes = apply(v1_to_v2, &mut table);
+            assert!(!table.contains_key("cloud_floor"), "{source}");
+            assert!(!table.contains_key("cloud_gamma"), "{source}");
+            for surface in ["land", "ocean"] {
+                let float = |key: &str| table[&format!("{key}_{surface}")].as_float();
+                assert_eq!(float("cloud_floor"), Some(floor), "{source}");
+                assert_eq!(float("cloud_gamma"), Some(gamma), "{source}");
+                assert_eq!(float("cloud_haze"), Some(0.0), "{source}");
+            }
+            for key in SPLIT_KEYS {
+                assert!(
+                    changes.iter().any(|c| c.key == key && c.to.is_some()),
+                    "{source}: {key} is not in the log"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_without_either_cloud_key_is_left_alone() {
+        let mut table = earth("cloud_opacity = 0.5");
+        assert!(apply(v1_to_v2, &mut table).is_empty());
+        assert_eq!(table, earth("cloud_opacity = 0.5"));
+    }
+
+    #[test]
+    fn a_file_at_version_2_keeps_its_cloud_keys() {
+        let source = "version = 2\n[sunlit.earth]\ncloud_floor = 0.4\ncloud_haze_land = 0.3\n";
+        let mut doc = earth(source);
+        let migrated = migrate(&mut doc);
+        assert!(migrated.changes.iter().all(|c| c.from_version >= 2));
+        let earth = doc["sunlit"]["earth"].as_table().unwrap();
+        assert_eq!(earth["cloud_floor"].as_float(), Some(0.4));
+        assert_eq!(earth["cloud_haze_land"].as_float(), Some(0.3));
+    }
+
+    #[test]
+    fn a_file_at_version_1_runs_the_cloud_step() {
+        let mut doc = earth("version = 1\n[sunlit.earth]\ncloud_floor = 0.4\n");
+        let migrated = migrate(&mut doc);
+        assert_eq!(migrated.from_version, 1);
+        assert!(
+            migrated
+                .changes
+                .iter()
+                .all(|c| c.from_version == 1 && c.key.starts_with("cloud_"))
+        );
+        let earth = doc["sunlit"]["earth"].as_table().unwrap();
+        assert_eq!(earth["cloud_floor_land"].as_float(), Some(0.4));
     }
 
     // --- versions ---

@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::tiles;
+use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::camera::CameraParams;
 
-use crate::harness::{Harness, gpu, test_params};
+use crate::harness::{Harness, TIMEOUT, gpu, test_params};
 use crate::test_support::{self, ScratchDir};
 
 /// The Earth fixture's cut, as `cube.rs` and the golden suite have it.
@@ -142,4 +143,46 @@ fn the_shipped_atlas_is_resident_as_24_caps() {
         (512, 512, 24, 1)
     );
     assert_eq!(caps.format, wgpu::TextureFormat::R8Unorm);
+}
+
+/// A resolution switch while the atlas is being decoded leaves it alone: the
+/// setting does not govern the atlas, so the decode in flight is the one that
+/// lands, the export waiting for it gets the ice, and the textures become
+/// ready again.
+#[test]
+fn a_resolution_switch_during_the_atlas_decode_still_draws_the_ice() {
+    let _gpu = gpu();
+    let atlas = test_support::earth_fixture_dir().join("sea_ice.jxl");
+    let without = SceneParams {
+        sea_ice: false,
+        ..arctic()
+    };
+    let (_dir, harness) = engine_with("engine_sea_ice_switch", Some(atlas), without);
+    harness.settle();
+
+    // One batch: the export draws and so starts the decode, and the switch
+    // that follows it is handled before any tick could take the decode in.
+    let (reply, replies) = crossbeam_channel::bounded(1);
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(arctic())));
+    harness.engine.send(EngineCommand::ExportPixels {
+        width: FRAME.0,
+        height: FRAME.1,
+        reply,
+    });
+    harness.set_texture_resolution(2048);
+
+    replies
+        .recv_timeout(TIMEOUT)
+        .expect("the export should be answered")
+        .expect("the engine should be able to export");
+    harness.wait_for_textures("the atlas after the switch");
+    let off = harness.picture(&without, FRAME);
+    let on = harness.picture(&arctic(), FRAME);
+    assert!(
+        differing(&on, &off) > on.len() / 50,
+        "the Arctic in March shows hardly any ice after the switch: {} bytes differ",
+        differing(&on, &off)
+    );
 }

@@ -41,11 +41,11 @@ pub(super) fn process_decoded_textures(res: &mut super::Renderer) -> bool {
             // Deliberately nothing else. `loading` says a decode is on its way
             // to this slot, and a discarded post is never that decode: a post is
             // discarded only when the generation has moved on, which happens
-            // exactly in `set_texture_resolution`, which purges every
-            // file-backed slot in the same breath. So the flag was either
-            // cleared there or has since been set by the reload, and clearing it
-            // here would say a live load is not running, which puts a second
-            // decode of the same source in flight beside the first.
+            // exactly in `set_texture_resolution`, which purges every slot whose
+            // decodes carry a generation in the same breath. So the flag was
+            // either cleared there or has since been set by the reload, and
+            // clearing it here would say a live load is not running, which puts
+            // a second decode of the same source in flight beside the first.
             continue;
         }
         applied_any = true;
@@ -144,7 +144,7 @@ fn is_current(posted: Option<u64>, current: u64) -> bool {
     posted.is_none_or(|g| g == current)
 }
 
-/// Free the textures of every file-backed slot and let them reload.
+/// Free the textures of the slots the resolution governs and let them reload.
 ///
 /// This is what makes a switch to a lower resolution lower the Milky Way's
 /// memory: the bind groups that reference the old textures are cleared first,
@@ -152,9 +152,10 @@ fn is_current(posted: Option<u64>, current: u64) -> bool {
 /// reload allocates only after that. The same nil-before-recreate order as
 /// `gpu_setup::replace_render_textures`.
 ///
-/// A slot is file-backed when it has a source path, which is exactly the slots
-/// the resolution governs: the grid is procedural and the cloud overlay arrives
-/// from the fetcher.
+/// The slots purged are the ones the resolution governs: those with a source
+/// path, less the sea ice atlas, which is decoded at its own size whatever the
+/// setting and so posts without a generation. The grid is procedural and the
+/// cloud overlay arrives from the fetcher.
 ///
 /// `last_state` is cleared so the next frame is drawn rather than skipped as
 /// unchanged.
@@ -210,8 +211,8 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
     let mailbox = res.texture_mailbox.clone();
     let notify = std::sync::Arc::clone(&res.notify);
     let target_width = res.texture_resolution;
-    let generation = res.texture_generation;
     let atlas = Some(slot_index) == res.layout().sea_ice();
+    let generation = (!atlas).then_some(res.texture_generation);
 
     std::thread::spawn(move || {
         texture_loader::register_jxl_hook();
@@ -236,7 +237,7 @@ pub(super) fn maybe_spawn_texture_load(res: &mut super::Renderer, slot_index: us
         mailbox.post(DecodedTextureMessage {
             slot_index,
             result,
-            generation: Some(generation),
+            generation,
         });
         notify();
     });

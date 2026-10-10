@@ -17,7 +17,7 @@ pub struct DecodedTextureMessage {
     /// stamped with a generation the consumer no longer wants.
     ///
     /// `None` for a producer the resolution does not govern (the cloud
-    /// fetcher), whose posts are never stale.
+    /// fetcher, the sea ice atlas), whose posts are never stale.
     pub generation: Option<u64>,
 }
 

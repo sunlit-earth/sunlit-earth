@@ -61,7 +61,7 @@ Documents: Product User Manual v3.3 https://osisaf-hl.met.no/sites/osisaf-hl/fil
 
 Albedo figures, all [S] and to be checked before they are quoted: open water about 0.07; nilas about 0.15, young grey ice about 0.26, grey-white ice about 0.33; first-year ice without snow 0.41 to 0.54 and with snow roughly 0.7 to 0.9 (Brandt et al. 2005). On the Arctic drift of SHEBA the albedo fell from 0.8 to 0.9 in April to about 0.4 on average by late July, with bare ice at 0.6 to 0.7 and melt ponds, which covered up to 50 to 60% of the surface, down to about 0.1. Antarctic sea ice stays snow covered through the year, has few surface melt ponds and melts mostly from below and at its edges, so it does not darken in summer the way the Arctic does.
 
-Leads and polynyas are open or thinly frozen water inside the pack and look near black to dark grey-blue against it [U].
+Leads and polynyas are open or thinly frozen water inside the pack and look near black to dark gray-blue against it [U].
 
 ## 5. Techniques for a coarse field
 

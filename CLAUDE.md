@@ -11,7 +11,7 @@ Public beta, with breaking changes still expected. Every release ships Windows (
 | Question | Read |
 |---|---|
 | How the crates, the engine thread, `SceneParams`, the renderer and the app fit together | `docs/architecture.md` |
-| Shaders, draw order, the Sun, the Moon, the stars, the Milky Way, the clouds | `docs/rendering.md` |
+| Shaders, draw order, the Sun, the Moon, the stars, the Milky Way, the clouds, the sea ice | `docs/rendering.md` |
 | Test layers, conventions, golden images, the CI workflows | `docs/testing.md` |
 | What each OS does, the per-OS implementations, the Linux wallpaper setter, e2e gating | `docs/platforms.md` |
 | The icon bake and which surface consumes which raster | `docs/app-icon.md` |
@@ -149,7 +149,7 @@ docs/                 see the table above
 - Test behavior, not constants: changing a preset or a default must not break a test.
 - Float comparisons use `approx::assert_relative_eq!`. GPU tests assert invariants (monotonicity, bounds, visibility), not exact pixels.
 - Golden images run on the software adapter with per-adapter references under `tests/golden/<adapter>/`, listed in `GENERATED_ADAPTERS`; tolerance is a mean channel difference under 2/255 with at most 1% of pixels off by more than 24. A missing case fails; a companion test keeps every pair of references distinguishable.
-- A test that needs the real assets (the cube faces, the Moon, the Milky Way) checks that they are not LFS pointers (by size for the Moon and the Milky Way, by pointer prefix for the cube faces), and skips with a printed reason without them. Everything else uses generated fixtures.
+- A test that needs the real assets (the cube faces, the Moon, the Milky Way, the sea ice atlas) checks that they are not LFS pointers (by size for the Moon, the Milky Way and the atlas, by pointer prefix for the cube faces), and skips with a printed reason without them. Everything else uses generated fixtures.
 - The desktop e2e suite is `#[ignore]`d, not `cfg`-gated: it compiles on all three OSes and runs by hand, on the desktop or in a VM. Cases that need a tray, a wallpaper setter, or Win32 gate themselves at runtime and print why they skipped.
 - `the_docs_spell_out_every_flag_dist_takes` and its `bundle` twin in the xtask read the `cargo xtask dist [...]` line in this file and in `docs/vm-setup.md`, and the `cargo xtask bundle ...` line in this file; keep both complete usage lines.
 

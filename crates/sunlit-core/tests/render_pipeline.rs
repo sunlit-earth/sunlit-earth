@@ -1851,42 +1851,76 @@ fn fresnel_diffuse_shift_absent_at_night() {
 }
 
 // ---------------------------------------------------------------------------
-// Cloud pipeline tests
+// The shells over the globe
 // ---------------------------------------------------------------------------
 
-// A full pipeline set-up followed by its assertions; the parts are not
-// meaningful on their own.
-#[allow(clippy::too_many_lines)]
-#[test]
-fn cloud_pipeline_renders_with_alpha() {
-    let ctx = render_ctx();
-    let size = 64;
+/// Bits 3 and 4 of `Uniforms::flags`, as `render_pass.rs` names them: the
+/// shells lit as day, or as night, everywhere.
+const FLAG_UNIFORM_DAY: u32 = 8;
+const FLAG_UNIFORM_NIGHT: u32 = 16;
 
-    let pipeline_layout = ctx
+/// One of the four shells drawn over the globe, with the blend production
+/// gives it.
+#[derive(Clone, Copy, Debug)]
+enum Shell {
+    Cloud,
+    Rayleigh,
+    NightglowOrange,
+    NightglowGreen,
+}
+
+impl Shell {
+    fn entry_points(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Cloud => ("vs_cloud", "fs_cloud"),
+            Self::Rayleigh => ("vs_rayleigh", "fs_rayleigh"),
+            Self::NightglowOrange => ("vs_nightglow_orange", "fs_nightglow_orange"),
+            Self::NightglowGreen => ("vs_nightglow_green", "fs_nightglow_green"),
+        }
+    }
+
+    fn blend(self) -> wgpu::BlendState {
+        let over = |dst_factor| wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        };
+        match self {
+            Self::Cloud => wgpu::BlendState::ALPHA_BLENDING,
+            Self::Rayleigh => over(wgpu::BlendFactor::OneMinusSrcAlpha),
+            Self::NightglowOrange | Self::NightglowGreen => over(wgpu::BlendFactor::One),
+        }
+    }
+}
+
+fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
+    let (vs_entry, fs_entry) = shell.entry_points();
+    let layout = ctx
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("test_cloud_pipeline_layout"),
+            label: Some("test_shell_pipeline_layout"),
             bind_group_layouts: &[&ctx.bind_group_layout],
             immediate_size: 0,
         });
-
-    let cloud_pipeline = ctx
-        .device
+    ctx.device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("test_cloud_pipeline"),
-            layout: Some(&pipeline_layout),
+            label: Some("test_shell_pipeline"),
+            layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &ctx.shader,
-                entry_point: Some("vs_cloud"),
+                entry_point: Some(vs_entry),
                 buffers: &[Vertex::buffer_layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &ctx.shader,
-                entry_point: Some("fs_cloud"),
+                entry_point: Some(fs_entry),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(shell.blend()),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -1911,34 +1945,32 @@ fn cloud_pipeline_renders_with_alpha() {
             },
             multiview_mask: None,
             cache: None,
-        });
+        })
+}
 
+/// Draw `shell` alone over the clear color, with a solid white cloud map, and
+/// return the RGBA8 pixel data.
+fn render_shell(ctx: &RenderContext, shell: Shell, uniforms: &Uniforms, size: u32) -> Vec<u8> {
+    let pipeline = shell_pipeline(ctx, shell);
     let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
-
-    let uniforms = Uniforms {
-        terminator_width: 0.15,
-        cloud_opacity: 1.0,
-        ..default_test_uniforms(size)
-    };
-
-    ctx.queue
-        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-
     let dummy_cube = &ctx.dummy_cube;
     let bind_group = test_bind_group(
-        &ctx,
+        ctx,
         &cloud_tex,
         &ctx.sampler,
         [dummy_cube, dummy_cube, dummy_cube],
     );
+    ctx.queue
+        .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
 
+    let extent = wgpu::Extent3d {
+        width: size,
+        height: size,
+        depth_or_array_layers: 1,
+    };
     let render_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("test_cloud_render_target"),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
+        label: Some("test_shell_render_target"),
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -1946,14 +1978,9 @@ fn cloud_pipeline_renders_with_alpha() {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-
     let depth_texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("test_cloud_depth"),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
+        label: Some("test_shell_depth"),
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -1961,7 +1988,6 @@ fn cloud_pipeline_renders_with_alpha() {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
-
     let color_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -1970,7 +1996,7 @@ fn cloud_pipeline_renders_with_alpha() {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("test_cloud_pass"),
+            label: Some("test_shell_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &color_view,
                 depth_slice: None,
@@ -1990,8 +2016,7 @@ fn cloud_pipeline_renders_with_alpha() {
             }),
             ..Default::default()
         });
-
-        pass.set_pipeline(&cloud_pipeline);
+        pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
         pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1999,14 +2024,180 @@ fn cloud_pipeline_renders_with_alpha() {
     }
     ctx.queue.submit(std::iter::once(encoder.finish()));
 
-    let pixels = common::read_texture_rgba8(&ctx.device, &ctx.queue, &render_texture, size, size)
-        .expect("reading the render target back");
+    common::read_texture_rgba8(&ctx.device, &ctx.queue, &render_texture, size, size)
+        .expect("reading the render target back")
+}
+
+#[test]
+fn cloud_pipeline_renders_with_alpha() {
+    let ctx = render_ctx();
+    let size = 64;
+    let uniforms = Uniforms {
+        terminator_width: 0.15,
+        cloud_opacity: 1.0,
+        ..default_test_uniforms(size)
+    };
+
+    let pixels = render_shell(&ctx, Shell::Cloud, &uniforms, size);
     let visible = count_non_clear_pixels(&pixels);
 
     assert!(
         visible > 50,
         "Cloud pipeline should render visible pixels, got {visible}"
     );
+}
+
+/// The frame size of the shell lighting cases.
+const SHELL_SIZE: u32 = 128;
+
+/// Uniforms that put the whole globe in the frame, with every shell's
+/// strength up and its rim widened, so each shell draws a hemisphere's worth
+/// of pixels rather than a ring a pixel wide at the limb.
+fn shell_case_uniforms(sun_dir: [f32; 3], flags: u32) -> Uniforms {
+    let eye = glam::Vec3::new(0.0, 0.0, 8.0);
+    Uniforms {
+        mvp: test_mvp_with_eye(SHELL_SIZE, SHELL_SIZE, eye),
+        eye_pos: eye.into(),
+        sun_dir,
+        flags,
+        cloud_opacity: 1.0,
+        rayleigh_intensity: 1.0,
+        rayleigh_sharpness: 3.0,
+        nightglow_intensity: 1.0,
+        nightglow_falloff: 1.0,
+        nightglow_balance: 0.5,
+        ..default_test_uniforms(SHELL_SIZE)
+    }
+}
+
+/// Mean of the three color channels over the left half of the frame and over
+/// the right half. The camera looks down -z with +x to its right, so a Sun
+/// along +x lights the right half.
+#[allow(clippy::cast_precision_loss)]
+fn half_means(pixels: &[u8], size: u32) -> (f64, f64) {
+    let mut sums = [0u64; 2];
+    for (index, px) in pixels.chunks(4).enumerate() {
+        let x = u32::try_from(index).expect("a small frame") % size;
+        let half = usize::from(x >= size / 2);
+        sums[half] += u64::from(px[0]) + u64::from(px[1]) + u64::from(px[2]);
+    }
+    let count = f64::from(size / 2 * size * 3);
+    (sums[0] as f64 / count, sums[1] as f64 / count)
+}
+
+const SUN_RIGHT: [f32; 3] = [1.0, 0.0, 0.0];
+const SUN_LEFT: [f32; 3] = [-1.0, 0.0, 0.0];
+
+/// How each shell differs between the hemispheres under the Sun, and what it
+/// does in the two even modes.
+///
+/// In Day and Night the frame may not depend on where the Sun is at all, so
+/// moving it to the other side changes no pixel, and the two halves of the
+/// frame read alike. Under the Sun the same shell differs between the halves,
+/// which is what says the even modes changed something. Day then has to read
+/// nearer what the Sun gives the day half than what it gives the night half,
+/// and Night the reverse. Not equal to it: the Sun's halves average a ramp
+/// across the terminator, and the green nightglow is brightest at midnight,
+/// which Night puts everywhere.
+#[test]
+fn the_even_modes_light_every_shell_the_same_on_both_hemispheres() {
+    let ctx = render_ctx();
+    for shell in [
+        Shell::Cloud,
+        Shell::Rayleigh,
+        Shell::NightglowOrange,
+        Shell::NightglowGreen,
+    ] {
+        let render = |sun_dir, flags| {
+            render_shell(
+                &ctx,
+                shell,
+                &shell_case_uniforms(sun_dir, flags),
+                SHELL_SIZE,
+            )
+        };
+
+        let (night_half, day_half) = half_means(&render(SUN_RIGHT, 0), SHELL_SIZE);
+        let contrast = (day_half - night_half).abs();
+        println!(
+            "{shell:?} under the Sun: {night_half:.2} on the night half, {day_half:.2} on the day half"
+        );
+        assert!(
+            contrast > 2.0,
+            "{shell:?} reads {night_half:.2} on the night half and {day_half:.2} on the day \
+             half under the Sun, so this case cannot tell the even modes from it"
+        );
+
+        let mut even = Vec::new();
+        for (flags, mode) in [(FLAG_UNIFORM_DAY, "Day"), (FLAG_UNIFORM_NIGHT, "Night")] {
+            let frame = render(SUN_RIGHT, flags);
+            assert!(
+                frame == render(SUN_LEFT, flags),
+                "{shell:?} in {mode} changes when the Sun moves to the other side"
+            );
+            let (left, right) = half_means(&frame, SHELL_SIZE);
+            println!("{shell:?} in {mode}: {left:.2} on the left half, {right:.2} on the right");
+            assert!(
+                (left - right).abs() < contrast * 0.05,
+                "{shell:?} in {mode} reads {left:.2} on one half and {right:.2} on the other"
+            );
+            even.push(left);
+        }
+
+        let (day, night) = (even[0], even[1]);
+        assert!(
+            (day - day_half).abs() < (day - night_half).abs(),
+            "{shell:?} in Day reads {day:.2} on each half, nearer the {night_half:.2} the \
+             Sun gives the night half than the {day_half:.2} it gives the day half"
+        );
+        assert!(
+            (night - night_half).abs() < (night - day_half).abs(),
+            "{shell:?} in Night reads {night:.2} on each half, nearer the {day_half:.2} the \
+             Sun gives the day half than the {night_half:.2} it gives the night half"
+        );
+    }
+}
+
+/// The Rayleigh shell's forward-scattering lobe is a terminator effect, so
+/// neither even mode draws it, even where the Sun lighting would.
+///
+/// The lobe's gate reads the Sun's world direction and its angle reads the
+/// Sun's view direction, two uniforms a case can set apart: lighting the
+/// whole front of the shell opens the gate over all of it, and a view
+/// direction straight ahead puts the lobe's peak in the middle of the frame.
+/// Day lights every point as noon, which the gate alone would let through.
+#[test]
+fn the_even_modes_draw_no_sunrise_lobe() {
+    let ctx = render_ctx();
+    let render = |flags, glow| {
+        let uniforms = Uniforms {
+            sun_view_dir: [0.0, 0.0, -1.0],
+            atmo_sunrise_glow: glow,
+            ..shell_case_uniforms([0.0, 0.0, 1.0], flags)
+        };
+        render_shell(&ctx, Shell::Rayleigh, &uniforms, SHELL_SIZE)
+    };
+
+    let changed = |flags| {
+        let without = render(flags, 0.0);
+        let with = render(flags, 4.0);
+        without
+            .iter()
+            .zip(&with)
+            .filter(|(a, b)| a.abs_diff(**b) > 2)
+            .count()
+    };
+
+    let under_the_sun = changed(0);
+    assert!(
+        under_the_sun > 100,
+        "the lobe changes only {under_the_sun} channel values under the Sun, so this \
+         camera does not show it"
+    );
+    for (flags, mode) in [(FLAG_UNIFORM_DAY, "Day"), (FLAG_UNIFORM_NIGHT, "Night")] {
+        let lobe = changed(flags);
+        assert_eq!(lobe, 0, "{mode} draws the lobe into {lobe} channel values");
+    }
 }
 
 // ---------------------------------------------------------------------------

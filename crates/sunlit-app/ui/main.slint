@@ -434,8 +434,8 @@ export component MainWindow inherits Window {
                                 spacing: 4px;
 
                                 SettingCombo {
-                                    label: "Texture";
-                                    hint: "Which map the globe is drawn from: the procedural grid, one of the two surface maps alone, or the day/night blend.";
+                                    label: "Surface";
+                                    hint: "What the globe shows: the procedural grid under the real Sun, the day map lit everywhere, the night map everywhere, or the two blended across the terminator by the Sun's position.";
                                     model: texture-options;
                                     current-index <=> root.texture-index;
                                     selected => { root.texture-changed(); }

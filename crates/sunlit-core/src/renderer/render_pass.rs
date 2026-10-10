@@ -10,6 +10,7 @@ use crate::scene::sky::SkyState;
 use crate::scene::sun_occlusion;
 
 use super::Renderer;
+use super::slots::TextureMode;
 use super::uniforms::Uniforms;
 
 /// The per-frame values that are not part of `SceneParams`: astronomy derived
@@ -38,6 +39,29 @@ pub(super) struct TileUniforms {
 const FLAG_DIFFUSE: u32 = 1;
 /// Bit 2 of `Uniforms::flags`: the cube drawn alone is the night floor.
 const FLAG_NIGHT_ALONE: u32 = 4;
+/// Bit 3 of `Uniforms::flags`: the shells are lit as day everywhere.
+const FLAG_UNIFORM_DAY: u32 = 8;
+/// Bit 4 of `Uniforms::flags`: the shells are lit as night everywhere.
+const FLAG_UNIFORM_NIGHT: u32 = 16;
+
+/// The flag bits that light the shells over the globe for the surface mode
+/// the user selected.
+///
+/// Day and Night show one map lit evenly, so the clouds, the Rayleigh shell
+/// and the nightglow are lit the same way everywhere. The grid keeps the
+/// shells under the real Sun, which is what makes it a check of where the Sun
+/// is, and the blend has a real terminator.
+///
+/// This reads the selection rather than the bind group the routing resolved,
+/// which can fall back to another surface while cubes load: a mode switch
+/// reaches the shells at once and the surface catches up when it arrives.
+fn shell_lighting_flags(mode: TextureMode) -> u32 {
+    match mode {
+        TextureMode::Day => FLAG_UNIFORM_DAY,
+        TextureMode::Night => FLAG_UNIFORM_NIGHT,
+        TextureMode::Grid | TextureMode::Blend => 0,
+    }
+}
 
 /// Texture views to render into. Decouples render pass encoding from
 /// which textures are used (preview vs export).
@@ -160,7 +184,7 @@ pub(super) fn write_uniforms<'a>(
             FLAG_NIGHT_ALONE
         } else {
             0
-        },
+        } | shell_lighting_flags(TextureMode::from_index(params.texture_index)),
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,
@@ -715,4 +739,33 @@ pub(super) fn read_texture_rgba8_into(
     readback.unmap();
 
     Ok(pixels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_day_and_night_take_the_shells_off_the_sun() {
+        assert_eq!(shell_lighting_flags(TextureMode::Grid), 0);
+        assert_eq!(shell_lighting_flags(TextureMode::Blend), 0);
+
+        let day = shell_lighting_flags(TextureMode::Day);
+        let night = shell_lighting_flags(TextureMode::Night);
+        assert_ne!(day, 0, "Day lights the shells evenly");
+        assert_ne!(night, 0, "Night lights the shells evenly");
+        assert_eq!(day & night, 0, "Day and Night are told apart");
+        assert_eq!(
+            (day | night) & (FLAG_DIFFUSE | FLAG_NIGHT_ALONE),
+            0,
+            "the shells' lighting shares no bit with the surface's flags"
+        );
+    }
+
+    #[test]
+    fn a_mode_index_nothing_names_keeps_the_shells_under_the_sun() {
+        for index in [-1, 4, i32::MAX] {
+            assert_eq!(shell_lighting_flags(TextureMode::from_index(index)), 0);
+        }
+    }
 }

@@ -197,16 +197,7 @@ pub(super) fn spawn_cloud_worker(
                     // attempt asks for rather than wait its turn.
                     updater.set_resolution(worker_target.load(Ordering::SeqCst));
                     let outcome = updater.poll_once();
-                    if outcome != PollOutcome::Abandoned
-                        && worker_answer.load(Ordering::SeqCst) == FirstAnswer::Pending as u8
-                    {
-                        let answer = if updater.has_posted() {
-                            FirstAnswer::Posted
-                        } else {
-                            FirstAnswer::Unavailable
-                        };
-                        worker_answer.store(answer as u8, Ordering::SeqCst);
-                    }
+                    record_first_answer(&worker_answer, outcome, updater.has_posted());
                     match outcome {
                         PollOutcome::Updated => {
                             debug!("cloud frame updated");
@@ -270,4 +261,21 @@ fn rest_while_enabled(delay: Duration, enabled: &AtomicBool) {
         }
         std::thread::sleep(left.min(REST_SLICE));
     }
+}
+
+/// Record what the worker's first finished attempt came to, once: a map on its
+/// way if one has been posted, and nothing to show otherwise. A download
+/// dropped because the layer went off is no answer.
+fn record_first_answer(answer: &AtomicU8, outcome: PollOutcome, posted: bool) {
+    if outcome == PollOutcome::Abandoned
+        || answer.load(Ordering::SeqCst) != FirstAnswer::Pending as u8
+    {
+        return;
+    }
+    let first = if posted {
+        FirstAnswer::Posted
+    } else {
+        FirstAnswer::Unavailable
+    };
+    answer.store(first as u8, Ordering::SeqCst);
 }

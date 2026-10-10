@@ -183,11 +183,27 @@ fn adopt_device_paths(monitors: &mut [crate::display::Monitor]) {
             return;
         }
     };
+    let placed = paths
+        .into_iter()
+        .filter_map(|path| api.monitor_rect(&path).ok().map(|rect| (path, rect)));
+    assign_device_paths(monitors, placed);
+}
+
+/// Give each monitor the device path whose rectangle is its own.
+///
+/// An empty path is skipped. The shell can list one carrying a monitor's
+/// rectangle beside that monitor's real path, whose own rectangle it then
+/// cannot read, and an empty id addresses nothing, so the monitor keeps its
+/// display device name instead.
+fn assign_device_paths(
+    monitors: &mut [crate::display::Monitor],
+    placed: impl IntoIterator<Item = (String, (i32, i32, i32, i32))>,
+) {
     let mut claimed = vec![false; monitors.len()];
-    for path in paths {
-        let Ok((left, top, right, bottom)) = api.monitor_rect(&path) else {
+    for (path, (left, top, right, bottom)) in placed {
+        if path.is_empty() {
             continue;
-        };
+        }
         let matched = monitors.iter().enumerate().position(|(index, monitor)| {
             !claimed[index]
                 && monitor.x == left
@@ -522,6 +538,45 @@ mod tests {
         assert!(
             set_wallpaper(&empty_file).is_err(),
             "an empty file is not a wallpaper"
+        );
+    }
+
+    fn monitor(device: &str, x: i32, width: u32) -> crate::display::Monitor {
+        crate::display::Monitor {
+            id: device.to_owned(),
+            label: display_label(device, 0),
+            x,
+            y: 0,
+            width,
+            height: 1440,
+            primary: x == 0,
+        }
+    }
+
+    #[test]
+    fn each_monitor_takes_the_device_path_with_its_rectangle() {
+        let mut monitors = [
+            monitor(r"\\.\DISPLAY1", 0, 3440),
+            monitor(r"\\.\DISPLAY2", 3440, 2560),
+        ];
+        assign_device_paths(
+            &mut monitors,
+            [
+                (r"\\?\DISPLAY#B".to_owned(), (3440, 0, 6000, 1440)),
+                (r"\\?\DISPLAY#A".to_owned(), (0, 0, 3440, 1440)),
+            ],
+        );
+        assert_eq!(monitors[0].id, r"\\?\DISPLAY#A");
+        assert_eq!(monitors[1].id, r"\\?\DISPLAY#B");
+    }
+
+    #[test]
+    fn an_empty_device_path_is_not_taken() {
+        let mut monitors = [monitor(r"\\.\DISPLAY1", 0, 3440)];
+        assign_device_paths(&mut monitors, [(String::new(), (0, 0, 3440, 1440))]);
+        assert_eq!(
+            monitors[0].id, r"\\.\DISPLAY1",
+            "an empty path addresses nothing, so the display device name stays"
         );
     }
 }

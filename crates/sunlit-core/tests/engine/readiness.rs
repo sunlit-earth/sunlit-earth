@@ -524,6 +524,40 @@ fn the_tile_wait_starts_over_when_the_month_in_force_changes() {
     assert!(rig.harness.wait_for_publish().is_ok());
 }
 
+/// The tile wait starts over when the resolution setting changes: the purge
+/// lets go of every tile, so the tiles the publish waits for are read from
+/// the start, and a wait counted from before it would publish from the floor
+/// and make the wallpaper again when they land.
+#[test]
+fn the_tile_wait_starts_over_when_the_resolution_changes() {
+    let _gpu = gpu();
+    let rig = rig("engine_ready_new_resolution", view(), build_every_pack);
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    ask_with_the_gate_shut(&rig, &before);
+    rig.harness
+        .advance(&rig.clock, TILE_WAIT.saturating_sub(Duration::from_secs(1)));
+    rig.harness.settle();
+    assert!(rig.sink.publications().is_empty());
+
+    rig.harness.set_texture_resolution(4096);
+    rig.harness.settle();
+    rig.harness.advance(
+        &rig.clock,
+        TILE_WAIT.saturating_sub(Duration::from_millis(1)),
+    );
+    rig.harness.settle();
+    assert!(
+        rig.sink.publications().is_empty(),
+        "the wallpaper went out before the wait from the purge was over"
+    );
+    rig.harness.advance(&rig.clock, Duration::from_millis(1));
+    assert!(rig.harness.wait_for_publish().is_ok());
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+}
+
 /// The live clock crossing into the next month while a publish waits for its
 /// tiles asks for the new month's tiles at once, though no draw follows: the
 /// publish is what sees the change, and it returns without drawing while it

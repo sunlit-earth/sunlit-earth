@@ -488,6 +488,7 @@ impl Engine {
             // asks for the tiles the new one allows.
             if let Some(surface) = &mut self.surface {
                 surface.purge_tiles(&mut self.renderer);
+                self.restart_export_waits();
             }
             // The textures the current mode needs are gone until the
             // reload lands, so the readiness latch has to reopen or

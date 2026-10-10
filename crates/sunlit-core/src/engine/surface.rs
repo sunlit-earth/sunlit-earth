@@ -70,8 +70,8 @@ pub(super) struct SurfaceFeed {
     /// resident in, one a tick while it is idle.
     landed: Vec<usize>,
     /// Counts the times the tiles of the month in force or of the night
-    /// could newly be read: the month in force changed, or its pack or the
-    /// night's was opened.
+    /// could newly be read: the month in force changed, its pack or the
+    /// night's was opened, or the tile array was purged.
     renewals: u64,
     /// Since when, on the injected clock, tiles in view have been on their
     /// way without a break.
@@ -297,8 +297,9 @@ impl SurfaceFeed {
     }
 
     /// How many times the tiles of the month in force or of the night could
-    /// newly be read: a change of the month in force, or its pack or the
-    /// night's opened. A publish's tile wait starts over on each.
+    /// newly be read: a change of the month in force, its pack or the
+    /// night's opened, or a purge of the tile array. A publish's tile wait
+    /// starts over on each.
     pub(super) fn renewals(&self) -> u64 {
         self.renewals
     }
@@ -309,9 +310,11 @@ impl SurfaceFeed {
         self.tiles.complete(renderer)
     }
 
-    /// Let go of every tile, for a change of the resolution setting.
+    /// Let go of every tile, for a change of the resolution setting, which
+    /// starts a publish's tile wait over.
     pub(super) fn purge_tiles(&mut self, renderer: &mut Renderer) {
         self.tiles.purge(renderer);
+        self.renewals += 1;
     }
 
     pub(super) fn tile_report(&self, renderer: &Renderer) -> TileReport {

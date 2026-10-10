@@ -58,7 +58,8 @@ pub(super) enum ExportReply {
 pub(super) struct WaitingExport {
     pub width: u32,
     pub height: u32,
-    /// When it was asked for, on the injected clock.
+    /// When it was asked for, or when the tile array was last purged, on the
+    /// injected clock.
     since: Duration,
     reply: ExportReply,
 }
@@ -179,8 +180,8 @@ impl Engine {
     /// Whether the wallpaper owed has waited [`TILE_WAIT`] for its tiles by
     /// `now`. The wait starts the first time this asks with the cubes
     /// resident, and starts over when the tiles it waits for could newly be
-    /// read since: the month in force changed, or its pack or the night's was
-    /// opened (plan departures 30 and 31).
+    /// read since: the month in force changed, its pack or the night's was
+    /// opened, or the tile array was purged (plan departures 30 and 31).
     fn tiles_waited_out(&mut self, now: Duration) -> bool {
         let opened = self
             .surface
@@ -462,6 +463,15 @@ impl Engine {
         }
         self.exports.push(export);
         self.settle_exports();
+    }
+
+    /// Start the tile wait of every waiting export over, for a purge of the
+    /// tile array that let go of whatever of their tiles had landed.
+    pub(super) fn restart_export_waits(&mut self) {
+        let now = self.clock.elapsed();
+        for export in &mut self.exports {
+            export.since = now;
+        }
     }
 
     /// Answer every waiting export whose own tiles are resident, or that has

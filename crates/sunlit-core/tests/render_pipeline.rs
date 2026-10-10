@@ -4533,7 +4533,7 @@ fn scattered_points(count: usize) -> Vec<[f32; 2]> {
         .collect()
 }
 
-/// Criterion 4: where the floes are resolved, the share drawn is the
+/// Where the floes are resolved, the share drawn is the
 /// remapped concentration, and nothing at or below the products' 15% is ice
 /// at any pixel size.
 #[test]
@@ -4566,7 +4566,7 @@ fn resolved_floes_cover_the_concentration() {
     }
 }
 
-/// Criterion 5: where nothing is resolved the edge of the pack is a line: a
+/// Where nothing is resolved the edge of the pack is a line: a
 /// ramp of the concentration goes from open water to ice within two pixels.
 #[test]
 fn the_far_edge_is_a_line_two_pixels_wide() {
@@ -4600,7 +4600,7 @@ fn the_far_edge_is_a_line_two_pixels_wide() {
 /// with a step between every two months.
 const MONTHLY_RAW: [u8; 12] = [250, 255, 250, 200, 140, 90, 50, 30, 60, 120, 190, 230];
 
-/// Criterion 3: the ice of a fixed patch moves with the date without a jump.
+/// The ice of a fixed patch moves with the date without a jump.
 /// No day's coverage is further from the day before's than the steepest change
 /// between two neighboring monthly means, per day of the shortest span between
 /// two anchors, and a tolerance.
@@ -4661,15 +4661,16 @@ fn the_ice_moves_continuously_with_the_date() {
     }
 }
 
-/// An eye above the north pole looking down at it, the Sun behind the eye.
-fn polar_uniforms(size: u32) -> Uniforms {
-    let eye = glam::Vec3::new(0.0, 3.5, 0.0);
+/// An eye above a pole looking down at it, the Sun behind the eye: the north
+/// pole for a `pole` of 1 and the south pole for -1.
+fn polar_uniforms(size: u32, pole: f32) -> Uniforms {
+    let eye = glam::Vec3::new(0.0, 3.5 * pole, 0.0);
     let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Z);
     let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
     Uniforms {
         mvp: (proj * view).to_cols_array(),
         eye_pos: eye.into(),
-        sun_dir: [0.0, 1.0, 0.0],
+        sun_dir: [0.0, pole, 0.0],
         terminator_width: 0.1,
         flags: 1,
         spec_intensity: 2.0,
@@ -4683,7 +4684,7 @@ fn polar_uniforms(size: u32) -> Uniforms {
     }
 }
 
-/// The pole from above, over a sea whose mask is `water` everywhere, with the
+/// A pole from above, over a sea whose mask is `water` everywhere, with the
 /// caps `caps`.
 fn render_polar(
     ctx: &RenderContext,
@@ -4714,19 +4715,22 @@ fn render_polar(
     render_with(ctx, uniforms, &group, 64, 64)
 }
 
-/// Criterion 2: the ice changes nothing over land, in blend mode and with the
-/// day drawn alone, and with the setting off the caps do not reach the frame.
+/// The ice changes nothing over land at either pole, in blend mode and with
+/// the day drawn alone, and with the setting off the caps do not reach the
+/// frame.
 #[test]
 fn ice_leaves_land_and_a_switched_off_frame_alone() {
     let ctx = render_ctx();
     let full = create_sea_ice(&ctx.device, &ctx.queue, 8, |_, _, _| 255);
-    let blend = polar_uniforms(64);
-    let day_alone = Uniforms {
-        terminator_width: -1.0,
-        flags: 0,
-        ..blend
-    };
-    for off in [blend, day_alone] {
+    for off in [1.0, -1.0].into_iter().flat_map(|pole| {
+        let blend = polar_uniforms(64, pole);
+        let day_alone = Uniforms {
+            terminator_width: -1.0,
+            flags: 0,
+            ..blend
+        };
+        [blend, day_alone]
+    }) {
         let on = Uniforms {
             flags: off.flags | FLAG_SEA_ICE,
             ..off
@@ -4752,7 +4756,7 @@ fn ice_leaves_land_and_a_switched_off_frame_alone() {
     }
 }
 
-/// Criterion 6: with the Sun's reflection on a fully covered sea, the frame is
+/// With the Sun's reflection on a fully covered sea, the frame is
 /// the diffusely lit ice alone: neither the glint nor the Fresnel term reach
 /// it.
 #[test]
@@ -4761,7 +4765,7 @@ fn covered_sea_has_no_glint() {
     let full = create_sea_ice(&ctx.device, &ctx.queue, 8, |_, _, _| 255);
     let shiny = Uniforms {
         flags: 1 | FLAG_SEA_ICE,
-        ..polar_uniforms(64)
+        ..polar_uniforms(64, 1.0)
     };
     let matte = Uniforms {
         spec_intensity: 0.0,

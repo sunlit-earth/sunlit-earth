@@ -99,7 +99,7 @@ pub(crate) fn ice_blend_at(at: &CivilTime) -> IceBlend {
 /// and saturation the day surface gets: the north's and the south's.
 ///
 /// A look, chosen by eye against true-color images of each month
-/// (`docs/rendering.md`). The Arctic's goes toward a blue grey in summer, for
+/// (`docs/rendering.md`). The Arctic's goes toward a blue gray in summer, for
 /// melt ponds and bare ice; the Antarctic's stays snow covered and hardly
 /// changes.
 const ICE_COLORS: [[[u8; 3]; 12]; 2] = [
@@ -211,7 +211,7 @@ mod tests {
     /// The first instant of a month is past the previous anchor by half the
     /// previous month, of a span of half of each.
     #[test]
-    fn the_first_of_a_month_is_between_its_neighbours_anchors() {
+    fn the_first_of_a_month_is_between_its_neighbors_anchors() {
         let blend = ice_blend_at(&at(2025, 3, 1, 0));
         assert_eq!((blend.month_a, blend.month_b), (1, 2));
         assert_relative_eq!(blend.weight, 14.0 / (14.0 + 15.5), epsilon = 1e-6);

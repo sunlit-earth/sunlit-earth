@@ -2,6 +2,11 @@
 
 Notable changes to Sunlit Earth, for people who use it. The GitHub release pages list every merged pull request.
 
+## [0.3.0] - 2026-10-10
+
+- Seasonal textures: the Earth's surface changes each month, from NASA's Blue Marble Next Generation, with sharper detail and no distortion at the poles. ([#69](https://github.com/sunlit-earth/sunlit-earth/pull/69))
+- Lower memory use: Lots of optimizations in the way textures are handled; sunlit earth needs less RAM but delivers the same image quality. ([#69](https://github.com/sunlit-earth/sunlit-earth/pull/69), [#70](https://github.com/sunlit-earth/sunlit-earth/pull/70))
+
 ## [0.2.2] - 2026-09-29
 
 - Bugfix for an issue in Slint 1.18 that prevents users from scrolling to the end of the page in the About window. ([#67](https://github.com/sunlit-earth/sunlit-earth/pull/67))
@@ -23,6 +28,7 @@ Notable changes to Sunlit Earth, for people who use it. The GitHub release pages
 
 - First public release, for Windows and Linux.
 
+[0.3.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.3.0
 [0.2.2]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.2
 [0.2.1]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.0

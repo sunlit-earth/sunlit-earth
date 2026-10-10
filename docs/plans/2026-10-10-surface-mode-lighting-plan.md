@@ -80,6 +80,6 @@ Numbered, with reasoning, appended here as they happen.
 
 ## Validation rounds
 
-Recorded here by the orchestrator.
+Round 1, over 752a902..f41018a: no MAJOR and no MINOR findings. The validator reran the gates and confirmed that five temporary mutations each fail a new test: the flags dropped from `write_uniforms`, the lobe gate removed, the green nightglow put back on `dot(n, sun_dir)`, the signs in `shell_n_dot_l` swapped, and Blend mapped to the uniform day bit. One observation, not a finding: no test pins decision 1 directly (a uniform mode selected while its floor is still loading); the single call site and the unit test over `shell_lighting_flags` hold it structurally.
 
 ## Open items

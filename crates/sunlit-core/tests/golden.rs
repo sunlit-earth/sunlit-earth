@@ -147,6 +147,7 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     config.texture_paths = vec![
         Some(support::write_moon_fixture(tmp)),
         Some(support::write_panorama_bands_fixture(tmp)),
+        Some(test_support::earth_fixture_dir().join("sea_ice.jxl")),
     ];
     // The cloud slot comes from the fetcher rather than from a path, so without
     // a source no case here could draw a cloud pixel at all; `base_params`
@@ -849,6 +850,39 @@ fn golden_africa_on_the_z_face() {
     check_golden("africa_on_the_z_face", &params);
 }
 
+/// The Arctic from above in `day_of_year` of 2026, the day floor alone, over
+/// the Earth fixture's cube and its 64 px sea ice atlas.
+fn arctic_params(day_of_year: u16) -> SceneParams {
+    let base = base_params();
+    let mut params = SceneParams {
+        texture_index: DAY_MODE,
+        camera: CameraParams {
+            longitude: -30.0,
+            latitude: 75.0,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        ..base
+    };
+    params.datetime.custom_day_of_year = day_of_year;
+    params
+}
+
+/// The sea ice at its largest: the pack reaches Labrador, the Barents Sea and
+/// the Sea of Okhotsk, with a hard edge at the golden's size.
+#[test]
+fn golden_arctic_in_march() {
+    check_golden("arctic_in_march", &arctic_params(74));
+}
+
+/// The sea ice at its smallest, the central pack alone, in its grayer summer
+/// color.
+#[test]
+fn golden_arctic_in_september() {
+    check_golden("arctic_in_september", &arctic_params(258));
+}
+
 /// The framing the two cloud cases share: the terminator down the middle of the
 /// frame, at the instant every case here renders.
 ///
@@ -997,6 +1031,8 @@ fn every_golden_case_is_distinguishable() {
         "panorama_at_a_narrow_sky",
         "panorama_at_a_wide_sky",
         "africa_on_the_z_face",
+        "arctic_in_march",
+        "arctic_in_september",
         "clouds_across_the_terminator",
         "cloud_terminator_close_up",
     ];

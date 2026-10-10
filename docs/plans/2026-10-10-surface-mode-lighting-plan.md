@@ -76,6 +76,8 @@ The orchestrator dispatches `ci.yml` with `os: all` on the branch at wrap-up, wh
 
 Numbered, with reasoning, appended here as they happen.
 
+1. `tests/engine/clouds.rs` had `a_dayside_cloud_is_brighter_than_a_night_side_one_in_every_mode`, which walked Grid, Day and Night and asserted that the deck reads brighter at noon than at midnight in each. That is the old behavior in Day and Night, as the Tests section anticipated. It now covers Grid alone, as `a_dayside_cloud_is_brighter_than_a_night_side_one_over_the_grid`, which keeps what it was written for: the grid carries the `terminator_width` sentinel and keeps the Sun-driven shells, so it still proves `fs_cloud` does not read the sentinel. Blend was not added, since its ground changes between the two hours and would confound the reading. Day and Night moved to the new case `day_and_night_light_the_clouds_evenly`.
+
 ## Validation rounds
 
 Recorded here by the orchestrator.

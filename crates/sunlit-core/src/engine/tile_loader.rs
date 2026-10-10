@@ -818,8 +818,10 @@ impl TileLoader {
     }
 
     /// Take results under what is left of the tick's byte budget and upload
-    /// them, evicting where a layer is needed. Returns whether a tile was
-    /// uploaded or failed, either of which can complete the set.
+    /// them, evicting where a layer is needed. Returns whether a tile the
+    /// frame can draw was uploaded or failed, either of which can complete
+    /// the set; the month ahead's tiles are drawn only once their month is in
+    /// force, so they change nothing drawn now and ask for no frame.
     ///
     /// What is queued is taken at once, and while a worker is still reading,
     /// the drain waits for it until the budget is spent, at the most until
@@ -844,8 +846,7 @@ impl TileLoader {
             .tick
             .deadline
             .get_or_insert_with(|| Instant::now() + wait);
-        let failures = self.failed.len();
-        let (mut received, mut uploads) = (0_u64, Vec::new());
+        let (mut received, mut uploads, mut failed_drawn) = (0_u64, Vec::new(), false);
         while self.tick.bytes < self.budget {
             let loaded = match results.try_recv() {
                 Ok(loaded) => loaded,
@@ -869,6 +870,7 @@ impl TileLoader {
                 }
                 Admit::Fail(reason) => {
                     warn!(tile = ?loaded.id, %reason, "a tile could not be read; it is drawn from its ancestor");
+                    failed_drawn |= self.drawn_now(loaded.id);
                     self.failed.insert(loaded.id);
                 }
                 Admit::Drop(why) => {
@@ -886,7 +888,16 @@ impl TileLoader {
         if more {
             (self.wake)();
         }
-        uploaded || self.failed.len() > failures
+        uploaded || failed_drawn
+    }
+
+    /// Whether `id` is a tile the frame draws from while the set in force
+    /// holds: any but the month ahead's.
+    fn drawn_now(&self, id: TileId) -> bool {
+        match (id.pack, &self.inputs) {
+            (PackKind::Day(month), Some(inputs)) => month == inputs.month,
+            _ => true,
+        }
     }
 
     /// Whether a result goes to the GPU, fails its tile, or is dropped.
@@ -911,7 +922,7 @@ impl TileLoader {
 
     /// Evict as many tiles outside the set as `uploads` needs layers beyond
     /// the free ones, the one wanted longest ago first, and upload. Returns
-    /// whether a tile was uploaded.
+    /// whether a tile the frame draws from was uploaded or failed.
     fn upload(&mut self, mut uploads: Vec<TileUpload>, target: &mut impl TileTarget) -> bool {
         if uploads.is_empty() {
             return false;
@@ -955,7 +966,7 @@ impl TileLoader {
             evicted = victims.len(),
             "tiles made resident"
         );
-        ids.len() > failed.len()
+        ids.iter().any(|&id| self.drawn_now(id))
     }
 
     /// Let go of every tile in the array, and of every read on its way: the
@@ -1644,6 +1655,48 @@ mod tests {
         let report = loader.report(&stand);
         assert_eq!(report.wanted, tiles[..2]);
         assert_eq!(report.beyond, 1, "one of the month in force's, none ahead");
+    }
+
+    /// The month ahead's tiles change nothing drawn until their month is in
+    /// force, so landing them asks for no frame; the month in force's do.
+    #[test]
+    fn only_the_tiles_the_frame_draws_from_ask_for_a_frame_when_they_land() {
+        let dir = ScratchDir::new("tile_loader_ahead_draws_nothing");
+        let pack = day_pack(&dir);
+        let tiles = stored(&pack);
+        let mut loader = loader(1, &pack);
+        let mut stand = Stand::new(8);
+        let inputs = |month| Inputs {
+            outputs: Vec::new(),
+            month,
+            ahead: Some(0),
+            surfaces: Some(Surfaces::Day),
+            finest: Geometry::level_of(FIXTURE.face),
+            drag: None,
+        };
+        let drained = |loader: &mut TileLoader, stand: &mut Stand, ids: &[TileId]| {
+            let mut asked = false;
+            wait_for("the tiles to land", || {
+                loader.end_tick();
+                asked |= loader.drain(stand);
+                ids.iter().all(|&id| stand.holds(id))
+            });
+            asked
+        };
+
+        loader.inputs = Some(inputs(11));
+        loader.apply(&wanted(&tiles[..2]), &mut stand);
+        assert!(
+            !drained(&mut loader, &mut stand, &tiles[..2]),
+            "the month ahead's tiles asked for a frame"
+        );
+
+        loader.inputs = Some(inputs(0));
+        loader.apply(&wanted(&tiles[..4]), &mut stand);
+        assert!(
+            drained(&mut loader, &mut stand, &tiles[2..4]),
+            "the month in force's tiles asked for no frame"
+        );
     }
 
     #[test]

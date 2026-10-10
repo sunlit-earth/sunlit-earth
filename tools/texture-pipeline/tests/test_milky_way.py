@@ -1,5 +1,7 @@
 """Tests for the Milky Way denoise pipeline."""
 
+from typing import TypedDict
+
 import numpy as np
 import pytest
 from conftest import synthetic_sky
@@ -16,7 +18,20 @@ from texture_pipeline.milky_way import (
     to_srgb8,
 )
 
-DESPECKLE_KWARGS = {
+
+class DespeckleKwargs(TypedDict):
+    """The despeckle thresholds and lengths the cases share."""
+
+    k: float
+    strong: float
+    eps: float
+    bg_sigma_px: float
+    bg_iterations: int
+    dilate_px: float
+    fill_sigma_px: float
+
+
+DESPECKLE_KWARGS: DespeckleKwargs = {
     "k": 3.0,
     "strong": 9.0,
     "eps": 0.0005,
@@ -176,7 +191,7 @@ class TestToSrgb8:
 
     def test_the_dither_preserves_the_mean(self) -> None:
         field = np.full((256, 256, 3), 0.002, dtype=np.float32)
-        exact = float(linear_to_srgb(np.float32(0.002)) * 255.0)
+        exact = float(linear_to_srgb(np.array(0.002, dtype=np.float32)) * 255.0)
 
         assert float(to_srgb8(field, 7).mean()) == pytest.approx(exact, abs=0.5)
 

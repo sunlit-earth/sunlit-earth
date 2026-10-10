@@ -2,6 +2,7 @@
 //! decoded frames from background threads to the consumer.
 
 pub mod cloud_fetcher;
+pub mod cloud_haze;
 pub mod cloud_source;
 pub mod cube_layout;
 pub mod cube_names;

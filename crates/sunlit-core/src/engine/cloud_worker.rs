@@ -15,7 +15,7 @@ use crossbeam_channel::{Sender, TryRecvError, bounded};
 use tracing::{debug, info, warn};
 
 use super::schedule::Schedule;
-use crate::assets::cloud_fetcher::{CloudUpdater, PollOutcome, RetryBackoff};
+use crate::assets::cloud_fetcher::{CloudSlots, CloudUpdater, PollOutcome, RetryBackoff};
 use crate::assets::cloud_source::CloudSource;
 use crate::assets::mailbox::TextureMailbox;
 
@@ -77,7 +77,7 @@ pub(super) fn spawn_cloud_worker(
     interval: Duration,
     now: Duration,
     texture_resolution: u32,
-    clouds_slot: usize,
+    slots: CloudSlots,
 ) -> CloudWorker {
     info!(source = %source.describe(), poll_secs = interval.as_secs(), "cloud source configured");
 
@@ -94,7 +94,7 @@ pub(super) fn spawn_cloud_worker(
                 source,
                 mailbox,
                 notify,
-                clouds_slot,
+                slots,
                 cache_dir,
                 texture_resolution,
             );

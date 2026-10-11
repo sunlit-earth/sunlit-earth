@@ -31,7 +31,7 @@ struct Uniforms {
     rayleigh_haze: f32,            // 4 bytes, offset 192
     cloud_night: f32,              // 4 bytes, offset 196
     cloud_terminator: f32,         // 4 bytes, offset 200
-    cloud_haze_equator: f32,          // 4 bytes, offset 204
+    cloud_haze_equator: f32,       // 4 bytes, offset 204
     sky_view: mat4x4<f32>,            // 64 bytes, offset 208
     world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
     viewport_size: vec2<f32>,         // 8 bytes, offset 320
@@ -72,7 +72,7 @@ struct Uniforms {
     tile_gutter: f32,                 // 4 bytes, offset 548
     cloud_floor_ocean: f32,           // 4 bytes, offset 552
     cloud_gamma_ocean: f32,           // 4 bytes, offset 556
-    cloud_haze_pole: f32,            // 4 bytes, offset 560
+    cloud_haze_pole: f32,             // 4 bytes, offset 560
     cloud_haze_latitude: f32,         // 4 bytes, offset 564
     cloud_haze_band: f32,             // 4 bytes, offset 568
     _pad11: f32,                      // 4 bytes, offset 572

@@ -167,7 +167,7 @@ git clone https://github.com/sunlit-earth/sunlit-earth.git
 cd sunlit-earth
 git lfs pull
 cargo build --release --locked
-cargo run --release --locked
+cargo app --release --locked
 ```
 
 Git LFS supplies all texture files. The asset preparation tools are not required for an ordinary build.
@@ -177,7 +177,7 @@ The executable is written to `target/release/`. Run from the repository root so 
 To render an image from the checkout:
 
 ```bash
-cargo run --release -- render --output earth.png --width 1920 --height 1080
+cargo app --release -- render --output earth.png --width 1920 --height 1080
 ```
 
 When building through WSL from a Windows checkout, set `CARGO_TARGET_DIR` to a separate directory in the Linux filesystem, such as `$HOME/sunlit-target-main`, before building. `$HOME/sunlit-target` is reserved for `cargo xtask`.

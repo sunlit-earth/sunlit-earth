@@ -400,7 +400,10 @@ fn real_cube() -> Result<CubeTextures, String> {
 /// The repository's cube faces and a cache that outlives the run with every
 /// pack of the year built from them, once for every case that reads it, or
 /// why there are none: a few minutes the first time, and a positional read of
-/// each index after it.
+/// each index after it. A case takes the GPU before it reads this, so the
+/// build, which holds every core for those minutes on a cold cache, is
+/// serialized against the engine cases and their one minute waits like any
+/// other case; taken again inside, the lock would never be had.
 static REAL_PACKS: LazyLock<Result<(CubeTextures, PathBuf), String>> = LazyLock::new(|| {
     let cube = real_cube()?;
     let cache = crate::test_support::scratch_root().join("engine_resolution_memory_cache");
@@ -570,6 +573,7 @@ fn day_tiles(pack: &tiles::Pack, faces: &FaceSet, mask: &[Vec<bool>]) -> DayTile
 /// neighboring face.
 #[test]
 fn the_real_day_packs_store_the_sea_ice_and_flag_the_open_water() {
+    let _gpu = gpu();
     let (cube, cache) = match &*REAL_PACKS {
         Ok(found) => found.clone(),
         Err(why) => {
@@ -650,6 +654,7 @@ fn lowering_the_resolution_releases_the_tile_array() {
     const WIDE: u32 = 8192;
     const NARROW: u32 = 2048;
 
+    let _gpu = gpu();
     let (cube, cache) = match &*REAL_PACKS {
         Ok(found) => found.clone(),
         Err(why) => {
@@ -657,8 +662,6 @@ fn lowering_the_resolution_releases_the_tile_array() {
             return;
         }
     };
-
-    let _gpu = gpu();
 
     let harness = Harness::start(|config| {
         config.cube_textures = cube.clone();

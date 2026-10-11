@@ -171,7 +171,7 @@ Round 1, on `b14a490..0e16148`, found 1 MAJOR and 5 MINOR. The MAJOR: decision 7
 
 Round 2, on `0e16148..fd02ff7`, verified every fix of round 1 and found 1 MAJOR and 2 MINOR. The MAJOR: the lavapipe and Metal references other than the three polar ones were still main's, never regenerated on the gated shader (criterion 10). It is closed by golden.yml runs on the pushed head:
 
-- Golden runs: (run IDs to come).
+- Golden runs 38158960711 (lavapipe) and 38159056989 (Metal) on `4a58821`, both green, taken in `abeadd2`: against the sets they replaced, `africa_on_the_z_face` moved at the Arctic rim of the July faces by at most 7, and the two cloud cases along the edges of the cloud bands by at most 23 on Metal and 47 on lavapipe, most likely the haze removal's split by latitude on main, which the replaced cloud references predated; the other nineteen references of each set were unchanged.
 
 The MINORs: the gate's residual was missing from the roadmap's item of possible refinements, and departure 16 claimed the golden `clouds_across_the_terminator` guards the gate, which it does not at the golden tolerance. Both were fixed in `275f328`.
 

@@ -36,10 +36,11 @@
 //! parameter are tabulated in `docs/testing.md`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use sunlit_core::assets::cube_layout::CubeTextures;
-use sunlit_core::assets::tiles::Geometry;
+use sunlit_core::assets::tiles::{self, Geometry, PackKind};
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineHandle};
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
@@ -127,16 +128,31 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
     //
     //
     // The surface is the Earth fixture's cube, cut into packs in a cache of
-    // this target's own. It is there for the orientation case, which is about
-    // it, and for the cloud cases: the layer is shaded against the sun, so
-    // pinning it wants a mode that is, and blend mode is the only one. Every
-    // other case renders the grid, which reads none of it.
+    // this target's own. It is there for the orientation case and the three
+    // polar cases, which are about it, and for the cloud cases: the layer is
+    // shaded against the sun, so pinning it wants a mode that is, and blend
+    // mode is the only one. Every other case renders the grid, which reads
+    // none of it.
     let tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let textures = tmp.join("golden-earth");
     test_support::write_earth_fixture(&textures);
     config.cube_textures = CubeTextures::resolve(&textures);
     config.tile_geometry = EARTH_GEOMETRY;
     config.cache_dir = Some(tmp.join("golden-cache"));
+    // Every pack is built before the engine starts, so a case dated in another
+    // month draws that month's floor and waits for its tiles. A pack still
+    // being built would leave the floor drawn before in its place.
+    let cancel = AtomicBool::new(false);
+    for kind in PackKind::all() {
+        tiles::ensure_pack(
+            &tmp.join("golden-cache"),
+            kind,
+            &config.cube_textures,
+            &EARTH_GEOMETRY,
+            &cancel,
+        )
+        .expect("build the Earth fixture's pack");
+    }
     assert!(
         config.takes_cube(),
         "the golden engine draws its surface from the Earth fixture's cube"
@@ -849,6 +865,46 @@ fn golden_africa_on_the_z_face() {
     check_golden("africa_on_the_z_face", &params);
 }
 
+/// A pole from above in `day_of_year` of 2026, the day surface alone, over the
+/// Earth fixture, whose March faces stand for March and July's for the rest.
+fn polar_params(latitude: f32, day_of_year: u16) -> SceneParams {
+    let base = base_params();
+    let mut params = SceneParams {
+        texture_index: DAY_MODE,
+        camera: CameraParams {
+            longitude: -30.0,
+            latitude,
+            ..base.camera
+        },
+        atmo_enabled: false,
+        star_intensity: 0.0,
+        ..base
+    };
+    params.datetime.custom_day_of_year = day_of_year;
+    params
+}
+
+/// The sea ice at its largest in the north, baked into March's faces: the
+/// pack reaches Labrador, the Barents Sea and the Sea of Okhotsk.
+#[test]
+fn golden_arctic_in_march() {
+    check_golden("arctic_in_march", &polar_params(75.0, 60));
+}
+
+/// The north in September, drawn from the fixture's July faces: the summer
+/// pack in its grayer color, the Arctic coasts free of the ice pass's strips.
+#[test]
+fn golden_arctic_in_september() {
+    check_golden("arctic_in_september", &polar_params(75.0, 244));
+}
+
+/// The south in September, drawn from the fixture's July faces: the winter
+/// ring of pack around Antarctica.
+#[test]
+fn golden_antarctic_in_september() {
+    check_golden("antarctic_in_september", &polar_params(-75.0, 244));
+}
+
 /// The framing the two cloud cases share: the terminator down the middle of the
 /// frame, at the instant every case here renders.
 ///
@@ -997,6 +1053,9 @@ fn every_golden_case_is_distinguishable() {
         "panorama_at_a_narrow_sky",
         "panorama_at_a_wide_sky",
         "africa_on_the_z_face",
+        "arctic_in_march",
+        "arctic_in_september",
+        "antarctic_in_september",
         "clouds_across_the_terminator",
         "cloud_terminator_close_up",
     ];

@@ -154,10 +154,15 @@ pub(crate) struct Renderer {
     /// surface's: one black layer, and one cell per face that draws the floor.
     dummy_tile_view: wgpu::TextureView,
     dummy_page_view: wgpu::TextureView,
-    /// Bind group for the cloud texture (populated after async load completes).
+    /// The cloud draw's bind group, made once the map has landed and made
+    /// again whenever the map, its background or the water mask changes.
     cloud_bind_group: Option<wgpu::BindGroup>,
-    /// Stored texture view for the cloud texture, used to rebuild the bind group.
+    /// The cloud map's view, kept to rebuild the bind group.
     cloud_texture_view: Option<wgpu::TextureView>,
+    /// The view of the map's clear-sky background, kept to rebuild the bind
+    /// group. Until one lands the group binds the 1x1 dummy, which reads zero:
+    /// no haze removed.
+    cloud_background_view: Option<wgpu::TextureView>,
 }
 
 impl Renderer {
@@ -328,13 +333,17 @@ impl Renderer {
     /// Where the textures sit, derived from how many file-backed slots this
     /// renderer was built with.
     fn layout(&self) -> SlotLayout {
-        SlotLayout::new(self.texture_slots.len() - 2)
+        SlotLayout::with_count(self.texture_slots.len())
     }
 
     /// The GPU label the texture in `slot` carries.
     fn slot_label(&self, slot: usize) -> String {
-        if slot == self.layout().clouds() {
+        let layout = self.layout();
+        if slot == layout.clouds() {
             return "cloud_texture".to_owned();
+        }
+        if slot == layout.cloud_background() {
+            return "cloud_background_texture".to_owned();
         }
         SLOT_LABELS
             .get(slot)
@@ -355,21 +364,26 @@ impl Renderer {
 
     /// Whether a cube the current mode needs is on its way, the day side's and
     /// the night side's.
-    pub(crate) fn cubes_waiting(&self, texture_index: i32) -> (bool, bool) {
-        texture_routing::cubes_waiting(self, TextureMode::from_index(texture_index))
+    pub(crate) fn cubes_waiting(&self, params: &SceneParams) -> (bool, bool) {
+        texture_routing::cubes_waiting(
+            self,
+            TextureMode::from_index(params.texture_index),
+            params.draws_clouds(),
+        )
     }
 
     /// Whether every texture the current mode needs is resident or has failed
     /// for good: its cubes, the floor of the month in force, the night floor,
-    /// the mask. The clouds, the Moon and the Milky Way are excluded: they are
+    /// the mask, which the cloud layer reads in every surface mode while it is
+    /// drawn. The clouds, the Moon and the Milky Way are excluded: they are
     /// overlays, not requirements. Without the cube surface only the grid is
     /// ever ready.
-    pub(crate) fn textures_ready(&self, texture_index: i32) -> bool {
-        let mode = TextureMode::from_index(texture_index);
+    pub(crate) fn textures_ready(&self, params: &SceneParams) -> bool {
+        let mode = TextureMode::from_index(params.texture_index);
         self.surface
             .as_ref()
             .map_or(mode == TextureMode::Grid, |surface| {
-                surface.readiness(mode).0
+                surface.readiness(mode, params.draws_clouds()).0
             })
     }
 
@@ -377,11 +391,11 @@ impl Renderer {
     ///
     /// Deliberately not the negation of `textures_ready`: without the cube
     /// surface nothing is on its way and only the grid is ready.
-    pub(crate) fn textures_pending(&self, texture_index: i32) -> bool {
-        let mode = TextureMode::from_index(texture_index);
+    pub(crate) fn textures_pending(&self, params: &SceneParams) -> bool {
+        let mode = TextureMode::from_index(params.texture_index);
         self.surface
             .as_ref()
-            .is_some_and(|surface| surface.readiness(mode).1)
+            .is_some_and(|surface| surface.readiness(mode, params.draws_clouds()).1)
     }
 
     /// Make `month`, January 0, the month in force: its floor is what
@@ -601,6 +615,44 @@ impl Renderer {
         surface.day_group = day_group;
         surface.night_group = night_group;
         surface.blend_group = blend_group;
+        self.rebuild_cloud_group();
+    }
+
+    /// Build the cloud draw's group from what is resident, once the map is:
+    /// the map, its background or the dummy, which reads zero, and the water
+    /// mask or the dummy cube, which reads every pixel as land.
+    fn rebuild_cloud_group(&mut self) {
+        let Some(map) = &self.cloud_texture_view else {
+            return;
+        };
+        let dummy = &self.dummy_cube_view;
+        let mask = self
+            .surface
+            .as_ref()
+            .and_then(|surface| surface.mask.as_ref())
+            .map_or(dummy, |cube| &cube.view);
+        let group = create_bind_group(
+            &self.device,
+            &self.bind_group_layout,
+            &self.uniform_buffer,
+            &Bindings {
+                texture: map,
+                sampler: &self.sampler,
+                background: self
+                    .cloud_background_view
+                    .as_ref()
+                    .unwrap_or(&self.dummy_texture_view),
+                cubes: [dummy, dummy, mask],
+                tiles: [&self.dummy_tile_view, &self.dummy_page_view],
+            },
+            "cloud_bind_group",
+        );
+        self.cloud_bind_group = Some(group);
+    }
+
+    /// Whether the cloud map and its background have both landed.
+    pub(crate) fn clouds_resident(&self) -> bool {
+        self.cloud_texture_view.is_some() && self.cloud_background_view.is_some()
     }
 
     /// A bind group of one flat texture.
@@ -613,6 +665,7 @@ impl Renderer {
             &Bindings {
                 texture,
                 sampler: &self.sampler,
+                background: &self.dummy_texture_view,
                 cubes: [dummy, dummy, dummy],
                 tiles: [&self.dummy_tile_view, &self.dummy_page_view],
             },
@@ -635,6 +688,7 @@ impl Renderer {
             &Bindings {
                 texture: &self.dummy_texture_view,
                 sampler: &self.surface_sampler,
+                background: &self.dummy_texture_view,
                 cubes,
                 tiles,
             },

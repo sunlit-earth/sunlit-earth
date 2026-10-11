@@ -33,16 +33,18 @@ pub(super) fn resolve_textures(res: &Renderer, mode: TextureMode) -> (ResolvedTe
 /// Whether a cube the frame needs for `mode` is on its way, the day side's
 /// and the night side's.
 ///
-/// The day side counts the mask too in blend mode, the one mode that reads
-/// it. Without a cube surface nothing is on its way.
-pub(super) fn cubes_waiting(res: &Renderer, mode: TextureMode) -> (bool, bool) {
+/// The mask counts on the side the mode draws, when the mode or the cloud
+/// layer reads it: the day's in blend and day mode, the night's in night mode.
+/// Without a cube surface nothing is on its way.
+pub(super) fn cubes_waiting(res: &Renderer, mode: TextureMode, clouds: bool) -> (bool, bool) {
     let Some(surface) = &res.surface else {
         return (false, false);
     };
     let waiting = |layer| surface.state(layer) == LayerState::Waiting;
-    let day = waiting(SurfaceLayer::Day(surface.month))
-        || (mode == TextureMode::Blend && waiting(SurfaceLayer::Mask));
-    let night = waiting(SurfaceLayer::Night);
+    let mask = waiting(SurfaceLayer::Mask)
+        && super::surface::needs(mode, surface.month, clouds).contains(&SurfaceLayer::Mask);
+    let day = waiting(SurfaceLayer::Day(surface.month)) || (mode != TextureMode::Night && mask);
+    let night = waiting(SurfaceLayer::Night) || (mode == TextureMode::Night && mask);
     match mode {
         TextureMode::Grid => (false, false),
         TextureMode::Day => (day, false),

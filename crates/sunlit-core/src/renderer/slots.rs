@@ -46,10 +46,10 @@ impl TextureMode {
 ///
 /// Slot 0 is the procedural grid, always loaded; then one slot per file-backed
 /// path, in the order the paths arrive, the Moon and the Milky Way; then the
-/// cloud overlay, which comes from the fetcher rather than from a file and is
-/// therefore last. Deriving the cloud slot from the number of paths rather than
-/// naming a constant is what lets a file-backed texture be added without moving
-/// it.
+/// cloud overlay and its clear-sky background, which come from the fetcher
+/// rather than from a file and are therefore last. Deriving the two from the
+/// number of paths rather than naming constants is what lets a file-backed
+/// texture be added without moving them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotLayout {
     file_backed: usize,
@@ -60,14 +60,25 @@ impl SlotLayout {
         Self { file_backed }
     }
 
+    /// The layout that has `count` slots in all.
+    pub(crate) fn with_count(count: usize) -> Self {
+        Self::new(count - Self::new(0).count())
+    }
+
     /// How many slots there are, which is also the mailbox's slot count.
     pub fn count(self) -> usize {
-        self.file_backed + 2
+        self.file_backed + 3
     }
 
     /// The cloud overlay's slot.
     pub fn clouds(self) -> usize {
         self.file_backed + 1
+    }
+
+    /// The slot of the cloud overlay's clear-sky background, the one after
+    /// the clouds.
+    pub fn cloud_background(self) -> usize {
+        self.clouds() + 1
     }
 
     /// The Moon's slot, in a layout that has one.
@@ -134,12 +145,13 @@ mod tests {
     }
 
     /// Production's layout: the grid, the Moon, the Milky Way, and the cloud
-    /// overlay last.
+    /// overlay and its background last.
     #[test]
     fn the_production_layout_puts_the_clouds_after_the_overlays() {
         let layout = SlotLayout::new(2);
-        assert_eq!(layout.count(), 4);
+        assert_eq!(layout.count(), 5);
         assert_eq!(layout.clouds(), 3);
+        assert_eq!(layout.cloud_background(), 4);
         assert_eq!(layout.moon(), Some(MOON_SLOT));
         assert_eq!(layout.milky_way(), Some(MILKY_WAY_SLOT));
     }
@@ -166,8 +178,14 @@ mod tests {
     fn the_clouds_are_last_at_every_size() {
         for file_backed in 0..6 {
             let layout = SlotLayout::new(file_backed);
-            assert_eq!(layout.count(), file_backed + 2, "{file_backed} paths");
-            assert_eq!(layout.clouds(), layout.count() - 1, "{file_backed} paths");
+            assert_eq!(layout.count(), file_backed + 3, "{file_backed} paths");
+            assert_eq!(layout.clouds(), layout.count() - 2, "{file_backed} paths");
+            assert_eq!(
+                layout.cloud_background(),
+                layout.count() - 1,
+                "{file_backed} paths"
+            );
+            assert_eq!(SlotLayout::with_count(layout.count()), layout);
         }
     }
 }

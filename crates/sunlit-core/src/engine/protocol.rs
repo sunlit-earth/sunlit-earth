@@ -109,6 +109,12 @@ pub enum EngineEvent {
     MonitorsChanged(Vec<crate::display::Monitor>),
     /// Loading-indicator text; empty when nothing is loading.
     Status(String),
+    /// The cloud layer's first answer, sent once per engine: `drawn` when the
+    /// map and its clear-sky background are both uploaded, and not when the
+    /// worker's first attempt found no cached map and a failed poll. Never
+    /// sent without a cloud source, or while the layer is switched off and no
+    /// poll has been made.
+    CloudsSettled { drawn: bool },
 }
 
 #[cfg(test)]

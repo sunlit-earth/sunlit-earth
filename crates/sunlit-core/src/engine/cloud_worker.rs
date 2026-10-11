@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use crossbeam_channel::{Sender, TryRecvError, bounded};
 use tracing::{debug, info, warn};
 
 use super::schedule::Schedule;
-use crate::assets::cloud_fetcher::{CloudUpdater, PollOutcome, RetryBackoff};
+use crate::assets::cloud_fetcher::{CloudSlots, CloudUpdater, PollOutcome, RetryBackoff};
 use crate::assets::cloud_source::CloudSource;
 use crate::assets::mailbox::TextureMailbox;
 
@@ -35,16 +35,66 @@ pub(super) struct CloudWorker {
     /// separate from the schedule so a busy worker does not drag the deadline
     /// backwards and forwards on every tick.
     pub(super) owed: bool,
+    /// What the worker's first attempt came to, a [`FirstAnswer`] as its
+    /// discriminant. Written once by the worker, before a failed attempt's
+    /// backoff, and read by the engine's tick.
+    answer: Arc<AtomicU8>,
+    /// Whether the cloud layer is switched on, which the engine writes on
+    /// every tick and the worker reads before every attempt and while it
+    /// backs off, so a retry stops when the layer is switched off.
+    enabled: Arc<AtomicBool>,
+    /// The worker ended a request without finishing it because the layer was
+    /// switched off. The engine takes it and owes the poll again.
+    abandoned: Arc<AtomicBool>,
     _thread: JoinHandle<()>,
 }
 
+/// What the worker's first attempt came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum FirstAnswer {
+    /// No attempt has finished yet.
+    Pending,
+    /// A map is on its way to the mailbox, from the cache or the network.
+    Posted,
+    /// There was no cached map and the poll failed, so nothing is coming until
+    /// a retry succeeds.
+    Unavailable,
+}
+
+impl FirstAnswer {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Posted,
+            2 => Self::Unavailable,
+            _ => Self::Pending,
+        }
+    }
+}
+
 impl CloudWorker {
+    /// What the worker's first attempt came to, so far.
+    pub(super) fn first_answer(&self) -> FirstAnswer {
+        FirstAnswer::from_u8(self.answer.load(Ordering::SeqCst))
+    }
+
     /// Point the worker at a different texture resolution's cloud variant.
     ///
     /// Returns whether that changed anything, so the caller can decide whether
     /// a poll is worth asking for.
     pub(super) fn retarget(&self, resolution: u32) -> bool {
         self.target.swap(resolution, Ordering::SeqCst) != resolution
+    }
+
+    /// Tell the worker whether the cloud layer is switched on.
+    pub(super) fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    /// Whether the worker gave up a request because the layer was switched
+    /// off, clearing the flag.
+    pub(super) fn take_abandoned(&self) -> bool {
+        self.abandoned.swap(false, Ordering::SeqCst)
     }
 
     /// Ask the worker for one poll. Returns `false` when the worker is still
@@ -77,7 +127,8 @@ pub(super) fn spawn_cloud_worker(
     interval: Duration,
     now: Duration,
     texture_resolution: u32,
-    clouds_slot: usize,
+    slots: CloudSlots,
+    enabled: bool,
 ) -> CloudWorker {
     info!(source = %source.describe(), poll_secs = interval.as_secs(), "cloud source configured");
 
@@ -86,6 +137,12 @@ pub(super) fn spawn_cloud_worker(
     let worker_busy = Arc::clone(&busy);
     let target = Arc::new(AtomicU32::new(texture_resolution));
     let worker_target = Arc::clone(&target);
+    let answer = Arc::new(AtomicU8::new(FirstAnswer::Pending as u8));
+    let worker_answer = Arc::clone(&answer);
+    let enabled = Arc::new(AtomicBool::new(enabled));
+    let worker_enabled = Arc::clone(&enabled);
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let worker_abandoned = Arc::clone(&abandoned);
 
     let thread = std::thread::Builder::new()
         .name("sunlit-cloud".into())
@@ -94,26 +151,54 @@ pub(super) fn spawn_cloud_worker(
                 source,
                 mailbox,
                 notify,
-                clouds_slot,
+                slots,
                 cache_dir,
                 texture_resolution,
             );
+            updater.set_gate(Arc::clone(&worker_enabled));
             let mut backoff = RetryBackoff::new();
-            // Show whatever is on disk before touching the network.
-            updater.post_cached();
+            let mut first = true;
+            let give_up = || {
+                info!("the cloud layer is switched off, the poll waits until it is on again");
+                worker_abandoned.store(true, Ordering::SeqCst);
+            };
             while rx.recv().is_ok() {
+                if !worker_enabled.load(Ordering::SeqCst) {
+                    give_up();
+                    worker_busy.store(false, Ordering::SeqCst);
+                    continue;
+                }
+                // Show whatever is on disk before touching the network, on the
+                // first request rather than at spawn, so a session that starts
+                // with the layer switched off decodes nothing until it is on.
+                // A resolution switched before then posts its own entry.
+                if std::mem::take(&mut first)
+                    && !updater.set_resolution(worker_target.load(Ordering::SeqCst))
+                {
+                    updater.post_cached();
+                }
                 // Retry a failed poll with exponential backoff rather than
                 // waiting out the whole poll interval, which in production is
                 // an hour: a thirty-second outage should not cost an hour of
                 // stale clouds. The engine's own requests are dropped while
                 // this runs (the worker is busy) and retried on the next tick.
                 loop {
+                    // Before every attempt, so a layer switched off during an
+                    // outage makes no further one. A download already under
+                    // way is not interrupted; the updater drops what it
+                    // brings back undecoded.
+                    if !worker_enabled.load(Ordering::SeqCst) {
+                        give_up();
+                        break;
+                    }
                     // Inside the retry loop, not outside it: an outage can hold
                     // this thread for minutes at a time, and a resolution
                     // switch made during one should change what the next
                     // attempt asks for rather than wait its turn.
                     updater.set_resolution(worker_target.load(Ordering::SeqCst));
-                    match updater.poll_once() {
+                    let outcome = updater.poll_once();
+                    record_first_answer(&worker_answer, outcome, updater.has_posted());
+                    match outcome {
                         PollOutcome::Updated => {
                             debug!("cloud frame updated");
                             backoff.reset();
@@ -123,13 +208,17 @@ pub(super) fn spawn_cloud_worker(
                             backoff.reset();
                             break;
                         }
+                        PollOutcome::Abandoned => {
+                            give_up();
+                            break;
+                        }
                         PollOutcome::Failed => {
                             let delay = backoff.fail();
                             warn!(
                                 retry_delay_secs = delay.as_secs(),
                                 "cloud poll failed, retrying"
                             );
-                            std::thread::sleep(delay);
+                            rest_while_enabled(delay, &worker_enabled);
                             // Give up if the engine went away while we slept.
                             if matches!(rx.try_recv(), Err(TryRecvError::Disconnected)) {
                                 return;
@@ -152,6 +241,41 @@ pub(super) fn spawn_cloud_worker(
             next: now,
         },
         owed: false,
+        answer,
+        enabled,
+        abandoned,
         _thread: thread,
     }
+}
+
+/// How often a backoff looks at whether the layer is still switched on.
+const REST_SLICE: Duration = Duration::from_millis(100);
+
+/// Sleep out `delay`, or less as soon as `enabled` reads false.
+fn rest_while_enabled(delay: Duration, enabled: &AtomicBool) {
+    let until = std::time::Instant::now() + delay;
+    while enabled.load(Ordering::SeqCst) {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(REST_SLICE));
+    }
+}
+
+/// Record what the worker's first finished attempt came to, once: a map on its
+/// way if one has been posted, and nothing to show otherwise. A download
+/// dropped because the layer went off is no answer.
+fn record_first_answer(answer: &AtomicU8, outcome: PollOutcome, posted: bool) {
+    if outcome == PollOutcome::Abandoned
+        || answer.load(Ordering::SeqCst) != FirstAnswer::Pending as u8
+    {
+        return;
+    }
+    let first = if posted {
+        FirstAnswer::Posted
+    } else {
+        FirstAnswer::Unavailable
+    };
+    answer.store(first as u8, Ordering::SeqCst);
 }

@@ -20,7 +20,7 @@ macro_rules! uniform_block {
     ) => {
         /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
         ///
-        /// Total: 560 bytes (must be a multiple of 16 for uniform alignment).
+        /// Total: 576 bytes (must be a multiple of 16 for uniform alignment).
         #[repr(C)]
         #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
         #[expect(
@@ -71,8 +71,10 @@ uniform_block! {
     night_saturation: f32 as f32,
     cloud_sphere_radius: f32 as f32,
     cloud_opacity: f32 as f32,
-    cloud_floor: f32 as f32,
-    cloud_gamma: f32 as f32,
+    /// The floor and the gamma of the cloud map over land. Blended with the
+    /// ocean's by the land weight `fs_cloud` reads from the water mask.
+    cloud_floor_land: f32 as f32,
+    cloud_gamma_land: f32 as f32,
     rayleigh_intensity: f32 as f32,
     rayleigh_sharpness: f32 as f32,
     nightglow_intensity: f32 as f32,
@@ -87,7 +89,9 @@ uniform_block! {
     /// Half-width of the cloud layer's terminator ramp. Never the globe's
     /// `terminator_width`, which carries a sentinel outside blend mode.
     cloud_terminator: f32 as f32,
-    _pad5: f32 as f32,
+    /// How much of the clear-sky background is taken off the map equatorward
+    /// of `cloud_haze_latitude`, 0 to 2.
+    cloud_haze_equator: f32 as f32,
     sky_view: [f32; 16] as mat4x4,
     world_from_eqj: [[f32; 4]; 3] as mat3x3,
     viewport_size: [f32; 2] as vec2,
@@ -158,11 +162,18 @@ uniform_block! {
     /// texels of the tile's finest level.
     tile_texels: f32 as f32,
     tile_gutter: f32 as f32,
-    _pad9: f32 as f32,
-    _pad10: f32 as f32,
+    cloud_floor_ocean: f32 as f32,
+    cloud_gamma_ocean: f32 as f32,
+    /// The same poleward of it.
+    cloud_haze_pole: f32 as f32,
+    /// The latitude the two are blended around and the width of the band they
+    /// are blended across, in degrees.
+    cloud_haze_latitude: f32 as f32,
+    cloud_haze_band: f32 as f32,
+    _pad11: f32 as f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 560);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 576);
 
 #[cfg(test)]
 mod tests {

@@ -239,6 +239,9 @@ pub fn event_forwarder(
             tracing::error!("wallpaper update failed: {e}");
             crate::ipc::signal("wallpaper_failed");
         }
+        // The running app publishes again within the hour whatever the clouds
+        // said, so only the one-shot commands wait for them.
+        EngineEvent::CloudsSettled { .. } => {}
     })
 }
 

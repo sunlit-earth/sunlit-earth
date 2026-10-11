@@ -192,6 +192,7 @@ pub(super) fn create_renderer(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            texture_entry(3, wgpu::TextureViewDimension::D2),
             texture_entry(4, wgpu::TextureViewDimension::Cube),
             texture_entry(5, wgpu::TextureViewDimension::Cube),
             texture_entry(6, wgpu::TextureViewDimension::Cube),
@@ -273,6 +274,7 @@ pub(super) fn create_renderer(
         &uniform_buffer,
         &Bindings {
             texture: &dummy_texture_view,
+            background: &dummy_texture_view,
             sampler: &surface_sampler,
             cubes: [&grid_tex_view, &dummy_cube_view, &dummy_cube_view],
             tiles: [&dummy_tile_view, &dummy_page_view],
@@ -315,14 +317,18 @@ pub(super) fn create_renderer(
         set.tiles = Some(tiles);
         set
     });
-    // The cloud overlay, always last because it comes from the fetcher rather
-    // than from a file. `SlotLayout::clouds` names its index.
-    texture_slots.push(TextureSlot {
-        bind_group: None,
-        texture: None,
-        source_path: None,
-        loading: false,
-    });
+    // The cloud overlay and its background, always last because they come
+    // from the fetcher rather than from a file. `SlotLayout::clouds` and
+    // `SlotLayout::cloud_background` name their indices.
+    texture_slots.extend(
+        std::iter::repeat_with(|| TextureSlot {
+            bind_group: None,
+            texture: None,
+            source_path: None,
+            loading: false,
+        })
+        .take(2),
+    );
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("sphere_pipeline_layout"),
@@ -385,6 +391,7 @@ pub(super) fn create_renderer(
         dummy_page_view,
         cloud_bind_group: None,
         cloud_texture_view: None,
+        cloud_background_view: None,
     }
 }
 

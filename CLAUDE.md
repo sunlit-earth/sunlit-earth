@@ -23,7 +23,7 @@ Public beta, with breaking changes still expected. Every release ships Windows (
 
 ## Commands
 
-`cargo unit`, `cargo e2e` and `cargo xtask` are aliases in `.cargo/config.toml`.
+`cargo app`, `cargo unit`, `cargo e2e` and `cargo xtask` are aliases in `.cargo/config.toml`.
 
 ### Build, test, lint
 
@@ -35,9 +35,9 @@ cargo test -p sunlit-core --test engine    # one integration target; also soak, 
 cargo test -p sunlit-earth --test slint_ui
 cargo clippy --all-targets         # pedantic on; not run in CI, so it is on you
 cargo fmt --check                  # CI gate
-cargo run                          # the app; --software-rendering, --quality <tier>, --texture-resolution <w>
-cargo run -- render --output x.png --width 640 --height 360   # headless render, all three OSes
-cargo run -- displays              # the monitors this session has and the plan they come to; --out <dir> renders it
+cargo app                          # the app; --software-rendering, --quality <tier>, --texture-resolution <w>
+cargo app -- render --output x.png --width 640 --height 360   # headless render, all three OSes
+cargo app -- displays              # the monitors this session has and the plan they come to; --out <dir> renders it
 SUNLIT_EARTH_UPDATE_GOLDEN=1 cargo test -p sunlit-core --test golden   # regenerate goldens for this adapter
 ```
 

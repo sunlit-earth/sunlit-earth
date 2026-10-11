@@ -272,10 +272,10 @@ fn a_taller_canvas_still_puts_the_globe_where_the_anchor_had_it() {
         monitors.clone(),
         DisplayMode::AcrossScreens,
         None,
-        params,
+        &params,
     );
     assert_eq!(spanned.canvas, Some((1280, 480)));
-    let alone = publish_plan_with(group, monitors, DisplayMode::EveryScreen, None, params);
+    let alone = publish_plan_with(group, monitors, DisplayMode::EveryScreen, None, &params);
 
     let (cx, cy, radius) = globe(picture(&spanned, 0));
     let (alone_x, alone_y, alone_radius) = globe(picture(&alone, 0));

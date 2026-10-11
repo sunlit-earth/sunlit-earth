@@ -53,6 +53,10 @@ pub struct SceneParams {
     pub fresnel_exp: f32,
 
     // Clouds
+    /// Whether the cloud layer is shown. Off, it is not drawn and no new
+    /// download or decode starts: a transfer already under way when it goes off
+    /// is not interrupted, and what it brings back is dropped undecoded.
+    pub clouds_enabled: bool,
     /// Opacity of a cloud on the day hemisphere, a straight multiplier on the
     /// source's own coverage.
     pub cloud_opacity: f32,
@@ -61,8 +65,22 @@ pub struct SceneParams {
     /// cover the ground completely. See `fs_cloud` for why the two hemispheres
     /// cannot share one number.
     pub cloud_opacity_night: f32,
-    pub cloud_floor: f32,
-    pub cloud_gamma: f32,
+    /// How much of the map's clear-sky background is taken off as a local
+    /// floor, 0 to 2, equatorward and poleward of `cloud_haze_latitude`, in
+    /// degrees, across a band `cloud_haze_band` degrees wide. Up to 1 it takes
+    /// that share of the estimate up to its cap; above 1 it lifts the cap
+    /// toward full brightness, which reaches 1 at 2. See `fs_cloud`.
+    pub cloud_haze_equator: f32,
+    pub cloud_haze_pole: f32,
+    pub cloud_haze_latitude: f32,
+    pub cloud_haze_band: f32,
+    /// The floor and the gamma applied after the haze removal over land.
+    /// `fs_cloud` blends each with its ocean twin by the water mask.
+    pub cloud_floor_land: f32,
+    pub cloud_gamma_land: f32,
+    /// The same two over open water.
+    pub cloud_floor_ocean: f32,
+    pub cloud_gamma_ocean: f32,
     /// Brightness of a cloud on the night hemisphere, as a fraction of display
     /// white. Not an irradiance: the night side is about 18.6 stops under the
     /// day side and this frame has one exposure for both, so the value is a
@@ -150,10 +168,17 @@ impl SceneParams {
             spec_intensity: config.spec_intensity,
             fresnel_mix: config.fresnel_mix,
             fresnel_exp: config.fresnel_exp,
+            clouds_enabled: config.clouds_enabled,
             cloud_opacity: config.cloud_opacity,
             cloud_opacity_night: config.cloud_opacity_night,
-            cloud_floor: config.cloud_floor,
-            cloud_gamma: config.cloud_gamma,
+            cloud_haze_equator: config.cloud_haze_equator,
+            cloud_haze_pole: config.cloud_haze_pole,
+            cloud_haze_latitude: config.cloud_haze_latitude,
+            cloud_haze_band: config.cloud_haze_band,
+            cloud_floor_land: config.cloud_floor_land,
+            cloud_gamma_land: config.cloud_gamma_land,
+            cloud_floor_ocean: config.cloud_floor_ocean,
+            cloud_gamma_ocean: config.cloud_gamma_ocean,
             cloud_night: config.cloud_night,
             atmo_enabled: config.atmo_enabled,
             rayleigh_intensity: config.rayleigh_intensity,
@@ -225,10 +250,17 @@ impl SceneParams {
         config.spec_intensity = self.spec_intensity;
         config.fresnel_mix = self.fresnel_mix;
         config.fresnel_exp = self.fresnel_exp;
+        config.clouds_enabled = self.clouds_enabled;
         config.cloud_opacity = self.cloud_opacity;
         config.cloud_opacity_night = self.cloud_opacity_night;
-        config.cloud_floor = self.cloud_floor;
-        config.cloud_gamma = self.cloud_gamma;
+        config.cloud_haze_equator = self.cloud_haze_equator;
+        config.cloud_haze_pole = self.cloud_haze_pole;
+        config.cloud_haze_latitude = self.cloud_haze_latitude;
+        config.cloud_haze_band = self.cloud_haze_band;
+        config.cloud_floor_land = self.cloud_floor_land;
+        config.cloud_gamma_land = self.cloud_gamma_land;
+        config.cloud_floor_ocean = self.cloud_floor_ocean;
+        config.cloud_gamma_ocean = self.cloud_gamma_ocean;
         config.cloud_night = self.cloud_night;
         config.atmo_enabled = self.atmo_enabled;
         config.rayleigh_intensity = self.rayleigh_intensity;
@@ -270,10 +302,11 @@ impl SceneParams {
         config.custom_year = self.datetime.custom_year;
     }
 
-    /// Whether the cloud layer draws at all. Each hemisphere has its own
-    /// opacity, so one of them at zero is not the layer switched off.
+    /// Whether the cloud layer draws at all: switched on, with either
+    /// hemisphere's opacity up. Each hemisphere has its own opacity, so one of
+    /// them at zero is not the layer switched off.
     pub fn draws_clouds(&self) -> bool {
-        self.cloud_opacity > 0.0 || self.cloud_opacity_night > 0.0
+        self.clouds_enabled && (self.cloud_opacity > 0.0 || self.cloud_opacity_night > 0.0)
     }
 
     /// Rayleigh intensity after the atmosphere master switch. Zero suppresses
@@ -458,6 +491,7 @@ scene_digest! {
     }
     switched {
         diffuse_shading,
+        clouds_enabled,
     }
     quantized {
         terminator_width,
@@ -469,8 +503,14 @@ scene_digest! {
         fresnel_exp,
         cloud_opacity,
         cloud_opacity_night,
-        cloud_floor,
-        cloud_gamma,
+        cloud_haze_equator,
+        cloud_haze_pole,
+        cloud_haze_latitude,
+        cloud_haze_band,
+        cloud_floor_land,
+        cloud_gamma_land,
+        cloud_floor_ocean,
+        cloud_gamma_ocean,
         cloud_night,
         rayleigh_sharpness,
         rayleigh_haze,
@@ -566,8 +606,8 @@ mod tests {
             spec_intensity: 0.4,
             fresnel_mix: 0.5,
             cloud_opacity: 0.75,
-            cloud_floor: 0.196,
-            cloud_gamma: 0.3,
+            cloud_floor_land: 0.196,
+            cloud_gamma_land: 0.3,
             day_gamma: 1.5,
             day_saturation: 0.5,
             rayleigh_intensity: 0.5,
@@ -636,8 +676,8 @@ mod tests {
         assert_eq!(d.diffuse_ramp, 600);
         assert_eq!(d.fresnel_mix, 500);
         assert_eq!(d.cloud_opacity, 750);
-        assert_eq!(d.cloud_floor, 196);
-        assert_eq!(d.cloud_gamma, 300);
+        assert_eq!(d.cloud_floor_land, 196);
+        assert_eq!(d.cloud_gamma_land, 300);
         assert_eq!(d.day_gamma, 1500);
         assert_eq!(d.day_saturation, 500);
         assert_eq!(d.rayleigh_intensity, 500);
@@ -671,6 +711,33 @@ mod tests {
             ..params()
         };
         assert_ne!(a.digest(), b.digest());
+    }
+
+    /// The switch gates the draw whichever hemisphere's opacity is up, and with
+    /// it on either one alone draws the layer.
+    #[test]
+    fn the_cloud_switch_gates_the_draw_whatever_the_opacities() {
+        for (day, night) in [(0.5, 0.0), (0.0, 0.5), (0.5, 0.5)] {
+            let on = SceneParams {
+                clouds_enabled: true,
+                cloud_opacity: day,
+                cloud_opacity_night: night,
+                ..params()
+            };
+            assert!(on.draws_clouds(), "day {day}, night {night}");
+            let off = SceneParams {
+                clouds_enabled: false,
+                ..on
+            };
+            assert!(!off.draws_clouds(), "day {day}, night {night}");
+        }
+        let neither = SceneParams {
+            clouds_enabled: true,
+            cloud_opacity: 0.0,
+            cloud_opacity_night: 0.0,
+            ..params()
+        };
+        assert!(!neither.draws_clouds());
     }
 
     #[test]

@@ -9,9 +9,11 @@
 //! `SUNLIT_EARTH_CLOUD_URL`, `SUNLIT_EARTH_CLOUD_POLL_SECS`, and
 //! `SUNLIT_EARTH_CACHE_DIR`.
 
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,7 @@ use tracing::{info, warn};
 
 use crate::config::{DEFAULT_TEXTURE_RESOLUTION, TEXTURE_RESOLUTIONS};
 
+use super::cloud_haze;
 use super::cloud_source::{CloudSource, Download};
 use super::mailbox::{DecodedTextureMessage, TextureMailbox};
 use super::texture_loader::{self, Channels, DecodedImage, Pixels};
@@ -259,6 +262,17 @@ pub(crate) enum PollOutcome {
     Unchanged,
     /// The fetch or the decode failed; the caller decides about backoff.
     Failed,
+    /// A new image was downloaded after the gate closed, and was dropped
+    /// undecoded with nothing written, so the next poll downloads it again.
+    Abandoned,
+}
+
+/// The two mailbox slots every cloud map is posted to: the map's, and its
+/// clear-sky background's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CloudSlots {
+    pub map: usize,
+    pub background: usize,
 }
 
 /// Turns a [`CloudSource`] into decoded frames in the texture mailbox, keeping
@@ -267,7 +281,7 @@ pub(crate) struct CloudUpdater {
     source: Arc<dyn CloudSource>,
     mailbox: TextureMailbox,
     notify: NotifyFn,
-    slot: usize,
+    slots: CloudSlots,
     cache_dir: Option<PathBuf>,
     /// Whether `SUNLIT_EARTH_CLOUD_URL` is in force, which decides what the
     /// cache entry is named after. Read once: the environment does not change
@@ -284,6 +298,13 @@ pub(crate) struct CloudUpdater {
     image_path: Option<PathBuf>,
     meta_path: Option<PathBuf>,
     cached_meta: Option<CacheMeta>,
+    /// Whether a map has been posted since construction, from the cache or
+    /// the network. A cell because posting reads the updater and changes
+    /// nothing else.
+    posted: Cell<bool>,
+    /// Whether a download that has come back is still wanted, read between the
+    /// download and its decode. `None` wants every one.
+    gate: Option<Arc<AtomicBool>>,
 }
 
 /// What a cache entry is named after.
@@ -322,7 +343,7 @@ impl CloudUpdater {
         source: Arc<dyn CloudSource>,
         mailbox: TextureMailbox,
         notify: NotifyFn,
-        slot: usize,
+        slots: CloudSlots,
         cache_dir: Option<PathBuf>,
         resolution: u32,
     ) -> Self {
@@ -337,7 +358,7 @@ impl CloudUpdater {
             source,
             mailbox,
             notify,
-            slot,
+            slots,
             cache_dir,
             overridden,
             variant,
@@ -345,6 +366,8 @@ impl CloudUpdater {
             image_path,
             meta_path,
             cached_meta,
+            posted: Cell::new(false),
+            gate: None,
         }
     }
 
@@ -359,10 +382,13 @@ impl CloudUpdater {
     ///
     /// A resolution that maps to the variant already in force is a no-op, which
     /// is what lets the worker call this before every poll.
-    pub fn set_resolution(&mut self, resolution: u32) {
+    ///
+    /// Returns whether it moved to another cache entry, whose image it has
+    /// then posted if there was one.
+    pub fn set_resolution(&mut self, resolution: u32) -> bool {
         let variant = cloud_variant(resolution);
         if variant == self.variant {
-            return;
+            return false;
         }
         self.variant = variant;
 
@@ -372,7 +398,7 @@ impl CloudUpdater {
             // nothing: the same image is served either way, and moving the
             // cache entry or dropping the ETag would only cost a re-download of
             // bytes already in hand.
-            return;
+            return false;
         }
         self.url = url;
         info!(url = %self.url, resolution, "cloud variant follows the texture resolution");
@@ -386,6 +412,18 @@ impl CloudUpdater {
         self.meta_path = meta_path;
         self.cached_meta = self.meta_path.as_ref().and_then(|p| load_cache_meta(p));
         self.post_cached();
+        true
+    }
+
+    /// Drop every download that comes back while `gate` reads false, before it
+    /// is decoded or anything of it is written.
+    pub fn set_gate(&mut self, gate: Arc<AtomicBool>) {
+        self.gate = Some(gate);
+    }
+
+    /// Whether a map has been posted since construction.
+    pub fn has_posted(&self) -> bool {
+        self.posted.get()
     }
 
     /// Decode the cached image, if any, and post it so clouds appear without
@@ -430,6 +468,21 @@ impl CloudUpdater {
                 return PollOutcome::Failed;
             }
         };
+
+        // Before the decode and before the cache: the bytes are dropped with
+        // no image, sidecar or ETag written, so the next poll is a download
+        // rather than a 304 with nothing to post.
+        if self
+            .gate
+            .as_ref()
+            .is_some_and(|gate| !gate.load(Ordering::SeqCst))
+        {
+            info!(
+                bytes = fetched.bytes.len(),
+                "the cloud layer was switched off during the download, dropping it"
+            );
+            return PollOutcome::Abandoned;
+        }
 
         info!(
             bytes = fetched.bytes.len(),
@@ -486,14 +539,30 @@ impl CloudUpdater {
         PollOutcome::Updated
     }
 
+    /// Post a map and its clear-sky background, the background first.
+    ///
+    /// Neither carries a generation: the two slots are never purged, so there
+    /// is nothing for a stamp to protect.
     fn post(&self, img: DecodedImage) {
+        let start = std::time::Instant::now();
+        let background = cloud_haze::background(&img);
+        info!(
+            width = img.width,
+            height = img.height,
+            elapsed_ms = format_args!("{:.1}", start.elapsed().as_secs_f64() * 1000.0),
+            "estimated the clear-sky background"
+        );
         self.mailbox.post(DecodedTextureMessage {
-            slot_index: self.slot,
-            result: Ok(img),
-            // The cloud slot is never purged, so there is nothing for a stamp
-            // to protect.
+            slot_index: self.slots.background,
+            result: Ok(background),
             generation: None,
         });
+        self.mailbox.post(DecodedTextureMessage {
+            slot_index: self.slots.map,
+            result: Ok(img),
+            generation: None,
+        });
+        self.posted.set(true);
         (self.notify)();
     }
 }
@@ -858,12 +927,39 @@ mod tests {
 
     use super::super::cloud_source::CloudImage;
 
+    const SLOTS: CloudSlots = CloudSlots {
+        map: 3,
+        background: 4,
+    };
+    const SLOT_COUNT: usize = 5;
+
+    /// Take everything parked and count the maps, each of which must have come
+    /// with a background of the grid's size.
+    fn maps_posted(mailbox: &TextureMailbox) -> usize {
+        let posted = mailbox.take_all();
+        let in_slot = |slot| posted.iter().filter(|m| m.slot_index == slot).count();
+        let (maps, backgrounds) = (in_slot(SLOTS.map), in_slot(SLOTS.background));
+        assert_eq!(maps, backgrounds, "a map without its background");
+        assert_eq!(maps + backgrounds, posted.len(), "a post to another slot");
+        for message in posted.iter().filter(|m| m.slot_index == SLOTS.background) {
+            let image = message
+                .result
+                .as_ref()
+                .expect("a background is never an error");
+            assert_eq!(
+                (image.width as usize, image.height as usize),
+                (cloud_haze::GRID_WIDTH, cloud_haze::GRID_HEIGHT)
+            );
+        }
+        maps
+    }
+
     fn updater_for(source: Arc<ScriptedSource>, mailbox: &TextureMailbox) -> CloudUpdater {
         CloudUpdater::new(
             source,
             mailbox.clone(),
             no_notify(),
-            3,
+            SLOTS,
             None,
             DEFAULT_TEXTURE_RESOLUTION,
         )
@@ -911,13 +1007,11 @@ mod tests {
     #[test]
     fn updater_downloads_then_revalidates_then_republishes() {
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let mut updater = updater_for(Arc::clone(&source), &mailbox);
 
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
-        let posted = mailbox.take_all();
-        assert_eq!(posted.len(), 1);
-        assert_eq!(posted[0].slot_index, 3);
+        assert_eq!(maps_posted(&mailbox), 1);
 
         assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
         assert_eq!(updater.poll_once(), PollOutcome::Unchanged);
@@ -931,7 +1025,7 @@ mod tests {
         source.publish();
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
         assert_eq!(source.fetches(), 2);
-        assert_eq!(mailbox.take_all().len(), 1);
+        assert_eq!(maps_posted(&mailbox), 1);
     }
 
     /// A failure posts nothing and leaves the freshness the last success
@@ -940,7 +1034,7 @@ mod tests {
     #[test]
     fn updater_reports_failure_and_recovers() {
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let mut updater = updater_for(Arc::clone(&source), &mailbox);
 
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
@@ -962,20 +1056,26 @@ mod tests {
 
         source.publish();
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
-        assert_eq!(mailbox.take_all().len(), 1, "the recovery posts a frame");
+        assert_eq!(maps_posted(&mailbox), 1, "the recovery posts a frame");
     }
 
     #[test]
     fn updater_notifies_after_posting() {
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
         let notify: NotifyFn = Arc::new(move || {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
-        let mut updater =
-            CloudUpdater::new(source, mailbox, notify, 3, None, DEFAULT_TEXTURE_RESOLUTION);
+        let mut updater = CloudUpdater::new(
+            source,
+            mailbox,
+            notify,
+            SLOTS,
+            None,
+            DEFAULT_TEXTURE_RESOLUTION,
+        );
 
         updater.poll_once();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -984,7 +1084,7 @@ mod tests {
     #[test]
     fn updater_without_a_cache_dir_posts_nothing_from_disk() {
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let updater = updater_for(source, &mailbox);
         assert!(!updater.post_cached());
         assert!(mailbox.take_all().is_empty());
@@ -995,7 +1095,7 @@ mod tests {
         let scratch = ScratchDir::new("cloud_updater_cache");
         let dir = scratch.path();
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
 
         let mut first = cached_updater(&source, &mailbox, dir, DEFAULT_TEXTURE_RESOLUTION);
         first.poll_once();
@@ -1006,7 +1106,36 @@ mod tests {
         assert_eq!(second.poll_once(), PollOutcome::Unchanged);
         assert_eq!(source.fetches(), 1);
         assert!(second.post_cached(), "the cached JPEG should decode");
-        assert_eq!(mailbox.take_all().len(), 1);
+        assert_eq!(maps_posted(&mailbox), 1);
+    }
+
+    /// A download that comes back while the gate is closed is dropped with
+    /// nothing decoded, posted or written, so the next poll with the gate open
+    /// downloads it again rather than revalidating into a 304.
+    #[test]
+    fn a_download_returning_through_a_closed_gate_leaves_nothing_behind() {
+        let scratch = ScratchDir::new("cloud_updater_gate");
+        let dir = scratch.path();
+        let source = Arc::new(ScriptedSource::new());
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut updater = cached_updater(&source, &mailbox, dir, DEFAULT_TEXTURE_RESOLUTION);
+        updater.set_gate(Arc::clone(&gate));
+
+        assert_eq!(updater.poll_once(), PollOutcome::Abandoned);
+        assert_eq!(source.fetches(), 1);
+        assert!(mailbox.take_all().is_empty(), "something was posted");
+        assert!(!updater.has_posted());
+        assert_eq!(
+            std::fs::read_dir(dir).expect("the cache directory").count(),
+            0,
+            "something was written to the cache"
+        );
+
+        gate.store(true, Ordering::SeqCst);
+        assert_eq!(updater.poll_once(), PollOutcome::Updated);
+        assert_eq!(source.fetches(), 2, "the open gate downloads again");
+        assert_eq!(maps_posted(&mailbox), 1);
     }
 
     /// An updater on a disk cache at a chosen resolution.
@@ -1020,7 +1149,7 @@ mod tests {
             Arc::clone(source) as Arc<dyn CloudSource>,
             mailbox.clone(),
             no_notify(),
-            3,
+            SLOTS,
             Some(dir.to_path_buf()),
             resolution,
         )
@@ -1033,12 +1162,12 @@ mod tests {
     #[test]
     fn construction_points_the_source_at_the_variant_it_will_cache_under() {
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let _updater = CloudUpdater::new(
             Arc::clone(&source) as Arc<dyn CloudSource>,
             mailbox,
             no_notify(),
-            3,
+            SLOTS,
             None,
             8192,
         );
@@ -1054,7 +1183,7 @@ mod tests {
     #[test]
     fn set_resolution_points_the_source_at_the_new_variant() {
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let mut updater = updater_for(Arc::clone(&source), &mailbox);
         source.forget_retargets();
 
@@ -1075,7 +1204,7 @@ mod tests {
     #[test]
     fn a_resolution_that_keeps_the_variant_does_not_retarget() {
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let mut updater = updater_for(Arc::clone(&source), &mailbox);
         source.forget_retargets();
 
@@ -1117,7 +1246,7 @@ mod tests {
         let meta = dir.join(format!("{stem}_meta.toml"));
 
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let mut updater = cached_updater(&source, &mailbox, dir, 8192);
 
         // A healthy poll first, so there is an entry for the failure to have to
@@ -1135,7 +1264,7 @@ mod tests {
             PollOutcome::Updated,
             "a cache that cannot be written must not stop the frame reaching the screen"
         );
-        assert_eq!(mailbox.take_all().len(), 1);
+        assert_eq!(maps_posted(&mailbox), 1);
         assert!(
             !meta.is_file(),
             "an ETag was recorded for an image that is not on disk"
@@ -1158,7 +1287,7 @@ mod tests {
         let meta = dir.join(format!("{stem}_meta.toml"));
 
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
         let mut updater = cached_updater(&source, &mailbox, dir, 8192);
 
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
@@ -1188,7 +1317,7 @@ mod tests {
             PollOutcome::Updated,
             "the retry must re-download, not revalidate into a 304"
         );
-        assert_eq!(mailbox.take_all().len(), 1);
+        assert_eq!(maps_posted(&mailbox), 1);
         assert_eq!(source.fetches(), 3);
     }
 
@@ -1196,7 +1325,7 @@ mod tests {
     fn a_switch_with_nothing_cached_and_no_network_posts_nothing() {
         let scratch = ScratchDir::new("cloud_switch_offline");
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
 
         let mut updater = cached_updater(&source, &mailbox, scratch.path(), 8192);
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
@@ -1216,7 +1345,7 @@ mod tests {
         let scratch = ScratchDir::new("cloud_variant_cache");
         let (widest, narrowest) = widest_and_narrowest();
         let source = Arc::new(ScriptedSource::new());
-        let mailbox = TextureMailbox::new(4);
+        let mailbox = TextureMailbox::new(SLOT_COUNT);
 
         let mut updater = cached_updater(&source, &mailbox, scratch.path(), widest);
         assert_eq!(updater.poll_once(), PollOutcome::Updated);
@@ -1242,7 +1371,7 @@ mod tests {
         // on disk with its own ETag.
         updater.set_resolution(widest);
         assert_eq!(
-            mailbox.take_all().len(),
+            maps_posted(&mailbox),
             1,
             "the switch must post the cached wide image"
         );

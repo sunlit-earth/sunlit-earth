@@ -66,6 +66,9 @@ struct RenderContext {
     /// A one-layer black tile array and a page table of one cell per face that
     /// draws the floor, for every case that draws no tile.
     dummy_tiles: [wgpu::TextureView; 2],
+    /// A 1x1 black texture at binding 3, which reads as no clear-sky
+    /// background.
+    dummy_background: wgpu::TextureView,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -134,6 +137,16 @@ fn create_render_context() -> RenderContext {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
             cube_entry(4),
             cube_entry(5),
             cube_entry(6),
@@ -160,6 +173,7 @@ fn create_render_context() -> RenderContext {
         ],
     });
     let dummy_cube = create_solid_cube(&device, &queue, [[0, 0, 0, 255]; 6]);
+    let dummy_background = create_solid_texture(&device, &queue, [0, 0, 0, 255]);
     let dummy_tiles = create_dummy_tiles(&device, &queue);
     let surface_sampler = device.create_sampler(
         &sunlit_core::renderer::surface_sampler_descriptor(ctx.cpu_adapter),
@@ -234,6 +248,7 @@ fn create_render_context() -> RenderContext {
         surface_sampler,
         dummy_cube,
         dummy_tiles,
+        dummy_background,
     }
 }
 
@@ -438,7 +453,38 @@ fn bind_group_with(
     cubes: [&wgpu::TextureView; 3],
     tiles: [&wgpu::TextureView; 2],
 ) -> wgpu::BindGroup {
+    bind_group_of(ctx, [flat, &ctx.dummy_background], sampler, cubes, tiles)
+}
+
+/// The cloud draw's group: the map and its clear-sky background, the water
+/// mask in the third cube place.
+fn cloud_bind_group(
+    ctx: &RenderContext,
+    map: &wgpu::TextureView,
+    background: &wgpu::TextureView,
+    mask: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    let [tiles, pages] = &ctx.dummy_tiles;
+    let dummy = &ctx.dummy_cube;
+    bind_group_of(
+        ctx,
+        [map, background],
+        &ctx.sampler,
+        [dummy, dummy, mask],
+        [tiles, pages],
+    )
+}
+
+/// A bind group of the production layout: `flat` at bindings 1 and 3.
+fn bind_group_of(
+    ctx: &RenderContext,
+    flat: [&wgpu::TextureView; 2],
+    sampler: &wgpu::Sampler,
+    cubes: [&wgpu::TextureView; 3],
+    tiles: [&wgpu::TextureView; 2],
+) -> wgpu::BindGroup {
     let view = wgpu::BindingResource::TextureView;
+    let [flat, background] = flat;
     ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test_bind_group"),
         layout: &ctx.bind_group_layout,
@@ -454,6 +500,10 @@ fn bind_group_with(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: view(background),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
@@ -668,8 +718,8 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         night_saturation: 1.0,
         cloud_sphere_radius: 1.0015,
         cloud_opacity: 0.0,
-        cloud_floor: 0.0,
-        cloud_gamma: 1.0,
+        cloud_floor_land: 0.0,
+        cloud_gamma_land: 1.0,
         rayleigh_intensity: 0.0,
         rayleigh_sharpness: 50.0,
         nightglow_intensity: 0.0,
@@ -681,7 +731,7 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         rayleigh_haze: 0.55,
         cloud_night: 0.35,
         cloud_terminator: sunlit_core::params::CLOUD_TERMINATOR_WIDTH,
-        _pad5: 0.0,
+        cloud_haze_equator: 0.0,
         sky_view: glam::Mat4::IDENTITY.to_cols_array(),
         world_from_eqj: [
             [1.0, 0.0, 0.0, 0.0],
@@ -732,8 +782,12 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         night_ocean: 0,
         tile_texels: 0.0,
         tile_gutter: 0.0,
-        _pad9: 0.0,
-        _pad10: 0.0,
+        cloud_floor_ocean: 0.0,
+        cloud_gamma_ocean: 1.0,
+        cloud_haze_pole: 0.0,
+        cloud_haze_latitude: 60.0,
+        cloud_haze_band: 20.0,
+        _pad11: 0.0,
     }
 }
 
@@ -874,8 +928,8 @@ fn uniform_readback() {
     // cloud params
     output[22] = uniforms.cloud_sphere_radius;
     output[23] = uniforms.cloud_opacity;
-    output[24] = uniforms.cloud_floor;
-    output[25] = uniforms.cloud_gamma;
+    output[24] = uniforms.cloud_floor_land;
+    output[25] = uniforms.cloud_gamma_land;
     // atmosphere params
     output[26] = uniforms.rayleigh_intensity;
     output[27] = uniforms.rayleigh_sharpness;
@@ -937,6 +991,13 @@ fn uniform_readback() {
     output[76] = f32(uniforms.night_ocean);
     output[77] = uniforms.tile_texels;
     output[78] = uniforms.tile_gutter;
+    // the cloud settings by latitude and by surface
+    output[79] = uniforms.cloud_haze_equator;
+    output[80] = uniforms.cloud_floor_ocean;
+    output[81] = uniforms.cloud_gamma_ocean;
+    output[82] = uniforms.cloud_haze_pole;
+    output[83] = uniforms.cloud_haze_latitude;
+    output[84] = uniforms.cloud_haze_band;
 }
 ";
 
@@ -945,7 +1006,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 79] = [
+const PROBED_FIELDS: [(f32, &str); 85] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -970,8 +1031,8 @@ const PROBED_FIELDS: [(f32, &str); 79] = [
     (0.6, "night_saturation"),
     (1.0015, "cloud_sphere_radius"),
     (0.9, "cloud_opacity"),
-    (0.25, "cloud_floor"),
-    (0.65, "cloud_gamma"),
+    (0.25, "cloud_floor_land"),
+    (0.65, "cloud_gamma_land"),
     (0.5, "rayleigh_intensity"),
     (50.0, "rayleigh_sharpness"),
     (0.25, "nightglow_intensity"),
@@ -1025,6 +1086,12 @@ const PROBED_FIELDS: [(f32, &str); 79] = [
     (984_325.0, "night_ocean"),
     (128.0, "tile_texels"),
     (8.0, "tile_gutter"),
+    (0.85, "cloud_haze_equator"),
+    (0.12, "cloud_floor_ocean"),
+    (1.3, "cloud_gamma_ocean"),
+    (0.2, "cloud_haze_pole"),
+    (47.0, "cloud_haze_latitude"),
+    (33.0, "cloud_haze_band"),
 ];
 
 #[allow(clippy::too_many_lines)]
@@ -1076,8 +1143,8 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         night_saturation: 0.6,
         cloud_sphere_radius: 1.0015,
         cloud_opacity: 0.9,
-        cloud_floor: 0.25,
-        cloud_gamma: 0.65,
+        cloud_floor_land: 0.25,
+        cloud_gamma_land: 0.65,
         rayleigh_intensity: 0.5,
         rayleigh_sharpness: 50.0,
         nightglow_intensity: 0.25,
@@ -1089,7 +1156,7 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         rayleigh_haze: 0.55,
         cloud_night: 0.31,
         cloud_terminator: 0.19,
-        _pad5: 0.0,
+        cloud_haze_equator: 0.85,
         sky_view: mvp,
         world_from_eqj: [
             [1.0, 0.0, 0.0, 0.0],
@@ -1136,8 +1203,12 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         night_ocean: 0x000F_0505,
         tile_texels: 128.0,
         tile_gutter: 8.0,
-        _pad9: 0.0,
-        _pad10: 0.0,
+        cloud_floor_ocean: 0.12,
+        cloud_gamma_ocean: 1.3,
+        cloud_haze_pole: 0.2,
+        cloud_haze_latitude: 47.0,
+        cloud_haze_band: 33.0,
+        _pad11: 0.0,
     };
 
     let uniform_buf = ctx
@@ -1951,7 +2022,6 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
 /// Draw `shell` alone over the clear color, with a solid white cloud map, and
 /// return the RGBA8 pixel data.
 fn render_shell(ctx: &RenderContext, shell: Shell, uniforms: &Uniforms, size: u32) -> Vec<u8> {
-    let pipeline = shell_pipeline(ctx, shell);
     let cloud_tex = create_solid_texture(&ctx.device, &ctx.queue, [255, 255, 255, 255]);
     let dummy_cube = &ctx.dummy_cube;
     let bind_group = test_bind_group(
@@ -1960,6 +2030,19 @@ fn render_shell(ctx: &RenderContext, shell: Shell, uniforms: &Uniforms, size: u3
         &ctx.sampler,
         [dummy_cube, dummy_cube, dummy_cube],
     );
+    render_shell_with(ctx, shell, uniforms, size, &bind_group)
+}
+
+/// Draw `shell` alone over the clear color from `bind_group`, and return the
+/// RGBA8 pixel data.
+fn render_shell_with(
+    ctx: &RenderContext,
+    shell: Shell,
+    uniforms: &Uniforms,
+    size: u32,
+    bind_group: &wgpu::BindGroup,
+) -> Vec<u8> {
+    let pipeline = shell_pipeline(ctx, shell);
     ctx.queue
         .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
 
@@ -2017,7 +2100,7 @@ fn render_shell(ctx: &RenderContext, shell: Shell, uniforms: &Uniforms, size: u3
             ..Default::default()
         });
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
         pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..ctx.index_count, 0, 0..1);
@@ -2045,6 +2128,226 @@ fn cloud_pipeline_renders_with_alpha() {
         visible > 50,
         "Cloud pipeline should render visible pixels, got {visible}"
     );
+}
+
+/// The two masks the land and ocean cloud cases draw over: every texel open
+/// water, which reads 255, or every texel land.
+#[derive(Clone, Copy, Debug)]
+enum Ground {
+    Water,
+    Land,
+}
+
+/// Draw the cloud shell from a solid map of `map` and a solid clear-sky
+/// background of `background` over a mask that is all `ground`.
+fn render_clouds_over(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    map: u8,
+    background: u8,
+    ground: Ground,
+) -> Vec<u8> {
+    let solid = |value| create_solid_texture(&ctx.device, &ctx.queue, [value, value, value, 255]);
+    let water = match ground {
+        Ground::Water => 255,
+        Ground::Land => 0,
+    };
+    let mask = create_solid_cube(&ctx.device, &ctx.queue, [[water, water, water, 255]; 6]);
+    let group = cloud_bind_group(ctx, &solid(map), &solid(background), &mask);
+    render_shell_with(ctx, Shell::Cloud, uniforms, CLOUD_CASE_SIZE, &group)
+}
+
+/// Uniforms for the land and ocean cloud cases: the whole globe in the frame,
+/// day everywhere, full day opacity, no haze removal, and the land and ocean
+/// settings given as (floor, gamma).
+fn cloud_surface_uniforms(land: (f32, f32), ocean: (f32, f32)) -> Uniforms {
+    let eye = glam::Vec3::new(0.0, 0.0, 8.0);
+    Uniforms {
+        mvp: test_mvp_with_eye(CLOUD_CASE_SIZE, CLOUD_CASE_SIZE, eye),
+        eye_pos: eye.into(),
+        flags: FLAG_UNIFORM_DAY,
+        cloud_opacity: 1.0,
+        cloud_haze_equator: 0.0,
+        cloud_haze_pole: 0.0,
+        cloud_floor_land: land.0,
+        cloud_gamma_land: land.1,
+        cloud_floor_ocean: ocean.0,
+        cloud_gamma_ocean: ocean.1,
+        ..default_test_uniforms(CLOUD_CASE_SIZE)
+    }
+}
+
+/// Uniforms for the haze cases: day everywhere, full day opacity, no floor, a
+/// gamma of 1, and the haze removal toward the equator and toward the poles
+/// of `latitude`, blended over 20 degrees.
+fn cloud_haze_uniforms(equator: f32, pole: f32, latitude: f32) -> Uniforms {
+    Uniforms {
+        cloud_haze_equator: equator,
+        cloud_haze_pole: pole,
+        cloud_haze_latitude: latitude,
+        cloud_haze_band: 20.0,
+        ..cloud_surface_uniforms((0.0, 1.0), (0.0, 1.0))
+    }
+}
+
+/// The frame size of the cloud cases.
+const CLOUD_CASE_SIZE: u32 = 64;
+
+/// The cloud pixels in each row of a frame of the cloud cases.
+fn cloud_pixels_by_row(pixels: &[u8]) -> Vec<usize> {
+    pixels
+        .chunks(CLOUD_CASE_SIZE as usize * 4)
+        .map(count_non_clear_pixels)
+        .collect()
+}
+
+/// With no haze removal and the same values over land and ocean, the mask
+/// cannot be seen in the frame. The one case of the three a swap of land and
+/// water in `fs_cloud` cannot fail, since nothing tells the two apart.
+#[test]
+fn equal_land_and_ocean_settings_hide_the_mask() {
+    let ctx = render_ctx();
+    let uniforms = cloud_surface_uniforms((0.2, 0.8), (0.2, 0.8));
+    let water = render_clouds_over(&ctx, &uniforms, 180, 120, Ground::Water);
+    let land = render_clouds_over(&ctx, &uniforms, 180, 120, Ground::Land);
+    assert!(count_non_clear_pixels(&water) > 50, "no cloud was drawn");
+    assert_eq!(water, land);
+}
+
+/// The land's floor applies over land and the ocean's over water.
+#[test]
+fn the_land_floor_applies_over_land_and_the_ocean_floor_over_water() {
+    let ctx = render_ctx();
+    let uniforms = cloud_surface_uniforms((1.0, 1.0), (0.0, 1.0));
+    let water = render_clouds_over(&ctx, &uniforms, 200, 0, Ground::Water);
+    let land = render_clouds_over(&ctx, &uniforms, 200, 0, Ground::Land);
+    assert!(
+        count_non_clear_pixels(&water) > 50,
+        "the ocean's floor of 0 must leave the cloud over water"
+    );
+    assert_eq!(
+        count_non_clear_pixels(&land),
+        0,
+        "the land's floor of 1 must leave no cloud over land"
+    );
+}
+
+/// A background equal to the map is all haze: removing all of it removes the
+/// cloud, and removing none of it leaves the cloud, over either surface.
+#[test]
+fn haze_removal_takes_the_background_off_the_map() {
+    let ctx = render_ctx();
+    for ground in [Ground::Land, Ground::Water] {
+        let all = render_clouds_over(&ctx, &cloud_haze_uniforms(1.0, 1.0, 60.0), 150, 150, ground);
+        let none = render_clouds_over(&ctx, &cloud_haze_uniforms(0.0, 0.0, 60.0), 150, 150, ground);
+        assert_eq!(
+            count_non_clear_pixels(&all),
+            0,
+            "{ground:?}: removing all the haze must remove the cloud"
+        );
+        assert!(
+            count_non_clear_pixels(&none) > 50,
+            "{ground:?}: removing none of the haze must leave the cloud"
+        );
+    }
+}
+
+/// A background above the cap is taken off only up to the cap at a haze
+/// removal of 1, and entirely at 2, which lifts the cap to full brightness.
+#[test]
+fn haze_removal_beyond_one_lifts_the_cap() {
+    let ctx = render_ctx();
+    let at_one = render_clouds_over(
+        &ctx,
+        &cloud_haze_uniforms(1.0, 1.0, 60.0),
+        240,
+        240,
+        Ground::Land,
+    );
+    let at_two = render_clouds_over(
+        &ctx,
+        &cloud_haze_uniforms(2.0, 2.0, 60.0),
+        240,
+        240,
+        Ground::Land,
+    );
+    assert!(
+        count_non_clear_pixels(&at_one) > 50,
+        "a haze removal of 1 must leave what is above the cap"
+    );
+    assert_eq!(
+        count_non_clear_pixels(&at_two),
+        0,
+        "a haze removal of 2 must take off the whole background"
+    );
+}
+
+/// The equatorward value applies around the equator, which is the frame's
+/// middle row, and the poleward one at the poles, its first and last rows
+/// with cloud in them.
+#[test]
+fn the_haze_removal_follows_the_latitude() {
+    let ctx = render_ctx();
+    let rows = |equator, pole| {
+        cloud_pixels_by_row(&render_clouds_over(
+            &ctx,
+            &cloud_haze_uniforms(equator, pole, 45.0),
+            150,
+            150,
+            Ground::Land,
+        ))
+    };
+    let all = rows(0.0, 0.0);
+    let first = all.iter().position(|&n| n > 0).expect("no cloud was drawn");
+    let last = all
+        .iter()
+        .rposition(|&n| n > 0)
+        .expect("no cloud was drawn");
+    let middle = CLOUD_CASE_SIZE as usize / 2;
+
+    let kept_at_the_equator = rows(0.0, 1.0);
+    assert!(
+        kept_at_the_equator[middle] > 0,
+        "the equator lost its cloud"
+    );
+    assert_eq!(kept_at_the_equator[first], 0, "the north kept its cloud");
+    assert_eq!(kept_at_the_equator[last], 0, "the south kept its cloud");
+
+    let kept_at_the_poles = rows(1.0, 0.0);
+    assert_eq!(kept_at_the_poles[middle], 0, "the equator kept its cloud");
+    assert!(kept_at_the_poles[first] > 0, "the north lost its cloud");
+    assert!(kept_at_the_poles[last] > 0, "the south lost its cloud");
+}
+
+/// Above 1 the amount taken off stops growing once the lifted cap passes the
+/// level, so the change has to be spread over the whole band rather than
+/// finished where the cap passes it. With the band from the equator to the
+/// pole and a level of 235 between the cap at 1 and the one at 2, the cloud
+/// thins toward the poles but is still there in the first and last rows the
+/// globe reaches, about 83 degrees, where blending the strengths instead
+/// would have emptied everything poleward of about 44 degrees.
+#[test]
+fn a_haze_above_one_changes_across_the_whole_band() {
+    let ctx = render_ctx();
+    let rows = |equator, pole| {
+        let uniforms = Uniforms {
+            cloud_haze_band: 90.0,
+            ..cloud_haze_uniforms(equator, pole, 45.0)
+        };
+        cloud_pixels_by_row(&render_clouds_over(&ctx, &uniforms, 235, 235, Ground::Land))
+    };
+    let all = rows(0.0, 0.0);
+    let first = all.iter().position(|&n| n > 0).expect("no cloud was drawn");
+    let last = all
+        .iter()
+        .rposition(|&n| n > 0)
+        .expect("no cloud was drawn");
+    let middle = CLOUD_CASE_SIZE as usize / 2;
+
+    let blended = rows(1.0, 2.0);
+    for (row, name) in [(first, "north"), (middle, "equator"), (last, "south")] {
+        assert!(blended[row] > 0, "the {name} lost its cloud");
+    }
 }
 
 /// The frame size of the shell lighting cases.

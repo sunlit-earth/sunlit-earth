@@ -198,6 +198,7 @@ const SLINT_LITERAL_PRECISION: f32 = 1.0e-3;
 /// slider a user touches pushes all the others to whatever the `.slint` file
 /// happened to say.
 #[test]
+#[expect(clippy::too_many_lines, reason = "one row per property of the window")]
 fn test_the_window_and_the_config_start_from_the_same_defaults() {
     /// One row per property: the `AppConfig` field, the window getter that
     /// mirrors it, and the tolerance the pair is compared at.
@@ -251,8 +252,14 @@ fn test_the_window_and_the_config_start_from_the_same_defaults() {
         fresnel_exp from get_fresnel_exp,
         cloud_opacity from get_cloud_opacity,
         cloud_opacity_night from get_cloud_opacity_night,
-        cloud_floor from get_cloud_floor,
-        cloud_gamma from get_cloud_gamma,
+        cloud_haze_equator from get_cloud_haze_equator,
+        cloud_haze_pole from get_cloud_haze_pole,
+        cloud_haze_latitude from get_cloud_haze_latitude,
+        cloud_haze_band from get_cloud_haze_band,
+        cloud_floor_land from get_cloud_floor_land,
+        cloud_gamma_land from get_cloud_gamma_land,
+        cloud_floor_ocean from get_cloud_floor_ocean,
+        cloud_gamma_ocean from get_cloud_gamma_ocean,
         cloud_night from get_cloud_night,
         rayleigh_intensity from get_rayleigh_intensity,
         rayleigh_sharpness from get_rayleigh_sharpness,
@@ -300,6 +307,11 @@ fn test_the_window_and_the_config_start_from_the_same_defaults() {
         window.get_atmo_enabled(),
         config.atmo_enabled,
         "atmo_enabled"
+    );
+    assert_eq!(
+        window.get_clouds_enabled(),
+        config.clouds_enabled,
+        "clouds_enabled"
     );
 }
 
@@ -507,6 +519,29 @@ fn test_the_atmosphere_sliders_follow_the_atmosphere_switch() {
             "the rayleigh slider with the atmosphere {}",
             if enabled { "enabled" } else { "disabled" }
         );
+    }
+}
+
+#[test]
+fn test_the_cloud_sliders_follow_the_cloud_switch() {
+    let window = create_window();
+    window.set_advanced_open(true);
+
+    for enabled in [true, false, true] {
+        window.set_clouds_enabled(enabled);
+        for id in [
+            "MainWindow::cloud-opacity-slider",
+            "MainWindow::cloud-haze-equator-slider",
+            "MainWindow::cloud-gamma-ocean-slider",
+        ] {
+            let sliders: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
+            assert_eq!(
+                !sliders.is_empty(),
+                enabled,
+                "{id} with the clouds {}",
+                if enabled { "shown" } else { "hidden" }
+            );
+        }
     }
 }
 

@@ -81,11 +81,11 @@ Run these commands from the repository root:
 ```bash
 cargo build                              # debug workspace build
 cargo build --release                    # optimized build with LTO and stripped symbols
-cargo run                                # launch the app
-cargo run -- --software-rendering        # request software rendering
-cargo run -- --quality high              # override the quality tier for this run
-cargo run -- --texture-resolution 2048    # override texture width for this run
-cargo run -- render --output earth.png --width 1920 --height 1080
+cargo app                                # launch the app
+cargo app -- --software-rendering        # request software rendering
+cargo app -- --quality high              # override the quality tier for this run
+cargo app -- --texture-resolution 2048    # override texture width for this run
+cargo app -- render --output earth.png --width 1920 --height 1080
 ```
 
 See [usage.md](usage.md) for launch flags and display diagnostics. The normal build uses committed assets and does not require the asset preparation tools.

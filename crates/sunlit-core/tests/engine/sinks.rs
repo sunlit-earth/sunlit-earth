@@ -163,7 +163,7 @@ pub(crate) fn publish_plan(
     mode: DisplayMode,
     anchor: Option<&str>,
 ) -> Publication {
-    publish_plan_with(group, monitors, mode, anchor, test_params())
+    publish_plan_with(group, monitors, mode, anchor, &test_params())
 }
 
 /// The same, with the scene said out loud, for the cases that compare pixels.
@@ -172,7 +172,7 @@ pub(crate) fn publish_plan_with(
     monitors: Vec<Monitor>,
     mode: DisplayMode,
     anchor: Option<&str>,
-    params: SceneParams,
+    params: &SceneParams,
 ) -> Publication {
     group.sink.set_monitors(monitors);
     group.engine.send(EngineCommand::SetDisplayPlan {
@@ -181,7 +181,7 @@ pub(crate) fn publish_plan_with(
     });
     group
         .engine
-        .send(EngineCommand::UpdateParams(Box::new(params)));
+        .send(EngineCommand::UpdateParams(Box::new(*params)));
     publish_once(group)
 }
 

@@ -125,12 +125,20 @@ pub(super) enum LayerState {
     Failed,
 }
 
-/// The cubes `mode` draws the globe from while `month` is in force.
-pub(super) fn needs(mode: TextureMode, month: usize) -> Vec<SurfaceLayer> {
+/// The cubes `mode` draws the globe from while `month` is in force, and the
+/// water mask the cloud layer takes its land weight from when `clouds` are
+/// drawn over a surface that does not read the mask itself.
+pub(super) fn needs(mode: TextureMode, month: usize, clouds: bool) -> Vec<SurfaceLayer> {
+    let with_mask = |mut layers: Vec<SurfaceLayer>| {
+        if clouds {
+            layers.push(SurfaceLayer::Mask);
+        }
+        layers
+    };
     match mode {
         TextureMode::Grid => Vec::new(),
-        TextureMode::Day => vec![SurfaceLayer::Day(month)],
-        TextureMode::Night => vec![SurfaceLayer::Night],
+        TextureMode::Day => with_mask(vec![SurfaceLayer::Day(month)]),
+        TextureMode::Night => with_mask(vec![SurfaceLayer::Night]),
         TextureMode::Blend => vec![
             SurfaceLayer::Day(month),
             SurfaceLayer::Night,
@@ -313,9 +321,10 @@ impl SurfaceSet {
     }
 
     /// Whether the cubes `mode` needs are all resident, and whether one of them
-    /// is still on its way.
-    pub(super) fn readiness(&self, mode: TextureMode) -> (bool, bool) {
-        readiness(&needs(mode, self.month), |layer| self.state(layer))
+    /// is still on its way, with `clouds` saying whether the cloud layer is
+    /// drawn.
+    pub(super) fn readiness(&self, mode: TextureMode, clouds: bool) -> (bool, bool) {
+        readiness(&needs(mode, self.month, clouds), |layer| self.state(layer))
     }
 
     /// The group `mode` draws with and whether it blends, or `None` while
@@ -596,11 +605,11 @@ mod tests {
 
     #[test]
     fn each_mode_needs_its_own_cubes() {
-        assert!(needs(TextureMode::Grid, 3).is_empty());
-        assert_eq!(needs(TextureMode::Day, 3), [SurfaceLayer::Day(3)]);
-        assert_eq!(needs(TextureMode::Night, 3), [SurfaceLayer::Night]);
+        assert!(needs(TextureMode::Grid, 3, false).is_empty());
+        assert_eq!(needs(TextureMode::Day, 3, false), [SurfaceLayer::Day(3)]);
+        assert_eq!(needs(TextureMode::Night, 3, false), [SurfaceLayer::Night]);
         assert_eq!(
-            needs(TextureMode::Blend, 11),
+            needs(TextureMode::Blend, 11, false),
             [
                 SurfaceLayer::Day(11),
                 SurfaceLayer::Night,
@@ -609,9 +618,31 @@ mod tests {
         );
     }
 
+    /// The cloud layer reads its land weight from the mask, so a mode that
+    /// does not need the mask itself needs it while clouds are drawn.
+    #[test]
+    fn drawn_clouds_add_the_mask_to_every_surface_mode() {
+        for mode in [TextureMode::Day, TextureMode::Night, TextureMode::Blend] {
+            let with = needs(mode, 2, true);
+            assert!(with.contains(&SurfaceLayer::Mask), "{mode:?}");
+            assert_eq!(
+                with.iter()
+                    .filter(|&&layer| layer == SurfaceLayer::Mask)
+                    .count(),
+                1,
+                "{mode:?}"
+            );
+            let without = needs(mode, 2, false);
+            assert!(without.iter().all(|layer| with.contains(layer)), "{mode:?}");
+        }
+        assert!(!needs(TextureMode::Day, 2, false).contains(&SurfaceLayer::Mask));
+        assert!(!needs(TextureMode::Night, 2, false).contains(&SurfaceLayer::Mask));
+        assert!(needs(TextureMode::Grid, 2, true).is_empty());
+    }
+
     #[test]
     fn a_mode_is_ready_when_all_it_needs_is_resident() {
-        let blend = needs(TextureMode::Blend, 4);
+        let blend = needs(TextureMode::Blend, 4, false);
         let all = |_| LayerState::Resident;
         assert_eq!(readiness(&blend, all), (true, false));
 
@@ -621,7 +652,7 @@ mod tests {
         };
         assert_eq!(readiness(&blend, night_waits), (false, true));
         assert_eq!(
-            readiness(&needs(TextureMode::Day, 4), night_waits),
+            readiness(&needs(TextureMode::Day, 4, false), night_waits),
             (true, false),
             "the day alone does not wait for the night"
         );
@@ -631,7 +662,7 @@ mod tests {
     /// wait for, unless another cube it needs is still coming.
     #[test]
     fn a_failed_cube_is_not_waited_for() {
-        let blend = needs(TextureMode::Blend, 0);
+        let blend = needs(TextureMode::Blend, 0, false);
         let mask_failed = |layer| match layer {
             SurfaceLayer::Mask => LayerState::Failed,
             _ => LayerState::Resident,
@@ -658,10 +689,10 @@ mod tests {
         set.mark_failed(SurfaceLayer::Day(5));
         assert_eq!(set.state(SurfaceLayer::Day(5)), LayerState::Failed);
         assert_eq!(set.state(SurfaceLayer::Day(6)), LayerState::Waiting);
-        assert_eq!(set.readiness(TextureMode::Grid), (true, false));
-        assert_eq!(set.readiness(TextureMode::Day), (true, false));
+        assert_eq!(set.readiness(TextureMode::Grid, false), (true, false));
+        assert_eq!(set.readiness(TextureMode::Day, false), (true, false));
         set.month = 6;
-        assert_eq!(set.readiness(TextureMode::Day), (false, true));
+        assert_eq!(set.readiness(TextureMode::Day, false), (false, true));
         assert_eq!(set.route(TextureMode::Blend), None, "nothing to draw yet");
     }
 }

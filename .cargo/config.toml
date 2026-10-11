@@ -8,6 +8,9 @@ e2e = "test --test e2e -- --ignored --test-threads=1 --nocapture"
 unit = "test --workspace --lib --bins"
 # Developer tooling: VM orchestration for the desktop e2e suite.
 xtask = "run -p xtask --"
+# The app. A plain `cargo run` cannot choose between it and the xtask, and the
+# root manifest is a virtual workspace, which has nowhere to put `default-run`.
+app = "run -p sunlit-earth"
 
 # Link the Visual C++ runtime into the binary rather than against
 # `vcruntime140.dll`, which a clean Windows does not carry and which otherwise

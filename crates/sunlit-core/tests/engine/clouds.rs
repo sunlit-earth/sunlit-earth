@@ -1,10 +1,22 @@
-//! Clouds on the night side.
+//! Clouds on the night side, the switch for the layer, and what it says when
+//! it has settled.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
+
+use sunlit_core::assets::cloud_source::{CloudImage, CloudSource};
+use sunlit_core::assets::cube_layout::CubeTextures;
+use sunlit_core::assets::tiles::{self, BuildGate, PackKind};
+use sunlit_core::engine::clock::MockClock;
+use sunlit_core::engine::{EngineCommand, EngineEvent};
 use sunlit_core::params::SceneParams;
 
 use crate::clouds_variant::wait_for_cloud_size;
+use crate::cube::CubeFixture;
 use crate::groups::surface;
-use crate::harness::gpu;
+use crate::harness::{Harness, TIMEOUT, gpu, test_params};
+use crate::sinks::{RecordingSink, screen};
 use crate::support;
 
 /// The size the cloud cases export at. Small on purpose: what they measure is
@@ -78,10 +90,10 @@ fn midnight_at(longitude: f32) -> f32 {
 /// The night side's ground lifted to near display white by its gamma, so a
 /// case has a bright ground under a night deck: the Earth fixture's night is
 /// dark wherever the equatorial band lies.
-fn with_a_lit_night_ground(params: SceneParams) -> SceneParams {
+fn with_a_lit_night_ground(params: &SceneParams) -> SceneParams {
     SceneParams {
         night_gamma: 16.0,
-        ..params
+        ..*params
     }
 }
 
@@ -211,7 +223,7 @@ fn day_and_night_light_the_clouds_evenly() {
 fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let base = with_a_lit_night_ground(cloud_case_params(3, 180.0, NIGHT_HOUR));
+    let base = with_a_lit_night_ground(&cloud_case_params(3, 180.0, NIGHT_HOUR));
     let read = |day: f32, night: f32| {
         let pixels = harness.picture(
             &SceneParams {
@@ -253,7 +265,13 @@ fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
 fn the_night_opacity_reaches_full_cover() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let base = with_a_lit_night_ground(cloud_case_params(3, 180.0, NIGHT_HOUR));
+    // A uniform map is all background, so haze removal would take the deck
+    // this case measures off entirely.
+    let base = SceneParams {
+        cloud_haze_equator: 0.0,
+        cloud_haze_pole: 0.0,
+        ..with_a_lit_night_ground(&cloud_case_params(3, 180.0, NIGHT_HOUR))
+    };
 
     // The banded map is 255 or nothing, so any nonzero night opacity covers the
     // ground completely and there is no covering left to measure. This is the
@@ -293,4 +311,407 @@ fn the_night_opacity_reaches_full_cover() {
         partly > covered + 5.0 && partly < uncovered - 5.0,
         "the default night opacity reads {partly:.1}, which is not between the {covered:.1} of          full cover and the {uncovered:.1} of none, so the slider is not doing the covering"
     );
+}
+
+/// The banded fixture map, counting what it is asked for, or a source whose
+/// every fetch fails as an outage would.
+struct CountingClouds {
+    inner: support::FixtureClouds,
+    fetches: AtomicU64,
+    offline: AtomicBool,
+}
+
+impl CountingClouds {
+    fn new(offline: bool) -> Self {
+        Self {
+            inner: support::FixtureClouds::bands(),
+            fetches: AtomicU64::new(0),
+            offline: AtomicBool::new(offline),
+        }
+    }
+
+    fn fetches(&self) -> u64 {
+        self.fetches.load(Ordering::SeqCst)
+    }
+
+    fn set_offline(&self, offline: bool) {
+        self.offline.store(offline, Ordering::SeqCst);
+    }
+
+    /// Watch the fetch count for [`QUIET`] and answer the highest it reached,
+    /// so a poll the engine asked for in the ticks before has had the time to
+    /// reach the source.
+    fn fetches_after_quiet(&self) -> u64 {
+        let until = std::time::Instant::now() + QUIET;
+        while std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.fetches()
+    }
+}
+
+/// How long a case watches for a fetch that must not come. The worker makes
+/// one within milliseconds of the tick that asks for it.
+const QUIET: Duration = Duration::from_secs(1);
+
+impl CountingClouds {
+    fn wait_for_fetches(&self, count: u64, what: &str) -> std::time::Instant {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while self.fetches() < count {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: no fetch {count}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::time::Instant::now()
+    }
+}
+
+impl CloudSource for CountingClouds {
+    fn fetch_if_changed(&self, known_etag: Option<&str>) -> Result<Option<CloudImage>, String> {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        if self.offline.load(Ordering::SeqCst) {
+            return Err("the fixture is offline".to_owned());
+        }
+        self.inner.fetch_if_changed(known_etag)
+    }
+
+    fn describe(&self) -> String {
+        "counting cloud fixture".to_owned()
+    }
+}
+
+/// Wait out one whole engine iteration and hand back the `drawn` of every
+/// `CloudsSettled` among the events so far, dropping the rest.
+fn clouds_settled(harness: &Harness) -> Vec<bool> {
+    for _ in 0..2 {
+        let _ = harness.engine.memory_report();
+    }
+    harness
+        .events
+        .try_iter()
+        .filter_map(|event| match event {
+            EngineEvent::CloudsSettled { drawn } => Some(drawn),
+            _ => None,
+        })
+        .collect()
+}
+
+fn has_cloud_texture(harness: &Harness) -> bool {
+    let report = harness.engine.memory_report().expect("a report");
+    report
+        .expected
+        .iter()
+        .any(|texture| texture.label == "cloud_texture")
+}
+
+/// The scene of the switch cases: the grid, with a cloud layer that draws when
+/// it is switched on.
+fn switched(clouds_enabled: bool) -> SceneParams {
+    SceneParams {
+        clouds_enabled,
+        cloud_opacity: 0.85,
+        cloud_opacity_night: 0.55,
+        ..test_params()
+    }
+}
+
+/// Switched off, the cloud layer asks its source for nothing over several
+/// polls that fall due, decodes nothing and says nothing. Switched on, one
+/// fetch follows, the map and its background land and are said to, and the
+/// layer is drawn; switched off again, the next poll that falls due is not
+/// made.
+#[test]
+fn a_switched_off_cloud_layer_fetches_nothing_until_it_is_switched_on() {
+    let _gpu = gpu();
+    let source = Arc::new(CountingClouds::new(false));
+    let bands = source.inner.serve_bands();
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let harness = Harness::start(|config| {
+        config.params = switched(false);
+        config.cloud = Some(Arc::clone(&source) as Arc<dyn CloudSource>);
+        config.clock = Arc::clone(&clock) as Arc<dyn sunlit_core::engine::clock::Clock>;
+        config.cloud_poll_interval = POLL;
+    });
+
+    for hour in 0..3 {
+        harness.advance(&clock, POLL);
+        assert!(clouds_settled(&harness).is_empty(), "hour {hour}");
+    }
+    assert_eq!(
+        source.fetches_after_quiet(),
+        0,
+        "a fetch while the layer is off"
+    );
+    assert!(
+        !has_cloud_texture(&harness),
+        "a map decoded while the layer is off"
+    );
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(switched(true))));
+    wait_for_cloud_size(&harness, bands, "the layer switched on");
+    harness.wait_for_slot_texture("cloud_background_texture");
+    assert_eq!(
+        source.fetches(),
+        1,
+        "switching on asks for the poll it owed"
+    );
+    assert_eq!(clouds_settled(&harness), [true], "said once, as drawn");
+
+    let size = (128, 64);
+    let drawn = harness.picture(&switched(true), size);
+    let bare = harness.picture(
+        &SceneParams {
+            cloud_opacity: 0.0,
+            cloud_opacity_night: 0.0,
+            ..switched(true)
+        },
+        size,
+    );
+    assert_ne!(drawn, bare, "the bands are not in the picture");
+    assert_eq!(
+        harness.picture(&switched(false), size),
+        bare,
+        "switched off, the layer is still drawn"
+    );
+
+    harness.advance(&clock, POLL);
+    assert!(clouds_settled(&harness).is_empty());
+    assert_eq!(
+        source.fetches_after_quiet(),
+        1,
+        "a fetch while the layer is off again"
+    );
+}
+
+/// Switching the layer off ends a poll that is backing off after a failure:
+/// no further attempt is made while it is off, and switching it back on sends
+/// the poll at once rather than when the backoff would have run out.
+///
+/// Without the switch reaching the worker its retry comes 15 s after the
+/// failure, while the layer is off, which is what the time bound holds.
+#[test]
+fn switching_the_layer_off_ends_a_failing_retry() {
+    let _gpu = gpu();
+    let source = Arc::new(CountingClouds::new(true));
+    let bands = source.inner.serve_bands();
+    let harness = Harness::start(|config| {
+        config.params = switched(true);
+        config.cloud = Some(Arc::clone(&source) as Arc<dyn CloudSource>);
+    });
+    let failed_at = source.wait_for_fetches(1, "the first poll");
+
+    harness.settle_at(&switched(false));
+    source.set_offline(false);
+    assert_eq!(
+        source.fetches_after_quiet(),
+        1,
+        "an attempt after the layer was switched off"
+    );
+    assert!(
+        !has_cloud_texture(&harness),
+        "a map decoded while the layer is off"
+    );
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(switched(true))));
+    source.wait_for_fetches(2, "switched back on");
+    wait_for_cloud_size(&harness, bands, "switched back on");
+    assert!(
+        failed_at.elapsed() < FIRST_RETRY,
+        "the map arrived {:?} after the failure, which is the backoff's retry rather than the poll the switch owed",
+        failed_at.elapsed()
+    );
+    assert_eq!(source.fetches(), 2);
+}
+
+/// The poll interval of the switch cases, on the mock clock.
+const POLL: Duration = Duration::from_hours(1);
+
+/// With nothing cached and a source that fails, the layer says it has nothing
+/// to show as soon as the first poll has failed, well before the worker's
+/// first retry.
+#[test]
+fn a_cloud_layer_with_nothing_to_show_says_so_before_the_first_retry() {
+    let _gpu = gpu();
+    let source = Arc::new(CountingClouds::new(true));
+    let start = std::time::Instant::now();
+    let harness = Harness::start(|config| {
+        config.params = switched(true);
+        config.cloud = Some(Arc::clone(&source) as Arc<dyn CloudSource>);
+    });
+    let deadline = start + FIRST_RETRY;
+    let mut answer = None;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        if let EngineEvent::CloudsSettled { drawn } = event {
+            answer = Some(drawn);
+            break;
+        }
+    }
+    assert_eq!(
+        answer,
+        Some(false),
+        "no answer within the {FIRST_RETRY:?} the first retry waits"
+    );
+    assert_eq!(source.fetches(), 1);
+}
+
+/// What the worker waits before its first retry, from `cloud_fetcher`.
+const FIRST_RETRY: Duration = Duration::from_secs(15);
+
+/// Day mode reads no mask of its own, but the cloud layer over it does: with
+/// the layer drawn a publish waits for the mask, and with it switched off it
+/// goes out without. Every pack but the mask's is built beforehand, and the
+/// mask's build is held at the gate.
+#[test]
+fn a_drawn_cloud_layer_holds_a_day_publish_for_the_mask() {
+    let _gpu = gpu();
+    for clouds in [false, true] {
+        let fixture = CubeFixture::new(&format!("engine_clouds_mask_{clouds}"));
+        let textures = CubeTextures::resolve(&fixture.dir.join("textures"));
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        for kind in PackKind::all().filter(|&kind| kind != PackKind::Mask) {
+            tiles::ensure_pack(&fixture.cache(), kind, &textures, &tiles::FIXTURE, &cancel)
+                .expect("build the pack");
+        }
+        let gate = BuildGate::default();
+        gate.hold();
+        let sink = Arc::new(RecordingSink::new(vec![screen("only", 0, 64, 32, true)]));
+        let sink_for_config = Arc::clone(&sink);
+        let harness = Harness::start(|config| {
+            fixture.configure(config);
+            config.wallpaper = sink_for_config;
+            config.params = SceneParams {
+                texture_index: 1,
+                ..switched(clouds)
+            };
+            config.build_gate = gate.clone();
+        });
+
+        harness.engine.send(EngineCommand::RenderWallpaperNow);
+        let within = if clouds { HELD } else { TIMEOUT };
+        let deadline = std::time::Instant::now() + within;
+        let mut published = None;
+        while let Ok(event) = harness.events.recv_deadline(deadline) {
+            if let EngineEvent::WallpaperSet(result) = event {
+                published = Some(result);
+                break;
+            }
+        }
+        if clouds {
+            assert!(
+                published.is_none(),
+                "a publish under a drawn cloud layer went out without the mask"
+            );
+            gate.open();
+            assert!(harness.wait_for_publish().is_ok());
+        } else {
+            assert!(
+                published.is_some_and(|result| result.is_ok()),
+                "a publish with the cloud layer off waited for the mask"
+            );
+            gate.open();
+        }
+        assert_eq!(sink.publications().len(), 1, "clouds {clouds}");
+    }
+}
+
+/// How long the held publish is watched for, on the wall clock.
+const HELD: Duration = Duration::from_secs(3);
+
+/// The banded fixture map, with every fetch held until the case lets it
+/// through, as a slow download would be.
+struct HeldClouds {
+    inner: support::FixtureClouds,
+    held: std::sync::Mutex<bool>,
+    released: std::sync::Condvar,
+    entered: AtomicU64,
+}
+
+impl HeldClouds {
+    fn new() -> Self {
+        Self {
+            inner: support::FixtureClouds::bands(),
+            held: std::sync::Mutex::new(true),
+            released: std::sync::Condvar::new(),
+            entered: AtomicU64::new(0),
+        }
+    }
+
+    fn release(&self) {
+        *self.held.lock().expect("the hold") = false;
+        self.released.notify_all();
+    }
+
+    fn wait_for_entered(&self, count: u64, what: &str) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while self.entered.load(Ordering::SeqCst) < count {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: no fetch {count}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl CloudSource for HeldClouds {
+    fn fetch_if_changed(&self, known_etag: Option<&str>) -> Result<Option<CloudImage>, String> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        let mut held = self.held.lock().expect("the hold");
+        while *held {
+            held = self.released.wait(held).expect("the hold");
+        }
+        drop(held);
+        self.inner.fetch_if_changed(known_etag)
+    }
+
+    fn describe(&self) -> String {
+        "held cloud fixture".to_owned()
+    }
+}
+
+/// A download that comes back after the layer was switched off is dropped
+/// undecoded: no map reaches the GPU while the layer is off, and switching it
+/// back on downloads the map again and draws it.
+#[test]
+fn a_download_that_returns_after_the_switch_is_not_decoded() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let bands = source.inner.serve_bands();
+    let harness = Harness::start(|config| {
+        config.params = switched(true);
+        config.cloud = Some(Arc::clone(&source) as Arc<dyn CloudSource>);
+    });
+    source.wait_for_entered(1, "the first poll");
+
+    harness.settle_at(&switched(false));
+    source.release();
+    let until = std::time::Instant::now() + QUIET;
+    while std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !has_cloud_texture(&harness),
+        "a map downloaded while the layer was off was decoded and uploaded"
+    );
+    assert!(
+        clouds_settled(&harness).is_empty(),
+        "a dropped download is not the layer's first answer"
+    );
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(switched(true))));
+    wait_for_cloud_size(&harness, bands, "switched back on");
+    assert_eq!(
+        source.entered.load(Ordering::SeqCst),
+        2,
+        "switching on downloads the map again"
+    );
+    assert_eq!(clouds_settled(&harness), [true]);
 }

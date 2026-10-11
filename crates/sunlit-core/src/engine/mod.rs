@@ -23,6 +23,7 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use tracing::{debug, info, warn};
 
+use crate::assets::cloud_fetcher::CloudSlots;
 use crate::assets::mailbox::TextureMailbox;
 use crate::assets::tiles::TranscoderConfig;
 use crate::config::QualityTier;
@@ -35,7 +36,7 @@ use crate::renderer::{
 use crate::scene::sky::{self, SkyState};
 
 use clock::Clock;
-use cloud_worker::{CloudWorker, spawn_cloud_worker};
+use cloud_worker::{CloudWorker, FirstAnswer, spawn_cloud_worker};
 use handle::AdapterReport;
 pub use handle::{EngineConfig, EngineHandle, start};
 pub use loading::TILES_NAMED_AFTER;
@@ -149,6 +150,8 @@ struct Engine {
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
+    /// Whether `CloudsSettled` has gone out, which it does once.
+    clouds_settled: bool,
     /// Whether the one debug-level memory dump has already been written. It
     /// goes out the first time the textures are ready, which is the first
     /// moment the numbers describe a loaded scene rather than a half-built one.
@@ -298,7 +301,11 @@ impl Engine {
                 cloud_poll_interval,
                 now,
                 texture_resolution,
-                slots.clouds(),
+                CloudSlots {
+                    map: slots.clouds(),
+                    background: slots.cloud_background(),
+                },
+                params.clouds_enabled,
             )
         });
 
@@ -331,6 +338,7 @@ impl Engine {
             published: false,
             dirty: true,
             textures_ready: false,
+            clouds_settled: false,
             memory_dumped: false,
             last_status: String::new(),
             drain: Schedule::new(DRAIN_INTERVAL, now),
@@ -535,6 +543,7 @@ impl Engine {
         if self.drain.due(now) && self.renderer.drain_texture_updates() {
             self.dirty = true;
         }
+        self.note_clouds();
 
         // Every tick rather than on the drain's schedule: a pack that landed is
         // one cheap check away, and the first frame of a first run waits on it.
@@ -558,12 +567,20 @@ impl Engine {
         }
 
         if let Some(cloud) = &mut self.cloud {
+            // A request the worker gave up because the layer went off is owed
+            // again, and goes out when it is switched back on.
+            cloud.set_enabled(self.params.clouds_enabled);
+            if cloud.take_abandoned() {
+                cloud.owed = true;
+            }
             if cloud.schedule.due(now) {
                 cloud.owed = true;
             }
             // Retry on the next tick rather than waiting out another whole
             // interval when the worker was still busy with the previous poll.
-            if cloud.owed && cloud.request() {
+            // While the layer is switched off a poll that falls due stays
+            // owed, so switching it on sends one at once.
+            if cloud.owed && self.params.clouds_enabled && cloud.request() {
                 cloud.owed = false;
             }
         }
@@ -625,7 +642,7 @@ impl Engine {
         if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
             self.publish_wallpaper();
         } else if self.reexport
-            && !self.renderer.textures_pending(self.params.texture_index)
+            && !self.renderer.textures_pending(&self.params)
             && !self.shots_pending()
         {
             info!("the tiles a wallpaper went out without are resident; making it again");
@@ -682,7 +699,7 @@ impl Engine {
         if surface.set_month(month, ahead, &mut self.renderer) {
             self.dirty = true;
         }
-        if !self.renderer.textures_ready(self.params.texture_index) {
+        if !self.renderer.textures_ready(&self.params) {
             self.textures_ready = false;
         }
     }
@@ -691,7 +708,7 @@ impl Engine {
     /// needs, and every tile it wants in view at the 1 px threshold, a failed
     /// one counting as there (plan decision 10).
     fn textures_ready(&self) -> bool {
-        self.renderer.textures_ready(self.params.texture_index)
+        self.renderer.textures_ready(&self.params)
             && self
                 .surface
                 .as_ref()
@@ -751,7 +768,7 @@ impl Engine {
     /// After every draw and at the end of every tick, since the transcoder
     /// prepares the rest of the year while nothing is drawn.
     fn note_status(&mut self) {
-        let (mut day, mut night) = self.renderer.cubes_waiting(self.params.texture_index);
+        let (mut day, mut night) = self.renderer.cubes_waiting(&self.params);
         let mut preparing = None;
         if let Some(surface) = &mut self.surface {
             preparing = surface.preparing();
@@ -874,6 +891,7 @@ impl Engine {
     /// window can be hours.
     fn prepare_export(&mut self) {
         self.renderer.drain_texture_updates();
+        self.note_clouds();
         if let Some(surface) = &mut self.surface {
             surface.drain(&mut self.renderer);
         }
@@ -884,6 +902,35 @@ impl Engine {
             // already holding this one.
             self.renderer.set_sky_state(sky);
         }
+    }
+
+    /// Tell clients, once, what the cloud layer's first answer was: drawn when
+    /// the map and its background are uploaded, not when the worker's first
+    /// attempt had nothing to show.
+    ///
+    /// After every drain, and on every tick, since an answer of nothing posts
+    /// nothing and so wakes nobody.
+    fn note_clouds(&mut self) {
+        if self.clouds_settled {
+            return;
+        }
+        let Some(cloud) = &self.cloud else {
+            return;
+        };
+        let drawn = if self.renderer.clouds_resident() {
+            true
+        } else if cloud.first_answer() == FirstAnswer::Unavailable {
+            false
+        } else {
+            return;
+        };
+        self.clouds_settled = true;
+        if drawn {
+            debug!("the cloud layer is resident");
+        } else {
+            debug!("the cloud layer has nothing to show yet");
+        }
+        self.emit(EngineEvent::CloudsSettled { drawn });
     }
 
     fn emit(&self, event: EngineEvent) {
@@ -911,7 +958,7 @@ fn checked_mailbox(
             mailbox.slot_count(),
             slots.count(),
             "the texture mailbox must have one slot per texture: the grid, \
-             {paths} file-backed, and the cloud overlay"
+             {paths} file-backed, the cloud overlay and its background"
         );
     }
     mailbox.unwrap_or_else(|| TextureMailbox::new(slots.count()))

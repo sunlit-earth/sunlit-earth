@@ -474,10 +474,17 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_spec_intensity(params.spec_intensity);
     window.set_fresnel_mix(params.fresnel_mix);
     window.set_fresnel_exp(params.fresnel_exp);
+    window.set_clouds_enabled(params.clouds_enabled);
     window.set_cloud_opacity(params.cloud_opacity);
     window.set_cloud_opacity_night(params.cloud_opacity_night);
-    window.set_cloud_floor(params.cloud_floor);
-    window.set_cloud_gamma(params.cloud_gamma);
+    window.set_cloud_haze_equator(params.cloud_haze_equator);
+    window.set_cloud_haze_pole(params.cloud_haze_pole);
+    window.set_cloud_haze_latitude(params.cloud_haze_latitude);
+    window.set_cloud_haze_band(params.cloud_haze_band);
+    window.set_cloud_floor_land(params.cloud_floor_land);
+    window.set_cloud_gamma_land(params.cloud_gamma_land);
+    window.set_cloud_floor_ocean(params.cloud_floor_ocean);
+    window.set_cloud_gamma_ocean(params.cloud_gamma_ocean);
     window.set_cloud_night(params.cloud_night);
     window.set_atmo_enabled(params.atmo_enabled);
     window.set_rayleigh_intensity(params.rayleigh_intensity);
@@ -550,10 +557,17 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         spec_intensity: window.get_spec_intensity(),
         fresnel_mix: window.get_fresnel_mix(),
         fresnel_exp: window.get_fresnel_exp(),
+        clouds_enabled: window.get_clouds_enabled(),
         cloud_opacity: window.get_cloud_opacity(),
         cloud_opacity_night: window.get_cloud_opacity_night(),
-        cloud_floor: window.get_cloud_floor(),
-        cloud_gamma: window.get_cloud_gamma(),
+        cloud_haze_equator: window.get_cloud_haze_equator(),
+        cloud_haze_pole: window.get_cloud_haze_pole(),
+        cloud_haze_latitude: window.get_cloud_haze_latitude(),
+        cloud_haze_band: window.get_cloud_haze_band(),
+        cloud_floor_land: window.get_cloud_floor_land(),
+        cloud_gamma_land: window.get_cloud_gamma_land(),
+        cloud_floor_ocean: window.get_cloud_floor_ocean(),
+        cloud_gamma_ocean: window.get_cloud_gamma_ocean(),
         cloud_night: window.get_cloud_night(),
         atmo_enabled: window.get_atmo_enabled(),
         rayleigh_intensity: window.get_rayleigh_intensity(),

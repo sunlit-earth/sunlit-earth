@@ -28,23 +28,23 @@ use crate::tiles::settled;
 
 /// A textures directory holding the fixture bake, and a cache directory for
 /// the packs cut from it.
-struct CubeFixture {
-    dir: ScratchDir,
+pub(crate) struct CubeFixture {
+    pub(crate) dir: ScratchDir,
 }
 
 impl CubeFixture {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         let dir = ScratchDir::new(name);
         test_support::write_cube_fixture(&dir.join("textures"));
         Self { dir }
     }
 
-    fn cache(&self) -> PathBuf {
+    pub(crate) fn cache(&self) -> PathBuf {
         self.dir.join("cache")
     }
 
     /// Point an engine at the fixture.
-    fn configure(&self, config: &mut EngineConfig) {
+    pub(crate) fn configure(&self, config: &mut EngineConfig) {
         config.cube_textures = CubeTextures::resolve(&self.dir.join("textures"));
         config.tile_geometry = tiles::FIXTURE;
         config.cache_dir = Some(self.cache());

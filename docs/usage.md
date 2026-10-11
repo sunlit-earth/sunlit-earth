@@ -71,12 +71,12 @@ The main options are:
 - `--log-level LEVEL` controls logging within the levels compiled into the binary.
 - `--ipc-socket NAME` enables the optional local control socket used by the desktop tests.
 
-Run `sunlit-earth --help` for the full list. Use `sunlit-earth.exe` on Windows or `./sunlit-earth` from the extracted folder on Linux. From a source checkout, prefix app arguments with `cargo run --`.
+Run `sunlit-earth --help` for the full list. Use `sunlit-earth.exe` on Windows or `./sunlit-earth` from the extracted folder on Linux. From a source checkout, prefix app arguments with `cargo app --`.
 
 ```bash
-cargo run -- render --output earth.png --width 1920 --height 1080
-cargo run -- displays
-cargo run -- displays --out ./plan
+cargo app -- render --output earth.png --width 1920 --height 1080
+cargo app -- displays
+cargo app -- displays --out ./plan
 ```
 
 `render` produces a single PNG without a window. `displays` prints the detected monitors, anchor, and wallpaper plan without creating a GPU device or changing the desktop. Adding `--out` renders the planned images into the chosen directory for inspection but does not apply them as wallpaper. The text output is useful in display bug reports.

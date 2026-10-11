@@ -203,10 +203,12 @@ pub(super) fn write_uniforms<'a>(
         cloud_opacity_night: params.cloud_opacity_night,
         cloud_floor_land: params.cloud_floor_land,
         cloud_gamma_land: params.cloud_gamma_land,
-        cloud_haze_land: params.cloud_haze_land,
+        cloud_haze_equator: params.cloud_haze_equator,
         cloud_floor_ocean: params.cloud_floor_ocean,
         cloud_gamma_ocean: params.cloud_gamma_ocean,
-        cloud_haze_ocean: params.cloud_haze_ocean,
+        cloud_haze_pole: params.cloud_haze_pole,
+        cloud_haze_latitude: params.cloud_haze_latitude,
+        cloud_haze_band: params.cloud_haze_band,
         rayleigh_intensity: params.effective_rayleigh_intensity(),
         rayleigh_sharpness: params.rayleigh_sharpness,
         nightglow_intensity: params.effective_nightglow_intensity(),
@@ -259,8 +261,6 @@ pub(super) fn write_uniforms<'a>(
         night_ocean: u32::from_le_bytes(inputs.tiles.ocean[1]),
         tile_texels: inputs.tiles.tile as f32,
         tile_gutter: inputs.tiles.gutter as f32,
-        _pad9: 0.0,
-        _pad10: 0.0,
         _pad11: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));

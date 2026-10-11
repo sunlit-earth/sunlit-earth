@@ -97,10 +97,12 @@ The background is sampled with the cloud sampler, which repeats in u and clamps 
 | key | label | range | default |
 |---|---|---|---|
 | `clouds_enabled` | Show clouds (checkbox) | | on |
-| `cloud_haze_land` | Land: Haze removal | 0 to 100% | 100% |
+| `cloud_haze_equator` | Haze removal: Toward the equator (departure 10) | 0 to 200% | 90% |
+| `cloud_haze_pole` | Haze removal: Toward the poles (departure 10) | 0 to 200% | 125% |
+| `cloud_haze_latitude` | Haze removal: Switch latitude (departure 10) | 20 to 80° | 55° |
+| `cloud_haze_band` | Haze removal: Blend width (departure 11) | 5 to 90° | 25° |
 | `cloud_floor_land` | Land: Floor | 0 to 50% | 25% |
 | `cloud_gamma_land` | Land: Gamma | 0.1 to 2.0 | 0.6 |
-| `cloud_haze_ocean` | Ocean: Haze removal | 0 to 100% | 100% |
 | `cloud_floor_ocean` | Ocean: Floor | 0 to 50% | 0% |
 | `cloud_gamma_ocean` | Ocean: Gamma | 0.1 to 2.0 | 0.8 |
 
@@ -256,9 +258,12 @@ The change is one feature branch. Before release, reverting it is enough. After 
 
 9. **Every version 1 file takes the new cloud settings.** Decision 9 kept a customized floor or gamma by copying it to both surfaces with haze removal off. After step 9 the user chose to force the new settings on every file instead: `v1_to_v2` removes `cloud_floor` and `cloud_gamma` and sets the six new keys with `override_value` to the values this release ships, which `CLOUD_SETTINGS_V2` names so a later default change cannot move them. A user who had tuned the old floor or gamma starts again from the new defaults: a picture tuned without haze removal does not carry over to one with it. `cloud_opacity`, `cloud_opacity_night` and `cloud_night` are left as the file has them.
 
+10. **Haze removal by latitude, above 100 percent by lifting the cap.** Decision 6 split the haze removal by land and ocean like the floor and the gamma. In validation (step 9) different haze strengths for land and ocean looked strange where different floors and gammas did not, and with haze removal off a veil near the poles was plain; with it on, the cap left part of it, since polar clear ground reads about 0.92 on the October map and the estimate stopped at 0.85. Three ways to take more off at high latitude were prototyped on that map: a fade of the density where the uncapped level passed 0.85, which emptied the Southern Ocean between 60 and 70 degrees south of 74 percent of its cloud and left round holes at the estimate's peaks; the same at half strength from 0.88, which barely changed anything; and lifting the cap to 0.95 beyond 50 degrees, which kept the structure but took off too much. The user judged all three too aggressive. Gentler lifts, to 0.87, 0.89 and 0.91 ramped in between 50 and 75 degrees, were rendered next, and the user chose instead to let the haze removal run above 100 percent with a value toward the equator, one toward the poles, and the latitude between them, blended over a fixed 20 degrees. Above 100 percent the cap rises from 0.85 to full brightness at 200, so a value above 1 never takes off more than the estimate, only more of it where the ground reads above the cap. That needs the uncapped level, so `cloud_haze::background` stores the estimate without the cap and `fs_cloud` applies it as `CLOUD_HAZE_CAP`. `cloud_haze_land` and `cloud_haze_ocean` became `cloud_haze_equator` and `cloud_haze_pole`, and `cloud_haze_latitude` took `_pad9` of the uniform block, which stays 576 bytes. `CLOUD_SETTINGS_V2` carries the three. The new field took `SceneParams` to 260 bytes, past pedantic clippy's 256 for a value argument, so twelve helpers of the engine test target take it by reference. It shipped with 100 and 120 percent and 60 degrees as a starting point; the user's tuning replaced them (Validation Record, step 9).
+
+11. **The amounts are blended, not the strengths, and the band has a width setting.** Departure 10 blended the two strengths across a fixed 20 degrees and took the amount from the blend. In the app the band read too narrow, and narrower still with either value above 100 percent: above 1 the amount stops growing once the lifted cap passes the level, so with 100 and 200 percent over ground at 0.92 the change was over a third of the way through the strengths, and with the smoothstep, before the middle of the band. `fs_cloud` now works out the amount for each strength through `haze_removed` and blends the two, so the change runs across the whole band whatever the values. The width became `cloud_haze_band`, 5 to 90 degrees, in `_pad10`, so the uniform block still is 576 bytes, and `CLOUD_SETTINGS_V2` carries it. `a_haze_above_one_changes_across_the_whole_band` fails with the strengths blended.
+
 ## Open items
 
-- Whether the cap becomes a setting and whether a polar fade is needed.
 - Whether frozen sea keeps a veil, and the ice concentration as land once the sea ice atlas exists (Relation to the sea ice plan).
 - The cloud draw's cost on lavapipe at 1920 x 1080, before and after (criterion 6, departure 6). It is the adapter risk 2 is about, since the texture overhaul research found anisotropic cube reads expensive there, and this run had no way to it without WSL. CI or the user measures it; if the mask read costs, the cloud group can carry the surface sampler at a binding of its own for the mask.
 
@@ -267,6 +272,8 @@ The change is one feature branch. Before release, reverting it is enough. After 
 ### Step 9, validation with the user
 
 The user ran the app with the prototype's defaults (haze removal 100 percent on land and 15 on ocean, floor 10 percent and gamma 0.65 on both) and judged haze removal to work well. Different values for land and ocean can look strange, and the best results came with full haze removal on both, so the defaults are now haze removal 100 percent on both, land floor 25 percent and gamma 0.6, ocean floor 0 and gamma 0.8. With them the WARP cloud goldens moved inside the tolerance and were regenerated (testing.md). The migration followed the user's call, departure 9.
+
+The user then judged different haze strengths for land and ocean to look strange and found a veil left near the poles, which led to the haze removal by latitude of departures 10 and 11. Tuned in the running app, its defaults are 90 percent toward the equator, 125 percent toward the poles, a switch at 55 degrees and a blend of 25 degrees; the floors and gammas stay as above.
 
 ### Review round 1
 

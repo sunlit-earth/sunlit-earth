@@ -252,10 +252,12 @@ fn test_the_window_and_the_config_start_from_the_same_defaults() {
         fresnel_exp from get_fresnel_exp,
         cloud_opacity from get_cloud_opacity,
         cloud_opacity_night from get_cloud_opacity_night,
-        cloud_haze_land from get_cloud_haze_land,
+        cloud_haze_equator from get_cloud_haze_equator,
+        cloud_haze_pole from get_cloud_haze_pole,
+        cloud_haze_latitude from get_cloud_haze_latitude,
+        cloud_haze_band from get_cloud_haze_band,
         cloud_floor_land from get_cloud_floor_land,
         cloud_gamma_land from get_cloud_gamma_land,
-        cloud_haze_ocean from get_cloud_haze_ocean,
         cloud_floor_ocean from get_cloud_floor_ocean,
         cloud_gamma_ocean from get_cloud_gamma_ocean,
         cloud_night from get_cloud_night,
@@ -529,7 +531,7 @@ fn test_the_cloud_sliders_follow_the_cloud_switch() {
         window.set_clouds_enabled(enabled);
         for id in [
             "MainWindow::cloud-opacity-slider",
-            "MainWindow::cloud-haze-land-slider",
+            "MainWindow::cloud-haze-equator-slider",
             "MainWindow::cloud-gamma-ocean-slider",
         ] {
             let sliders: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();

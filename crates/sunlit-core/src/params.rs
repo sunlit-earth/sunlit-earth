@@ -66,13 +66,19 @@ pub struct SceneParams {
     /// cannot share one number.
     pub cloud_opacity_night: f32,
     /// How much of the map's clear-sky background is taken off as a local
-    /// floor over land, 0 to 1, and the floor and the gamma applied after it.
+    /// floor, 0 to 2, equatorward and poleward of `cloud_haze_latitude`, in
+    /// degrees, across a band `cloud_haze_band` degrees wide. Up to 1 it takes
+    /// that share of the estimate up to its cap; above 1 it lifts the cap
+    /// toward full brightness, which reaches 1 at 2. See `fs_cloud`.
+    pub cloud_haze_equator: f32,
+    pub cloud_haze_pole: f32,
+    pub cloud_haze_latitude: f32,
+    pub cloud_haze_band: f32,
+    /// The floor and the gamma applied after the haze removal over land.
     /// `fs_cloud` blends each with its ocean twin by the water mask.
-    pub cloud_haze_land: f32,
     pub cloud_floor_land: f32,
     pub cloud_gamma_land: f32,
-    /// The same three over open water.
-    pub cloud_haze_ocean: f32,
+    /// The same two over open water.
     pub cloud_floor_ocean: f32,
     pub cloud_gamma_ocean: f32,
     /// Brightness of a cloud on the night hemisphere, as a fraction of display
@@ -165,10 +171,12 @@ impl SceneParams {
             clouds_enabled: config.clouds_enabled,
             cloud_opacity: config.cloud_opacity,
             cloud_opacity_night: config.cloud_opacity_night,
-            cloud_haze_land: config.cloud_haze_land,
+            cloud_haze_equator: config.cloud_haze_equator,
+            cloud_haze_pole: config.cloud_haze_pole,
+            cloud_haze_latitude: config.cloud_haze_latitude,
+            cloud_haze_band: config.cloud_haze_band,
             cloud_floor_land: config.cloud_floor_land,
             cloud_gamma_land: config.cloud_gamma_land,
-            cloud_haze_ocean: config.cloud_haze_ocean,
             cloud_floor_ocean: config.cloud_floor_ocean,
             cloud_gamma_ocean: config.cloud_gamma_ocean,
             cloud_night: config.cloud_night,
@@ -245,10 +253,12 @@ impl SceneParams {
         config.clouds_enabled = self.clouds_enabled;
         config.cloud_opacity = self.cloud_opacity;
         config.cloud_opacity_night = self.cloud_opacity_night;
-        config.cloud_haze_land = self.cloud_haze_land;
+        config.cloud_haze_equator = self.cloud_haze_equator;
+        config.cloud_haze_pole = self.cloud_haze_pole;
+        config.cloud_haze_latitude = self.cloud_haze_latitude;
+        config.cloud_haze_band = self.cloud_haze_band;
         config.cloud_floor_land = self.cloud_floor_land;
         config.cloud_gamma_land = self.cloud_gamma_land;
-        config.cloud_haze_ocean = self.cloud_haze_ocean;
         config.cloud_floor_ocean = self.cloud_floor_ocean;
         config.cloud_gamma_ocean = self.cloud_gamma_ocean;
         config.cloud_night = self.cloud_night;
@@ -493,10 +503,12 @@ scene_digest! {
         fresnel_exp,
         cloud_opacity,
         cloud_opacity_night,
-        cloud_haze_land,
+        cloud_haze_equator,
+        cloud_haze_pole,
+        cloud_haze_latitude,
+        cloud_haze_band,
         cloud_floor_land,
         cloud_gamma_land,
-        cloud_haze_ocean,
         cloud_floor_ocean,
         cloud_gamma_ocean,
         cloud_night,

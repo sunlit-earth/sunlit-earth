@@ -31,7 +31,7 @@ struct Uniforms {
     rayleigh_haze: f32,            // 4 bytes, offset 192
     cloud_night: f32,              // 4 bytes, offset 196
     cloud_terminator: f32,         // 4 bytes, offset 200
-    cloud_haze_land: f32,          // 4 bytes, offset 204
+    cloud_haze_equator: f32,          // 4 bytes, offset 204
     sky_view: mat4x4<f32>,            // 64 bytes, offset 208
     world_from_eqj: mat3x3<f32>,      // 48 bytes, offset 272
     viewport_size: vec2<f32>,         // 8 bytes, offset 320
@@ -72,9 +72,9 @@ struct Uniforms {
     tile_gutter: f32,                 // 4 bytes, offset 548
     cloud_floor_ocean: f32,           // 4 bytes, offset 552
     cloud_gamma_ocean: f32,           // 4 bytes, offset 556
-    cloud_haze_ocean: f32,            // 4 bytes, offset 560
-    _pad9: f32,                       // 4 bytes, offset 564
-    _pad10: f32,                      // 4 bytes, offset 568
+    cloud_haze_pole: f32,            // 4 bytes, offset 560
+    cloud_haze_latitude: f32,         // 4 bytes, offset 564
+    cloud_haze_band: f32,             // 4 bytes, offset 568
     _pad11: f32,                      // 4 bytes, offset 572
 };
 
@@ -616,6 +616,20 @@ fn vs_cloud(in: VertexInput) -> VertexOutput {
 // cloud the source gives a coverage of 0.1 still hides what is under it.
 const NIGHT_OPACITY_MIN_TRANSMITTANCE: f32 = 0.03125;
 
+// The highest clear-sky level a haze removal of 1 or less takes off. Above it
+// the estimate can no longer tell cold ground from a deck wider than its
+// window, so only a haze above 1 reaches it.
+const CLOUD_HAZE_CAP: f32 = 0.85;
+
+/// What a haze removal of `haze` takes off a clear-sky level of `background`.
+/// Up to 1 that share of the level up to the cap; beyond 1 the cap is lifted
+/// instead, so it never takes off more than the estimate, only more of it
+/// where cold ground reads above the cap.
+fn haze_removed(haze: f32, background: f32) -> f32 {
+    let cap = CLOUD_HAZE_CAP + max(haze - 1.0, 0.0) * (1.0 - CLOUD_HAZE_CAP);
+    return min(haze, 1.0) * min(background, cap);
+}
+
 // Face width of the water mask level the land weight reads, about 80 km a
 // texel, which is how soft a coastline the cloud settings change across.
 const LAND_WEIGHT_FACE: f32 = 128.0;
@@ -639,11 +653,25 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let land = 1.0 - textureSampleLevel(water_cube, sphere_sampler, equi_angular(n), mask_level).r;
     let cloud_floor = by_land(uniforms.cloud_floor_ocean, uniforms.cloud_floor_land, land);
     let cloud_gamma = by_land(uniforms.cloud_gamma_ocean, uniforms.cloud_gamma_land, land);
-    let haze = by_land(uniforms.cloud_haze_ocean, uniforms.cloud_haze_land, land);
+    let latitude = degrees(asin(min(abs(n.y), 1.0)));
+    let half_band = max(0.5 * uniforms.cloud_haze_band, 0.01);
+    let poleward = smoothstep(
+        uniforms.cloud_haze_latitude - half_band,
+        uniforms.cloud_haze_latitude + half_band,
+        latitude,
+    );
+    // The two amounts are blended rather than the two strengths: above 1 an
+    // amount stops growing once the cap passes the level, so a blended
+    // strength would finish its change early in the band.
+    let removed = mix(
+        haze_removed(uniforms.cloud_haze_equator, background),
+        haze_removed(uniforms.cloud_haze_pole, background),
+        poleward,
+    );
     // Taking the background off and then the floor is one subtraction of
-    // 1 - (1 - haze * background) * (1 - floor), written so that no haze
-    // leaves the floor exactly as it is.
-    let local_floor = cloud_floor + haze * background * (1.0 - cloud_floor);
+    // 1 - (1 - removed) * (1 - floor), written so that no haze leaves the
+    // floor exactly as it is.
+    let local_floor = cloud_floor + removed * (1.0 - cloud_floor);
     let floored = saturate((raw - local_floor) / max(1.0 - local_floor, 0.001));
     let cloud_density = pow(floored, 1.0 / max(cloud_gamma, 0.01));
     let n_dot_l = shell_n_dot_l(n);

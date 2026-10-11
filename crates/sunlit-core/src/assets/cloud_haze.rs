@@ -24,9 +24,6 @@ pub const WINDOW: usize = 9;
 /// Standard deviation of the blur applied to the percentile, in grid pixels,
 /// about 230 km.
 pub const SMOOTH_SIGMA: f32 = 3.0;
-/// The largest background the estimate gives, so the inside of a deck wider
-/// than the window is not taken for ground entirely.
-pub const CAP: f32 = 0.85;
 
 /// How far the blur reaches, in standard deviations.
 const SMOOTH_TRUNCATE: f32 = 4.0;
@@ -56,10 +53,7 @@ pub fn background(map: &DecodedImage) -> DecodedImage {
     let grid = reduce(&map.pixels, width, height);
     let floor = percentile(&grid);
     let smoothed = blur(&floor);
-    let pixels = smoothed
-        .iter()
-        .map(|&value| quantize(value.min(CAP)))
-        .collect();
+    let pixels = smoothed.iter().map(|&value| quantize(value)).collect();
 
     DecodedImage {
         pixels: Pixels::new(pixels),
@@ -274,16 +268,17 @@ mod tests {
         map(width, height, |_, _| value)
     }
 
+    /// Bright ones included: the cap is the shader's, so the estimate keeps
+    /// what polar ground reads above it.
     #[test]
     fn a_uniform_map_is_its_own_background() {
-        let estimate = background(&uniform(1024, 512, 100));
-        assert!(estimate.pixels.iter().all(|&value| value == 100));
-    }
-
-    #[test]
-    fn the_background_never_passes_the_cap() {
-        let estimate = background(&uniform(1024, 512, 255));
-        assert!(estimate.pixels.iter().all(|&value| value == quantize(CAP)));
+        for level in [100, 240, 255] {
+            let estimate = background(&uniform(1024, 512, level));
+            assert!(
+                estimate.pixels.iter().all(|&value| value == level),
+                "{level}"
+            );
+        }
     }
 
     /// Dense cloud over half the map, in patches smaller than the window, over

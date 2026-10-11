@@ -477,10 +477,12 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_clouds_enabled(params.clouds_enabled);
     window.set_cloud_opacity(params.cloud_opacity);
     window.set_cloud_opacity_night(params.cloud_opacity_night);
-    window.set_cloud_haze_land(params.cloud_haze_land);
+    window.set_cloud_haze_equator(params.cloud_haze_equator);
+    window.set_cloud_haze_pole(params.cloud_haze_pole);
+    window.set_cloud_haze_latitude(params.cloud_haze_latitude);
+    window.set_cloud_haze_band(params.cloud_haze_band);
     window.set_cloud_floor_land(params.cloud_floor_land);
     window.set_cloud_gamma_land(params.cloud_gamma_land);
-    window.set_cloud_haze_ocean(params.cloud_haze_ocean);
     window.set_cloud_floor_ocean(params.cloud_floor_ocean);
     window.set_cloud_gamma_ocean(params.cloud_gamma_ocean);
     window.set_cloud_night(params.cloud_night);
@@ -558,10 +560,12 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         clouds_enabled: window.get_clouds_enabled(),
         cloud_opacity: window.get_cloud_opacity(),
         cloud_opacity_night: window.get_cloud_opacity_night(),
-        cloud_haze_land: window.get_cloud_haze_land(),
+        cloud_haze_equator: window.get_cloud_haze_equator(),
+        cloud_haze_pole: window.get_cloud_haze_pole(),
+        cloud_haze_latitude: window.get_cloud_haze_latitude(),
+        cloud_haze_band: window.get_cloud_haze_band(),
         cloud_floor_land: window.get_cloud_floor_land(),
         cloud_gamma_land: window.get_cloud_gamma_land(),
-        cloud_haze_ocean: window.get_cloud_haze_ocean(),
         cloud_floor_ocean: window.get_cloud_floor_ocean(),
         cloud_gamma_ocean: window.get_cloud_gamma_ocean(),
         cloud_night: window.get_cloud_night(),

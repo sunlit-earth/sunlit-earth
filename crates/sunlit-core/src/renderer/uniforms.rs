@@ -89,9 +89,9 @@ uniform_block! {
     /// Half-width of the cloud layer's terminator ramp. Never the globe's
     /// `terminator_width`, which carries a sentinel outside blend mode.
     cloud_terminator: f32 as f32,
-    /// How much of the clear-sky background is taken off the map over land,
-    /// 0 to 1.
-    cloud_haze_land: f32 as f32,
+    /// How much of the clear-sky background is taken off the map equatorward
+    /// of `cloud_haze_latitude`, 0 to 2.
+    cloud_haze_equator: f32 as f32,
     sky_view: [f32; 16] as mat4x4,
     world_from_eqj: [[f32; 4]; 3] as mat3x3,
     viewport_size: [f32; 2] as vec2,
@@ -164,9 +164,12 @@ uniform_block! {
     tile_gutter: f32 as f32,
     cloud_floor_ocean: f32 as f32,
     cloud_gamma_ocean: f32 as f32,
-    cloud_haze_ocean: f32 as f32,
-    _pad9: f32 as f32,
-    _pad10: f32 as f32,
+    /// The same poleward of it.
+    cloud_haze_pole: f32 as f32,
+    /// The latitude the two are blended around and the width of the band they
+    /// are blended across, in degrees.
+    cloud_haze_latitude: f32 as f32,
+    cloud_haze_band: f32 as f32,
     _pad11: f32 as f32,
 }
 

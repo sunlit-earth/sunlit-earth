@@ -34,11 +34,13 @@ fn v0_to_v1(earth: &mut Table, log: &mut ChangeLog) {
 }
 
 /// The cloud settings version 2 shipped with.
-const CLOUD_SETTINGS_V2: [(&str, f64); 6] = [
-    ("cloud_haze_land", 1.0),
+const CLOUD_SETTINGS_V2: [(&str, f64); 8] = [
+    ("cloud_haze_equator", 0.9),
+    ("cloud_haze_pole", 1.25),
+    ("cloud_haze_latitude", 55.0),
+    ("cloud_haze_band", 25.0),
     ("cloud_floor_land", 0.25),
     ("cloud_gamma_land", 0.6),
-    ("cloud_haze_ocean", 1.0),
     ("cloud_floor_ocean", 0.0),
     ("cloud_gamma_ocean", 0.8),
 ];
@@ -350,7 +352,7 @@ mod tests {
             ("cloud_floor = 0.4\ncloud_gamma = 1.2\n", 2),
             ("cloud_gamma = 1.2\n", 1),
             ("", 0),
-            ("cloud_floor_land = 0.4\ncloud_haze_ocean = 0.3\n", 0),
+            ("cloud_floor_land = 0.4\ncloud_haze_pole = 0.3\n", 0),
         ] {
             let source = format!("{old}cloud_opacity = 0.5\n");
             let mut table = earth(&source);
@@ -378,13 +380,13 @@ mod tests {
 
     #[test]
     fn a_file_at_version_2_keeps_its_cloud_keys() {
-        let source = "version = 2\n[sunlit.earth]\ncloud_floor = 0.4\ncloud_haze_land = 0.3\n";
+        let source = "version = 2\n[sunlit.earth]\ncloud_floor = 0.4\ncloud_haze_equator = 0.3\n";
         let mut doc = earth(source);
         let migrated = migrate(&mut doc);
         assert!(migrated.changes.iter().all(|c| c.from_version >= 2));
         let earth = doc["sunlit"]["earth"].as_table().unwrap();
         assert_eq!(earth["cloud_floor"].as_float(), Some(0.4));
-        assert_eq!(earth["cloud_haze_land"].as_float(), Some(0.3));
+        assert_eq!(earth["cloud_haze_equator"].as_float(), Some(0.3));
     }
 
     #[test]

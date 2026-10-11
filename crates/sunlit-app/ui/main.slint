@@ -56,10 +56,12 @@ export component MainWindow inherits Window {
     in-out property <bool> clouds-enabled: true;
     in-out property <float> cloud-opacity: 0.85;
     in-out property <float> cloud-opacity-night: 0.55;
-    in-out property <float> cloud-haze-land: 1.0;
+    in-out property <float> cloud-haze-equator: 0.9;
+    in-out property <float> cloud-haze-pole: 1.25;
+    in-out property <float> cloud-haze-latitude: 55.0;
+    in-out property <float> cloud-haze-band: 25.0;
     in-out property <float> cloud-floor-land: 0.25;
     in-out property <float> cloud-gamma-land: 0.6;
-    in-out property <float> cloud-haze-ocean: 1.0;
     in-out property <float> cloud-floor-ocean: 0.0;
     in-out property <float> cloud-gamma-ocean: 0.8;
     in-out property <float> cloud-night: 0.20;
@@ -728,19 +730,57 @@ export component MainWindow inherits Window {
                                         changed => { root.sliders-changed(); }
                                     }
 
-                                    SettingHeading { text: "Land"; }
+                                    SettingHeading { text: "Haze removal"; }
 
-                                    cloud-haze-land-slider := SettingRow {
-                                        label: "Haze removal";
-                                        hint: "How much of the grey veil cold clear ground leaves in the source image is taken off over land. The veil is estimated from the map itself, region by region.";
+                                    cloud-haze-equator-slider := SettingRow {
+                                        label: "Toward the equator";
+                                        hint: "How much of the grey veil cold clear ground leaves in the source image is taken off, estimated from the map itself region by region. Up to 100% that share of the veil goes; beyond it, also the part of it brighter than the estimate trusts, which is mostly polar ground.";
                                         indent: 8px;
                                         minimum: 0.0;
-                                        maximum: 1.0;
-                                        value <=> root.cloud-haze-land;
-                                        value-text: round(root.cloud-haze-land * 100) + "%";
+                                        maximum: 2.0;
+                                        value <=> root.cloud-haze-equator;
+                                        value-text: round(root.cloud-haze-equator * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
+
+                                    cloud-haze-pole-slider := SettingRow {
+                                        label: "Toward the poles";
+                                        hint: "The same, poleward of the switch latitude, where cold ground leaves the most veil.";
+                                        indent: 8px;
+                                        minimum: 0.0;
+                                        maximum: 2.0;
+                                        value <=> root.cloud-haze-pole;
+                                        value-text: round(root.cloud-haze-pole * 100) + "%";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    cloud-haze-latitude-slider := SettingRow {
+                                        label: "Switch latitude";
+                                        hint: "Where the haze removal changes from its value toward the equator to its value toward the poles, at the middle of the blend.";
+                                        indent: 8px;
+                                        minimum: 20.0;
+                                        maximum: 80.0;
+                                        value <=> root.cloud-haze-latitude;
+                                        value-text: round(root.cloud-haze-latitude) + "°";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    cloud-haze-band-slider := SettingRow {
+                                        label: "Blend width";
+                                        hint: "How many degrees of latitude the change from one haze removal to the other is spread over, centered on the switch latitude.";
+                                        indent: 8px;
+                                        minimum: 5.0;
+                                        maximum: 90.0;
+                                        value <=> root.cloud-haze-band;
+                                        value-text: round(root.cloud-haze-band) + "°";
+                                        value-width: 35px;
+                                        changed => { root.sliders-changed(); }
+                                    }
+
+                                    SettingHeading { text: "Land"; }
 
                                     cloud-floor-land-slider := SettingRow {
                                         label: "Floor";
@@ -767,18 +807,6 @@ export component MainWindow inherits Window {
                                     }
 
                                     SettingHeading { text: "Ocean"; }
-
-                                    cloud-haze-ocean-slider := SettingRow {
-                                        label: "Haze removal";
-                                        hint: "How much of the estimated clear-sky veil is taken off over open water, where warm sea leaves little of it.";
-                                        indent: 8px;
-                                        minimum: 0.0;
-                                        maximum: 1.0;
-                                        value <=> root.cloud-haze-ocean;
-                                        value-text: round(root.cloud-haze-ocean * 100) + "%";
-                                        value-width: 35px;
-                                        changed => { root.sliders-changed(); }
-                                    }
 
                                     cloud-floor-ocean-slider := SettingRow {
                                         label: "Floor";

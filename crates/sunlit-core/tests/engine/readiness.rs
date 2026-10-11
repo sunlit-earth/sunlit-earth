@@ -56,14 +56,14 @@ struct Rig {
 /// night's pack landed: a day mode is ready without it, and its landing starts
 /// a waiting publish's tile wait over at whatever the mock clock reads then.
 /// `prepare` runs on the scratch directory before the engine starts.
-fn rig(name: &str, params: SceneParams, prepare: impl FnOnce(&ScratchDir)) -> Rig {
+fn rig(name: &str, params: &SceneParams, prepare: impl FnOnce(&ScratchDir)) -> Rig {
     rig_at(name, params, time::OffsetDateTime::UNIX_EPOCH, prepare)
 }
 
 /// The same, with the mock clock starting at `at`.
 fn rig_at(
     name: &str,
-    params: SceneParams,
+    params: &SceneParams,
     at: time::OffsetDateTime,
     prepare: impl FnOnce(&ScratchDir),
 ) -> Rig {
@@ -73,7 +73,7 @@ fn rig_at(
 /// The same, with `configure` run on the engine's config last.
 fn rig_configured(
     name: &str,
-    params: SceneParams,
+    params: &SceneParams,
     at: time::OffsetDateTime,
     prepare: impl FnOnce(&ScratchDir),
     configure: impl FnOnce(&mut sunlit_core::engine::EngineConfig),
@@ -89,7 +89,7 @@ fn rig_configured(
     let (sink_for_config, clock_for_config, gate_for_config) =
         (Arc::clone(&sink), Arc::clone(&clock), gate.clone());
     let harness = start(&dir, |config| {
-        config.params = params;
+        config.params = *params;
         config.wallpaper = sink_for_config;
         config.clock = clock_for_config;
         config.tile_gate = gate_for_config;
@@ -162,7 +162,7 @@ fn published(rig: &Rig, index: usize) -> Vec<u8> {
 #[test]
 fn a_publish_waits_for_the_tiles_its_screen_wants_and_goes_out_when_they_land() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_publish", view(), |_| {});
+    let rig = rig("engine_ready_publish", &view(), |_| {});
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -243,7 +243,7 @@ fn a_publish_waits_for_the_tiles_its_screen_wants_and_goes_out_when_they_land() 
 #[test]
 fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_tiles_land() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_timeout", view(), |_| {});
+    let rig = rig("engine_ready_timeout", &view(), |_| {});
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -317,12 +317,12 @@ fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_ti
 
 /// Move the custom date into another month, and hand back that month.
 fn to_another_month(rig: &Rig) -> usize {
-    to_another_month_from(rig, view())
+    to_another_month_from(rig, &view())
 }
 
 /// The same, with `params` the scene to move.
-fn to_another_month_from(rig: &Rig, params: SceneParams) -> usize {
-    let mut other = params;
+fn to_another_month_from(rig: &Rig, params: &SceneParams) -> usize {
+    let mut other = *params;
     other.datetime.custom_day_of_year = 260;
     let month = sunlit_core::scene::month::month_in_force(&other.datetime, rig.clock.now_utc());
     assert_ne!(
@@ -361,7 +361,7 @@ fn screen_wanted_in(rig: &Rig, month: usize) -> TileReport {
 #[test]
 fn a_publish_held_for_a_cube_waits_for_its_tiles_no_longer_than_the_tile_wait() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_cube_first", view(), |_| {});
+    let rig = rig("engine_ready_cube_first", &view(), |_| {});
     settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -398,12 +398,12 @@ fn a_publish_held_for_a_cube_has_its_tiles_read_ahead_of_it() {
     let mut blend = day_over(90.0, 0.0, 0.55);
     blend.texture_index = 3;
     blend.terminator_width = 1.0;
-    let rig = rig("engine_ready_ahead", blend, |_| {});
+    let rig = rig("engine_ready_ahead", &blend, |_| {});
     settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
     rig.gate.shut();
-    let month = to_another_month_from(&rig, blend);
+    let month = to_another_month_from(&rig, &blend);
     rig.harness.engine.send(EngineCommand::RenderWallpaperNow);
     let report = report_when(&rig.harness, "the screen's night tiles are wanted", |r| {
         r.wanted[..r.in_view]
@@ -429,7 +429,7 @@ fn the_tile_wait_is_not_renewed_by_the_packs_of_other_months() {
     let _gpu = gpu();
     let rig = rig_configured(
         "engine_ready_other_packs",
-        view(),
+        &view(),
         time::OffsetDateTime::UNIX_EPOCH,
         |dir| {
             let textures =
@@ -497,7 +497,7 @@ pub(crate) fn build_every_pack(dir: &ScratchDir) {
 #[test]
 fn the_tile_wait_starts_over_when_the_month_in_force_changes() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_new_month", view(), build_every_pack);
+    let rig = rig("engine_ready_new_month", &view(), build_every_pack);
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -531,7 +531,7 @@ fn the_tile_wait_starts_over_when_the_month_in_force_changes() {
 #[test]
 fn the_tile_wait_starts_over_when_the_resolution_changes() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_new_resolution", view(), build_every_pack);
+    let rig = rig("engine_ready_new_resolution", &view(), build_every_pack);
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -574,7 +574,7 @@ fn a_live_month_change_during_a_tile_wait_asks_for_the_new_months_tiles() {
     params.datetime.use_custom = false;
     let rig = rig_at(
         "engine_ready_live_month",
-        params,
+        &params,
         before_noon,
         build_every_pack,
     );
@@ -617,7 +617,7 @@ fn a_live_month_change_during_a_tile_wait_asks_for_the_new_months_tiles() {
 #[test]
 fn a_second_publish_waits_for_its_tiles_as_the_first_did() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_second", view(), |_| {});
+    let rig = rig("engine_ready_second", &view(), |_| {});
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -652,7 +652,7 @@ fn a_second_publish_waits_for_its_tiles_as_the_first_did() {
 #[test]
 fn an_export_waits_for_its_own_tiles_and_not_for_a_publishs() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_own_tiles", view(), |_| {});
+    let rig = rig("engine_ready_own_tiles", &view(), |_| {});
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -690,7 +690,7 @@ fn an_export_waits_for_its_own_tiles_and_not_for_a_publishs() {
 #[test]
 fn a_publish_asked_for_as_the_engine_stops_goes_out_with_what_is_resident() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_stop", view(), |_| {});
+    let rig = rig("engine_ready_stop", &view(), |_| {});
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -723,7 +723,7 @@ fn a_publish_asked_for_as_the_engine_stops_goes_out_with_what_is_resident() {
 #[test]
 fn a_publish_waiting_for_its_tiles_as_the_engine_stops_goes_out_with_what_is_resident() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_stop_owed", view(), |_| {});
+    let rig = rig("engine_ready_stop_owed", &view(), |_| {});
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -757,7 +757,7 @@ fn a_publish_waiting_for_its_tiles_as_the_engine_stops_goes_out_with_what_is_res
 #[test]
 fn failed_tiles_hold_neither_readiness_nor_a_publish() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_failed", view(), |dir| {
+    let rig = rig("engine_ready_failed", &view(), |dir| {
         build_every_pack(dir);
         damage_the_day_tiles(&dir.join("cache"));
     });
@@ -778,7 +778,7 @@ fn failed_tiles_hold_neither_readiness_nor_a_publish() {
 #[test]
 fn the_tiles_of_a_waiting_publish_come_first() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_first", view(), |_| {});
+    let rig = rig("engine_ready_first", &view(), |_| {});
     let before = settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -823,7 +823,7 @@ fn the_tiles_of_a_waiting_publish_come_first() {
 #[test]
 fn an_export_a_caller_waits_on_waits_for_its_tiles() {
     let _gpu = gpu();
-    let rig = rig("engine_ready_export", view(), |_| {});
+    let rig = rig("engine_ready_export", &view(), |_| {});
     settled(&rig.harness, "the preview's tiles", |r| {
         !r.wanted.is_empty()
     });
@@ -871,7 +871,7 @@ fn an_export_a_caller_waits_on_waits_for_its_tiles() {
 fn a_drag_converges_to_the_one_pixel_set_within_half_a_second_of_stopping() {
     let _gpu = gpu();
     let mut scene = day_over(0.0, 0.0, 0.0);
-    let rig = rig("engine_ready_drag", scene, |_| {});
+    let rig = rig("engine_ready_drag", &scene, |_| {});
     settled(&rig.harness, "the tiles at the near end", |r| {
         !r.wanted.is_empty()
     });

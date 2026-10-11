@@ -90,10 +90,10 @@ fn midnight_at(longitude: f32) -> f32 {
 /// The night side's ground lifted to near display white by its gamma, so a
 /// case has a bright ground under a night deck: the Earth fixture's night is
 /// dark wherever the equatorial band lies.
-fn with_a_lit_night_ground(params: SceneParams) -> SceneParams {
+fn with_a_lit_night_ground(params: &SceneParams) -> SceneParams {
     SceneParams {
         night_gamma: 16.0,
-        ..params
+        ..*params
     }
 }
 
@@ -223,7 +223,7 @@ fn day_and_night_light_the_clouds_evenly() {
 fn an_opacity_at_zero_switches_off_only_its_own_hemisphere() {
     let gpu = gpu();
     let harness = surface(&gpu);
-    let base = with_a_lit_night_ground(cloud_case_params(3, 180.0, NIGHT_HOUR));
+    let base = with_a_lit_night_ground(&cloud_case_params(3, 180.0, NIGHT_HOUR));
     let read = |day: f32, night: f32| {
         let pixels = harness.picture(
             &SceneParams {
@@ -268,9 +268,9 @@ fn the_night_opacity_reaches_full_cover() {
     // A uniform map is all background, so haze removal would take the deck
     // this case measures off entirely.
     let base = SceneParams {
-        cloud_haze_land: 0.0,
-        cloud_haze_ocean: 0.0,
-        ..with_a_lit_night_ground(cloud_case_params(3, 180.0, NIGHT_HOUR))
+        cloud_haze_equator: 0.0,
+        cloud_haze_pole: 0.0,
+        ..with_a_lit_night_ground(&cloud_case_params(3, 180.0, NIGHT_HOUR))
     };
 
     // The banded map is 255 or nothing, so any nonzero night opacity covers the

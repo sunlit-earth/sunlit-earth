@@ -34,21 +34,21 @@ fn sun_params(longitude: f32) -> SceneParams {
 
 /// Render `params` with the Sun off and then on, and return both frames.
 pub(crate) fn sun_off_and_on(harness: &Harness, longitude: f32) -> (Vec<u8>, Vec<u8>) {
-    sun_off_and_on_framed(harness, sun_params(longitude))
+    sun_off_and_on_framed(harness, &sun_params(longitude))
 }
 
 /// The same for a framing the caller has already adjusted.
-fn sun_off_and_on_framed(harness: &Harness, params: SceneParams) -> (Vec<u8>, Vec<u8>) {
+fn sun_off_and_on_framed(harness: &Harness, params: &SceneParams) -> (Vec<u8>, Vec<u8>) {
     sun_off_and_on_at(harness, params, 1.5)
 }
 
 /// The same again at a glare strength of the caller's choosing, for a case
 /// that needs the disk clipped white while the glare around it is not.
-fn sun_off_and_on_at(harness: &Harness, params: SceneParams, glow: f32) -> (Vec<u8>, Vec<u8>) {
-    let mut off = params;
+fn sun_off_and_on_at(harness: &Harness, params: &SceneParams, glow: f32) -> (Vec<u8>, Vec<u8>) {
+    let mut off = *params;
     off.sun_glow = 0.0;
     let off = harness.picture(&off, FRAME);
-    let mut on = params;
+    let mut on = *params;
     on.sun_glow = glow;
     let on = harness.picture(&on, FRAME);
     (off, on)
@@ -140,7 +140,7 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
 /// a brightest gain of 254 whatever the exposure does, and the two framings
 /// below would compare equal at every setting. The gain multiplies the glare's
 /// amplitude, so what it moves is how much light there is.
-fn sun_light(harness: &Harness, params: SceneParams) -> (usize, u64) {
+fn sun_light(harness: &Harness, params: &SceneParams) -> (usize, u64) {
     let (off, on) = sun_off_and_on_framed(harness, params);
     let mut painted = 0;
     let mut total = 0;
@@ -164,7 +164,7 @@ fn sun_light(harness: &Harness, params: SceneParams) -> (usize, u64) {
 #[test]
 fn a_sliver_of_sun_over_the_limb_still_glares() {
     let gpu = gpu();
-    let (painted, _) = sun_light(plain(&gpu), sun_params(172.0));
+    let (painted, _) = sun_light(plain(&gpu), &sun_params(172.0));
     assert!(
         painted > 2000,
         "a sliver of Sun in the band painted only {painted} pixels"
@@ -183,8 +183,8 @@ fn a_sliver_of_sun_over_the_limb_still_glares() {
 fn the_glare_peaks_as_the_disk_clears_the_horizon() {
     let gpu = gpu();
     let harness = plain(&gpu);
-    let (_, at_the_zone) = sun_light(harness, sun_params(168.0));
-    let (_, well_clear) = sun_light(harness, sun_params(160.0));
+    let (_, at_the_zone) = sun_light(harness, &sun_params(168.0));
+    let (_, well_clear) = sun_light(harness, &sun_params(160.0));
     assert!(
         at_the_zone > well_clear * 2,
         "the glare at the top of the zone added {at_the_zone} against \
@@ -206,7 +206,7 @@ fn the_physical_exposure_has_no_peak() {
     let flat = |longitude: f32| {
         let mut params = sun_params(longitude);
         params.sun_horizon_boost = 1.0;
-        sun_light(harness, params).1
+        sun_light(harness, &params).1
     };
     let at_the_zone = flat(168.0);
     let well_clear = flat(160.0);
@@ -303,7 +303,7 @@ fn the_sunrise_band_arrives_with_the_suns_image() {
 #[test]
 fn a_pan_past_the_frame_corner_still_draws_the_sun() {
     /// Pixels the Sun added more than a handful of levels to, and its most.
-    fn added(harness: &Harness, params: SceneParams) -> (usize, u8) {
+    fn added(harness: &Harness, params: &SceneParams) -> (usize, u8) {
         let (off, on) = sun_off_and_on_framed(harness, params);
         let mut painted = 0;
         let mut brightest = 0;
@@ -321,14 +321,14 @@ fn a_pan_past_the_frame_corner_still_draws_the_sun() {
     let harness = plain(&gpu);
     let mut framed = sun_params(68.0);
     assert_eq!(
-        added(harness, framed),
+        added(harness, &framed),
         (0, 0),
         "no point of an unpanned frame is within the glare's cone here, so \
          the Sun may not touch a pixel of it"
     );
 
     framed.camera.offset_x = -0.9;
-    let (painted, brightest) = added(harness, framed);
+    let (painted, brightest) = added(harness, &framed);
     assert!(
         painted > 4000 && brightest > 8,
         "the pan brings the frame's nearest pixel to 10.2 degrees from the \
@@ -356,7 +356,7 @@ fn an_enlarged_disk_reaching_the_frame_corner_is_drawn() {
     let mut framed = sun_params(105.0);
     framed.sun_size = 8.0;
     framed.sun_rays = 0.0;
-    let (off, on) = sun_off_and_on_at(plain(&gpu), framed, 0.25);
+    let (off, on) = sun_off_and_on_at(plain(&gpu), &framed, 0.25);
     let clipped = off
         .chunks_exact(4)
         .zip(on.chunks_exact(4))

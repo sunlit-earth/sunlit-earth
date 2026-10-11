@@ -312,6 +312,96 @@ class TestCubeCommand:
         assert "at least 256 wide" in result.output
 
 
+@pytest.fixture(scope="module")
+def plain_bake(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Bake the fixture sources without the sea ice, as the rollback does
+    with the default ice pass, and return the output directory."""
+    root = tmp_path_factory.mktemp("cube_plain")
+    days, night, shapefile = write_fixture_sources(root / "src")
+    out = root / "out"
+    result = runner.invoke(app, bake_arguments(days, night, shapefile, out))
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    return out
+
+
+def texel_at(bake: Path, part: str, lon: float, lat: float) -> np.ndarray:
+    """Return the texel of ``part`` of a bake, ``mask`` or a day set's
+    directory relative to the bake, at a longitude and latitude."""
+    face, row, col = texel_of(direction_at(lon, lat), FIXTURE_FACE)
+    return decode(bake / part / f"{face}.jxl")[row, col]
+
+
+class TestBakeOptions:
+    def test_a_bake_without_sea_ice_leaves_open_water_the_fill(
+        self, plain_bake: Path, fixture_bake: Path
+    ) -> None:
+        for month in FIXTURE_MONTHS:
+            stamp = f"day/2004{month:02d}"
+            assert tuple(texel_at(plain_bake, stamp, -150, 80)) == OCEAN_FILL
+            assert min(texel_at(fixture_bake, stamp, -150, 80)) > 150
+
+    def test_the_sea_ice_leaves_the_mask_and_the_night_as_they_are(
+        self, plain_bake: Path, fixture_bake: Path
+    ) -> None:
+        for part in ("mask", "night"):
+            for face in FACES:
+                np.testing.assert_array_equal(
+                    decode(plain_bake / part / f"{face}.jxl"),
+                    decode(fixture_bake / part / f"{face}.jxl"),
+                    err_msg=f"{part}/{face}",
+                )
+
+    def test_both_poles_keeps_the_arctic_ice_the_detector_finds_as_land(
+        self, plain_bake: Path, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        out = tmp_path / "out"
+        arguments = [
+            *bake_arguments(days, night, shapefile, out),
+            "--ocean-ice-both-poles",
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert int(texel_at(plain_bake, "mask", -100, 76)) == 255
+        assert int(texel_at(out, "mask", -100, 76)) < 255
+        assert tuple(texel_at(out, "day/200401", -100, 76)) != OCEAN_FILL
+        assert int(texel_at(out, "mask", -100, -66)) == int(
+            texel_at(plain_bake, "mask", -100, -66)
+        )
+
+    def test_missing_sea_ice_files_are_refused_before_anything_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        empty = tmp_path / "osi"
+        empty.mkdir()
+        out = tmp_path / "out"
+        arguments = [
+            *bake_arguments(days, night, shapefile, out),
+            "--sea-ice",
+            str(empty),
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 1
+        assert "monthly sea ice files are missing" in result.output
+        assert "--fetch" in result.output
+        assert not list(out.rglob("*.jxl"))
+
+    @pytest.mark.parametrize("size", ["0", "6", "9", "257"])
+    def test_a_cap_size_that_is_odd_or_below_8_is_refused(
+        self, tmp_path: Path, size: str
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        arguments = [
+            *bake_arguments(days, night, shapefile, tmp_path / "out"),
+            "--sea-ice-cap-size",
+            size,
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 2
+        assert "Cap size must be even and at least 8" in result.output
+
+
 class TestFixtureBake:
     def test_the_committed_fixture_matches_a_fresh_bake(
         self, fixture_bake: Path

@@ -167,7 +167,13 @@ Baking without `--sea-ice` and the pass gate reproduces today's faces, and on ic
 
 ## Validation Record
 
-None yet.
+Round 1, on `b14a490..0e16148`, found 1 MAJOR and 5 MINOR. The MAJOR: decision 7's water term took the glint and the Fresnel shift off every bright texel over mask water, so coast texels whose land is bright lost them with no ice anywhere near, the Red Sea, the Gulf of Aden, the Persian Gulf and the Mozambique coast among them. It was fixed by the latitude gate the user chose, the ice term read poleward of 30 to 35 degrees alone (departure 15), in `c56b887`, which also regenerated WARP's goldens, and `30d56ff`. The MINORs: band noise finer than the cap's texels was scaled up to texel noise rather than left at zero (`3c2602e`, the 4096 fields unchanged to the bit and the cube fixture rebaked); criterion 5's case draws cubes of one color rather than the Earth fixture (departure 16, in `c56b887`); nothing tested the bake without the sea ice, the both poles gate, the refusal of missing files or the cap size's check (`cec2336`); the real packs were built outside the GPU lock the engine cases hold (`3dd66ae`); and three inaccuracies in the documents, the golden changes in `docs/testing.md` and the matte ice in `docs/rendering.md` (`c56b887`) and the order of the bake's steps in `textures/PROVENANCE.md` (`856d7b3`), with `fd02ff7` mending a list the first edit split. The three polar references of lavapipe and Metal from golden runs 38154644647 and 38154960924 on `0e16148` went in with `b1bf81c`; those cases draw the day surface alone, which no water term reaches, so the gate does not move them.
+
+Round 2, on `0e16148..fd02ff7`, verified every fix of round 1 and found 1 MAJOR and 2 MINOR. The MAJOR: the lavapipe and Metal references other than the three polar ones were still main's, never regenerated on the gated shader (criterion 10). It is closed by golden.yml runs on the pushed head:
+
+- Golden runs: (run IDs to come).
+
+The MINORs: the gate's residual was missing from the roadmap's item of possible refinements, and departure 16 claimed the golden `clouds_across_the_terminator` guards the gate, which it does not at the golden tolerance. Both were fixed in `275f328`.
 
 ## Settled with the user
 

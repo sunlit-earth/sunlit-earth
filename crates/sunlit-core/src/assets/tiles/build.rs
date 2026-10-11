@@ -53,6 +53,12 @@ const OPEN_WATER: u8 = 255;
 /// stands tens to hundreds above it, which keeps its tile stored.
 const NIGHT_OCEAN_TOLERANCE: u8 = 4;
 
+/// How far a day texel over open water may lie from the day's ocean color in
+/// a tile drawn as that color. The flattened fill decodes within 5 of the
+/// month's ocean color in every tile of open water, and sea ice composited
+/// over it stands far above that, which keeps its tile stored.
+const DAY_OCEAN_TOLERANCE: u8 = 8;
+
 /// Why a pack was not built.
 #[derive(Debug)]
 pub enum BuildError {
@@ -371,16 +377,19 @@ fn chain(plane: &Plane, size: u32) -> Vec<Plane> {
     chain
 }
 
-/// The mean color of the texels of `color` that `mask` calls open water.
+/// The median per channel of the texels of `color` that `mask` calls open
+/// water: the lower median, so an even count picks a value that occurs. Sea
+/// ice over open water is among those texels, and a median stays on the
+/// flattened fill where a mean would drift toward the ice.
 fn ocean_color(color: &Cube, mask: &Cube) -> [u8; 4] {
-    let mut sum = [0_u64; 4];
+    let mut histogram = [[0_u64; 256]; 4];
     let mut count = 0_u64;
     for face in 0..6 {
         let texels = color.face(face).texels.chunks_exact(4);
         for (texel, &water) in texels.zip(&mask.face(face).texels) {
             if water == OPEN_WATER {
-                for (s, &c) in sum.iter_mut().zip(texel) {
-                    *s += u64::from(c);
+                for (bins, &c) in histogram.iter_mut().zip(texel) {
+                    bins[usize::from(c)] += 1;
                 }
                 count += 1;
             }
@@ -389,7 +398,27 @@ fn ocean_color(color: &Cube, mask: &Cube) -> [u8; 4] {
     if count == 0 {
         return [0; 4];
     }
-    sum.map(|s| u8::try_from((s + count / 2) / count).expect("a mean of bytes"))
+    histogram.map(|bins| {
+        let mut seen = 0;
+        let value = bins
+            .iter()
+            .position(|&n| {
+                seen += n;
+                2 * seen >= count
+            })
+            .expect("the bins hold every texel");
+        u8::try_from(value).expect("a bin index")
+    })
+}
+
+/// How far a texel of a surface pack of `kind` over open water may lie from
+/// the ocean color in a tile drawn as that color.
+fn ocean_tolerance(kind: PackKind) -> Option<u8> {
+    match kind {
+        PackKind::Day(_) => Some(DAY_OCEAN_TOLERANCE),
+        PackKind::Night => Some(NIGHT_OCEAN_TOLERANCE),
+        PackKind::Mask => None,
+    }
 }
 
 /// What a pack of `kind` stores, before any of it is encoded: its block
@@ -403,7 +432,7 @@ fn prepare(
     match (color, mask) {
         (Some(color), mask) => {
             let ocean = mask.as_ref().map_or([0; 4], |m| ocean_color(&color, m));
-            let flat = matches!(kind, PackKind::Night).then_some((ocean, NIGHT_OCEAN_TOLERANCE));
+            let flat = ocean_tolerance(kind).map(|tolerance| (ocean, tolerance));
             let (levels, jobs) = surface_jobs(color, mask.as_ref(), flat, geometry);
             (BlockFormat::Bc7, ocean, levels, jobs)
         }
@@ -1388,19 +1417,95 @@ mod tests {
         );
     }
 
+    /// Over open water a day tile is flat only where it holds no ice: noise
+    /// of the lossy fill within the tolerance is drawn as the ocean color, and
+    /// an ice texel keeps its tile, and the tiles whose gutters reach it,
+    /// stored.
     #[test]
-    fn the_ocean_color_is_the_mean_of_open_water() {
-        let color = smooth_cube(4);
-        let mut sum = [0_u64; 4];
-        for face in 0..6 {
-            for texel in color.face(face).texels.chunks(4) {
-                for (s, &c) in sum.iter_mut().zip(texel) {
-                    *s += u64::from(c);
+    fn a_day_tile_over_water_is_ocean_only_without_ice() {
+        let geometry = Geometry {
+            face: 32,
+            levels: 2,
+            tile: 8,
+            gutter: 4,
+            floor: 8,
+            mask: 16,
+        };
+        let fill = [10_u8, 30, 60, 255];
+        let faces = (0..6)
+            .map(|face| {
+                let mut texels: Vec<u8> = (0..32 * 32)
+                    .flat_map(|i: usize| {
+                        let wobble = u8::try_from(i % 9).expect("a byte");
+                        [fill[0] + wobble % 6, fill[1], fill[2] - wobble % 5, 255]
+                    })
+                    .collect();
+                if face == 4 {
+                    let at = (26 * 32 + 3) * 4;
+                    texels[at..at + 3].copy_from_slice(&[226, 231, 235]);
                 }
-            }
-        }
-        let expected = sum.map(|s| u8::try_from((s + 48) / 96).expect("a byte"));
-        assert_eq!(ocean_color(&color, &water_cube(4, &[])), expected);
+                Plane {
+                    size: 32,
+                    channels: 4,
+                    texels,
+                }
+            })
+            .collect();
+        let day = Cube::new(faces).expect("a cube");
+        let mask = water_cube(32, &[]);
+        let (_, jobs) = surface_jobs(
+            day,
+            Some(&mask),
+            Some((fill, DAY_OCEAN_TOLERANCE)),
+            &geometry,
+        );
+        let stored: Vec<TileKey> = jobs
+            .iter()
+            .filter_map(|job| match job {
+                Job::Tile {
+                    key, ocean: false, ..
+                } => Some(*key),
+                _ => None,
+            })
+            .collect();
+        let key = |level, face, row, col| TileKey {
+            level,
+            face,
+            row,
+            col,
+        };
+        assert_eq!(
+            stored,
+            [
+                key(4, 1, 1, 1),
+                key(4, 3, 0, 0),
+                key(4, 4, 1, 0),
+                key(5, 1, 3, 3),
+                key(5, 4, 2, 0),
+                key(5, 4, 3, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_ocean_color_is_the_median_of_open_water() {
+        let fill = [10_u8, 30, 60, 255];
+        let ice = [230_u8, 235, 240, 255];
+        let faces = (0..6)
+            .map(|face| Plane {
+                size: 4,
+                channels: 4,
+                texels: (0..16)
+                    .flat_map(|i| if face == 2 && i < 12 { ice } else { fill })
+                    .collect(),
+            })
+            .collect();
+        let color = Cube::new(faces).expect("a cube");
+        assert_eq!(
+            ocean_color(&color, &water_cube(4, &[])),
+            fill,
+            "twelve ice texels of 96 move a mean, not the median"
+        );
 
         let everywhere: Vec<_> = (0..6)
             .flat_map(|f| (0..16).map(move |i| (f, i / 4, i % 4)))
@@ -1410,6 +1515,27 @@ mod tests {
             [0; 4],
             "no water, no color"
         );
+    }
+
+    #[test]
+    fn the_median_of_an_even_count_is_the_lower_one() {
+        let faces = (0..6)
+            .map(|face| Plane {
+                size: 4,
+                channels: 4,
+                texels: (0..16)
+                    .flat_map(|_| {
+                        if face < 3 {
+                            [10, 30, 60, 255]
+                        } else {
+                            [12, 31, 62, 255]
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        let color = Cube::new(faces).expect("a cube");
+        assert_eq!(ocean_color(&color, &water_cube(4, &[])), [10, 30, 60, 255]);
     }
 
     /// A digest of everything the cutter hands the encoder for the fixture's
@@ -1492,8 +1618,8 @@ mod tests {
     #[test]
     fn a_change_to_what_the_cutter_makes_comes_with_a_format_version_bump() {
         const PINNED: (u32, &str) = (
-            1,
-            "64ab0d3dcb4b2dffbf705a3157bc5449024f89c6568eb167e8a5923598249461",
+            2,
+            "125133994611518c8e8dfbbc615768d7d8e330a1107cdf38d4a1e03613d6d60b",
         );
         let found = cutter_digest();
         assert_eq!(

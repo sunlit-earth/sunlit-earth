@@ -51,9 +51,9 @@ const MAGIC: [u8; 8] = *b"SUNLTILE";
 /// Part of every pack's key. Bump it whenever the bytes a build writes for the
 /// same sources change: the layout above, or anything the cutter hands the
 /// encoder, such as gutter sampling, the halving filter, the ocean rules or the
-/// night's ocean tolerance. A test pins a digest of the cutter's output and
+/// day's and the night's ocean tolerances. A test pins a digest of the cutter's output and
 /// fails until this and the pin agree.
-pub(crate) const FORMAT_VERSION: u32 = 1;
+pub(crate) const FORMAT_VERSION: u32 = 2;
 const FIXED_HEADER: usize = 48;
 const ENTRY_BYTES: usize = 56;
 const CRC_START: usize = 20;

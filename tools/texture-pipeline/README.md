@@ -79,6 +79,7 @@ uv run texture-pipeline cube \
     --input /path/to/bmng-topography \
     --night /path/to/BlackMarble_2016_3km.jpg \
     --ocean-mask /path/to/ne_10m_ocean.shp \
+    --sea-ice /path/to/osi450 --fetch \
     --output ../../textures
 ```
 
@@ -100,7 +101,15 @@ uv run texture-pipeline cube \
 
 `--workers`: Threads that resample the bands of a face (default: the CPU count, at most 4).
 
-The `--ocean-*` options are those of `earth`. The one difference is that ice the detector finds in any month is kept as land in every month, because a single mask serves the whole year.
+`--sea-ice`: Directory of the 24 OSI-450-a1 monthly files of 2004, both hemispheres, as the OSI SAF THREDDS server names them (`ice_conc_nh_ease2-250_cdr-v3p1_200403.nc`). With it, every month's sea ice is generated and composited into the month's open water. Without it the faces have no sea ice.
+
+`--fetch`: Download the files missing from the `--sea-ice` directory first, one at a time over HTTPS, and write their checksums to `SHA256SUMS` beside them. About 22 MB.
+
+`--sea-ice-cap-size`: Texels along each side of the polar caps the ice is generated on (default: 4096, 2.87 km a texel). 8192 is no sharper at 2048 px faces and needs over 6 GiB.
+
+`--ocean-ice-south-only/--ocean-ice-both-poles`: Where the ice detection looks (default: south only). South of the latitude gate it keeps the Antarctic ice shelves as land; north of it the generated sea ice takes the place of the Blue Marble's own coastal ice and snow. `--ocean-ice-both-poles` is the detection of earlier bakes.
+
+The other `--ocean-*` options are those of `earth`. The one difference is that ice the detector finds in any month is kept as land in every month, because a single mask serves the whole year.
 
 ### Output
 
@@ -110,15 +119,16 @@ The day faces are 8-bit RGB with no alpha, the night faces 8-bit RGB, and the ma
 
 ### The water mask
 
-A mask texel is the fraction of its footprint that is open water: 255 is open ocean, 0 is land, and values in between are coastline. Ice that the detector finds on the ocean side of the shapefile's coastline, which on Blue Marble is the Antarctic ice shelves and snow along Arctic coasts, counts as land and is 0. The day faces are flattened toward the ocean fill color (default 10, 30, 60) in proportion to the same mask, so wherever a mask texel is 255 the day texel is the fill to within one level before the lossy encode moves it; a consumer that wants a flat ocean should write the fill itself where the mask is 255 rather than trust the decoded color.
+A mask texel is the fraction of its footprint that is open water: 255 is open ocean, 0 is land, and values in between are coastline. Ice that the detector finds on the ocean side of the shapefile's coastline, which on Blue Marble south of the gate is the Antarctic ice shelves, counts as land and is 0. With `--sea-ice` a texel the mask calls open water is the fill or sea ice, and nothing else. The day faces are flattened toward the ocean fill color (default 10, 30, 60) in proportion to the same mask, so wherever a mask texel is 255 the day texel is the fill to within one level before the lossy encode moves it; a consumer that wants a flat ocean should write the fill itself where the mask is 255 rather than trust the decoded color.
 
 ### What the command does
 
 1. Rasterizes the shapefile once at the day maps' size, with the `earth` command's supersampling and coast offset.
-2. Runs the ice detection on every month and subtracts the union of what it finds from the mask.
+2. Runs the ice detection on every month, south of the gate unless `--ocean-ice-both-poles` is given, and subtracts the union of what it finds from the mask.
 3. Resamples the mask to six faces at the working size, a quarter of the source's width (5400 for the 21600 maps), which is the source's own density at the equator. These working faces flatten every month, and their area average down to the face size is what `mask/` holds.
-4. For each month, resamples the picture to six faces at the working size, flattens the ocean through the working mask, averages each face down to the face size over every texel's footprint (Pillow's box filter, which weighs partial pixels exactly at a non-integer ratio), and encodes it.
-5. Resamples the night map the same way at a quarter of its own width, without flattening.
+4. With `--sea-ice`, reads the twelve monthly means of each hemisphere, extends them three cells into land from the nearest ocean cell, resamples them onto a polar cap of 1024 texels (the polar Lambert azimuthal equal-area plane out to 35 degrees of latitude on its axes) through a cubic B-spline, and generates the hemisphere's noise fields on a cap of `--sea-ice-cap-size` (`src/texture_pipeline/sea_ice_look.py`): a threshold stretched along the ice edge, a divergence-free swirl, a lead network and brightness noise, seeded and the same in every month.
+5. For each month, resamples the picture to six faces at the working size, flattens the ocean through the working mask, composites the month's ice into the water share of every texel (a texel `(1 - w) * land + w * fill` becomes `(1 - w) * land + w * mix(fill, ice, coverage)`, so land is never touched), averages each face down to the face size over every texel's footprint (Pillow's box filter, which weighs partial pixels exactly at a non-integer ratio), and encodes it. With `--sea-ice` it prints each hemisphere's ice area over the mask's water against the source's.
+6. Resamples the night map the same way at a quarter of its own width, without flattening.
 
 The resampling maps every texel center back into the source and samples it bilinearly, wrapping in longitude and clamping at the poles, one band of 256 rows at a time, so the memory a face needs does not grow with its size.
 

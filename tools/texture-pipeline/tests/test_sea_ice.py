@@ -1,20 +1,29 @@
 """Tests for the sea ice source, its caps and its look.
 
 The real monthly files are not in the repository; ``conftest`` writes a
-synthetic year of them on the 25 km EASE2 grid.
+synthetic year of them on the 25 km EASE2 grid. Point
+``TEXTURE_PIPELINE_OSI_DIR`` at a directory holding the 24 files of 2004
+(``texture-pipeline cube --sea-ice <dir> --fetch`` fills one) to run the case
+that holds the real bake's area to the source's; without it that case skips.
 """
 
 import csv
+import os
 from pathlib import Path
 
 import numpy as np
+import pillow_jxl  # noqa: F401 - registers the JPEG XL plugin with Pillow
 import pytest
 from conftest import synthetic_concentration
+from PIL import Image
 
 from texture_pipeline import sea_ice, sea_ice_look
 from texture_pipeline.cube import FACES, face_directions
 
 POINTS = Path(__file__).parent / "fixtures" / "sea_ice_points.csv"
+SHIPPED_MASK = Path(__file__).resolve().parents[3] / "textures" / "mask"
+LFS_POINTER = b"version https://git-lfs"
+AREA_TOLERANCE = 0.10
 FILL = (10, 30, 60)
 SMALL_CAP = 256
 
@@ -320,3 +329,61 @@ class TestComposite:
         )
         for km2 in total.values():
             assert km2 == pytest.approx(reach, rel=0.02)
+
+
+def osi_directory() -> Path:
+    """Return the directory of the real monthly files, or skip the test."""
+    value = os.environ.get("TEXTURE_PIPELINE_OSI_DIR", "").strip()
+    if not value:
+        pytest.skip("TEXTURE_PIPELINE_OSI_DIR names no directory of OSI-450-a1 files")
+    directory = Path(value)
+    missing = sea_ice.missing_files(directory)
+    if missing:
+        pytest.skip(f"{len(missing)} monthly files missing from {directory}")
+    return directory
+
+
+def shipped_mask() -> dict[str, np.ndarray]:
+    """Return the shipped mask faces, or skip the test."""
+    masks = {}
+    for face in FACES:
+        path = SHIPPED_MASK / f"{face}.jxl"
+        with path.open("rb") as file:
+            if file.read(len(LFS_POINTER)) == LFS_POINTER:
+                pytest.skip("the shipped mask is a Git LFS pointer in this checkout")
+        with Image.open(path) as image:
+            masks[face] = np.asarray(image)
+    return masks
+
+
+class TestRealIce:
+    def test_the_drawn_area_follows_the_source_in_every_month(self) -> None:
+        """The coverage over the shipped mask's water, weighted by its share
+        of water and the texels' area, against the source's concentration
+        times its cells' area."""
+        directory = osi_directory()
+        masks = shipped_mask()
+        fields = {}
+        source = {}
+        for name in sea_ice.HEMISPHERES:
+            hemisphere = sea_ice.read_hemisphere(directory, name)
+            source[name] = sea_ice.source_area_km2(hemisphere)
+            fields[name] = sea_ice_look.prepare(
+                sea_ice.cap_concentration(hemisphere), name, sea_ice.CAP_SIZE
+            )
+        for month in sea_ice.MONTHS:
+            ice = sea_ice_look.MonthIce(
+                {n: sea_ice_look.month_cap(f, month) for n, f in fields.items()}
+            )
+            drawn = dict.fromkeys(sea_ice.HEMISPHERES, 0.0)
+            for face, water in masks.items():
+                flat = np.zeros((*water.shape, 3), dtype=np.uint8)
+                found = sea_ice_look.composite_face(flat, water, face, ice, FILL)
+                for name, km2 in found.items():
+                    drawn[name] += km2
+            for name in sea_ice.HEMISPHERES:
+                expected = float(source[name][month - 1])
+                assert abs(drawn[name] / expected - 1) <= AREA_TOLERANCE, (
+                    f"{name} {month:02d}: drawn {drawn[name] / 1e6:.2f} against "
+                    f"{expected / 1e6:.2f} million km2"
+                )

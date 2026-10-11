@@ -120,7 +120,7 @@ The Earth's surface as an equi-angular cube: twelve monthly day sets under `day/
 
 ### What a mask texel means
 
-A mask texel is the share of its footprint that is open water: 255 is open ocean, 0 is land, and the values in between are coastline. Ice the detector finds on the ocean side of the shapefile's coastline counts as land and is 0. One mask serves all twelve months. The day faces were flattened toward the ocean fill color (10, 30, 60) in proportion to the same mask, so where a mask texel is 255 the day texel was that fill to within one level before the lossy encode; decoded, it carries the codec's noise, and anything that wants a flat ocean writes (10, 30, 60) itself where the mask is 255. Nothing in the cube set has an alpha channel.
+A mask texel is the share of its footprint that is open water: 255 is open ocean, 0 is land, and the values in between are coastline. Ice the detector finds on the ocean side of the shapefile's coastline south of 60 S, the Antarctic ice shelves, counts as land and is 0. One mask serves all twelve months. The day faces were flattened toward the ocean fill color (10, 30, 60) in proportion to the same mask, and the month's sea ice was then composited into the water share of every texel, so where a mask texel is 255 the day texel was that fill to within one level before the lossy encode, or sea ice; decoded, open water carries the codec's noise, at most 43 of 255 in luminance on the faces measured, below any ice, and anything that wants a flat ocean writes (10, 30, 60) itself where the mask is 255 and the texel is dark. Nothing in the cube set has an alpha channel.
 
 Natural Earth's ocean layer holds Null Island, a hole of about a kilometer at 0 N 0 E, which comes out as four texels of 245 at the center of `pz`.
 
@@ -152,6 +152,42 @@ with `<month>` the lowercase English month name, `january` for `200401` through 
 - Credit: NASA Earth Observatory, produced by Reto Stöckli, NASA Goddard Space Flight Center, from Terra MODIS. Antarctica is the Landsat Image Mosaic of Antarctica (USGS/NASA), and south of 60 S the source is the same in every month.
 - License: US Government work, not copyrighted in the US. NASA asks that republished imagery credit "NASA Earth Observatory".
 
+### Sea ice: EUMETSAT OSI SAF OSI-450-a1, 2004
+
+The day faces carry each month's sea ice, generated from the monthly mean sea ice concentration of 2004, the Blue Marble's own year, and composited into the open water of that month's faces (`docs/plans/2026-10-11-baked-sea-ice-plan.md`).
+
+- Source: EUMETSAT OSI SAF, Global sea ice concentration climate data record 1978-2020 (v3.1, 2025), OSI-450-a1, doi:10.15770/EUM_SAF_OSI_0023, [product page](https://osi-saf.eumetsat.int/products/osi-450-a1). The monthly files on the 25 km EASE2 grid (EPSG:6931 in the north, EPSG:6932 in the south), `ice_conc` as published. Inputs for 2004 are SSM/I, with ERA5 for the weather correction (global attribute `source`).
+- Files taken: the 24 monthly files of 2004, both hemispheres, 22,188,301 bytes together, downloaded on 2026-10-11 one at a time by `cube --fetch` from `https://thredds.met.no/thredds/fileServer/osisaf/met.no/reprocessed/ice/conc_450a1_files/monthly/2004/ice_conc_{nh,sh}_ease2-250_cdr-v3p1_2004MM.nc`. Their checksums are below.
+- License: Creative Commons Attribution 4.0 International. The faces hold a modification of the data (a reprojection, a generated texture and a composite), and carry the credit "Contains modified EUMETSAT OSI SAF data" with the product and its DOI.
+- What is drawn: each month's mean, extended three cells into land from the nearest ocean cell, resampled onto a polar cap through a cubic B-spline, and turned into coverage and brightness by `tools/texture-pipeline/src/texture_pipeline/sea_ice_look.py` at 4096 texels a cap side, 2.87 km: an edge stretched into streaks along itself, a sparse lead network and broad brightness noise, the same noise fields in every month, one color per hemisphere and month. The structure is generated; the extent follows the data. The coverage-weighted area over the mask's water came within -6.6% (Antarctic, February) and +5.0% (Arctic, September) of the source's concentration times area in every month of both hemispheres.
+
+```
+acdef73bd5db4a714acb800f63852aa92682d523f72ede605376451445ea38fd  ice_conc_nh_ease2-250_cdr-v3p1_200401.nc
+cf7e51b1e4b8b4a186f5e9079a6731045591d615f7f20b5d1a89aaa165ce3ac2  ice_conc_nh_ease2-250_cdr-v3p1_200402.nc
+093e9e3413d9097c6d0aed901052716ebac2156d432e85a39cbf9fd7731877ed  ice_conc_nh_ease2-250_cdr-v3p1_200403.nc
+9da93fe392fc60e7d596bea0e0cce055b6b2e39c104dc856040acd8cba9c74bb  ice_conc_nh_ease2-250_cdr-v3p1_200404.nc
+f701d7773d81c28d82e533430d7e93543a18c1d557d30f8ad4c47dae72e9db14  ice_conc_nh_ease2-250_cdr-v3p1_200405.nc
+f134aecc9768b4fd12e80b0c3cd30b1871f639b8f64335a7b44a03987f493e79  ice_conc_nh_ease2-250_cdr-v3p1_200406.nc
+0b165ce516eb09f4e9cb3d4a67ea62d9f1dd8b54e6f5f3bf9b13124ff9d12a50  ice_conc_nh_ease2-250_cdr-v3p1_200407.nc
+90bd4def9d163b035536b1ee021dedae597c678f7de928f878bd5a4401835ccc  ice_conc_nh_ease2-250_cdr-v3p1_200408.nc
+cfc93a642d2a8e26ca36baec2c172b9b7e51d1a3b2d3e30f76691fb4a7b3b572  ice_conc_nh_ease2-250_cdr-v3p1_200409.nc
+6d841bdb87d94ddb6cb56393996efc88f2ff1470aaedcf91d5430d2c7ffd15c0  ice_conc_nh_ease2-250_cdr-v3p1_200410.nc
+248498b698d98c1c6e13cdc84665b3bf710e8faa1def1f7b34a445834c8d241e  ice_conc_nh_ease2-250_cdr-v3p1_200411.nc
+a53a3ef51c58b4a06bf9c6a084a4480e6c4b5438a1c1aff8076015fde9d04c9b  ice_conc_nh_ease2-250_cdr-v3p1_200412.nc
+0d7ade62c23647d50e60b8291a16aed185751e77018424eeae034332f9abe303  ice_conc_sh_ease2-250_cdr-v3p1_200401.nc
+8d82c94bc7bff4d9153fa36c41352debbcb632dedba1558f507c1071ca5d0c21  ice_conc_sh_ease2-250_cdr-v3p1_200402.nc
+afe07e80138bf6157b4ee328f89b6ab05639658a90f3b226305287213a0149cd  ice_conc_sh_ease2-250_cdr-v3p1_200403.nc
+0f40bc0cea6f1c08cdade9fd81fcb020a52d8ce2c3f3e4243685e3340f1d2da4  ice_conc_sh_ease2-250_cdr-v3p1_200404.nc
+c6cacbca47a3c41e2e539aa72c9fff279af90a7b4360daccc6e0c487735efc73  ice_conc_sh_ease2-250_cdr-v3p1_200405.nc
+13ea47863bb250d40d57bcbff0606cd2eebf1d7be763b92b34d0928a02c3673c  ice_conc_sh_ease2-250_cdr-v3p1_200406.nc
+d6afe15996b83d7206cc1bc15abff65f470f39d23af7fcc0eeb5bf6fc3ea8ba1  ice_conc_sh_ease2-250_cdr-v3p1_200407.nc
+10cfe60325718c60cdb9227b76f9f269380f440cc96b5dd279d729e71eb3bdbd  ice_conc_sh_ease2-250_cdr-v3p1_200408.nc
+3e5d7b288303f7ebb1ead291105031089bf0e02b9e3a14a89c5482bd5ad599f3  ice_conc_sh_ease2-250_cdr-v3p1_200409.nc
+8f3ce18089b2eb5e80c0e41afe9b01933c856d1c405f3528230a755edbdfd87e  ice_conc_sh_ease2-250_cdr-v3p1_200410.nc
+36f72f00f6f3b890da2124100941406b5e7e1d117175c099edc9efcf26006921  ice_conc_sh_ease2-250_cdr-v3p1_200411.nc
+460f99d6deda45fcfd118183184e27b07f8686825d628a4f6659ea9c7a57bbd0  ice_conc_sh_ease2-250_cdr-v3p1_200412.nc
+```
+
 ### Night: Black Marble 2016
 
 NASA Earth Observatory's Black Marble 2016, `BlackMarble_2016_3km.jpg`, 13500 x 6750, 8,106,233 bytes, sha256 `230aac448ae68c358be433dd518888cccb3a85ccf66f7b44326441c324ad6725`, downloaded on 2026-09-29 from `https://assets.science.nasa.gov/content/dam/science/esd/eo/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg`. The older address `https://eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg` answers with a file of the same length.
@@ -168,36 +204,38 @@ Natural Earth's 1:10m physical vectors, the Ocean layer (`ne_10m_ocean`), versio
 With the texture pipeline in `tools/texture-pipeline`, the twelve JPEGs in one directory:
 
 ```
-uv run texture-pipeline cube --input <the twelve JPEGs> --night BlackMarble_2016_3km.jpg --ocean-mask ne_10m_ocean.shp --output textures
+uv run texture-pipeline cube --input <the twelve JPEGs> --night BlackMarble_2016_3km.jpg --ocean-mask ne_10m_ocean.shp --sea-ice <the 24 OSI-450-a1 files> --fetch --output textures
 ```
 
-Every other option at its default: face size 2048, quality 85, effort 7, fill 10,30,60, supersample 2, coast offset 0, ice kept at seed luminance 200 above 60 degrees of latitude, four workers. The encoder is libjxl through pillow-jxl-plugin 1.3.7, the version the pipeline's `uv.lock` pins.
+Every other option at its default: face size 2048, quality 85, effort 7, fill 10,30,60, supersample 2, coast offset 0, ice kept at seed luminance 200 south of 60 degrees south alone, sea ice caps of 4096, four workers. The encoder is libjxl through pillow-jxl-plugin 1.3.7, the version the pipeline's `uv.lock` pins.
 
-What that does, in order: rasterizes the shapefile once at 21600 x 10800; runs the ice detection on all twelve months and subtracts the union of what it finds; resamples that mask to six faces at 5400, the source's density at the equator; resamples every month to six faces at 5400 by inverse mapping each texel center into the source and sampling it bilinearly, flattens the ocean through the 5400 mask, and averages each face down to 2048 over every texel's footprint; resamples the night at 3375, a quarter of its width, and averages it down the same way without flattening; and writes the mask faces as the same average of the 5400 mask faces.
+What that does, in order: rasterizes the shapefile once at 21600 x 10800; runs the ice detection south of 60 S on all twelve months and subtracts the union of what it finds; reads the 24 sea ice files, resamples each month onto the polar caps and generates both hemispheres' noise fields; resamples that mask to six faces at 5400, the source's density at the equator; resamples every month to six faces at 5400 by inverse mapping each texel center into the source and sampling it bilinearly, flattens the ocean through the 5400 mask, composites the month's sea ice into the water share of every texel, and averages each face down to 2048 over every texel's footprint; resamples the night at 3375, a quarter of its width, and averages it down the same way without flattening; and writes the mask faces as the same average of the 5400 mask faces.
 
-The ice pass changes the mask on this data. Per month it keeps 3.1 M to 4.0 M source pixels as land, 0.53% to 0.62% of the ocean's area: 2.71 M of them are Antarctic ice shelves and the same in every month, the rest is snow along Arctic coasts, from 0.35 M in August to 1.27 M in February. The union over the year is 4.02 M pixels, 0.62% of the ocean.
+The ice pass changes the mask on this data: it keeps 2,710,935 source pixels as land, the Antarctic ice shelves, the same in every month. Bakes before the sea ice ran it at both poles, where it also kept 0.35 M to 1.27 M source pixels of snow and fast ice along Arctic coasts as land in every month; that water now takes the generated ice, and the mask's `py` face gained 73,155 texels of water, 421,530 km2.
 
 ### Measurements
 
-Run on 2026-09-29 on Windows 11, an AMD Ryzen 7 5800X (16 logical cores) with 64 GB, while another agent's builds shared the machine: 572.8 s in all, a peak working set of 3.04 GiB and a peak commit of 4.16 GiB. The shapefile raster took 38.6 s, the ice pass over twelve months 134.1 s, the mask faces 13.7 s, the months 27.0 s to 42.5 s each and 373.6 s together, and the night 12.9 s. The peak is the shapefile raster at twice the source's size; the resampling, done in bands of 256 rows, stays below it.
+Run on 2026-10-11 on Windows 11, an AMD Ryzen 7 5800X (16 logical cores) with 64 GB, with nothing else running: 712.3 s in all, a peak working set of 3.37 GiB and a peak commit of 4.32 GiB. The shapefile raster took 36.7 s, the ice pass over twelve months 67.1 s, the mask faces 14.3 s, the sea ice's noise fields 68.8 s for each hemisphere, the months 34.9 s to 43.1 s each with their sea ice, and the night 10.4 s. A one-month bake without the sea ice took 85.6 s and peaked at a working set of 2.70 GiB and a commit of 3.85 GiB. The night faces came out byte for byte as before, and of the day faces only the 27 that hold sea ice changed: `py` and `ny` in every month and `px` in January, February and December, for the Bohai Sea.
+
+The bake before the sea ice, on 2026-09-29 with another agent's builds sharing the machine, took 572.8 s, a peak working set of 3.04 GiB and a peak commit of 4.16 GiB, its ice pass over twelve months at both poles 134.1 s.
 
 | Set | Files | Bytes |
 |---|---|---|
-| day/200401 | 6 | 1,553,014 |
-| day/200402 | 6 | 1,542,041 |
-| day/200403 | 6 | 1,504,676 |
-| day/200404 | 6 | 1,448,285 |
-| day/200405 | 6 | 1,400,336 |
-| day/200406 | 6 | 1,347,752 |
-| day/200407 | 6 | 1,288,658 |
-| day/200408 | 6 | 1,282,466 |
-| day/200409 | 6 | 1,349,437 |
-| day/200410 | 6 | 1,411,854 |
-| day/200411 | 6 | 1,508,024 |
-| day/200412 | 6 | 1,545,721 |
-| day, twelve months | 72 | 17,182,264 |
+| day/200401 | 6 | 1,609,421 |
+| day/200402 | 6 | 1,579,822 |
+| day/200403 | 6 | 1,550,245 |
+| day/200404 | 6 | 1,512,529 |
+| day/200405 | 6 | 1,491,060 |
+| day/200406 | 6 | 1,487,388 |
+| day/200407 | 6 | 1,447,214 |
+| day/200408 | 6 | 1,430,834 |
+| day/200409 | 6 | 1,492,540 |
+| day/200410 | 6 | 1,542,672 |
+| day/200411 | 6 | 1,637,181 |
+| day/200412 | 6 | 1,664,385 |
+| day, twelve months | 72 | 18,445,291 |
 | night | 6 | 883,886 |
-| mask | 6 | 398,743 |
-| all | 84 | 18,464,893 |
+| mask | 6 | 409,228 |
+| all | 84 | 19,738,405 |
 
 The northern winter months are the largest, as section 17 of `docs/plans/2026-09-29-texture-overhaul-research.md` expected from their snow. The night baked from the 13500 source is 883,886 bytes; the one-month spike in section 19.3 there resampled the 8192 map the flat texture used to be (no longer in this directory) to the same faces and got 1,033,595.

@@ -142,13 +142,27 @@ def decode(path: Path) -> np.ndarray:
         return np.asarray(image)
 
 
+FIXTURE_CAP = 256
+"""Texels along each side of the fixture bake's sea ice caps."""
+
+
 @pytest.fixture(scope="module")
-def fixture_bake(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Bake the fixture sources once and return the output directory."""
+def fixture_bake(
+    tmp_path_factory: pytest.TempPathFactory, osi_monthly_dir: Path
+) -> Path:
+    """Bake the fixture sources with the synthetic sea ice once and return the
+    output directory."""
     root = tmp_path_factory.mktemp("cube")
     days, night, shapefile = write_fixture_sources(root / "src")
     out = root / "out"
-    result = runner.invoke(app, bake_arguments(days, night, shapefile, out))
+    arguments = [
+        *bake_arguments(days, night, shapefile, out),
+        "--sea-ice",
+        str(osi_monthly_dir),
+        "--sea-ice-cap-size",
+        str(FIXTURE_CAP),
+    ]
+    result = runner.invoke(app, arguments)
     assert result.exit_code == 0, f"CLI failed: {result.output}"
     return out
 
@@ -363,13 +377,13 @@ class TestFixtureBake:
             day = decode(fixture_bake / "day" / f"2004{month:02d}" / f"{face}.jxl")
             assert tuple(day[row, col]) != OCEAN_FILL
 
-    def test_bright_arctic_water_is_flattened_like_any_sea(
+    def test_the_sea_ice_is_composited_over_open_water(
         self, fixture_bake: Path
     ) -> None:
-        face, row, col = texel_of(direction_at(-100, 76), FIXTURE_FACE)
+        face, row, col = texel_of(direction_at(-150, 80), FIXTURE_FACE)
         for month in FIXTURE_MONTHS:
             day = decode(fixture_bake / "day" / f"2004{month:02d}" / f"{face}.jxl")
-            assert tuple(day[row, col]) == OCEAN_FILL
+            assert min(day[row, col]) > 150, (month, tuple(day[row, col]))
 
 
 def direction_at(lon: float, lat: float) -> tuple[float, float, float]:

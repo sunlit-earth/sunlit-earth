@@ -75,7 +75,9 @@ pub enum Surfaces {
     /// `n . l` exceeds `-terminator_width`, the night where it is below
     /// `terminator_width`, and with diffuse shading also where it is below
     /// the ramp, since the shaded day is held at or above `min(night, day)`
-    /// wherever the shading darkens it.
+    /// wherever the shading darkens it. The night side's sea ice reads the
+    /// day texel too, but no day tile is wanted for it, so beyond those cells
+    /// it reads the day floor.
     Blend {
         sun: Vec3,
         terminator_width: f32,

@@ -1759,18 +1759,17 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
     );
 }
 
-/// Sea ice the bake composited over open water takes neither the glint nor
-/// the Fresnel shift, from the brightest winter pack down to a texel at the
-/// darkest fully covered ice, while the fill beside it keeps both.
-#[test]
-fn sea_ice_over_open_water_takes_no_glint_and_no_fresnel_shift() {
-    let ctx = render_ctx();
-    let size = 128;
-    let night = [5, 5, 10, 128];
+/// The frame a sea ice case draws, looking down at `latitude` with the Sun
+/// behind the camera, so its glint is centered there, without the water
+/// effects and with them.
+fn water_effects_at(latitude: f32, size: u32) -> (Uniforms, Uniforms) {
+    let phi = latitude.to_radians();
+    let axis = glam::Vec3::new(0.0, phi.sin(), phi.cos());
     let matte = Uniforms {
         terminator_width: 0.15,
         flags: 1,
-        ..default_test_uniforms(size)
+        sun_dir: axis.into(),
+        ..looking_along(size, axis)
     };
     let wet = Uniforms {
         spec_intensity: 0.5,
@@ -1779,18 +1778,92 @@ fn sea_ice_over_open_water_takes_no_glint_and_no_fresnel_shift() {
         fresnel_exp: 1.0,
         ..matte
     };
+    (matte, wet)
+}
+
+/// The RGB of the pixels of a square frame drawn with `uniforms` whose surface
+/// lies at a latitude `keep` accepts, in degrees either side of the equator.
+fn pixels_at_latitudes(
+    frame: &[u8],
+    uniforms: &Uniforms,
+    size: u32,
+    keep: impl Fn(f64) -> bool,
+) -> Vec<[u8; 3]> {
+    let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
+        .as_dmat4()
+        .inverse();
+    let mut kept = Vec::new();
+    for y in 0..size {
+        for x in 0..size {
+            let Some(n) = normal_under_pixel(inverse, size, x, y) else {
+                continue;
+            };
+            if keep(n.y.clamp(-1.0, 1.0).asin().to_degrees().abs()) {
+                let at = ((y * size + x) * 4) as usize;
+                kept.push([frame[at], frame[at + 1], frame[at + 2]]);
+            }
+        }
+    }
+    kept
+}
+
+/// Sea ice the bake composited over open water takes neither the glint nor
+/// the Fresnel shift, from the brightest winter pack down to a texel at the
+/// darkest fully covered ice, while the fill beside it keeps both. Held
+/// poleward of the caps' reach, over a frame centered at 60 degrees.
+#[test]
+fn sea_ice_over_open_water_takes_no_glint_and_no_fresnel_shift() {
+    let ctx = render_ctx();
+    let size = 128;
+    let night = [5, 5, 10, 128];
+    let (matte, wet) = water_effects_at(60.0, size);
+    let poleward = |day: [u8; 4], uniforms: &Uniforms| {
+        let frame = render_frame(&ctx, uniforms, day, night, size, size);
+        pixels_at_latitudes(&frame, uniforms, size, |latitude| latitude >= 35.0)
+    };
     for ice in [[240, 243, 247, 128], [80, 80, 80, 128]] {
+        let seen = poleward(ice, &matte);
+        assert!(seen.len() > 1_000, "{} pixels poleward of 35", seen.len());
         assert_eq!(
-            render_frame(&ctx, &matte, ice, night, size, size),
-            render_frame(&ctx, &wet, ice, night, size, size),
+            seen,
+            poleward(ice, &wet),
             "ice {ice:?} over open water should draw as if the water effects were off"
         );
     }
     let fill = [10, 30, 60, 128];
     assert_ne!(
-        render_frame(&ctx, &matte, fill, night, size, size),
-        render_frame(&ctx, &wet, fill, night, size, size),
+        poleward(fill, &matte),
+        poleward(fill, &wet),
         "the open water's fill should keep its glint and its shift"
+    );
+}
+
+/// Equatorward of the caps there is no sea ice, so a bright texel over water
+/// is a coast's land and its share of water keeps the glint and the Fresnel
+/// shift: a light sand half over water, in a frame centered on the equator.
+#[test]
+fn a_bright_coast_texel_equatorward_of_the_caps_keeps_its_glint() {
+    let ctx = render_ctx();
+    let size = 128;
+    let night = [5, 5, 10, 128];
+    let (matte, wet) = water_effects_at(0.0, size);
+    let sand_half_water = [200, 180, 140, 191];
+    let equatorward = |uniforms: &Uniforms| {
+        let frame = render_frame(&ctx, uniforms, sand_half_water, night, size, size);
+        pixels_at_latitudes(&frame, uniforms, size, |latitude| latitude <= 30.0)
+    };
+    let (dry, glinting) = (equatorward(&matte), equatorward(&wet));
+    assert!(dry.len() > 1_000, "{} pixels equatorward of 30", dry.len());
+    let brighter = dry
+        .iter()
+        .zip(&glinting)
+        .filter(|(d, g)| g.iter().zip(d.iter()).all(|(g, d)| g > d))
+        .count();
+    assert!(
+        brighter > dry.len() / 4,
+        "only {brighter} of {} pixels equatorward of 30 degrees glint over a bright \
+         coast texel's water",
+        dry.len()
     );
 }
 

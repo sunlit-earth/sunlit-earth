@@ -393,6 +393,13 @@ const ICE_LUMA_FOOT: f32 = 52.0 / 255.0;
 const ICE_LUMA_TOP: f32 = 76.0 / 255.0;
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
+/// The latitudes, in degrees from the equator, over which the ice term fades
+/// in. The bake composites sea ice within its polar caps alone, which reach to
+/// 35 degrees, so nearer the equator a bright texel over water is a coast's
+/// land, and the water beside it keeps its glint.
+const ICE_LATITUDE_FOOT: f32 = 30.0;
+const ICE_LATITUDE_TOP: f32 = 35.0;
+
 /// What the globe's surface holds at a fragment: the day color, and in blend
 /// mode the night color and how much of it is open water, 0 to 1.
 struct Surface {
@@ -547,7 +554,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    let ice = smoothstep(ICE_LUMA_FOOT, ICE_LUMA_TOP, dot(surface.day, LUMA));
+    let latitude = degrees(asin(clamp(n.y, -1.0, 1.0)));
+    let ice = smoothstep(ICE_LATITUDE_FOOT, ICE_LATITUDE_TOP, abs(latitude))
+        * smoothstep(ICE_LUMA_FOOT, ICE_LUMA_TOP, dot(surface.day, LUMA));
     let water = surface.water * (1.0 - ice);
     if water > 0.0 {
         let v = normalize(uniforms.eye_pos - in.world_normal);

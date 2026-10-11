@@ -399,7 +399,7 @@ fn real_cube() -> Result<CubeTextures, String> {
 
 /// The repository's cube faces and a cache that outlives the run with every
 /// pack of the year built from them, once for every case that reads it, or
-/// why there are none: about a minute the first time, and a positional read of
+/// why there are none: a few minutes the first time, and a positional read of
 /// each index after it.
 static REAL_PACKS: LazyLock<Result<(CubeTextures, PathBuf), String>> = LazyLock::new(|| {
     let cube = real_cube()?;
@@ -642,7 +642,7 @@ fn the_real_day_packs_store_the_sea_ice_and_flag_the_open_water() {
 /// they started (`docs/testing.md`). The figure is printed for the record.
 ///
 /// An engine of its own, over a cache that outlives the run: every pack of the
-/// year is built before the engine starts, which takes about a minute the first
+/// year is built before the engine starts, which takes a few minutes the first
 /// time and a positional read of each index after it, so no build runs in the
 /// background while the engine sits idle between the two reports.
 #[test]

@@ -192,8 +192,7 @@ def _rng(look: Look, hemisphere: str, stream: int) -> np.random.Generator:
 def normalized(field: np.ndarray) -> np.ndarray:
     """Scale a zero-mean field to a standard deviation of 1, in place.
 
-    A field without variance, which a band finer than the cap's texels gives,
-    stays zero.
+    A field without variance stays zero.
 
     :param field: float32 array.
     :returns: ``field``.
@@ -213,7 +212,10 @@ def band_noise(
 
     White noise is shaped in the frequency domain to an amplitude of ``1/k``
     between the band's frequencies, with Gaussian falloffs in log frequency on
-    either side, and scaled to a standard deviation of 1.
+    either side, and scaled to a standard deviation of 1. A band whose largest
+    feature is finer than a texel is zero everywhere, since the cap cannot draw
+    it and its falloff alone would be scaled up to texel noise. The white noise
+    is drawn either way, so the generator is left where a drawn band leaves it.
 
     :param size: Texels along each side of the cap.
     :param band_km: The smallest and largest feature size, half a wavelength.
@@ -222,6 +224,8 @@ def band_noise(
     """
     spacing = texel_km(size)
     white = rng.standard_normal((size, size), dtype=np.float32)
+    if band_km[1] < spacing:
+        return np.zeros((size, size), dtype=np.float32)
     spectrum = fft.rfft2(white, workers=-1)
     del white
     fy = fft.fftfreq(size, d=spacing).astype(np.float32)

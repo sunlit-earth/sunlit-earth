@@ -194,9 +194,24 @@ class TestNoise:
         assert float(first.std()) == pytest.approx(1.0, rel=1e-3)
         assert abs(float(first.mean())) < 1e-3
 
-    def test_a_band_finer_than_the_texels_is_zero(self) -> None:
-        noise = sea_ice_look.band_noise(16, (5, 20), np.random.default_rng(0))
-        assert not np.isnan(noise).any()
+    @pytest.mark.parametrize("size", [16, 256])
+    def test_a_band_finer_than_the_texels_is_zero(self, size: int) -> None:
+        assert sea_ice.texel_km(size) > 20
+        noise = sea_ice_look.band_noise(size, (5, 20), np.random.default_rng(0))
+        assert not np.any(noise)
+
+    def test_a_band_the_texels_reach_is_drawn(self) -> None:
+        assert sea_ice.texel_km(256) < 120
+        noise = sea_ice_look.band_noise(256, (10, 120), np.random.default_rng(0))
+        assert float(noise.std()) == pytest.approx(1.0, rel=1e-3)
+
+    def test_a_band_left_out_leaves_the_generator_where_a_drawn_one_does(
+        self,
+    ) -> None:
+        left_out, drawn = np.random.default_rng(3), np.random.default_rng(3)
+        sea_ice_look.band_noise(16, (5, 20), left_out)
+        sea_ice_look.band_noise(16, (500, 2000), drawn)
+        assert left_out.random() == drawn.random()
 
     def test_the_fields_do_not_depend_on_the_month(
         self, north: sea_ice.Hemisphere, north_fields: sea_ice_look.Fields

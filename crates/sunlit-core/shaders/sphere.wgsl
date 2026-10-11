@@ -400,6 +400,21 @@ const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 const ICE_LATITUDE_FOOT: f32 = 30.0;
 const ICE_LATITUDE_TOP: f32 = 35.0;
 
+/// The night draws sea ice in the color the Black Marble gives the ice sheets,
+/// on its stored sRGB values, scaled by the day texel's luminance against
+/// winter pack's, so thin ice and leads stay darker as they are by day.
+const NIGHT_ICE: vec3<f32> = vec3<f32>(41.0 / 255.0, 49.0 / 255.0, 81.0 / 255.0);
+const NIGHT_ICE_DAY_LUMA: f32 = 240.0 / 255.0;
+
+/// The night texel with the ice in place of its water's share of the fill, as
+/// the bake composites the day's, so a coast's land and its lights keep their
+/// color. The result stays between the texel and the ice, so water that is not
+/// the fill, lights at sea, is not brightened past both.
+fn night_with_ice(night: vec3<f32>, ice: vec3<f32>, weight: f32) -> vec3<f32> {
+    let fill = unpack4x8unorm(uniforms.night_ocean).rgb;
+    return clamp(night + weight * (ice - fill), min(night, ice), max(night, ice));
+}
+
 /// What the globe's surface holds at a fragment: the day color, and in blend
 /// mode the night color and how much of it is open water, 0 to 1.
 struct Surface {
@@ -538,10 +553,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(day_rgb, 1.0);
     }
 
-    var night_rgb = apply_gamma(surface.night, uniforms.night_gamma);
+    let n = normalize(in.world_normal);
+    let latitude = degrees(asin(clamp(n.y, -1.0, 1.0)));
+    let day_luma = dot(surface.day, LUMA);
+    let ice = smoothstep(ICE_LATITUDE_FOOT, ICE_LATITUDE_TOP, abs(latitude))
+        * smoothstep(ICE_LUMA_FOOT, ICE_LUMA_TOP, day_luma);
+
+    let night_ice = NIGHT_ICE * min(day_luma / NIGHT_ICE_DAY_LUMA, 1.0);
+    let night_texel = night_with_ice(surface.night, night_ice, ice * surface.water);
+    var night_rgb = apply_gamma(night_texel, uniforms.night_gamma);
     night_rgb = adjust_saturation(night_rgb, uniforms.night_saturation);
 
-    let n = normalize(in.world_normal);
     let n_dot_l = dot(n, uniforms.sun_dir);
 
     let result = blend_fragment(
@@ -554,9 +576,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    let latitude = degrees(asin(clamp(n.y, -1.0, 1.0)));
-    let ice = smoothstep(ICE_LATITUDE_FOOT, ICE_LATITUDE_TOP, abs(latitude))
-        * smoothstep(ICE_LUMA_FOOT, ICE_LUMA_TOP, dot(surface.day, LUMA));
     let water = surface.water * (1.0 - ice);
     if water > 0.0 {
         let v = normalize(uniforms.eye_pos - in.world_normal);

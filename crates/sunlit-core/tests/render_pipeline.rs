@@ -1798,6 +1798,20 @@ fn latitude_of(n: glam::DVec3) -> f64 {
     n.y.clamp(-1.0, 1.0).asin().to_degrees().abs()
 }
 
+/// Poleward of the shader's ice gate by a degree. The shader reads the
+/// latitude off the test sphere's flat triangles, which puts a pixel a fraction
+/// of a degree from where the sphere under it lies, so a cut on the gate's
+/// own edge leaves pixels inside its ramp.
+fn poleward_of_the_gate(latitude: f64) -> bool {
+    latitude >= 36.0
+}
+
+/// Equatorward of the shader's ice gate by a degree, as
+/// [`poleward_of_the_gate`] is poleward of it.
+fn equatorward_of_the_gate(latitude: f64) -> bool {
+    latitude <= 29.0
+}
+
 /// The RGB of the pixels of a square frame drawn with `uniforms` whose surface
 /// normal `keep` accepts.
 fn pixels_where(
@@ -1836,11 +1850,11 @@ fn sea_ice_over_open_water_takes_no_glint_and_no_fresnel_shift() {
     let (matte, wet) = water_effects_at(60.0, size);
     let poleward = |day: [u8; 4], uniforms: &Uniforms| {
         let frame = render_frame(&ctx, uniforms, day, night, size, size);
-        pixels_at_latitudes(&frame, uniforms, size, |latitude| latitude >= 35.0)
+        pixels_at_latitudes(&frame, uniforms, size, poleward_of_the_gate)
     };
     for ice in [[240, 243, 247, 128], [80, 80, 80, 128]] {
         let seen = poleward(ice, &matte);
-        assert!(seen.len() > 1_000, "{} pixels poleward of 35", seen.len());
+        assert!(seen.len() > 1_000, "{} pixels poleward of 36", seen.len());
         assert_eq!(
             seen,
             poleward(ice, &wet),
@@ -1867,10 +1881,10 @@ fn a_bright_coast_texel_equatorward_of_the_caps_keeps_its_glint() {
     let sand_half_water = [200, 180, 140, 191];
     let equatorward = |uniforms: &Uniforms| {
         let frame = render_frame(&ctx, uniforms, sand_half_water, night, size, size);
-        pixels_at_latitudes(&frame, uniforms, size, |latitude| latitude <= 30.0)
+        pixels_at_latitudes(&frame, uniforms, size, equatorward_of_the_gate)
     };
     let (dry, glinting) = (equatorward(&matte), equatorward(&wet));
-    assert!(dry.len() > 1_000, "{} pixels equatorward of 30", dry.len());
+    assert!(dry.len() > 1_000, "{} pixels equatorward of 29", dry.len());
     let brighter = dry
         .iter()
         .zip(&glinting)
@@ -1878,7 +1892,7 @@ fn a_bright_coast_texel_equatorward_of_the_caps_keeps_its_glint() {
         .count();
     assert!(
         brighter > dry.len() / 4,
-        "only {brighter} of {} pixels equatorward of 30 degrees glint over a bright \
+        "only {brighter} of {} pixels equatorward of 29 degrees glint over a bright \
          coast texel's water",
         dry.len()
     );
@@ -1949,7 +1963,7 @@ fn rgb(color: [u8; 4]) -> [u8; 3] {
 #[test]
 fn sea_ice_on_the_night_side_is_drawn_by_its_day_luminance() {
     let ctx = render_ctx();
-    let poleward = |latitude: f64| latitude >= 35.0;
+    let poleward = poleward_of_the_gate;
     let pack = night_color(&ctx, 60.0, [240, 243, 247, 128], NIGHT_FILL, poleward);
     let fill = rgb(NIGHT_FILL);
     assert!(
@@ -1970,9 +1984,13 @@ fn sea_ice_on_the_night_side_is_drawn_by_its_day_luminance() {
 #[test]
 fn open_water_on_the_night_side_keeps_the_night_fill() {
     let ctx = render_ctx();
-    let drawn = night_color(&ctx, 60.0, [10, 30, 60, 128], NIGHT_FILL, |latitude| {
-        latitude >= 35.0
-    });
+    let drawn = night_color(
+        &ctx,
+        60.0,
+        [10, 30, 60, 128],
+        NIGHT_FILL,
+        poleward_of_the_gate,
+    );
     assert!(
         close(drawn, rgb(NIGHT_FILL), 1),
         "open water draws {drawn:?} by night"
@@ -1985,12 +2003,16 @@ fn open_water_on_the_night_side_keeps_the_night_fill() {
 #[test]
 fn a_bright_coast_texel_equatorward_of_the_caps_keeps_its_night() {
     let ctx = render_ctx();
-    let drawn = night_color(&ctx, 0.0, [200, 180, 140, 191], NIGHT_FILL, |latitude| {
-        latitude <= 30.0
-    });
+    let drawn = night_color(
+        &ctx,
+        0.0,
+        [200, 180, 140, 191],
+        NIGHT_FILL,
+        equatorward_of_the_gate,
+    );
     assert!(
         close(drawn, rgb(NIGHT_FILL), 1),
-        "a bright coast texel equatorward of 30 degrees draws {drawn:?} by night"
+        "a bright coast texel equatorward of 29 degrees draws {drawn:?} by night"
     );
 }
 
@@ -1999,7 +2021,7 @@ fn a_bright_coast_texel_equatorward_of_the_caps_keeps_its_night() {
 #[test]
 fn a_half_water_texel_takes_the_night_ice_by_its_share() {
     let ctx = render_ctx();
-    let poleward = |latitude: f64| latitude >= 35.0;
+    let poleward = poleward_of_the_gate;
     let pack = night_color(&ctx, 60.0, [240, 243, 247, 128], NIGHT_FILL, poleward);
     let coast = night_color(&ctx, 60.0, [240, 243, 247, 191], NIGHT_FILL, poleward);
     assert!(
@@ -2027,7 +2049,7 @@ fn the_nights_lights_keep_their_color_over_sea_ice() {
     let ctx = render_ctx();
     let lights = [200, 160, 100, 255];
     for day in [[240, 243, 247, 191], [240, 243, 247, 128]] {
-        let drawn = night_color(&ctx, 60.0, day, lights, |latitude| latitude >= 35.0);
+        let drawn = night_color(&ctx, 60.0, day, lights, poleward_of_the_gate);
         assert!(
             close(drawn, rgb(lights), 1),
             "lights of {lights:?} over ice {day:?} draw {drawn:?}"

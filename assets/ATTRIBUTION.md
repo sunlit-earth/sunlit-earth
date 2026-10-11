@@ -4,6 +4,7 @@ Sunlit Earth was built with public data, freely licensed imagery and open source
 
 - Day side: NASA Blue Marble Next Generation, the twelve monthly images of 2004, topography variant. Credit [NASA Earth Observatory](https://earthobservatory.nasa.gov/), produced by Reto Stöckli, NASA Goddard Space Flight Center, from Terra MODIS. Antarctica: Landsat Image Mosaic of Antarctica (USGS/NASA).
 - Night side: NASA Black Marble 2016. Credit [NASA Earth Observatory](https://earthobservatory.nasa.gov/) images by Joshua Stevens, using Suomi NPP VIIRS data from Miguel Román, NASA GSFC.
+- Sea ice: Contains modified EUMETSAT OSI SAF data: the monthly means of 2004 of the [Global sea ice concentration climate data record 1978-2020](https://osi-saf.eumetsat.int/products/osi-450-a1) (v3.1, 2025), OSI-450-a1, doi:[10.15770/EUM_SAF_OSI_0023](https://doi.org/10.15770/EUM_SAF_OSI_0023), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The ice is baked into the day side's monthly images.
 - Clouds: [clouds.matteason.co.uk](https://clouds.matteason.co.uk/) by Matt Eason. Contains modified EUMETSAT data, per EUMETSAT's [data licensing](https://www.eumetsat.int/eumetsat-data-licensing).
 - Moon: [CGI Moon Kit](https://svs.gsfc.nasa.gov/4720) by NASA's Scientific Visualization Studio.
 - Stars: Derived from the [HYG Database v4.4](https://codeberg.org/astronexus/hyg) by David Nash, licensed [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). HYG merges the Hipparcos, Yale Bright Star and Gliese catalogues.

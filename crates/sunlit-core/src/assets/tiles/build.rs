@@ -131,27 +131,11 @@ const DECODER_VERSIONS: &str = concat!(
     "jxl-threadpool 1.0.0 jxl-vardct 0.11.1 image 0.25.9",
 );
 
-/// What a source file looked like: size and modification time. Hashing 84
-/// files on every start would cost more than it could catch, since they only
-/// change when an install replaces them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    bytes: u64,
-    modified_ms: Option<u64>,
-}
+/// The SHA-256 of a source file's contents.
+type SourceHash = [u8; 32];
 
-impl Stamp {
-    fn of(path: &Path) -> Option<Self> {
-        let meta = fs::metadata(path).ok()?;
-        Some(Self {
-            bytes: meta.len(),
-            modified_ms: meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .and_then(|d| u64::try_from(d.as_millis()).ok()),
-        })
-    }
+fn hash_file(path: &Path) -> io::Result<SourceHash> {
+    Ok(Sha256::digest(fs::read(path)?).into())
 }
 
 /// The face sets a pack is made from: the surface itself, and the mask where
@@ -188,14 +172,16 @@ fn sources(kind: PackKind, textures: &CubeTextures) -> Result<Sources<'_>, Build
     })
 }
 
-fn stamps(sources: &Sources<'_>) -> Result<Vec<(&'static str, &'static str, Stamp)>, BuildError> {
+fn hashes(
+    sources: &Sources<'_>,
+) -> Result<Vec<(&'static str, &'static str, SourceHash)>, BuildError> {
     let mut out = Vec::new();
     for (role, set) in [("color", sources.color), ("mask", sources.mask)] {
         for (face, path) in FACES.iter().zip(set.iter().flatten()) {
-            let stamp = Stamp::of(path).ok_or_else(|| {
-                BuildError::Incomplete(format!("no metadata for {}", path.display()))
+            let hash = hash_file(path).map_err(|e| {
+                BuildError::Incomplete(format!("could not read {}: {e}", path.display()))
             })?;
-            out.push((role, *face, stamp));
+            out.push((role, *face, hash));
         }
     }
     Ok(out)
@@ -205,7 +191,7 @@ fn key_text(
     kind: PackKind,
     geometry: &Geometry,
     versions: Versions,
-    stamps: &[(&str, &str, Stamp)],
+    hashes: &[(&str, &str, SourceHash)],
 ) -> String {
     use std::fmt::Write as _;
     let mut key = format!(
@@ -229,11 +215,12 @@ fn key_text(
         PackKind::Night => writeln!(key, "kind night"),
         PackKind::Mask => writeln!(key, "kind mask"),
     };
-    for (role, face, stamp) in stamps {
-        let modified = stamp
-            .modified_ms
-            .map_or_else(|| "-".to_owned(), |ms| ms.to_string());
-        let _ = writeln!(key, "{role} {face} {} {modified}", stamp.bytes);
+    for (role, face, hash) in hashes {
+        let _ = write!(key, "{role} {face} sha256 ");
+        for byte in hash {
+            let _ = write!(key, "{byte:02x}");
+        }
+        key.push('\n');
     }
     key
 }
@@ -245,7 +232,7 @@ pub fn expected_key(
     geometry: &Geometry,
 ) -> Result<String, BuildError> {
     let sources = sources(kind, textures)?;
-    Ok(key_text(kind, geometry, CURRENT, &stamps(&sources)?))
+    Ok(key_text(kind, geometry, CURRENT, &hashes(&sources)?))
 }
 
 /// Make sure the pack of `kind` under `cache_dir` is the one the current
@@ -276,7 +263,7 @@ fn ensure_as(
 ) -> Result<Ensured, BuildError> {
     geometry.check().map_err(BuildError::Failed)?;
     let sources = sources(kind, textures)?;
-    let before = stamps(&sources)?;
+    let before = hashes(&sources)?;
     let key = key_text(kind, geometry, versions, &before);
     let path = pack_path(cache_dir, kind);
     match Pack::open(&path) {
@@ -437,7 +424,7 @@ fn build(
     path: &Path,
     kind: PackKind,
     sources: &Sources<'_>,
-    before: &[(&str, &str, Stamp)],
+    before: &[(&str, &str, SourceHash)],
     geometry: &Geometry,
     key: String,
     cancel: &AtomicBool,
@@ -472,7 +459,7 @@ fn build(
     let bytes = write_pack(&tmp.0, &header, &jobs, &levels, geometry, cancel)?;
     // Checked before the rename, so a pack whose sources moved under the
     // decode is never put where a reader would open it.
-    if stamps(sources)? != before {
+    if hashes(sources)? != before {
         return Err(BuildError::Failed(
             "a source changed while its pack was built".to_owned(),
         ));
@@ -971,13 +958,9 @@ mod tests {
         assert_eq!(setup.ensure(PackKind::Mask), Ensured::Current);
 
         let mask = setup.textures.mask[3].clone().expect("a face");
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .open(&mask)
-            .expect("open a mask face");
-        file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(86_400))
-            .expect("touch");
-        drop(file);
+        let other = setup.textures.mask[2].clone().expect("a face");
+        assert_ne!(fs::read(&mask).ok(), fs::read(&other).ok());
+        fs::copy(&other, &mask).expect("replace a mask face");
         assert!(
             built(&setup.ensure(kind)),
             "a mask face flags the day's ocean"
@@ -988,6 +971,32 @@ mod tests {
         );
         assert!(built(&setup.ensure(PackKind::Mask)));
         assert_eq!(setup.ensure(kind), Ensured::Current);
+    }
+
+    #[test]
+    fn a_source_with_a_new_timestamp_and_the_same_contents_keeps_the_pack() {
+        let setup = Setup::new("touched");
+        let kinds = [PackKind::Day(0), PackKind::Night, PackKind::Mask];
+        for kind in kinds {
+            assert!(built(&setup.ensure(kind)), "{kind:?}");
+        }
+
+        let face = setup.face(0, 2);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&face)
+            .expect("open a day face");
+        file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(86_400))
+            .expect("touch");
+        drop(file);
+        let mask = setup.textures.mask[3].clone().expect("a face");
+        let bytes = fs::read(&mask).expect("read a mask face");
+        fs::remove_file(&mask).expect("remove a mask face");
+        fs::write(&mask, &bytes).expect("write the same mask face back");
+
+        for kind in kinds {
+            assert_eq!(setup.ensure(kind), Ensured::Current, "{kind:?}");
+        }
     }
 
     #[test]
@@ -1090,16 +1099,16 @@ mod tests {
         assert_eq!(leftovers, 0, "the build's own temporary file is gone");
     }
 
-    /// A build is handed the stamps its key was made from; sources that no
-    /// longer look that way when the pack is written mean the pack may hold
+    /// A build is handed the hashes its key was made from; sources that no
+    /// longer hash that way when the pack is written mean the pack may hold
     /// pixels of either, and it is not put in place.
     #[test]
     fn a_pack_whose_sources_changed_during_the_build_is_not_put_in_place() {
         let setup = Setup::new("changed_mid_build");
         let kind = PackKind::Day(5);
         let sources = sources(kind, &setup.textures).expect("sources");
-        let mut stale = stamps(&sources).expect("stamps");
-        stale[2].2.bytes += 1;
+        let mut stale = hashes(&sources).expect("hashes");
+        stale[2].2[0] ^= 1;
         let path = pack_path(&setup.cache(), kind);
         let result = build(
             &path,

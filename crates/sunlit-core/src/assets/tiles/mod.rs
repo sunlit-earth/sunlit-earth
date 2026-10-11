@@ -15,7 +15,7 @@
 //! - The mask pack holds the water mask as a BC4 cube of 1024 px with its mip
 //!   chain.
 //!
-//! A pack carries the key it was built under: the stamps of the faces it was
+//! A pack carries the key it was built under: the SHA-256 of each face it was
 //! made from, the `dds` version, the preset, the decoder versions, the
 //! geometry and the format version. [`ensure_pack`] rebuilds a pack whose key
 //! is not the one the current sources and this build would give it. Packs are

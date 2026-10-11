@@ -9,7 +9,7 @@ The cloud map is mostly a temperature map, so cold clear ground reads as a grey 
 3. **A switch for the whole layer.** "Show clouds" stops drawing, and while it is off nothing is downloaded or decoded.
 4. **A bug fix.** `sunlit-earth render` and `sunlit-earth displays --out` wait for the cloud layer before they save, instead of usually saving a globe without clouds (research section 8).
 
-It is meant to be tried and tuned. The defaults below come from a Python prototype on one map and are expected to move during validation.
+It is meant to be tried and tuned. The defaults below are the user's from validation (step 9); the prototype's are in the Validation Record.
 
 ## Stakes Classification
 
@@ -98,11 +98,11 @@ The background is sampled with the cloud sampler, which repeats in u and clamps 
 |---|---|---|---|
 | `clouds_enabled` | Show clouds (checkbox) | | on |
 | `cloud_haze_land` | Land: Haze removal | 0 to 100% | 100% |
-| `cloud_floor_land` | Land: Floor | 0 to 50% | 10% |
-| `cloud_gamma_land` | Land: Gamma | 0.1 to 2.0 | 0.65 |
-| `cloud_haze_ocean` | Ocean: Haze removal | 0 to 100% | 15% |
-| `cloud_floor_ocean` | Ocean: Floor | 0 to 50% | 10% |
-| `cloud_gamma_ocean` | Ocean: Gamma | 0.1 to 2.0 | 0.65 |
+| `cloud_floor_land` | Land: Floor | 0 to 50% | 25% |
+| `cloud_gamma_land` | Land: Gamma | 0.1 to 2.0 | 0.6 |
+| `cloud_haze_ocean` | Ocean: Haze removal | 0 to 100% | 100% |
+| `cloud_floor_ocean` | Ocean: Floor | 0 to 50% | 0% |
+| `cloud_gamma_ocean` | Ocean: Gamma | 0.1 to 2.0 | 0.8 |
 
 `cloud_floor` and `cloud_gamma` go. `cloud_opacity`, `cloud_opacity_night` and `cloud_night` stay shared. The six numbers are shader parameters and take the fourteen edits each (CLAUDE.md, Architecture in brief), all in the `quantized` digest group. `clouds_enabled` is not a uniform: it is a `SceneParams` field in the `switched` group, like `diffuse_shading`, and `draws_clouds` becomes `clouds_enabled && (cloud_opacity > 0 || cloud_opacity_night > 0)`.
 
@@ -122,7 +122,7 @@ Turning the layer off does not free a cloud texture that is already resident. Th
 
 ### 9. Migration 1 to 2
 
-A file at version 1 has `cloud_floor` and `cloud_gamma`. The step reads both, treating a missing key as its default:
+Superseded by departure 9: every file now takes the new settings. As planned, a file at version 1 has `cloud_floor` and `cloud_gamma`. The step reads both, treating a missing key as its default:
 
 - Both at the old defaults (floor 0.25, gamma 0.65): remove the two keys. The six new keys are missing, so serde fills them with the new defaults, haze removal on.
 - Anything else: write the old floor to both new floor keys and the old gamma to both new gamma keys, set both haze strengths to 0, and remove the two old keys. The clouds look exactly as they did.
@@ -163,7 +163,7 @@ Not chosen: making the clouds part of `TexturesReady`. That event gates every pu
 1. With both haze strengths at 0 and equal land and ocean values, the cloud layer renders exactly as today's.
 2. At the defaults, over the research's two validation views and over Europe and Asia in daylight, the grey veil over clear land is gone and the cloud bands over land remain; the ocean looks as it does today. Judged by the user in the running app.
 3. With "Show clouds" off, the engine makes no download and no decode, and draws no cloud; turning it on draws the cached map at once and polls.
-4. A version 1 file at the old defaults loads with the new defaults, and one with a customized floor or gamma loads with the same picture as before.
+4. A version 1 file at the old defaults loads with the new defaults, and one with a customized floor or gamma loads with the same picture as before. Replaced by departure 9: every version 1 file loads with the new cloud settings.
 5. The estimate takes under 100 ms on the 8192 x 4096 map in a release build, measured, on the worker thread.
 6. The cloud draw's cost on WARP and lavapipe at 1920 x 1080 is measured against today's 16 ms on WARP and recorded; an increase of more than a quarter is a finding to discuss before merging.
 7. `sunlit-earth render` with a warm tile cache and a cached cloud map saves a globe with clouds every time; with no cached map and no network it saves one without clouds as soon as the first poll fails, with a warning; with clouds off it does not wait.
@@ -254,16 +254,19 @@ The change is one feature branch. Before release, reverting it is enough. After 
 
 8. **The switch reaches the worker, and a download that returns while it is off is dropped.** Decision 8 only keeps the engine from handing the worker a poll while the layer is off. That leaves a poll that is already retrying after a failure going on: the worker backs off for up to five minutes between attempts and never saw the setting, so an outage that began with the layer on kept contacting the source after it was switched off, and once the network returned it downloaded, decoded, estimated and posted a map with the layer off. The engine now writes the switch into an atomic beside `busy` and `target` on every tick, and the worker reads it before every attempt and every 100 ms of a backoff. When the layer is off it gives the request up and sets `abandoned`, the engine owes the poll again, and switching the layer on sends it at once. The updater reads the same atomic once more between the download and its decode: `poll_once` decodes before it writes the cache image, the sidecar or the in-memory `ETag`, so a download that comes back with the layer off is dropped there with nothing decoded, estimated, posted or written, the request is given up the same way, and the next poll with the layer on downloads the map again. What still completes while the layer is off is the download itself, when an HTTP transfer was already under way as the switch flipped: interrupting one would need the source to watch the setting mid-transfer, which `CloudSource` has no way to do, and the bytes are dropped as soon as it returns. `a_download_that_returns_after_the_switch_is_not_decoded` holds this with a fixture source that keeps the fetch open until the case releases it.
 
+9. **Every version 1 file takes the new cloud settings.** Decision 9 kept a customized floor or gamma by copying it to both surfaces with haze removal off. After step 9 the user chose to force the new settings on every file instead: `v1_to_v2` removes `cloud_floor` and `cloud_gamma` and sets the six new keys with `override_value` to the values this release ships, which `CLOUD_SETTINGS_V2` names so a later default change cannot move them. A user who had tuned the old floor or gamma starts again from the new defaults: a picture tuned without haze removal does not carry over to one with it. `cloud_opacity`, `cloud_opacity_night` and `cloud_night` are left as the file has them.
+
 ## Open items
 
-- The defaults of decision 6, from validation.
 - Whether the cap becomes a setting and whether a polar fade is needed.
 - Whether frozen sea keeps a veil, and the ice concentration as land once the sea ice atlas exists (Relation to the sea ice plan).
 - The cloud draw's cost on lavapipe at 1920 x 1080, before and after (criterion 6, departure 6). It is the adapter risk 2 is about, since the texture overhaul research found anisotropic cube reads expensive there, and this run had no way to it without WSL. CI or the user measures it; if the mask read costs, the cloud group can carry the surface sampler at a binding of its own for the mask.
 
 ## Validation Record
 
-The validation with the user (step 9) has not been run.
+### Step 9, validation with the user
+
+The user ran the app with the prototype's defaults (haze removal 100 percent on land and 15 on ocean, floor 10 percent and gamma 0.65 on both) and judged haze removal to work well. Different values for land and ocean can look strange, and the best results came with full haze removal on both, so the defaults are now haze removal 100 percent on both, land floor 25 percent and gamma 0.6, ocean floor 0 and gamma 0.8. With them the WARP cloud goldens moved inside the tolerance and were regenerated (testing.md). The migration followed the user's call, departure 9.
 
 ### Review round 1
 

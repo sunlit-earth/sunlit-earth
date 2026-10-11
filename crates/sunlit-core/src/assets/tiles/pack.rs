@@ -382,7 +382,7 @@ impl Pack {
         self.header.tile_levels
     }
 
-    /// The color a constant-ocean tile stands for: the mean of the finest
+    /// The color a constant-ocean tile stands for: the median of the finest
     /// level's open water, which the bake flattened to one color.
     pub fn ocean(&self) -> [u8; 4] {
         self.header.ocean

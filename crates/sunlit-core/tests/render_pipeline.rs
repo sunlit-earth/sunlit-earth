@@ -1759,6 +1759,41 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
     );
 }
 
+/// Sea ice the bake composited over open water takes neither the glint nor
+/// the Fresnel shift, from the brightest winter pack down to a texel at the
+/// darkest fully covered ice, while the fill beside it keeps both.
+#[test]
+fn sea_ice_over_open_water_takes_no_glint_and_no_fresnel_shift() {
+    let ctx = render_ctx();
+    let size = 128;
+    let night = [5, 5, 10, 128];
+    let matte = Uniforms {
+        terminator_width: 0.15,
+        flags: 1,
+        ..default_test_uniforms(size)
+    };
+    let wet = Uniforms {
+        spec_intensity: 0.5,
+        spec_shininess: 8.0,
+        fresnel_mix: 0.5,
+        fresnel_exp: 1.0,
+        ..matte
+    };
+    for ice in [[240, 243, 247, 128], [80, 80, 80, 128]] {
+        assert_eq!(
+            render_frame(&ctx, &matte, ice, night, size, size),
+            render_frame(&ctx, &wet, ice, night, size, size),
+            "ice {ice:?} over open water should draw as if the water effects were off"
+        );
+    }
+    let fill = [10, 30, 60, 128];
+    assert_ne!(
+        render_frame(&ctx, &matte, fill, night, size, size),
+        render_frame(&ctx, &wet, fill, night, size, size),
+        "the open water's fill should keep its glint and its shift"
+    );
+}
+
 #[test]
 fn fresnel_specular_brighter_at_grazing() {
     let ctx = render_ctx();

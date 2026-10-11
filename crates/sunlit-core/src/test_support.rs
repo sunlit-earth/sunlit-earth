@@ -102,8 +102,15 @@ pub fn earth_fixture_dir() -> PathBuf {
 pub fn write_earth_fixture(dir: &Path) {
     let source = earth_fixture_dir();
     for month in 1..=12 {
-        let faces = if month == 3 { "day/200403" } else { "day/200407" };
-        copy_files(&source.join(faces), &dir.join(format!("day/2004{month:02}")));
+        let faces = if month == 3 {
+            "day/200403"
+        } else {
+            "day/200407"
+        };
+        copy_files(
+            &source.join(faces),
+            &dir.join(format!("day/2004{month:02}")),
+        );
     }
     copy_files(&source.join("night"), &dir.join("night"));
     copy_files(&source.join("mask"), &dir.join("mask"));

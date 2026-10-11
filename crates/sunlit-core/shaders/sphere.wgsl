@@ -385,6 +385,14 @@ fn equi_angular(n: vec3<f32>) -> vec3<f32> {
     return atan(n / max(a.x, max(a.y, a.z))) * FOUR_OVER_PI;
 }
 
+/// The day texel's luminance, on its stored sRGB values, over which the water
+/// term fades out. Open water is the flattened fill, at most 46 of 255 after
+/// the BC7 transcode, and the sea ice the bake composited over it is at least
+/// 76 where it covers a texel fully, so a texel between is partly covered.
+const ICE_LUMA_FOOT: f32 = 52.0 / 255.0;
+const ICE_LUMA_TOP: f32 = 76.0 / 255.0;
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
 /// What the globe's surface holds at a fragment: the day color, and in blend
 /// mode the night color and how much of it is open water, 0 to 1.
 struct Surface {
@@ -539,7 +547,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    let water = surface.water;
+    let ice = smoothstep(ICE_LUMA_FOOT, ICE_LUMA_TOP, dot(surface.day, LUMA));
+    let water = surface.water * (1.0 - ice);
     if water > 0.0 {
         let v = normalize(uniforms.eye_pos - in.world_normal);
         let n_dot_v = max(dot(n, v), 0.0);

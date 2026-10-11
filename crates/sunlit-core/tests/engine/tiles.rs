@@ -12,7 +12,7 @@ use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::tiles::{self, PackKind};
 use sunlit_core::engine::{EngineCommand, TileReport};
 use sunlit_core::params::SceneParams;
-use sunlit_core::scene::camera::CameraParams;
+use sunlit_core::scene::camera::{CameraParams, OrbitalCamera};
 
 use crate::harness::{Harness, TIMEOUT, gpu, test_params};
 use crate::test_support::{self, ScratchDir};
@@ -347,4 +347,148 @@ fn a_resolution_switch_purges_the_tiles_and_takes_the_new_cap() {
         back.wanted, full.wanted,
         "the same view wants the same tiles"
     );
+}
+
+/// The centers of two patches of the Earth fixture's March ice, by latitude
+/// and longitude in degrees: the pack north of Franz Josef Land, and the
+/// marginal ice of the Barents Sea, streaks of ice and open water.
+const PACK: (f64, f64) = (85.0, 40.0);
+const MARGINAL_ICE: (f64, f64) = (75.0, 44.0);
+
+/// A patch is everything within this distance of its center: 200 km across.
+const PATCH_RADIUS_KM: f64 = 100.0;
+
+const EARTH_RADIUS_KM: f64 = 6371.0;
+
+/// The side of the square frames the patches are rendered into.
+const PATCH_FRAME: u32 = 512;
+
+/// The fewest pixels a patch fills in the farthest of its two frames.
+const PATCH_PIXELS: usize = 64;
+
+/// The day surface alone at `zoom` over `center`, on the first of March, with
+/// no atmosphere over it.
+fn march_over(center: (f64, f64), zoom: f32) -> SceneParams {
+    #[expect(clippy::cast_possible_truncation, reason = "degrees")]
+    let mut params = day_over(center.1 as f32, center.0 as f32, zoom);
+    params.datetime.custom_day_of_year = 60;
+    params.atmo_enabled = false;
+    params
+}
+
+/// The byte offsets of the pixels of a square frame drawn at `params` whose
+/// surface lies within [`PATCH_RADIUS_KM`] of `center`.
+fn patch_pixels(params: &SceneParams, center: (f64, f64)) -> Vec<usize> {
+    let inverse = OrbitalCamera::from_params(&params.camera)
+        .mvp_matrix(1.0)
+        .as_dmat4()
+        .inverse();
+    let (lat, lon) = (center.0.to_radians(), center.1.to_radians());
+    let toward = glam::DVec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos());
+    let size = f64::from(PATCH_FRAME);
+    let mut pixels = Vec::new();
+    for y in 0..PATCH_FRAME {
+        for x in 0..PATCH_FRAME {
+            let ndc_x = (f64::from(x) + 0.5) / size * 2.0 - 1.0;
+            let ndc_y = 1.0 - (f64::from(y) + 0.5) / size * 2.0;
+            let near = inverse.project_point3(glam::DVec3::new(ndc_x, ndc_y, 0.0));
+            let far = inverse.project_point3(glam::DVec3::new(ndc_x, ndc_y, 1.0));
+            let ray = (far - near).normalize();
+            let half_b = near.dot(ray);
+            let discriminant = half_b * half_b - (near.length_squared() - 1.0);
+            if discriminant < 0.0 {
+                continue;
+            }
+            let surface = (near + ray * (-half_b - discriminant.sqrt())).normalize();
+            if surface.dot(toward).clamp(-1.0, 1.0).acos() * EARTH_RADIUS_KM <= PATCH_RADIUS_KM {
+                pixels.push(((y * PATCH_FRAME + x) * 4) as usize);
+            }
+        }
+    }
+    pixels
+}
+
+/// The farthest zoom, in steps of a hundredth, at which the patch around
+/// `center` fills more than [`PATCH_PIXELS`] pixels.
+fn farthest_zoom_filling(center: (f64, f64)) -> f32 {
+    (0..=100_u8)
+        .rev()
+        .map(|step| f32::from(step) / 100.0)
+        .find(|&zoom| patch_pixels(&march_over(center, zoom), center).len() > PATCH_PIXELS)
+        .expect("the patch fills the frame at the closest zoom")
+}
+
+/// The mean of each color channel over `pixels` of `frame`.
+#[expect(clippy::cast_precision_loss, reason = "a frame's worth of pixels")]
+fn patch_mean(frame: &[u8], pixels: &[usize]) -> [f64; 3] {
+    let mut sum = [0.0; 3];
+    for &at in pixels {
+        for (channel, total) in sum.iter_mut().enumerate() {
+            *total += f64::from(frame[at + channel]);
+        }
+    }
+    sum.map(|total| total / pixels.len() as f64)
+}
+
+/// Rec. 709 luminance of the pixel at `at`, on the 8-bit values.
+fn luminance(frame: &[u8], at: usize) -> f64 {
+    0.2126 * f64::from(frame[at])
+        + 0.7152 * f64::from(frame[at + 1])
+        + 0.0722 * f64::from(frame[at + 2])
+}
+
+/// The luminance, on the 8-bit values, at and above which a pixel is ice, and
+/// at and below which it is open water: the two ends of the shader's ramp.
+const ICE_LUMA: f64 = 76.0;
+const WATER_LUMA: f64 = 52.0;
+
+/// The sea ice is part of the picture and not of the view: a 200 km patch of
+/// the pack and one of marginal ice keep their mean color, within 2 levels a
+/// channel, from the closest zoom, about 2 km a pixel, to the farthest at
+/// which the patch still fills 64 pixels, about 21 km a pixel. The fixture's
+/// finest level is about 39 km a texel, so both frames read it, magnified.
+#[test]
+fn a_patch_of_sea_ice_keeps_its_mean_color_from_the_closest_zoom_to_the_farthest() {
+    let _gpu = gpu();
+    let dir = ScratchDir::new("engine_tiles_sea_ice");
+    test_support::write_earth_fixture(&dir.join("textures"));
+    let harness = start(&dir, |config| config.params = march_over(PACK, 0.0));
+    harness.wait_for_textures("March's floor");
+
+    for (what, center) in [("pack", PACK), ("marginal ice", MARGINAL_ICE)] {
+        let near = march_over(center, 0.0);
+        let far = march_over(center, farthest_zoom_filling(center));
+        let near_pixels = patch_pixels(&near, center);
+        let near_frame = harness.picture(&near, (PATCH_FRAME, PATCH_FRAME));
+        let far_frame = harness.picture(&far, (PATCH_FRAME, PATCH_FRAME));
+        let near_mean = patch_mean(&near_frame, &near_pixels);
+        let far_mean = patch_mean(&far_frame, &patch_pixels(&far, center));
+
+        #[expect(clippy::cast_precision_loss, reason = "a frame's worth of pixels")]
+        let share = |keep: fn(f64) -> bool| {
+            let kept = near_pixels
+                .iter()
+                .filter(|&&at| keep(luminance(&near_frame, at)))
+                .count();
+            kept as f64 / near_pixels.len() as f64
+        };
+        let (ice, water) = (share(|l| l >= ICE_LUMA), share(|l| l <= WATER_LUMA));
+        println!(
+            "{what}: {near_mean:.2?} at zoom 0, {far_mean:.2?} at zoom {}; \
+             {ice:.2} of the patch ice, {water:.2} open water",
+            far.camera.zoom
+        );
+        if center == PACK {
+            assert!(ice >= 1.0, "the pack patch is {ice:.2} ice");
+        } else {
+            assert!(
+                ice > 0.25 && water > 0.25,
+                "the marginal ice patch is {ice:.2} ice and {water:.2} open water"
+            );
+        }
+        assert!(
+            (0..3).all(|channel| (near_mean[channel] - far_mean[channel]).abs() <= 2.0),
+            "the {what} patch's mean is {near_mean:.2?} near and {far_mean:.2?} far"
+        );
+    }
 }

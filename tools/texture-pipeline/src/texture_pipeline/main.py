@@ -18,6 +18,7 @@ from rich.progress import (
     TextColumn,
 )
 
+from texture_pipeline import sea_ice, sea_ice_look
 from texture_pipeline.cube import FACES, area_average, reproject_face, working_size
 from texture_pipeline.discovery import (
     compute_output_path,
@@ -411,6 +412,70 @@ def _write_face(pixels: np.ndarray, path: Path, quality: int, effort: int) -> in
     return path.stat().st_size
 
 
+def _read_sea_ice(
+    directory: Path | None, fetch: bool
+) -> dict[str, sea_ice.Hemisphere] | None:
+    if directory is None:
+        return None
+    if fetch:
+        downloaded = sea_ice.fetch(
+            directory, report=lambda name: typer.echo(f"Fetching {name}")
+        )
+        typer.echo(f"Fetched: {downloaded} files, manifest {sea_ice.MANIFEST}")
+    missing = sea_ice.missing_files(directory)
+    if missing:
+        typer.echo(
+            f"Error: {len(missing)} monthly sea ice files are missing from "
+            f"{directory}, the first {missing[0]}; pass --fetch to download them",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return {h: sea_ice.read_hemisphere(directory, h) for h in sea_ice.HEMISPHERES}
+
+
+def _sea_ice_fields(
+    hemispheres: dict[str, sea_ice.Hemisphere] | None, cap_size: int
+) -> dict[str, sea_ice_look.Fields] | None:
+    if hemispheres is None:
+        return None
+    fields = {}
+    for name, hemisphere in hemispheres.items():
+        stage = time.monotonic()
+        fields[name] = sea_ice_look.prepare(
+            sea_ice.cap_concentration(hemisphere), name, cap_size
+        )
+        typer.echo(
+            f"Ice:     {name} fields at {cap_size}, {time.monotonic() - stage:.1f}s"
+        )
+    return fields
+
+
+def _month_ice(
+    fields: dict[str, sea_ice_look.Fields] | None, month: int
+) -> sea_ice_look.MonthIce | None:
+    if fields is None:
+        return None
+    return sea_ice_look.MonthIce(
+        {name: sea_ice_look.month_cap(f, month) for name, f in fields.items()}
+    )
+
+
+def _report_ice_area(
+    hemispheres: dict[str, sea_ice.Hemisphere] | None,
+    month: int,
+    area: dict[str, float],
+) -> None:
+    if hemispheres is None:
+        return
+    for name, hemisphere in hemispheres.items():
+        source = float(sea_ice.source_area_km2(hemisphere)[month - 1])
+        ratio = area[name] / source if source else float(area[name] == 0)
+        typer.echo(
+            f"Ice:     {name} {area[name] / 1e6:.2f} million km2 over water, "
+            f"source {source / 1e6:.2f}, {(ratio - 1) * 100:+.1f}%"
+        )
+
+
 def run_cube(
     *,
     input_dir: Path,
@@ -427,6 +492,10 @@ def run_cube(
     ocean_ice_luminance: int,
     ocean_ice_latitude: float,
     workers: int,
+    ocean_ice_south_only: bool = True,
+    sea_ice_dir: Path | None = None,
+    sea_ice_fetch: bool = False,
+    sea_ice_cap_size: int = sea_ice.CAP_SIZE,
 ) -> None:
     """Bake the monthly day cubes, the night cube and the water mask cube.
 
@@ -437,6 +506,10 @@ def run_cube(
     area-averaged down to the face size; the mask faces are the same average
     of the same mask. The night is resampled and averaged the same way from its
     own source, without flattening.
+
+    With ``sea_ice_dir`` each month's sea ice is generated from its OSI-450-a1
+    mean on the polar caps and composited into the water share of the
+    flattened faces before the average.
 
     :param input_dir: Directory of monthly day maps carrying ``.YYYYMM.`` stamps.
     :param night_path: The equirectangular night map.
@@ -452,8 +525,14 @@ def run_cube(
     :param ocean_ice_luminance: Seed luminance threshold for ice detection.
     :param ocean_ice_latitude: Minimum absolute latitude for polar gate.
     :param workers: Threads that resample the bands of a face.
+    :param ocean_ice_south_only: Look for ice south of the gate alone.
+    :param sea_ice_dir: Directory of the OSI-450-a1 monthly files of 2004.
+    :param sea_ice_fetch: Download the files missing from ``sea_ice_dir``.
+    :param sea_ice_cap_size: Texels along each side of a cap the ice is
+        generated on.
     :raises typer.BadParameter: If the sources are missing, not 2:1, of
         different sizes, or too small for the face size.
+    :raises typer.Exit: If monthly sea ice files are missing.
     """
     from texture_pipeline.ocean_masking import (
         apply_ocean_mask,
@@ -477,6 +556,7 @@ def run_cube(
         raise typer.BadParameter(msg)
     ((width, height),) = sizes
     night_width, _ = _cube_source_size(night_path, face_size)
+    hemispheres = _read_sea_ice(sea_ice_dir, sea_ice_fetch)
     work = working_size(width, face_size)
     written = {"day": 0, "night": 0, "mask": 0}
     typer.echo(
@@ -504,6 +584,7 @@ def run_cube(
                     _open_rgb(path),
                     mask,
                     latitude_threshold=ocean_ice_latitude,
+                    south_only=ocean_ice_south_only,
                     seed_luminance=ocean_ice_luminance,
                 )
                 np.maximum(ice, found, out=ice)
@@ -530,18 +611,30 @@ def run_cube(
             f"Mask:    {written['mask']:,} bytes, {time.monotonic() - stage:.1f}s"
         )
 
+        fields = _sea_ice_fields(hemispheres, sea_ice_cap_size)
+
         for stamp, path in months.items():
             stage = time.monotonic()
             source = np.asarray(_open_rgb(path))
+            ice = _month_ice(fields, int(stamp[4:]))
+            area = dict.fromkeys(sea_ice.HEMISPHERES, 0.0)
             month_bytes = 0
             for face in FACES:
-                flat = apply_ocean_mask(
-                    Image.fromarray(reproject_face(source, face, work, pool)),
-                    water[face],
-                    color=ocean_color,
+                flat = np.array(
+                    apply_ocean_mask(
+                        Image.fromarray(reproject_face(source, face, work, pool)),
+                        water[face],
+                        color=ocean_color,
+                    )
                 )
+                if ice is not None:
+                    found = sea_ice_look.composite_face(
+                        flat, water[face], face, ice, ocean_color, pool
+                    )
+                    for hemisphere, km2 in found.items():
+                        area[hemisphere] += km2
                 month_bytes += _write_face(
-                    area_average(np.asarray(flat), face_size),
+                    area_average(flat, face_size),
                     output_dir / "day" / stamp / f"{face}.jxl",
                     quality=quality,
                     effort=effort,
@@ -552,6 +645,9 @@ def run_cube(
                 f"Day:     {stamp} {month_bytes:,} bytes, "
                 f"{time.monotonic() - stage:.1f}s"
             )
+            if ice is not None:
+                _report_ice_area(hemispheres, int(stamp[4:]), area)
+            del ice
 
         stage = time.monotonic()
         source = np.asarray(_open_rgb(night_path))
@@ -588,6 +684,13 @@ def _validate_workers(value: int) -> int:
 def _parse_ocean_color(value: str) -> tuple[int, int, int]:
     red, green, blue = (int(part) for part in value.split(","))
     return red, green, blue
+
+
+def _validate_cap_size(value: int) -> int:
+    if value < 8 or value % 2:
+        msg = f"Cap size must be even and at least 8, got {value}."
+        raise typer.BadParameter(msg)
+    return value
 
 
 @app.command("cube")
@@ -714,12 +817,45 @@ def cube(
             callback=_validate_workers,
         ),
     ] = min(4, os.cpu_count() or 1),
+    ocean_ice_south_only: Annotated[
+        bool,
+        typer.Option(
+            "--ocean-ice-south-only/--ocean-ice-both-poles",
+            help="Look for ice to keep as land south of the gate alone.",
+        ),
+    ] = True,
+    sea_ice_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--sea-ice",
+            help="Directory of the OSI-450-a1 monthly files of 2004.",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None,
+    fetch: Annotated[
+        bool,
+        typer.Option(
+            "--fetch",
+            help="Download the missing sea ice files over HTTPS, one at a time.",
+        ),
+    ] = False,
+    sea_ice_cap_size: Annotated[
+        int,
+        typer.Option(
+            "--sea-ice-cap-size",
+            help="Edge length of the polar caps the sea ice is generated on.",
+            callback=_validate_cap_size,
+        ),
+    ] = sea_ice.CAP_SIZE,
 ) -> None:
     """Bake equi-angular cube faces of the Earth's surface as JPEG XL.
 
     Writes day/YYYYMM/<face>.jxl for every monthly map, night/<face>.jxl and a
     lossless single-channel mask/<face>.jxl, with faces px, nx, py, ny, pz, nz.
     A mask texel is the water fraction: 255 is open water, 0 is land or ice.
+    With --sea-ice, every month's sea ice is composited into its open water.
     """
     run_cube(
         input_dir=input_dir,
@@ -736,6 +872,10 @@ def cube(
         ocean_ice_luminance=ocean_ice_luminance,
         ocean_ice_latitude=ocean_ice_latitude,
         workers=workers,
+        ocean_ice_south_only=ocean_ice_south_only,
+        sea_ice_dir=sea_ice_dir,
+        sea_ice_fetch=fetch,
+        sea_ice_cap_size=sea_ice_cap_size,
     )
 
 

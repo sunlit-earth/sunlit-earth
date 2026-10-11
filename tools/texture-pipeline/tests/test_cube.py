@@ -77,7 +77,8 @@ def write_fixture_sources(root: Path) -> tuple[Path, Path, Path]:
 
     The land is one box on each face around the equator, one in the north and
     a cap south of 70 S, so a face swapped or turned changes the bake. January
-    carries a bright block in the Arctic ocean for the ice detector to find.
+    carries a bright block in the Southern Ocean for the ice detector to find,
+    and one in the Arctic Ocean that the detector's southern gate leaves alone.
 
     :param root: Directory to write into.
     :returns: The day directory, the night map and the shapefile.
@@ -90,6 +91,7 @@ def write_fixture_sources(root: Path) -> tuple[Path, Path, Path]:
         rgb = np.stack([cols * 2, rows * 4, blue], axis=-1).astype(np.uint8)
         if month == 1:
             rgb[1:9, 20:36] = 240
+            rgb[54:57, 16:40] = 240
         Image.fromarray(rgb).save(days / f"world.topo.2004{month:02d}.png")
 
     night_rows, night_cols = np.mgrid[0:32, 0:64]
@@ -344,7 +346,8 @@ class TestFixtureBake:
         assert mask_at(-150, 0) == 255
         assert mask_at(15, 0) == 0
         assert mask_at(0, -85) == 0
-        assert mask_at(-100, 76) == 0
+        assert mask_at(-100, -66) < 255
+        assert mask_at(-100, 76) == 255
 
     def test_open_water_is_the_fill_in_every_month(self, fixture_bake: Path) -> None:
         face, row, col = texel_of(direction_at(-150, 0), FIXTURE_FACE)
@@ -355,10 +358,18 @@ class TestFixtureBake:
     def test_ice_found_in_one_month_stays_unflattened_in_every_month(
         self, fixture_bake: Path
     ) -> None:
-        face, row, col = texel_of(direction_at(-100, 76), FIXTURE_FACE)
+        face, row, col = texel_of(direction_at(-100, -66), FIXTURE_FACE)
         for month in FIXTURE_MONTHS:
             day = decode(fixture_bake / "day" / f"2004{month:02d}" / f"{face}.jxl")
             assert tuple(day[row, col]) != OCEAN_FILL
+
+    def test_bright_arctic_water_is_flattened_like_any_sea(
+        self, fixture_bake: Path
+    ) -> None:
+        face, row, col = texel_of(direction_at(-100, 76), FIXTURE_FACE)
+        for month in FIXTURE_MONTHS:
+            day = decode(fixture_bake / "day" / f"2004{month:02d}" / f"{face}.jxl")
+            assert tuple(day[row, col]) == OCEAN_FILL
 
 
 def direction_at(lon: float, lat: float) -> tuple[float, float, float]:

@@ -181,6 +181,7 @@ def detect_ice_regions(
     image: Image.Image,
     ocean_mask: np.ndarray,
     latitude_threshold: float = 60.0,
+    south_only: bool = False,
     seed_luminance: int = 200,
     seed_saturation: float = 0.15,
     relax_luminance: int = 120,
@@ -199,6 +200,8 @@ def detect_ice_regions(
     :param image: Source RGB image (equirectangular projection).
     :param ocean_mask: uint8 array (H, W). 0 = land, 255 = ocean.
     :param latitude_threshold: Minimum absolute latitude for polar gate.
+    :param south_only: Search south of ``-latitude_threshold`` alone, where
+        the ocean side of the coastline holds the Antarctic ice shelves.
     :param seed_luminance: Strict seed luminance threshold (0--255).
     :param seed_saturation: Strict seed max saturation (0.0--1.0).
     :param relax_luminance: Relaxed expansion luminance threshold.
@@ -221,7 +224,11 @@ def detect_ice_regions(
 
     # 1. Latitude gate — identify polar row ranges
     row_latitudes = 90.0 - np.arange(h) * 180.0 / h
-    polar_rows = np.abs(row_latitudes) >= latitude_threshold
+    polar_rows = (
+        row_latitudes <= -latitude_threshold
+        if south_only
+        else np.abs(row_latitudes) >= latitude_threshold
+    )
 
     # Find contiguous polar row ranges to avoid processing the full image.
     # In equirectangular, polar rows are at the top (Arctic) and bottom

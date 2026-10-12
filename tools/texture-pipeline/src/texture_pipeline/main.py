@@ -1094,6 +1094,19 @@ def _validate_month(value: int) -> int:
     return value
 
 
+def _validate_preview_workers(value: int | None) -> int | None:
+    if value is not None and value < 1:
+        raise typer.BadParameter("A worker count is at least 1.")
+    return value
+
+
+_WORKERS_HELP = (
+    "Threads for each parallel step, and the most views, renders and "
+    "measurements at once. 1 runs everything in turn. Default: the "
+    "TEXTURE_PIPELINE_WORKERS environment variable, else the cores up to 16."
+)
+
+
 @preview_app.command("run")
 def preview_run(
     variant: Annotated[
@@ -1133,6 +1146,20 @@ def preview_run(
             help="Month of the south's summer view.", callback=_validate_month
         ),
     ] = 2,
+    workers: Annotated[
+        int | None,
+        typer.Option(help=_WORKERS_HELP, callback=_validate_preview_workers),
+    ] = None,
+    warm_check: Annotated[
+        bool,
+        typer.Option(
+            "--warm-check",
+            help=(
+                "Render the views in turn on one tile cache and once more warm, "
+                "to measure what the tile packs cost, instead of at once."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Bake, assemble, render and measure one variant of the sea ice's look.
 
@@ -1143,10 +1170,142 @@ def preview_run(
     views = sea_ice_preview.default_views(
         north_winter, north_summer, south_winter, south_summer
     )
-    metrics = sea_ice_preview.run_variant(root, variant, views, report=typer.echo)
+    metrics = sea_ice_preview.run_variant(
+        root,
+        variant,
+        views,
+        report=typer.echo,
+        workers=workers,
+        warm_check=warm_check,
+    )
     typer.echo(f"Elapsed: {metrics['time_s']['total']}s")
     page = sea_ice_preview_page.build(root)
     typer.echo(f"Page:    {page}")
+
+
+@preview_app.command("draft")
+def preview_draft(
+    variant: Annotated[
+        str,
+        typer.Argument(help="The variant to draw.", callback=_validate_variant),
+    ],
+    place: Annotated[
+        str,
+        typer.Option(
+            "--place",
+            help="The place to draw around; see the list in `preview draft --help`.",
+        ),
+    ],
+    view: Annotated[
+        str | None,
+        typer.Option(
+            help=(
+                "north-winter, north-summer, south-winter or south-summer: the "
+                "face and the month to draw. Default: the winter view of the "
+                "place's hemisphere."
+            )
+        ),
+    ] = None,
+    half: Annotated[
+        int,
+        typer.Option(
+            min=16,
+            help="Half the region's side, in texels of the 5400 texel working size.",
+        ),
+    ] = 512,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            help=(
+                "Where to write the PNG. Default: "
+                "<root>/<variant>/draft-<view>-<place>.png."
+            ),
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None,
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            help="The harness's directory, holding sources.toml.",
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = _PREVIEW_ROOT,
+    north_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's winter view.", callback=_validate_month
+        ),
+    ] = 3,
+    north_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's summer view.", callback=_validate_month
+        ),
+    ] = 8,
+    south_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's winter view.", callback=_validate_month
+        ),
+    ] = 9,
+    south_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's summer view.", callback=_validate_month
+        ),
+    ] = 2,
+    workers: Annotated[
+        int | None,
+        typer.Option(help=_WORKERS_HELP, callback=_validate_preview_workers),
+    ] = None,
+) -> None:
+    """Draw a region of a variant around a place in seconds.
+
+    The variant's noise fields come from the cache (made once if missing) and
+    the region is blended and composited as the full bake does it, texel for
+    texel. No app render, no metrics, no encode, no page. Run `preview run`
+    for those.
+
+    Places: north-greenland, ellesmere-north, svalbard, franz-josef-land,
+    canadian-arctic-west, east-greenland, beaufort-sea, antarctic-peninsula,
+    ross-sea-coast, east-antarctica, ronne-ice-shelf-front,
+    ross-ice-shelf-front, amery-ice-shelf, victoria-land, weddell-sea.
+    """
+    from texture_pipeline import sea_ice_preview
+
+    try:
+        found = sea_ice_preview.find_place(place)
+        views = {
+            v.key: v
+            for v in sea_ice_preview.default_views(
+                north_winter, north_summer, south_winter, south_summer
+            )
+        }
+        key = view or ("north-winter" if found[1] > 0 else "south-winter")
+        if key not in views:
+            msg = f"No view {key!r}; one of {', '.join(views)}."
+            raise ValueError(msg)
+        harness = sea_ice_preview.Harness(
+            root,
+            sea_ice_preview.VARIANTS[variant],
+            tuple(views.values()),
+            report=typer.echo,
+            workers=workers,
+        )
+        drawn = harness.draft(views[key], found, half, out)
+    except ValueError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    stages = ", ".join(f"{k} {v} s" for k, v in drawn["seconds"].items())
+    typer.echo(
+        f"Region:  rows {drawn['window'].rows}, columns {drawn['window'].columns}"
+    )
+    typer.echo(f"Seconds: {sum(drawn['seconds'].values()):.1f} ({stages})")
+    typer.echo(f"Draft:   {drawn['path']}")
 
 
 @preview_app.command("page")

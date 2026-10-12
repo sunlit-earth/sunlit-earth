@@ -31,12 +31,13 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import tomllib
 import tracemalloc
 import types
 import typing
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,7 +55,7 @@ from scipy.ndimage import (
     zoom,
 )
 
-from texture_pipeline import ocean_masking, sea_ice, sea_ice_look
+from texture_pipeline import ocean_masking, parallel, sea_ice, sea_ice_look
 from texture_pipeline.cube import FACES, area_average, face_directions, reproject_face
 from texture_pipeline.discovery import discover_months
 from texture_pipeline.processing import encode_jxl
@@ -94,6 +95,10 @@ variant's latitude, where the sea ice record's concentration stays below
 ``ice_free_below`` all year, every ``step``-th pixel along both axes. The
 thresholds are the percentiles named of the brightest luminance and of the
 least blue."""
+
+DRAFT_HALF = 512
+"""Half the side of a draft's region, in texels of the working size: about
+390 texels of the 2048 face, more than a detail crop shows."""
 
 POOL = 8
 """Source pixels along each side of a pixel of the imagery water's overview."""
@@ -631,7 +636,15 @@ class Cache:
 
 
 class Harness:
-    """Runs a variant end to end."""
+    """Runs a variant end to end.
+
+    The noise fields are kept per part and per hemisphere, each under a key
+    of the tunables and the code that part reads, so a change to one tunable
+    makes only the parts that read it again. The two hemispheres' fields, the
+    four views' bakes, renders and measurements run at once, each step on up
+    to ``workers`` threads; none of it changes a byte of the results, and
+    ``workers=1`` runs everything in turn.
+    """
 
     def __init__(
         self,
@@ -639,7 +652,22 @@ class Harness:
         variant: Variant,
         views: tuple[View, ...],
         report: Report = print,
+        workers: int | None = None,
+        warm_check: bool = False,
     ) -> None:
+        """Open a harness.
+
+        :param root: The harness's directory, holding ``sources.toml``.
+        :param variant: The variant to run.
+        :param views: The four views.
+        :param report: Told what is happening.
+        :param workers: Threads; the process's setting when ``None``.
+        :param warm_check: Render in turn on one tile cache and once more
+            warm, to measure what the tile packs cost; otherwise the views
+            render at once, each on a tile cache of its own.
+        """
+        self.workers = parallel.workers(workers)
+        self.warm_check = warm_check
         self.root = root
         self.variant = variant
         self.views = views
@@ -650,6 +678,9 @@ class Harness:
         self.times: dict[str, float] = {}
         self.months = discover_months(self.sources.blue_marble)
         self.notes: dict[str, object] = {}
+        self._fields: dict[str, tuple[sea_ice_look.Look, sea_ice_look.Fields]] = {}
+        self._fields_notes: dict[str, dict] = {}
+        self._locks = {h: threading.Lock() for h in sea_ice.HEMISPHERES}
 
     # The source raster and the masks.
 
@@ -804,6 +835,14 @@ class Harness:
 
         return self.cache.arrays(f"water-{key}-{work}", make)
 
+    def water_face(self, face: str, pool: Executor) -> np.ndarray:
+        """One face of the variant's mask, without reading the others."""
+        path = self.cache.dir / f"water-{self.mask_key()}-{self.work_size}.npz"
+        if path.exists():
+            with np.load(path) as data:
+                return data[face]
+        return self.water_faces(pool)[face]
+
     @property
     def work_size(self) -> int:
         """The size the faces are resampled at before the average."""
@@ -849,52 +888,123 @@ class Harness:
             look = dataclasses.replace(look, colors=colors)
         return look
 
-    def fields(self, hemisphere: str, look: sea_ice_look.Look) -> sea_ice_look.Fields:
-        """A hemisphere's noise fields, cached by the tunables and the code that
-        make them."""
-        key = fields_key(look)
-        name = f"fields-{hemisphere}-{key}"
-        steps: dict[str, float] = {}
+    def record(
+        self, hemisphere: str, look: sea_ice_look.Look
+    ) -> tuple[np.ndarray, np.ndarray | None, str]:
+        """A hemisphere's concentration on the coarse cap, the fast ice band's
+        raise of it, and the key they are kept under."""
+        key = record_key(self.sources.sea_ice, hemisphere, look)
 
         def make() -> dict[str, np.ndarray]:
-            self.report(f"Noise fields: {hemisphere}")
             read = sea_ice.read_hemisphere(self.sources.sea_ice, hemisphere)
             banded = sea_ice_look.fast_ice(read, look)
-            concentration = sea_ice.cap_concentration(banded)
-            fast = sea_ice_look.fast_ice_raise(read, banded)
-            last = [time.monotonic(), ""]
+            out = {"concentration": sea_ice.cap_concentration(banded)}
+            raise_ = sea_ice_look.fast_ice_raise(read, banded)
+            if raise_ is not None:
+                out["fast"] = raise_
+            return out
 
-            def step(what: str) -> None:
-                now = time.monotonic()
-                if last[1]:
-                    steps[last[1]] = round(now - last[0], 1)
-                last[:] = [now, what]
+        arrays = self.cache.arrays(f"record-{hemisphere}-{key}", make)
+        return arrays["concentration"], arrays.get("fast"), key
 
-            tracemalloc.start()
-            made = sea_ice_look.prepare(
-                concentration, hemisphere, sea_ice.CAP_SIZE, look, step, fast
-            )
-            step("")
-            peak = tracemalloc.get_traced_memory()[1]
-            tracemalloc.stop()
-            arrays = fields_to_arrays(made)
-            self.cache.record(
-                f"{name}-made",
-                lambda: {
-                    "seconds": steps,
-                    "peak_gib": round(peak / 2**30, 2),
-                    "mib": {k: round(v.nbytes / 2**20, 1) for k, v in arrays.items()},
-                },
-            )
-            return arrays
+    def fields(self, hemisphere: str, look: sea_ice_look.Look) -> sea_ice_look.Fields:
+        """A hemisphere's noise fields, each part of them cached by the
+        tunables and the code that make it."""
+        with self._locks[hemisphere]:
+            kept = self._fields.get(hemisphere)
+            if kept is not None and kept[0] == look:
+                return kept[1]
+            concentration, fast, record = self.record(hemisphere, look)
+            keys = part_keys(look, hemisphere, record, sea_ice.CAP_SIZE)
+            tracing = self.workers == 1
 
-        arrays = self.cache.arrays(name, make)
-        made = self.cache.dir / f"{name}-made.json"
-        if made.exists():
-            self.notes.setdefault("fields", {})[hemisphere] = json.loads(
-                made.read_text(encoding="utf-8")
+            def cached(
+                part: sea_ice_look.Part, make: Callable[[], dict[str, object]]
+            ) -> dict[str, object]:
+                name = f"fields-{hemisphere}-{part.name}-{keys[part.name]}"
+                made: dict[str, object] = {}
+
+                def build() -> dict[str, np.ndarray]:
+                    self.report(f"Noise fields: {hemisphere}, {part.name}")
+                    started = time.monotonic()
+                    if tracing:
+                        tracemalloc.start()
+                    made["part"] = make()
+                    made["seconds"] = round(time.monotonic() - started, 1)
+                    if tracing:
+                        made["peak"] = tracemalloc.get_traced_memory()[1]
+                        tracemalloc.stop()
+                    return part_to_arrays(made["part"])
+
+                arrays = self.cache.arrays(name, build)
+                if "part" not in made:
+                    return parts_from_arrays(arrays)
+                self.cache.record(
+                    f"{name}-made",
+                    lambda: {
+                        "seconds": made["seconds"],
+                        "peak_gib": (
+                            round(made["peak"] / 2**30, 2) if "peak" in made else None
+                        ),
+                        "mib": {
+                            k: round(v.nbytes / 2**20, 1) for k, v in arrays.items()
+                        },
+                    },
+                )
+                return made["part"]
+
+            fields = sea_ice_look.prepare(
+                concentration,
+                hemisphere,
+                sea_ice.CAP_SIZE,
+                look,
+                fast=fast,
+                workers=self.workers,
+                cache=cached,
             )
-        return fields_from_arrays(hemisphere, arrays)
+            self._fields_notes[hemisphere] = self.fields_note(
+                hemisphere, look, keys, fields
+            )
+            self._fields[hemisphere] = (look, fields)
+            return fields
+
+    def fields_note(
+        self,
+        hemisphere: str,
+        look: sea_ice_look.Look,
+        keys: dict[str, str],
+        fields: sea_ice_look.Fields,
+    ) -> dict:
+        """What the parts of a hemisphere's fields cost when they were made."""
+        seconds: dict[str, float] = {}
+        peaks: list[float] = []
+        for part in sea_ice_look.parts_for(look, hemisphere):
+            path = (
+                self.cache.dir
+                / f"fields-{hemisphere}-{part.name}-{keys[part.name]}-made.json"
+            )
+            if not path.exists():
+                continue
+            made = json.loads(path.read_text(encoding="utf-8"))
+            seconds[part.name] = made["seconds"]
+            if made["peak_gib"] is not None:
+                peaks.append(made["peak_gib"])
+        return {
+            "seconds": seconds,
+            "peak_gib": max(peaks) if peaks else None,
+            "mib": {
+                k: round(v.nbytes / 2**20, 1)
+                for k, v in fields_to_arrays(fields).items()
+            },
+        }
+
+    def fields_both(self, look: sea_ice_look.Look) -> None:
+        """Make or load the fields of the views' hemispheres, at once."""
+        names = [
+            h for h in sea_ice.HEMISPHERES if any(v.hemisphere == h for v in self.views)
+        ]
+        parallel.pmap(lambda h: self.fields(h, look), names, self.workers)
+        self.notes["fields"] = {h: self._fields_notes[h] for h in names}
 
     def source_area(self, hemisphere: str) -> np.ndarray:
         """Each month's ice area in the source, in square kilometers."""
@@ -912,12 +1022,14 @@ class Harness:
         if self.out.exists():
             shutil.rmtree(self.out)
         (self.out / "faces").mkdir(parents=True)
-        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
             water = _timed(self.times, "mask", lambda: self.water_faces(pool))
             colors = _timed(self.times, "colors", lambda: self.colors(water, pool))
             look = self.look(colors)
+            _timed(self.times, "fields", lambda: self.fields_both(look))
             baked = _timed(self.times, "bake", lambda: self.bake(water, look, pool))
             masks = _timed(self.times, "mask faces", lambda: self.mask_faces(water))
+        self._fields.clear()
         textures = _timed(self.times, "assemble", lambda: self.assemble(baked, masks))
         renders = self.render_all(textures)
         metrics = _timed(
@@ -931,12 +1043,50 @@ class Harness:
         return metrics
 
     def colors(
-        self, water: dict[str, np.ndarray], pool: Executor
+        self, water: dict[str, np.ndarray] | None, pool: Executor
     ) -> dict[str, tuple[sea_ice_look.Rgb, ...]] | None:
-        """The ice's colors when the variant takes them from the snow."""
+        """The ice's colors when the variant takes them from the snow, kept by
+        the mask, the table and the code that measures the snow."""
         if not self.variant.snow_colors:
             return None
         table = dataclasses.replace(sea_ice_look.LOOK, **self.variant.look).colors
+        sources = [(m, p.name, p.stat().st_size) for m, p in self.months.items()]
+        key = _key(
+            "snow-colors",
+            self.mask_key(),
+            self.work_size,
+            FACE_SIZE,
+            table,
+            sources,
+            code_digest(
+                coastal_snow,
+                sea_ice_look.winter_months,
+                sea_ice_look.rescaled_colors,
+                area_average,
+                luma,
+                face_latitude,
+            ),
+        )
+
+        def make() -> dict:
+            faces = water if water is not None else self.water_faces(pool)
+            colors, snow = self.snow_colors(table, faces, pool)
+            return json.loads(json.dumps({"colors": colors, "snow": snow}))
+
+        stored = self.cache.record(f"snow-colors-{key}", make)
+        self.notes["snow_colors"] = stored["snow"]
+        return {
+            hemisphere: tuple((r, g, b) for r, g, b in rgb)
+            for hemisphere, rgb in stored["colors"].items()
+        }
+
+    def snow_colors(
+        self,
+        table: dict[str, tuple[sea_ice_look.Rgb, ...]],
+        water: dict[str, np.ndarray],
+        pool: Executor,
+    ) -> tuple[dict, dict]:
+        """Measure the coastal snow of each hemisphere's winter months."""
         snow = {}
         colors = {}
         for hemisphere, face, min_lat in (("nh", "py", 70.0), ("sh", "ny", 60.0)):
@@ -963,68 +1113,125 @@ class Harness:
                 "table_before": [list(c) for c in table[hemisphere]],
                 "table_after": [list(c) for c in colors[hemisphere]],
             }
-        self.notes["snow_colors"] = snow
-        return colors
+        return colors, snow
 
     def bake(
         self, water: dict[str, np.ndarray], look: sea_ice_look.Look, pool: Executor
     ) -> dict[str, dict]:
-        """Rebake each view's face, and measure the ice's area on every face."""
+        """Rebake each view's face, and measure the ice's area on every face.
+
+        The views run at once; what each one notes is put together in the
+        views' order, so the notes do not depend on which finished first.
+        """
+        self.fields_both(look)
+        results = parallel.pmap(
+            lambda view: self.bake_view(view, water, look, pool),
+            self.views,
+            self.workers,
+        )
         baked = {}
-        for view in self.views:
-            stage = time.monotonic()
-            fields = self.fields(view.hemisphere, look)
-            cap = sea_ice_look.month_cap(fields, view.month, look)
-            if fields.fractures is not None:
-                self.notes.setdefault("fractures", {})[view.hemisphere] = (
-                    fracture_stats(fields.fractures)
-                )
-            if cap.land_coverage is not None and fields.fractures is not None:
-                pack = cap.land_coverage > 0.5
-                whole = float(cap.land_coverage[pack].sum())
-                open_ = float((cap.land_coverage - cap.coverage)[pack].sum())
-                self.notes.setdefault("lead_area", {})[view.key] = round(
-                    open_ / max(whole, 1e-9), 4
-                )
-            if cap.activity is not None:
-                self.notes.setdefault("activity", {})[view.key] = activity_shares(cap)
-            if cap.land_coverage is not None:
-                self.notes.setdefault("pack_streaks", {})[view.key] = pack_streaks(
-                    fields, cap, view.month
-                )
-            ice = sea_ice_look.MonthIce({view.hemisphere: cap})
-            source = self.source_face(view.stamp, view.face, pool)
-            flat = np.array(
-                ocean_masking.apply_ocean_mask(
-                    Image.fromarray(source), water[view.face], color=FILL
-                )
-            )
-            if look.coast_blend:
-                self.blend_coast(view, flat, source, water[view.face], ice, look, pool)
-            area = sea_ice_look.composite_face(
-                flat, water[view.face], view.face, ice, FILL, pool
-            )[view.hemisphere]
-            for face in FACES:
-                if face != view.face:
-                    area += ice_area(water[face], face, ice, view.hemisphere, pool)
-            del fields, cap
-            small = area_average(flat, FACE_SIZE)
-            pre = self.out / "faces" / f"{view.stamp}-{view.face}.png"
-            Image.fromarray(small).save(pre)
-            encoded = self.out / "faces" / f"{view.stamp}-{view.face}.jxl"
-            encode_jxl(Image.fromarray(small), encoded, quality=QUALITY, effort=EFFORT)
-            source_km2 = float(self.source_area(view.hemisphere)[view.month - 1])
-            baked[view.key] = {
-                "preencode": pre,
-                "encoded": encoded,
-                "area_km2": area,
-                "source_km2": source_km2,
-            }
-            self.report(
-                f"Baked {view.key}: {time.monotonic() - stage:.1f}s, ice "
-                f"{area / 1e6:.2f} million km2 against {source_km2 / 1e6:.2f}"
-            )
+        for view, (entry, notes) in zip(self.views, results, strict=True):
+            baked[view.key] = entry
+            for name, value in notes.items():
+                section = self.notes.setdefault(name, {})
+                section[view.hemisphere if name == "fractures" else view.key] = value
         return baked
+
+    def bake_view(
+        self,
+        view: View,
+        water: dict[str, np.ndarray],
+        look: sea_ice_look.Look,
+        pool: Executor,
+    ) -> tuple[dict, dict]:
+        """Rebake one view's face.
+
+        :returns: The baked face's paths and ice areas, and what the bake
+            noted about the view.
+        """
+        stage = time.monotonic()
+        notes: dict[str, object] = {}
+        fields = self.fields(view.hemisphere, look)
+        cap = sea_ice_look.month_cap(fields, view.month, look, workers=self.workers)
+        if fields.fractures is not None:
+            notes["fractures"] = fracture_stats(fields.fractures)
+        if cap.land_coverage is not None and fields.fractures is not None:
+            pack = cap.land_coverage > 0.5
+            whole = float(cap.land_coverage[pack].sum())
+            open_ = float((cap.land_coverage - cap.coverage)[pack].sum())
+            notes["lead_area"] = round(open_ / max(whole, 1e-9), 4)
+        if cap.activity is not None:
+            notes["activity"] = activity_shares(cap)
+        if cap.land_coverage is not None:
+            notes["pack_streaks"] = pack_streaks(fields, cap, view.month)
+        ice = sea_ice_look.MonthIce({view.hemisphere: cap})
+        source = self.source_face(view.stamp, view.face, pool)
+        flat = np.array(
+            ocean_masking.apply_ocean_mask(
+                Image.fromarray(source), water[view.face], color=FILL
+            )
+        )
+        if look.coast_blend:
+            notes["coast_blend"] = self.blend_coast(
+                view, flat, source, water[view.face], ice, look, pool
+            )
+        area = sea_ice_look.composite_face(
+            flat, water[view.face], view.face, ice, FILL, pool
+        )[view.hemisphere]
+        for face in FACES:
+            if face != view.face:
+                area += ice_area(water[face], face, ice, view.hemisphere, pool)
+        del fields, cap
+        small = area_average(flat, FACE_SIZE)
+        pre = self.out / "faces" / f"{view.stamp}-{view.face}.png"
+        Image.fromarray(small).save(pre)
+        encoded = self.out / "faces" / f"{view.stamp}-{view.face}.jxl"
+        encode_jxl(Image.fromarray(small), encoded, quality=QUALITY, effort=EFFORT)
+        source_km2 = float(self.source_area(view.hemisphere)[view.month - 1])
+        self.report(
+            f"Baked {view.key}: {time.monotonic() - stage:.1f}s, ice "
+            f"{area / 1e6:.2f} million km2 against {source_km2 / 1e6:.2f}"
+        )
+        entry = {
+            "preencode": pre,
+            "encoded": encoded,
+            "area_km2": area,
+            "source_km2": source_km2,
+        }
+        return entry, notes
+
+    def coast_weight(
+        self,
+        source: np.ndarray,
+        water: np.ndarray,
+        look: sea_ice_look.Look,
+        spacing_km: float | None = None,
+    ) -> np.ndarray:
+        """The coast's weight for a face, kept by a hash of the pixels it is
+        made from, the tunables it reads and the code that makes it."""
+        digest = hashlib.blake2b(digest_size=16)
+        for array in (source, water):
+            digest.update(np.ascontiguousarray(array).data)
+        read = tunables_read(sea_ice_look.coast_weight)
+        tunables = tuple(
+            (f.name, getattr(look, f.name))
+            for f in dataclasses.fields(look)
+            if f.name in read
+        )
+        key = _key(
+            "coast-weight",
+            digest.hexdigest(),
+            source.shape,
+            tunables,
+            spacing_km,
+            code_digest(sea_ice_look.coast_weight),
+        )
+        return self.cache.array(
+            f"coast-weight-{key}",
+            lambda: sea_ice_look.coast_weight(
+                source, water, look, spacing_km, workers=self.workers
+            ),
+        )
 
     def blend_coast(
         self,
@@ -1035,18 +1242,21 @@ class Harness:
         ice: sea_ice_look.MonthIce,
         look: sea_ice_look.Look,
         pool: Executor,
-    ) -> None:
-        """Blend the coast's land toward the ice, and draw and count the blend."""
+    ) -> dict:
+        """Blend the coast's land toward the ice, and draw and count the blend.
+
+        :returns: What the blend did, for the view's notes.
+        """
         started = time.monotonic()
+        weight = self.coast_weight(source, water, look)
         applied = sea_ice_look.blend_coast(
-            flat, source, water, view.face, ice, look, pool, fill=FILL
+            flat, source, water, view.face, ice, look, pool, fill=FILL, weight=weight
         )
         seconds = time.monotonic() - started
         small = area_average(np.rint(applied * 255).astype(np.uint8), FACE_SIZE)
         name = f"{view.key}-coast-blend.png"
         Image.fromarray(small).save(self.out / name)
-        blends = self.notes.setdefault("coast_blend", {})
-        blends[view.key] = {
+        return {
             "seconds": round(seconds, 1),
             "texels_blended": int((applied > 0.01).sum()),
             "texels_mostly_ice": int((applied > 0.5).sum()),
@@ -1055,17 +1265,35 @@ class Harness:
         }
 
     def mask_faces(self, water: dict[str, np.ndarray]) -> dict[str, Path]:
-        """Write the variant's mask faces, lossless."""
-        paths = {}
-        for face in FACES:
-            path = self.out / "faces" / f"mask-{face}.jxl"
+        """Write the variant's mask faces, lossless, or copy them from the
+        cache when the mask is one the harness has encoded."""
+        key = _key(
+            "mask-faces",
+            self.mask_key(),
+            self.work_size,
+            FACE_SIZE,
+            EFFORT,
+            code_digest(encode_jxl, area_average),
+        )
+        kept = self.cache.dir / f"mask-faces-{key}"
+        paths = {face: self.out / "faces" / f"mask-{face}.jxl" for face in FACES}
+        if all((kept / path.name).exists() for path in paths.values()):
+            for path in paths.values():
+                shutil.copyfile(kept / path.name, path)
+            return paths
+
+        def encode(face: str) -> None:
             encode_jxl(
                 Image.fromarray(area_average(water[face], FACE_SIZE)),
-                path,
+                paths[face],
                 quality=100,
                 effort=EFFORT,
             )
-            paths[face] = path
+
+        parallel.pmap(encode, FACES, self.workers)
+        kept.mkdir(exist_ok=True)
+        for path in paths.values():
+            shutil.copyfile(path, kept / path.name)
         return paths
 
     def assemble(self, baked: dict[str, dict], masks: dict[str, Path]) -> Path:
@@ -1085,7 +1313,21 @@ class Harness:
     # The renders.
 
     def render_all(self, textures: Path) -> dict[str, dict]:
-        """Render every view with a cold tile cache, then the first one warm."""
+        """Render every view, at once on tile caches of their own.
+
+        With ``warm_check`` the views render in turn on one tile cache, and
+        the first once more warm, which is how the packs' cost is measured.
+        """
+        if not self.warm_check:
+            started = time.monotonic()
+
+            def one(view: View) -> tuple[str, dict]:
+                cache = self.out / f"tile-cache-{view.key}"
+                return view.key, self.render(view, textures, cache, view.key)
+
+            renders = dict(parallel.pmap(one, self.views, self.workers))
+            self.times["renders"] = round(time.monotonic() - started, 1)
+            return renders
         cache = self.out / "tile-cache"
         renders = {}
         for view in self.views:
@@ -1136,103 +1378,235 @@ class Harness:
         self.report(f"Rendered {name}: {seconds}s")
         return {"path": output, "seconds": seconds}
 
+    # The draft.
+
+    def draft(
+        self,
+        view: View,
+        place: tuple[str, float, float],
+        half: int = DRAFT_HALF,
+        out: Path | None = None,
+    ) -> dict:
+        """Draw the region around a place of one view's face, in seconds.
+
+        Nothing is encoded, rendered or measured. The fields come from the
+        cache, the month's ice is made for the cap rows the region reads, and
+        the region of the face at the working size is blended with the coast
+        and composited as the bake does it, so a texel is the one the bake
+        would write there.
+
+        :param view: The view, whose face and month are drawn.
+        :param place: A name, a latitude and a longitude, as :data:`PLACES`
+            lists them.
+        :param half: Half the region's side in texels of the working size.
+        :param out: Where to write the PNG; under the variant's directory by
+            default.
+        :returns: The PNG's path, the region's window, and the seconds each
+            stage took.
+        """
+        stages: dict[str, float] = {}
+        mark = [time.monotonic()]
+
+        def tick(name: str) -> None:
+            now = time.monotonic()
+            stages[name] = round(now - mark[0], 2)
+            mark[0] = now
+
+        name, latitude, longitude = place
+        if (latitude > 0) != (view.hemisphere == "nh"):
+            msg = f"{name} is not in the {view.hemisphere} hemisphere of {view.key}."
+            raise ValueError(msg)
+        size = self.work_size
+        window = region_window(view.face, latitude, longitude, size, half)
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            look = self.look(self.colors(None, pool))
+            tick("colors")
+            fields = self.fields(view.hemisphere, look)
+            tick("fields")
+            cap = sea_ice_look.month_cap(
+                fields,
+                view.month,
+                look,
+                row_range=cap_rows(view.face, window, fields.size),
+                workers=self.workers,
+            )
+            tick("month")
+            kept = self.cache.dir / f"source-{view.stamp}-{view.face}-{size}.npy"
+            if not kept.exists():
+                self.source_face(view.stamp, view.face, pool)
+            full_source = np.load(kept, mmap_mode="r")
+            full_water = self.water_face(view.face, pool)
+            tick("sources")
+            ice = sea_ice_look.MonthIce({view.hemisphere: cap})
+            rows, columns = window.rows, window.columns
+            spacing = np.pi / 2 * sea_ice.AUTHALIC_RADIUS_KM / size
+            reach = 4 * look.coast_window_km + max(
+                look.coast_reach_km[1], look.coast_inner_km[1]
+            )
+            margin = max(int(np.ceil(reach / spacing)) + 8, 64)
+            top, bottom = max(rows[0] - margin, 0), min(rows[1] + margin, size)
+            left, right = max(columns[0] - margin, 0), min(columns[1] + margin, size)
+            inner = (
+                slice(rows[0] - top, rows[1] - top),
+                slice(columns[0] - left, columns[1] - left),
+            )
+            slab_source = np.ascontiguousarray(full_source[top:bottom, left:right])
+            slab_water = np.ascontiguousarray(full_water[top:bottom, left:right])
+            source = np.ascontiguousarray(slab_source[inner])
+            water = np.ascontiguousarray(slab_water[inner])
+            flat = np.array(
+                ocean_masking.apply_ocean_mask(
+                    Image.fromarray(source), water, color=FILL
+                )
+            )
+            tick("slice")
+            if look.coast_blend:
+                weight = sea_ice_look.coast_weight(
+                    slab_source, slab_water, look, spacing, workers=self.workers
+                )
+                tick("coast weight")
+                sea_ice_look.blend_coast(
+                    flat,
+                    source,
+                    water,
+                    view.face,
+                    ice,
+                    look,
+                    pool,
+                    fill=FILL,
+                    weight=np.ascontiguousarray(weight[inner]),
+                    window=window,
+                )
+                tick("blend")
+            sea_ice_look.composite_face(
+                flat, water, view.face, ice, FILL, pool, window=window
+            )
+            tick("composite")
+        target = out or self.out / f"draft-{view.key}-{name}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(flat).save(target)
+        tick("save")
+        return {"path": target, "window": window, "seconds": stages}
+
     # The measurements.
 
     def measure(
         self, textures: Path, baked: dict[str, dict], renders: dict[str, dict]
     ) -> dict:
-        """Measure the variant's faces and renders."""
+        """Measure the variant's faces and renders, the views and the global
+        checks at once."""
         baseline = self.root / "baseline"
         metrics: dict = {
             "variant": self.variant.name,
             "views": {},
             "dark_land": {},
         }
-        for face in ("py", "ny"):
-            metrics["dark_land"][face] = dark_land(textures, face)
-        for view in self.views:
-            entry = baked[view.key]
-            decoded = _open_rgb(entry["encoded"])
-            pre = _open_rgb(entry["preencode"])
-            mask = _open_gray(textures / "mask" / f"{view.face}.jxl")
-            min_lat = 70.0 if view.face == "py" else 60.0
-            m = {
-                "label": view.label,
-                "face": view.face,
-                "month": view.month,
-                "render": renders[view.key]["path"].name,
-                "render_s": renders[view.key]["seconds"],
-                "month_check": month_check(view, renders[view.key]["path"], textures),
-                "coast_snow": coast_against_ice(decoded, mask, view.face, min_lat),
-                "ice_area": {
-                    "faces_km2": round(entry["area_km2"]),
-                    "source_km2": round(entry["source_km2"]),
-                    "difference_pct": round(
-                        (entry["area_km2"] / entry["source_km2"] - 1) * 100, 1
-                    ),
-                },
-                "fine_detail": fine_detail(pre, decoded, mask, view.face),
-                "coast_steps": coast_steps(decoded, mask, view.face),
-            }
-            parent_dir = self.root / (self.variant.parent or "baseline")
-            parent_face = parent_dir / "textures" / "day" / view.stamp
-            if self.variant.parent and (parent_face / f"{view.face}.jxl").exists():
-                m["parent_coast_steps"] = coast_steps(
-                    _open_rgb(parent_face / f"{view.face}.jxl"),
-                    _open_gray(parent_dir / "textures" / "mask" / f"{view.face}.jxl"),
-                    view.face,
-                )
-            if baseline != self.out and (baseline / "faces").exists():
-                m["against_baseline"] = changes_against(
-                    baseline,
-                    self.out,
-                    view,
-                    textures,
-                    self.out / f"{view.key}-changes.png",
-                )
-            parent = self.variant.parent
-            if (
-                parent not in (None, "baseline")
-                and (self.root / parent / "faces").exists()
-            ):
-                m["against_parent"] = changes_against(
-                    self.root / parent,
-                    self.out,
-                    view,
-                    textures,
-                    self.out / f"{view.key}-changes-against-{parent}.png",
-                )
-            metrics["views"][view.key] = m
-        if baseline != self.out and (baseline / "faces").exists():
-            metrics["mask_change"] = mask_change(baseline, self.out)
-        metrics["against_shipped"] = against_shipped(
-            self.sources.textures, textures, self.views
-        )
-        metrics["pack_build_s"] = self.notes.get("pack_build_s")
-        metrics["warm_render_s"] = self.notes.get("warm_render_s")
-        if self.variant.imagery_water:
-            key = self.mask_key()
-            metrics["imagery_water"] = self.cache.record(f"imagery-water-{key}", dict)
-            flags = np.load(self.cache.dir / f"imagery-water-flags-{key}.npy")
-            imagery_water_overview(self.raster(), flags, self.out)
-        if "snow_colors" in self.notes:
-            metrics["snow_colors"] = self.notes["snow_colors"]
-        if "coast_blend" in self.notes:
-            metrics["coast_blend"] = self.notes["coast_blend"]
-        for key in ("activity", "fields", "fractures", "lead_area", "pack_streaks"):
-            if key in self.notes:
-                metrics[key] = self.notes[key]
-        thumbnails(self.out, self.views)
+        compared = baseline != self.out and (baseline / "faces").exists()
         parent = self.variant.parent
-        metrics["crops"] = detail_crops(
-            self.root / "baseline",
-            self.out,
-            self.views,
-            self.root / parent if parent not in (None, "baseline") else None,
-        )
+        crop_parent = self.root / parent if parent not in (None, "baseline") else None
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            dark = {
+                face: pool.submit(dark_land, textures, face) for face in ("py", "ny")
+            }
+            views = [
+                pool.submit(self.measure_view, view, textures, baked, renders)
+                for view in self.views
+            ]
+            changed = pool.submit(mask_change, baseline, self.out) if compared else None
+            shipped = pool.submit(
+                against_shipped, self.sources.textures, textures, self.views
+            )
+            thumbs = pool.submit(thumbnails, self.out, self.views)
+            crops = pool.submit(
+                detail_crops, baseline, self.out, self.views, crop_parent
+            )
+            for face, future in dark.items():
+                metrics["dark_land"][face] = future.result()
+            for view, future in zip(self.views, views, strict=True):
+                metrics["views"][view.key] = future.result()
+            if changed is not None:
+                metrics["mask_change"] = changed.result()
+            metrics["against_shipped"] = shipped.result()
+            thumbs.result()
+            metrics["pack_build_s"] = self.notes.get("pack_build_s")
+            metrics["warm_render_s"] = self.notes.get("warm_render_s")
+            if self.variant.imagery_water:
+                key = self.mask_key()
+                metrics["imagery_water"] = self.cache.record(
+                    f"imagery-water-{key}", dict
+                )
+                flags = np.load(self.cache.dir / f"imagery-water-flags-{key}.npy")
+                imagery_water_overview(self.raster(), flags, self.out)
+            if "snow_colors" in self.notes:
+                metrics["snow_colors"] = self.notes["snow_colors"]
+            if "coast_blend" in self.notes:
+                metrics["coast_blend"] = self.notes["coast_blend"]
+            for key in ("activity", "fields", "fractures", "lead_area", "pack_streaks"):
+                if key in self.notes:
+                    metrics[key] = self.notes[key]
+            metrics["crops"] = crops.result()
         jsonable = _jsonable(metrics)
         assert isinstance(jsonable, dict)
         return jsonable
+
+    def measure_view(
+        self,
+        view: View,
+        textures: Path,
+        baked: dict[str, dict],
+        renders: dict[str, dict],
+    ) -> dict:
+        """Measure one view's face and render."""
+        baseline = self.root / "baseline"
+        entry = baked[view.key]
+        decoded = _open_rgb(entry["encoded"])
+        pre = _open_rgb(entry["preencode"])
+        mask = _open_gray(textures / "mask" / f"{view.face}.jxl")
+        min_lat = 70.0 if view.face == "py" else 60.0
+        m = {
+            "label": view.label,
+            "face": view.face,
+            "month": view.month,
+            "render": renders[view.key]["path"].name,
+            "render_s": renders[view.key]["seconds"],
+            "month_check": month_check(view, renders[view.key]["path"], textures),
+            "coast_snow": coast_against_ice(decoded, mask, view.face, min_lat),
+            "ice_area": {
+                "faces_km2": round(entry["area_km2"]),
+                "source_km2": round(entry["source_km2"]),
+                "difference_pct": round(
+                    (entry["area_km2"] / entry["source_km2"] - 1) * 100, 1
+                ),
+            },
+            "fine_detail": fine_detail(pre, decoded, mask, view.face),
+            "coast_steps": coast_steps(decoded, mask, view.face),
+        }
+        parent_dir = self.root / (self.variant.parent or "baseline")
+        parent_face = parent_dir / "textures" / "day" / view.stamp
+        if self.variant.parent and (parent_face / f"{view.face}.jxl").exists():
+            m["parent_coast_steps"] = coast_steps(
+                _open_rgb(parent_face / f"{view.face}.jxl"),
+                _open_gray(parent_dir / "textures" / "mask" / f"{view.face}.jxl"),
+                view.face,
+            )
+        if baseline != self.out and (baseline / "faces").exists():
+            m["against_baseline"] = changes_against(
+                baseline,
+                self.out,
+                view,
+                textures,
+                self.out / f"{view.key}-changes.png",
+            )
+        parent = self.variant.parent
+        if parent not in (None, "baseline") and (self.root / parent / "faces").exists():
+            m["against_parent"] = changes_against(
+                self.root / parent,
+                self.out,
+                view,
+                textures,
+                self.out / f"{view.key}-changes-against-{parent}.png",
+            )
+        return m
 
     def write_notes(self, metrics: dict) -> None:
         """Write ``notes.md``: what the variant changes and what it measured."""
@@ -1286,6 +1660,23 @@ def _syntax(value: object) -> ast.AST:
     return ast.parse(textwrap.dedent(inspect.getsource(value)))
 
 
+def _stable(value: object) -> str:
+    """Return a constant's text without the addresses a function's repr has."""
+    if inspect.isfunction(value):
+        return f"{value.__qualname__}:{inspect.getsource(value)}"
+    if isinstance(value, dict):
+        items = ", ".join(f"{k!r}: {_stable(v)}" for k, v in value.items())
+        return "{" + items + "}"
+    if isinstance(value, tuple | list | frozenset):
+        parts = [_stable(v) for v in value]
+        return (
+            "("
+            + ", ".join(sorted(parts) if isinstance(value, frozenset) else parts)
+            + ")"
+        )
+    return repr(value)
+
+
 def code_closure(*roots: object) -> tuple[list[object], list[str]]:
     """Return what functions and classes of this package reach by name.
 
@@ -1324,7 +1715,7 @@ def code_closure(*roots: object) -> tuple[list[object], list[str]]:
             elif isinstance(
                 found, int | float | str | bytes | tuple | frozenset | dict
             ):
-                constants.add(f"{value.__module__}.{name}={found!r}")
+                constants.add(f"{value.__module__}.{name}={_stable(found)}")
     return list(reached.values()), sorted(constants)
 
 
@@ -1376,27 +1767,88 @@ def fields_key(look: sea_ice_look.Look) -> str:
     )
 
 
-def fields_to_arrays(fields: sea_ice_look.Fields) -> dict[str, np.ndarray]:
-    """Return a hemisphere's noise fields as named arrays, for the cache.
+RECORD_ROOTS: tuple[Callable[..., object], ...] = (
+    sea_ice.read_hemisphere,
+    sea_ice_look.fast_ice,
+    sea_ice_look.fast_ice_raise,
+    sea_ice.cap_concentration,
+)
+"""The functions that make a hemisphere's concentration, and the fast ice
+band's raise of it, from the record."""
 
-    An array is named by its field, one of a nested dataclass by both names
-    joined with a dot; a field that is ``None`` is left out.
+
+def record_key(directory: Path, hemisphere: str, look: sea_ice_look.Look) -> str:
+    """The cache key of a hemisphere's concentration: the record's files, the
+    tunables that shape it and the code that reads it."""
+    files = []
+    for month in sea_ice.MONTHS:
+        stat = (directory / sea_ice.file_name(hemisphere, month)).stat()
+        files.append((month, stat.st_size, stat.st_mtime_ns))
+    read = tunables_read(*RECORD_ROOTS)
+    tunables = tuple(
+        (f.name, getattr(look, f.name))
+        for f in dataclasses.fields(look)
+        if f.name in read
+    )
+    return _key(
+        "record", sea_ice.FIELD_SIZE, files, tunables, code_digest(*RECORD_ROOTS)
+    )
+
+
+def part_keys(
+    look: sea_ice_look.Look, hemisphere: str, record: str, size: int
+) -> dict[str, str]:
+    """Return the cache key of each part of a hemisphere's noise fields.
+
+    A key holds the cap's size, the tunables the part's code reads, that code,
+    the record's key when the part reads the concentration, and the keys of
+    the parts it reads, so that a change reaches exactly the parts it affects.
+
+    :param look: The tunables.
+    :param hemisphere: ``nh`` or ``sh``.
+    :param record: The record's key, as :func:`record_key` gives it.
+    :param size: Texels along each side of the cap.
+    :returns: The key of each part the look needs, by the part's name.
+    """
+    keys: dict[str, str] = {}
+    for part in sea_ice_look.parts_for(look, hemisphere):
+        read = tunables_read(part.make)
+        tunables = tuple(
+            (f.name, getattr(look, f.name))
+            for f in dataclasses.fields(look)
+            if f.name in read
+        )
+        keys[part.name] = _key(
+            "part",
+            part.name,
+            size,
+            tunables,
+            code_digest(part.make),
+            record if part.reads_record else None,
+            tuple(keys[name] for name in part.needs),
+        )
+    return keys
+
+
+def part_to_arrays(part: Mapping[str, object]) -> dict[str, np.ndarray]:
+    """Return the attributes of a part, or of the fields, as named arrays.
+
+    An array is named by its attribute, one of a nested dataclass by both
+    names joined with a dot; an attribute that is neither is left out.
     """
     out = {}
-    for f in dataclasses.fields(fields):
-        value = getattr(fields, f.name)
+    for name, value in part.items():
         if isinstance(value, np.ndarray):
-            out[f.name] = value
+            out[name] = value
         elif dataclasses.is_dataclass(value):
             for g in dataclasses.fields(value):
-                out[f"{f.name}.{g.name}"] = getattr(value, g.name)
+                out[f"{name}.{g.name}"] = getattr(value, g.name)
     return out
 
 
-def fields_from_arrays(
-    hemisphere: str, arrays: dict[str, np.ndarray]
-) -> sea_ice_look.Fields:
-    """Return the noise fields :func:`fields_to_arrays` took apart."""
+def parts_from_arrays(arrays: dict[str, np.ndarray]) -> dict[str, object]:
+    """Return the attributes of the fields that :func:`part_to_arrays` took
+    apart."""
     hints = typing.get_type_hints(sea_ice_look.Fields)
     values: dict[str, object] = {}
     for f in dataclasses.fields(sea_ice_look.Fields):
@@ -1414,6 +1866,26 @@ def fields_from_arrays(
             values[f.name] = kind(**nested)
         elif f.name in arrays:
             values[f.name] = arrays[f.name]
+    return values
+
+
+def fields_to_arrays(fields: sea_ice_look.Fields) -> dict[str, np.ndarray]:
+    """Return a hemisphere's noise fields as named arrays, for the cache.
+
+    An array is named by its field, one of a nested dataclass by both names
+    joined with a dot; a field that is ``None`` is left out.
+    """
+    return part_to_arrays(
+        {f.name: getattr(fields, f.name) for f in dataclasses.fields(fields)}
+    )
+
+
+def fields_from_arrays(
+    hemisphere: str, arrays: dict[str, np.ndarray]
+) -> sea_ice_look.Fields:
+    """Return the noise fields :func:`fields_to_arrays` took apart."""
+    values = parts_from_arrays(arrays)
+    values.setdefault("leads", None)
     return sea_ice_look.Fields(hemisphere=hemisphere, **values)
 
 
@@ -2013,6 +2485,69 @@ CROP = 256
 """Render pixels along each side of a detail crop, drawn at twice the size."""
 
 
+def find_place(name: str) -> tuple[str, float, float]:
+    """Return the place of :data:`PLACES` with a name.
+
+    :raises ValueError: If there is none; the message lists the names.
+    """
+    for place in PLACES:
+        if place[0] == name:
+            return place
+    msg = f"No place {name!r}; one of {', '.join(p[0] for p in PLACES)}."
+    raise ValueError(msg)
+
+
+def region_window(
+    face: str, latitude: float, longitude: float, size: int, half: int
+) -> sea_ice_look.Window:
+    """Return the square of a polar face around a point, kept on the face.
+
+    :param face: ``py`` or ``ny``.
+    :param latitude: The point's latitude in degrees.
+    :param longitude: The point's longitude in degrees.
+    :param size: The face's edge in texels.
+    :param half: Half the square's side in texels.
+    :returns: The window.
+    :raises ValueError: If the point is not on the face.
+    """
+    phi, lam = math.radians(latitude), math.radians(longitude)
+    x, y, z = (
+        np.array(v)
+        for v in (
+            math.cos(phi) * math.sin(lam),
+            math.sin(phi),
+            math.cos(phi) * math.cos(lam),
+        )
+    )
+    row, col, on = polar_face_texels(face, x, y, z, size)
+    if not on:
+        msg = f"{latitude}, {longitude} is not on the {face} face."
+        raise ValueError(msg)
+    return sea_ice_look.Window(
+        size,
+        (max(round(float(row)) - half, 0), min(round(float(row)) + half, size)),
+        (max(round(float(col)) - half, 0), min(round(float(col)) + half, size)),
+    )
+
+
+def cap_rows(face: str, window: sea_ice_look.Window, cap_size: int) -> tuple[int, int]:
+    """Return the cap rows a region of a polar face reads.
+
+    :param face: ``py`` or ``ny``.
+    :param window: The region.
+    :param cap_size: Texels along each side of the cap.
+    :returns: The first row and the one after the last, with a margin for the
+        interpolation.
+    """
+    x, y, z = face_directions(face, window.size, *window.rows, window.columns)
+    _, px, py = sea_ice.directions_to_cap(x, y, z)
+    rows_, _ = sea_ice.plane_to_texel(px.ravel(), py.ravel(), cap_size)
+    return (
+        max(int(np.floor(rows_.min())) - 3, 0),
+        min(int(np.ceil(rows_.max())) + 4, cap_size),
+    )
+
+
 def view_pixel(view: View, latitude: float, longitude: float, size: int):
     """Return the render pixel a point on the surface is drawn at.
 
@@ -2158,9 +2693,13 @@ def notes_body(variant: Variant, metrics: dict) -> list[str]:
         "",
         f"- Total {times['total']} s: "
         + ", ".join(f"{k} {v} s" for k, v in times.items() if k != "total"),
-        f"- Tile packs built during the cold renders: about {metrics['pack_build_s']} s"
-        f" (cold renders less four warm ones of {metrics['warm_render_s']} s).",
     ]
+    if metrics["pack_build_s"] is not None:
+        lines.append(
+            f"- Tile packs built during the cold renders: about "
+            f"{metrics['pack_build_s']} s (cold renders less four warm ones of "
+            f"{metrics['warm_render_s']} s)."
+        )
     if "imagery_water" in metrics:
         lines += imagery_water_notes(metrics)
     if "snow_colors" in metrics:
@@ -2318,9 +2857,13 @@ def fields_notes(fields: dict) -> list[str]:
         steps = ", ".join(f"{k} {v} s" for k, v in f["seconds"].items())
         total = round(sum(f["seconds"].values()), 1)
         size = round(sum(f["mib"].values()))
+        peak = (
+            f"; peak {f['peak_gib']} GiB of traced allocations"
+            if f["peak_gib"] is not None
+            else ""
+        )
         lines.append(
-            f"- `{hemisphere}`: {total} s ({steps}); peak {f['peak_gib']} GiB of "
-            f"traced allocations; {size} MiB kept: "
+            f"- `{hemisphere}`: {total} s of work ({steps}){peak}; {size} MiB kept: "
             + ", ".join(f"{k} {v}" for k, v in f["mib"].items())
         )
     return lines
@@ -2429,7 +2972,12 @@ def imagery_water_overview(raster: np.ndarray, flags: np.ndarray, out: Path) -> 
 
 
 def run_variant(
-    root: Path, name: str, views: tuple[View, ...], report: Report = print
+    root: Path,
+    name: str,
+    views: tuple[View, ...],
+    report: Report = print,
+    workers: int | None = None,
+    warm_check: bool = False,
 ) -> dict:
     """Run a variant by name.
 
@@ -2437,9 +2985,11 @@ def run_variant(
     :param name: One of :data:`VARIANTS`.
     :param views: The four views.
     :param report: Told what is happening.
+    :param workers: Threads; the process's setting when ``None``.
+    :param warm_check: Render in turn and once warm, to measure the packs.
     :returns: The variant's metrics.
     """
-    return Harness(root, VARIANTS[name], views, report).run()
+    return Harness(root, VARIANTS[name], views, report, workers, warm_check).run()
 
 
 def against_shipped(shipped: Path, textures: Path, views: tuple[View, ...]) -> dict:

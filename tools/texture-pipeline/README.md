@@ -183,6 +183,34 @@ Lossy at quality 90 by default. The worry that a lossy codec would flatten the d
 
 Only the 8192 output from the 16k source has been judged on renders. Other widths work and are not validated, because the thresholds are relative to a local mean whose grain depends on how many stars a pixel holds.
 
+## `preview`
+
+A harness for the look of the sea ice. A variant is a set of tunables of the generator in `sea_ice_look.py`; the harness rebakes the faces four views read, renders the views through the app, measures them against the baseline and writes a page to compare them. Its inputs are named in `tmp/sea-ice-look/sources.toml`, and its caches and outputs are under that directory, which is not tracked.
+
+```bash
+uv run texture-pipeline preview run b3c-floes      # bake, render and measure a variant
+uv run texture-pipeline preview draft b3c-floes --place svalbard   # a region in seconds
+uv run texture-pipeline preview page               # rebuild the page
+```
+
+`preview run` writes `tmp/sea-ice-look/<variant>/` and rebuilds `index.html`. `--north-winter`, `--north-summer`, `--south-winter` and `--south-summer` choose the months of the four views.
+
+### Caches
+
+The noise fields are kept per hemisphere and per part: the edge, the eddies, the activity, the crumple, the fractures, the floes, the melt tone, and for the first look the lead network and the brightness noise. A part's key is made of the cap size, the values of the tunables the part's code reads, a digest of that code, and the keys of the parts and the record it reads. Changing a tunable remakes the parts that read it and the ones that read those, nothing else: a floes tunable remakes the floes (about 10 s per hemisphere made alone), a fracture tunable the fractures (a few seconds), a crumple tunable the crumple (about a minute). Parts made side by side take longer each than alone, and less together. Editing the code of a part, or of a function it calls, remakes that part alone; `tests/test_sea_ice_perf.py` pins which tunables reach which part. Fractures replace the lead network, so a look with them does not make or keep it.
+
+The other cached pieces are keyed the same way: the concentration read from the record, the weight the coast blend gives the land (by a hash of the face's pixels, the mask and the tunables), the lossless mask faces, and the snow colors. `rm -r tmp/sea-ice-look/cache/fields-*` clears the fields and nothing else.
+
+### Threads
+
+Bands of rows, the independent parts of the fields, the two hemispheres, the four views, the four renders and the measurements run on threads. None of it changes a byte of the output: every part draws from a random stream of its own, and each band computes what it would compute alone. `--workers N`, the `TEXTURE_PIPELINE_WORKERS` environment variable, or `texture_pipeline.parallel.configure(N)` sets the thread count (default: the logical cores up to 16), and `1` runs everything in turn. Peak memory is about 7 GiB with everything at once; a smaller machine should take a lower count. The renders run at once, each on a tile cache of its own; `--warm-check` renders in turn on one tile cache and once more warm, which is how `pack_build_s` and `warm_render_s` are measured.
+
+### The draft
+
+`preview draft` draws the square around a named place of one view's face at the app's working size (5400 texels per face edge), with the variant's coast blend and composite and nothing else: no encode, no app render, no metrics, no page. `--half` is half the square's side in texels (default 512, so 1024 by 1024, about 390 texels of the 2048 face); `--view` names the face and month (default: the winter view of the place's hemisphere); `--out` sets the PNG's path, which defaults to `tmp/sea-ice-look/<variant>/draft-<view>-<place>.png`. The places are those of the detail crops: `north-greenland`, `ellesmere-north`, `svalbard`, `franz-josef-land`, `canadian-arctic-west`, `east-greenland`, `beaufort-sea`, `antarctic-peninsula`, `ross-sea-coast`, `east-antarctica`, `ronne-ice-shelf-front`, `ross-ice-shelf-front`, `amery-ice-shelf`, `victoria-land` and `weddell-sea`.
+
+With the fields cached the draft takes about 1.1 s of work (a month of ice for the cap rows the square reads, the coast weight of the square with a margin, the blend and the composite) and 3 to 4 s with Python's start. After an edit to a tunable it makes the parts that changed first. The square is the same texels the full bake writes there, which `tests/test_sea_ice_perf.py` checks on a generated face and a run on the real inputs did for seven places of both hemispheres. It shows the bake's face before the area average to 2048 and the JPEG XL encode, so it is sharper than the face in the textures.
+
 ## Development
 
 Run tests:

@@ -23,8 +23,8 @@ feature's size is half the wavelength of the noise that draws it.
 """
 
 import dataclasses
-from collections.abc import Callable, Iterator
-from concurrent.futures import Executor
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import FIRST_COMPLETED, Executor, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -38,6 +38,7 @@ from scipy.ndimage import (
 from scipy.spatial import cKDTree
 from scipy.special import ndtr
 
+from texture_pipeline import parallel
 from texture_pipeline.cube import face_directions
 from texture_pipeline.sea_ice import (
     AUTHALIC_RADIUS_KM,
@@ -589,7 +590,11 @@ def edge_orientation(concentration: np.ndarray, size: int, look: Look) -> np.nda
 
 
 def streak(
-    noise: np.ndarray, doubled: np.ndarray, length_km: float, finest_km: float
+    noise: np.ndarray,
+    doubled: np.ndarray,
+    length_km: float,
+    finest_km: float,
+    workers: int | None = None,
 ) -> np.ndarray:
     """Average a noise field along the edge's direction at every texel.
 
@@ -602,6 +607,8 @@ def streak(
         :func:`edge_orientation` returns it.
     :param length_km: About the length of a streak: four Gaussian sigmas.
     :param finest_km: The noise's smallest feature size.
+    :param workers: Threads for the bands of rows; the process's setting when
+        ``None``. The result does not depend on it.
     :returns: float32 array of the noise's shape, standard deviation 1.
     """
     size = noise.shape[0]
@@ -612,7 +619,9 @@ def streak(
     offsets = np.arange(-reach, reach + step / 2, step)
     weights = np.exp(-0.5 * (offsets / sigma) ** 2)
     out = np.empty_like(noise)
-    for start, stop in rows(size):
+
+    def band(span: tuple[int, int]) -> None:
+        start, stop = span
         angle = 0.5 * np.arctan2(doubled[1, start:stop], doubled[0, start:stop])
         tr, tc = -np.sin(angle), np.cos(angle)
         r = np.arange(start, stop, dtype=np.float32)[:, None]
@@ -626,6 +635,8 @@ def streak(
                 mode="grid-wrap",
             )
         out[start:stop] = acc
+
+    parallel.pmap(band, rows(size), workers)
     return normalized(out)
 
 
@@ -1417,8 +1428,8 @@ class Fields:
     """float32 array ``(2, size, size)``: where each texel reads the
     concentration from, in texels, row first."""
 
-    leads: Leads
-    """The lead network."""
+    leads: Leads | None
+    """The lead network; ``None`` when the fractures replace it."""
 
     brightness: np.ndarray | None = None
     """float16 broad brightness noise, standard deviation 1; ``None`` with the
@@ -1461,30 +1472,37 @@ class Fields:
         return self.threshold.shape[0]
 
 
-def prepare(
-    concentration: np.ndarray,
-    hemisphere: str,
-    size: int,
-    look: Look = LOOK,
-    report: Callable[[str], None] = lambda _: None,
-    fast: np.ndarray | None = None,
-) -> Fields:
-    """Generate a hemisphere's noise fields.
+@dataclass(frozen=True)
+class Inputs:
+    """What a part of the noise fields is made from."""
 
-    :param concentration: float array ``(12, n, n)`` from 0 to 1.
-    :param hemisphere: ``nh`` or ``sh``.
-    :param size: Texels along each side of the cap the ice is generated on.
-    :param look: The tunables.
-    :param report: Told what is being generated.
-    :param fast: How much the fast ice band raised the concentration, as
-        :func:`fast_ice_raise` returns it; kept with the floes.
-    :returns: The fields.
-    """
-    report("orientation")
-    doubled = edge_orientation(concentration, size, look)
-    report("edge noise")
-    fine = band_noise(size, look.edge_band_km, _rng(look, hemisphere, 0))
-    stretched = streak(fine, doubled, look.edge_streak_km, look.edge_band_km[0])
+    concentration: np.ndarray
+    """float array ``(12, n, n)`` from 0 to 1."""
+
+    hemisphere: str
+    """``nh`` or ``sh``."""
+
+    size: int
+    """Texels along each side of the cap."""
+
+    look: Look
+    """The tunables."""
+
+    done: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    """The parts finished so far, by name: the ones the part needs."""
+
+    workers: int | None = None
+    """Threads for the steps inside a part; the process's setting when ``None``."""
+
+
+def make_edge(inputs: Inputs) -> dict[str, object]:
+    """Draw the threshold the concentration is read against."""
+    look, size = inputs.look, inputs.size
+    doubled = edge_orientation(inputs.concentration, size, look)
+    fine = band_noise(size, look.edge_band_km, _rng(look, inputs.hemisphere, 0))
+    stretched = streak(
+        fine, doubled, look.edge_streak_km, look.edge_band_km[0], inputs.workers
+    )
     del doubled
     stretched *= np.float32(np.sqrt(1 - look.edge_isotropic**2))
     stretched += np.float32(look.edge_isotropic) * fine
@@ -1493,72 +1511,239 @@ def prepare(
     threshold = (
         look.edge_center + look.edge_spread * (2 * ndtr(stretched) - 1)
     ).astype(np.float32)
-    del stretched
-    report("eddies")
+    return {"threshold": threshold}
+
+
+def make_eddies(inputs: Inputs) -> dict[str, object]:
+    """Draw the shift that swirls the edge."""
+    look = inputs.look
     shift = curl_shift(
-        size, look.eddy_band_km, look.eddy_shift_km, _rng(look, hemisphere, 1)
+        inputs.size,
+        look.eddy_band_km,
+        look.eddy_shift_km,
+        _rng(look, inputs.hemisphere, 1),
     )
-    report("leads")
-    network = leads(size, look, _rng(look, hemisphere, 2))
-    if look.crumple:
-        report("activity")
-        activity = activity_field(size, look, _rng(look, hemisphere, 5))
-        report("crumple")
-        slope, creases, plates = crumple(size, look, _rng(look, hemisphere, 6))
-        cracks = None
-        if look.fractures:
-            report("fractures")
-            cracks = fractures(
-                size,
-                look,
-                hemisphere,
-                activity,
-                concentration,
-                _rng(look, hemisphere, 7),
-            )
-        melt = None
-        if look.melt_tone and hemisphere == "nh":
-            report("melt")
-            melt = band_noise(size, look.melt_band_km, _rng(look, hemisphere, 9))
-            melt = melt.astype(np.float16)
-        broken = None
-        if look.floes:
-            report("floes")
-            broken = floe_cells(size, look, _rng(look, hemisphere, 8))
-        return Fields(
-            hemisphere,
-            concentration.astype(np.float32),
-            threshold,
-            shift,
-            network,
-            floes=broken,
-            activity=activity,
-            slope=slope,
-            creases=creases,
-            plates=plates,
-            melt=melt,
-            fractures=cracks,
-            fast=(
-                fast.astype(np.float16)
-                if fast is not None and broken is not None
-                else None
-            ),
-        )
-    report("brightness")
+    return {"shift": shift}
+
+
+def make_leads(inputs: Inputs) -> dict[str, object]:
+    """Draw the lead network."""
+    look = inputs.look
+    return {"leads": leads(inputs.size, look, _rng(look, inputs.hemisphere, 2))}
+
+
+def make_classic(inputs: Inputs) -> dict[str, object]:
+    """Draw the broad brightness and the melt mottling of the first look."""
+    look, size = inputs.look, inputs.size
     brightness = band_noise(
-        size, look.brightness_band_km, _rng(look, hemisphere, 3)
+        size, look.brightness_band_km, _rng(look, inputs.hemisphere, 3)
     ).astype(np.float16)
-    mottle = band_noise(size, look.mottle_band_km, _rng(look, hemisphere, 4)).astype(
-        np.float16
+    mottle = band_noise(
+        size, look.mottle_band_km, _rng(look, inputs.hemisphere, 4)
+    ).astype(np.float16)
+    return {"brightness": brightness, "mottle": mottle}
+
+
+def make_activity(inputs: Inputs) -> dict[str, object]:
+    """Draw where the pack is flat and where it is structured."""
+    look = inputs.look
+    activity = activity_field(inputs.size, look, _rng(look, inputs.hemisphere, 5))
+    return {"activity": activity}
+
+
+def make_crumple(inputs: Inputs) -> dict[str, object]:
+    """Draw the crumpled snow."""
+    look = inputs.look
+    slope, creases, plates = crumple(
+        inputs.size, look, _rng(look, inputs.hemisphere, 6)
     )
+    return {"slope": slope, "creases": creases, "plates": plates}
+
+
+def make_fractures(inputs: Inputs) -> dict[str, object]:
+    """Trace and draw the fracture systems, where the activity says."""
+    look = inputs.look
+    cracks = fractures(
+        inputs.size,
+        look,
+        inputs.hemisphere,
+        inputs.done["activity"]["activity"],
+        inputs.concentration,
+        _rng(look, inputs.hemisphere, 7),
+    )
+    return {"fractures": cracks}
+
+
+def make_melt(inputs: Inputs) -> dict[str, object]:
+    """Draw the melt's tone."""
+    look = inputs.look
+    melt = band_noise(inputs.size, look.melt_band_km, _rng(look, inputs.hemisphere, 9))
+    return {"melt": melt.astype(np.float16)}
+
+
+def make_floes(inputs: Inputs) -> dict[str, object]:
+    """Draw the floes of the marginal ice."""
+    look = inputs.look
+    return {"floes": floe_cells(inputs.size, look, _rng(look, inputs.hemisphere, 8))}
+
+
+@dataclass(frozen=True)
+class Part:
+    """One independent piece of a hemisphere's noise fields.
+
+    Each part draws from a random stream of its own, so the parts can be made
+    in any order or at once, and one that nothing changed can be kept.
+    """
+
+    name: str
+    """What the part is called, in reports and in the cache."""
+
+    make: Callable[[Inputs], dict[str, object]]
+    """Draws it: the :class:`Fields` attributes it sets, by name."""
+
+    needs: tuple[str, ...] = ()
+    """The parts it reads, which are made first."""
+
+    reads_record: bool = False
+    """Whether it reads the concentration."""
+
+
+type PartCache = Callable[[Part, Callable[[], dict[str, object]]], dict[str, object]]
+"""Takes a part and what makes it, and returns what it is: from a cache, or
+by calling the maker."""
+
+
+def parts_for(look: Look, hemisphere: str) -> list[Part]:
+    """Return the parts of a hemisphere's noise fields that a look needs.
+
+    :param look: The tunables.
+    :param hemisphere: ``nh`` or ``sh``.
+    :returns: The parts, longest first, each after the ones it needs.
+    """
+    crumpled = look.crumple
+    cracked = crumpled and look.fractures
+    parts = []
+    if crumpled:
+        parts.append(Part("crumple", make_crumple))
+    parts.append(Part("edge", make_edge, reads_record=True))
+    if crumpled and look.floes:
+        parts.append(Part("floes", make_floes))
+    if crumpled:
+        parts.append(Part("activity", make_activity))
+    if cracked:
+        parts.append(
+            Part("fractures", make_fractures, needs=("activity",), reads_record=True)
+        )
+    parts.append(Part("eddies", make_eddies))
+    if not cracked:
+        parts.append(Part("leads", make_leads))
+    if crumpled and look.melt_tone and hemisphere == "nh":
+        parts.append(Part("melt", make_melt))
+    if not crumpled:
+        parts.append(Part("classic", make_classic))
+    return parts
+
+
+def run_parts(
+    parts: list[Part],
+    inputs: Inputs,
+    report: Callable[[str], None] = lambda _: None,
+    workers: int | None = None,
+    cache: PartCache | None = None,
+) -> dict[str, dict[str, object]]:
+    """Make parts of the noise fields, the independent ones at once.
+
+    :param parts: The parts, each after the ones it needs.
+    :param inputs: What they are made from.
+    :param report: Told each part's name as its making starts.
+    :param workers: Parts made at once; the process's setting when ``None``.
+    :param cache: Takes each part and its maker, and returns the part from
+        wherever it was kept or by calling the maker.
+    :returns: Each part's attributes, by the part's name.
+    """
+    done: dict[str, dict[str, object]] = {}
+    seen = dataclasses.replace(inputs, done=done)
+
+    def run(part: Part) -> dict[str, object]:
+        report(part.name)
+
+        def make() -> dict[str, object]:
+            return part.make(seen)
+
+        return make() if cache is None else cache(part, make)
+
+    threads = min(parallel.workers(workers), len(parts))
+    if threads <= 1:
+        for part in parts:
+            done[part.name] = run(part)
+        return done
+    waiting = list(parts)
+    running = {}
+    with ThreadPoolExecutor(threads) as pool:
+        while waiting or running:
+            for part in [p for p in waiting if all(n in done for n in p.needs)]:
+                waiting.remove(part)
+                running[pool.submit(run, part)] = part
+            if not running:
+                msg = f"No part can be made: {[p.name for p in waiting]} wait."
+                raise ValueError(msg)
+            finished, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in finished:
+                done[running.pop(future).name] = future.result()
+    return {part.name: done[part.name] for part in parts}
+
+
+def prepare(
+    concentration: np.ndarray,
+    hemisphere: str,
+    size: int,
+    look: Look = LOOK,
+    report: Callable[[str], None] = lambda _: None,
+    fast: np.ndarray | None = None,
+    workers: int | None = None,
+    cache: PartCache | None = None,
+) -> Fields:
+    """Generate a hemisphere's noise fields.
+
+    The parts of the fields that nothing joins, the edge, the eddies, the
+    crumple and the rest, are made at once on threads; each draws from a random
+    stream of its own, so they are what a serial run makes.
+
+    :param concentration: float array ``(12, n, n)`` from 0 to 1.
+    :param hemisphere: ``nh`` or ``sh``.
+    :param size: Texels along each side of the cap the ice is generated on.
+    :param look: The tunables.
+    :param report: Told the name of each part as its making starts.
+    :param fast: How much the fast ice band raised the concentration, as
+        :func:`fast_ice_raise` returns it; kept with the floes.
+    :param workers: Threads; the process's setting when ``None``, and ``1``
+        makes the fields serially.
+    :param cache: Takes each part and its maker, and returns the part from
+        wherever it was kept or by calling the maker.
+    :returns: The fields.
+    """
+    inputs = Inputs(concentration, hemisphere, size, look, workers=workers)
+    made = run_parts(parts_for(look, hemisphere), inputs, report, workers, cache)
+    kept = {key: value for part in made.values() for key, value in part.items()}
+    broken = kept.get("floes")
     return Fields(
         hemisphere,
         concentration.astype(np.float32),
-        threshold,
-        shift,
-        network,
-        brightness,
-        mottle,
+        kept["threshold"],
+        kept["shift"],
+        kept.get("leads"),
+        brightness=kept.get("brightness"),
+        mottle=kept.get("mottle"),
+        activity=kept.get("activity"),
+        slope=kept.get("slope"),
+        creases=kept.get("creases"),
+        plates=kept.get("plates"),
+        fractures=kept.get("fractures"),
+        floes=broken,
+        melt=kept.get("melt"),
+        fast=(
+            fast.astype(np.float16) if fast is not None and broken is not None else None
+        ),
     )
 
 
@@ -1610,25 +1795,40 @@ class Cap:
         return np.clip(brightness[..., None] * rgb, 0, 255)
 
 
-def month_cap(fields: Fields, month: int, look: Look = LOOK) -> Cap:
+MONTH_BAND_ROWS = 128
+"""Cap rows :func:`month_cap` hands to a thread at once."""
+
+
+def month_cap(
+    fields: Fields,
+    month: int,
+    look: Look = LOOK,
+    row_range: tuple[int, int] | None = None,
+    workers: int | None = None,
+) -> Cap:
     """Generate the coverage and brightness of one month.
 
     :param fields: The hemisphere's noise fields.
     :param month: The month, 1 to 12.
     :param look: The tunables.
+    :param row_range: The first cap row and the one after the last to make,
+        for a region; the other rows of the arrays are zero.
+    :param workers: Threads for the bands of rows; the process's setting when
+        ``None``. The result does not depend on it.
     :returns: The month's cap.
     """
     size = fields.size
     field_ = fields.concentration[month - 1]
     scale = field_.shape[-1] / size
-    coverage = np.empty((size, size), dtype=np.float32)
-    brightness = np.empty((size, size), dtype=np.float32)
-    land = np.empty((size, size), dtype=np.float32) if look.coast_blend else None
-    activity = np.empty((size, size), dtype=np.float32) if look.crumple else None
+    alloc = np.empty if row_range is None else np.zeros
+    coverage = alloc((size, size), dtype=np.float32)
+    brightness = alloc((size, size), dtype=np.float32)
+    land = alloc((size, size), dtype=np.float32) if look.coast_blend else None
+    activity = alloc((size, size), dtype=np.float32) if look.crumple else None
     whole = None
     opened = fields.fractures is not None or fields.floes is not None
     if opened and look.coast_blend:
-        whole = np.empty((size, size), dtype=np.float32)
+        whole = alloc((size, size), dtype=np.float32)
     mottle = (
         look.mottle_amplitude * look.mottle_months[month - 1]
         if fields.hemisphere == "nh"
@@ -1639,7 +1839,9 @@ def month_cap(fields: Fields, month: int, look: Look = LOOK) -> Cap:
     ceiling = high if look.edge_pack is None else look.edge_pack
     squeeze = np.float32((ceiling - low) / (high - low))
     fast = None if fields.fast is None else fields.fast[month - 1].astype(np.float32)
-    for start, stop in rows(size):
+
+    def work(span: tuple[int, int]) -> None:
+        start, stop = span
         r = (
             np.arange(start, stop, dtype=np.float32)[:, None]
             + fields.shift[0, start:stop]
@@ -1662,8 +1864,8 @@ def month_cap(fields: Fields, month: int, look: Look = LOOK) -> Cap:
             look.lead_share_open - look.lead_share_closed
         ) * smoothstep(1.0, 0.85, conc)
         if fields.fractures is not None:
-            closed, opened = look.fracture_share
-            share = closed + (opened - closed) * smoothstep(1.0, 0.85, conc)
+            closed, wide = look.fracture_share
+            share = closed + (wide - closed) * smoothstep(1.0, 0.85, conc)
             drawn = np.clip((share - fields.fractures.rank[start:stop]) / 0.15, 0, 1)
             gaps = fields.fractures.open[start:stop] * drawn
             coverage[start:stop] = covered * (1 - gaps)
@@ -1717,6 +1919,12 @@ def month_cap(fields: Fields, month: int, look: Look = LOOK) -> Cap:
         brightness[start:stop] = texture * (1 - lead)
         if land is not None:
             land[start:stop] = texture
+
+    first, last = (0, size) if row_range is None else row_range
+    spans = [
+        (a, min(a + MONTH_BAND_ROWS, last)) for a in range(first, last, MONTH_BAND_ROWS)
+    ]
+    parallel.pmap(work, spans, workers)
     color = look.colors[fields.hemisphere][month - 1]
     tint, tint_rgb = None, (0.0, 0.0, 0.0)
     melting = look.mottle_months[month - 1] if fields.hemisphere == "nh" else 0.0
@@ -1859,6 +2067,25 @@ def texel_solid_angles(x: np.ndarray, y: np.ndarray, z: np.ndarray, size: int):
     return (np.pi / (2 * size)) ** 2 * product / squared**1.5
 
 
+@dataclass(frozen=True)
+class Window:
+    """A rectangle of a face, for working on a region instead of the whole."""
+
+    size: int
+    """The face's edge in texels."""
+
+    rows: tuple[int, int]
+    """The first row and the one after the last."""
+
+    columns: tuple[int, int]
+    """The first column and the one after the last."""
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """The rectangle's height and width."""
+        return self.rows[1] - self.rows[0], self.columns[1] - self.columns[0]
+
+
 def composite_face(
     flat: np.ndarray,
     water: np.ndarray,
@@ -1867,6 +2094,7 @@ def composite_face(
     fill: Rgb,
     pool: Executor | None = None,
     band_rows: int = 256,
+    window: Window | None = None,
 ) -> dict[str, float]:
     """Put the month's ice into the water share of a flattened face.
 
@@ -1884,20 +2112,27 @@ def composite_face(
     :param fill: The ocean fill color the face was flattened with.
     :param pool: Runs the bands concurrently when given.
     :param band_rows: Face rows worked at once.
+    :param window: The rectangle of the face that ``flat`` and ``water`` hold,
+        when they hold a region; the whole face when ``None``.
     :returns: Per hemisphere, the ice's area on this face in square
         kilometers: coverage times the mask's share of water times the
         texel's area.
     """
-    size = flat.shape[0]
+    size, first, columns, height = _extent(flat, window)
     fill_rgb = np.asarray(fill, dtype=np.float32)
 
     def band(start: int) -> tuple[float, float]:
-        stop = min(start + band_rows, size)
+        stop = min(start + band_rows, height)
         share = water[start:stop]
         wet = share > 0
         if not wet.any():
             return 0.0, 0.0
-        x, y, z = (axis[wet] for axis in face_directions(face, size, start, stop))
+        x, y, z = (
+            axis[wet]
+            for axis in face_directions(
+                face, size, first + start, first + stop, columns
+            )
+        )
         coverage, rgb = ice.sample(x, y, z)
         weight = share[wet].astype(np.float32) / 255 * coverage
         texels = flat[start:stop][wet].astype(np.float32)
@@ -1907,10 +2142,18 @@ def composite_face(
         north = float(area[y > 0].sum())
         return north, float(area.sum()) - north
 
-    starts = range(0, size, band_rows)
+    starts = range(0, height, band_rows)
     bands = map(band, starts) if pool is None else pool.map(band, starts)
     north, south = (sum(values) for values in zip(*bands, strict=True))
     return {"nh": north, "sh": south}
+
+
+def _extent(
+    flat: np.ndarray, window: Window | None
+) -> tuple[int, int, tuple[int, int] | None, int]:
+    if window is None:
+        return flat.shape[0], 0, None, flat.shape[0]
+    return window.size, window.rows[0], window.columns, window.shape[0]
 
 
 def winter_months(table: tuple[Rgb, ...]) -> list[int]:
@@ -1955,18 +2198,28 @@ def imagery_sea(rgb: np.ndarray, look: Look = LOOK) -> np.ndarray:
     )
 
 
-def _surroundings(
-    lum: np.ndarray, snowy: np.ndarray, inner: np.ndarray, sigma: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Read the land around each texel: how much of it there is, how much of
-    it is snow, and the standard deviation of the snow's luminance."""
-    read = gaussian_filter(inner, sigma, mode="nearest")
+def _blurred(lum: np.ndarray, snowy: np.ndarray, inner: np.ndarray) -> list[np.ndarray]:
+    """Return the four fields that are smoothed to read the land around.
+
+    :param lum: Luminance.
+    :param snowy: Whether a texel is snow.
+    :param inner: The land at least a distance from the water, 0 or 1.
+    :returns: How much land there is, the snow, and the snow's luminance and
+        its square.
+    """
     snow = inner * snowy
-    covered = gaussian_filter(snow, sigma, mode="nearest")
+    return [inner, snow, lum * snow, lum * lum * snow]
+
+
+def _surroundings(
+    blurred: list[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read the land around each texel from :func:`_blurred`'s fields after the
+    smoothing: how much of it there is, how much of it is snow, and the
+    standard deviation of the snow's luminance."""
+    read, covered, mean, square = blurred
     share = covered / np.maximum(read, 1e-6)
-    mean = gaussian_filter(lum * snow, sigma, mode="nearest")
     mean /= np.maximum(covered, 1e-6)
-    square = gaussian_filter(lum * lum * snow, sigma, mode="nearest")
     square /= np.maximum(covered, 1e-6)
     relief = np.sqrt(np.maximum(square - mean * mean, 0.0))
     relief[covered < 0.02] = np.inf
@@ -1978,6 +2231,7 @@ def coast_weight(
     water: np.ndarray,
     look: Look = LOOK,
     spacing_km: float | None = None,
+    workers: int | None = None,
 ) -> np.ndarray:
     """Return how far each texel's land takes the ice's color, before coverage.
 
@@ -1994,35 +2248,49 @@ def coast_weight(
     :param water: uint8 array ``(N, N)``, the mask, 255 for open water.
     :param look: The tunables.
     :param spacing_km: The texels' side; a face's at its center when ``None``.
+    :param workers: Threads for the distance transform, the colors and the
+        eight Gaussian filters; the process's setting when ``None``. The
+        result does not depend on it.
     :returns: float32 array ``(N, N)`` from 0 to 1, 0 on open water.
     """
     size = water.shape[0]
     spacing = (
         np.pi / 2 * AUTHALIC_RADIUS_KM / size if spacing_km is None else spacing_km
     )
-    inland = distance_transform_edt(water < 128).astype(np.float32)
-    inland *= np.float32(spacing)
+
+    def distance() -> np.ndarray:
+        inland = distance_transform_edt(water < 128).astype(np.float32)
+        inland *= np.float32(spacing)
+        return inland
+
+    def colors() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        rgb = source.astype(np.float32)
+        lum = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+        top = rgb.max(axis=-1)
+        snowy = (lum > look.coast_snow[0]) & (
+            top - rgb.min(axis=-1) < look.coast_snow[1] * np.maximum(top, 1)
+        )
+        return lum, snowy, imagery_sea(source, look)
+
+    inland, (lum, snowy, sea) = parallel.pmap(
+        lambda make: make(), [distance, colors], workers
+    )
     reach = smoothstep(look.coast_reach_km[1], look.coast_reach_km[0], inland)
     reach[water == 255] = 0
     if not reach.any():
         return reach
-    rgb = source.astype(np.float32)
-    lum = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-    top = rgb.max(axis=-1)
-    snowy = (lum > look.coast_snow[0]) & (
-        top - rgb.min(axis=-1) < look.coast_snow[1] * np.maximum(top, 1)
-    )
-    sea = imagery_sea(source, look)
-    del rgb, top
     sigma = look.coast_window_km / spacing
     near_km, far_km = look.coast_inner_km
-    _, share, relief = _surroundings(
-        lum, snowy, ((inland >= near_km) & ~sea).astype(np.float32), sigma
+    inside = [((inland >= km) & ~sea).astype(np.float32) for km in (near_km, far_km)]
+    smooth = parallel.pmap(
+        lambda field_: gaussian_filter(field_, sigma, mode="nearest"),
+        [f for inner in inside for f in _blurred(lum, snowy, inner)],
+        workers,
     )
-    read, far_share, far_relief = _surroundings(
-        lum, snowy, ((inland >= far_km) & ~sea).astype(np.float32), sigma
-    )
-    del lum, snowy
+    del lum, snowy, inside
+    _, share, relief = _surroundings(smooth[:4])
+    read, far_share, far_relief = _surroundings(smooth[4:])
+    del smooth
     far = smoothstep(0.02, 0.1, read)
     share += far * (far_share - share)
     relief = np.where(far > 0.5, far_relief, relief)
@@ -2044,6 +2312,8 @@ def blend_coast(
     band_rows: int = 256,
     spacing_km: float | None = None,
     fill: Rgb | None = None,
+    weight: np.ndarray | None = None,
+    window: Window | None = None,
 ) -> np.ndarray:
     """Blend the land share of a flattened face toward the ice along the coast.
 
@@ -2066,19 +2336,29 @@ def blend_coast(
     :param spacing_km: The texels' side; a face's at its center when ``None``.
     :param fill: The ocean fill color the face was flattened with; the
         imagery's sea is left out of the blend when ``None``.
+    :param weight: The :func:`coast_weight` of ``source`` and ``water`` when
+        it is at hand, changed in place as the result is; made when ``None``.
+    :param window: The rectangle of the face that the arrays hold, when they
+        hold a region; the whole face when ``None``.
     :returns: float32 array ``(N, N)``: ``k`` times the land share, the share
         of each texel the ice took.
     """
-    size = flat.shape[0]
-    weight = coast_weight(source, water, look, spacing_km)
+    size, first, columns, height = _extent(flat, window)
+    if weight is None:
+        weight = coast_weight(source, water, look, spacing_km)
     fill_rgb = np.asarray(fill if fill is not None else (0, 0, 0), dtype=np.float32)
 
     def band(start: int) -> None:
-        stop = min(start + band_rows, size)
+        stop = min(start + band_rows, height)
         here = weight[start:stop] > 0
         if not here.any():
             return
-        x, y, z = (axis[here] for axis in face_directions(face, size, start, stop))
+        x, y, z = (
+            axis[here]
+            for axis in face_directions(
+                face, size, first + start, first + stop, columns
+            )
+        )
         coverage, rgb = ice.sample(x, y, z, land=True)
         land = 1 - water[start:stop][here].astype(np.float32) / 255
         original = source[start:stop][here]
@@ -2093,7 +2373,7 @@ def blend_coast(
         texels += k[:, None] * (rgb - original.astype(np.float32))
         flat[start:stop][here] = np.clip(texels + 0.5, 0, 255).astype(np.uint8)
 
-    starts = range(0, size, band_rows)
+    starts = range(0, height, band_rows)
     for _ in map(band, starts) if pool is None else pool.map(band, starts):
         pass
     return weight

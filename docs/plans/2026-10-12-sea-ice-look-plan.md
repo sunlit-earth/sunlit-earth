@@ -1,12 +1,12 @@
 # Sea ice look, second iteration: plan
 
-Follows `docs/plans/2026-10-11-baked-sea-ice-plan.md` (PR #76), whose bake the user accepted as a first iteration. This plan improves the look of the baked sea ice in three ways the user found by comparing the app with MODIS true color imagery. It runs in two phases: experiments the user inspects and steers, then, once the user has chosen a solution, the production bake with tests, goldens, docs and validation. Nothing of the second phase starts before the user's decision.
+Follows `docs/plans/2026-10-11-baked-sea-ice-plan.md` (PR #76), whose bake the user accepted as a first iteration. This plan improves the look of the baked sea ice in three ways the user found by comparing the app with MODIS true color imagery. The experiments came first: through a preview harness of the real bake (phases A and B), and then, because each harness run took minutes, in two standalone labs on synthetic data. The labs' settled results are recorded, with code that reproduces them, in `docs/plans/2026-10-12-sea-ice-solid-research.md` (closed pack and leads) and `docs/plans/2026-10-12-sea-ice-floes-research.md` (partial coverage and the coast). Phase C moves that settled look into the pipeline and ships it, with tests, goldens, docs and validation.
 
-Worktree `.worktrees/sea-ice-look`, branch `feature/sea-ice-look`, from `feature/baked-sea-ice` at 75055b3. It is rebased onto `main` once #76 is merged.
+Worktree `.worktrees/sea-ice-look`, branch `feature/sea-ice-look`, from `feature/baked-sea-ice` at 75055b3. It is rebased onto `main` once #76 is merged. Commits so far: 5c368ed (the harness and the variants B1 to B3d), 843b035 (the two research documents), 2260387 (the harness and generator speedups).
 
 ## The three imperfections
 
-1. **The interior is too uniform, and its texture reads as dots and scratches.** The pack is a white base with soft grey blobs, light grey dots and short straight dark lines. Real sea ice, the Antarctic's above all, is covered in snow and looks much like the snow covered land: bright, with very fine detail, like a crumpled sheet of paper flattened again. The detail is not uniform: some areas show much more structure, others look almost flat.
+1. **The interior is too uniform, and its texture reads as dots and scratches.** The pack is a white base with soft gray blobs, light gray dots and short straight dark lines. Real sea ice, the Antarctic's above all, is covered in snow and looks much like the snow covered land: bright, with very fine detail, like a crumpled sheet of paper flattened again. The detail is not uniform: some areas show much more structure, others look almost flat.
 2. **The coastline stays visible under the ice.** From high above the boundary between snow covered land and snow covered pack disappears; only open water between floes gives the ice away. In the app the edge between land and ice is always visible.
 3. **The mask does not fit the Blue Marble's coastline.** Along North Greenland's coast, where satellite imagery shows no boundary in winter, the app shows strokes of dark blue water all year.
 
@@ -39,13 +39,18 @@ Measured on 2026-10-12 on the shipped faces at 75055b3.
 - The experiments run through a preview harness: four renders, the north and the south pole in winter and in summer, and an HTML page that shows them.
 - An implementer subagent writes the code. The orchestrator guides it and checks each variant's results for plausibility before handing them to the user.
 - No validation rounds until the user has committed to a solution.
-- No git commits or pushes without the user's approval; the experiment work stays uncommitted until then.
+- No git commits or pushes without the user's approval.
 - After inspecting A, B1 and B2 (2026-10-12): B1 and B2 are kept as the base of what follows; North Greenland's coast looks a lot better. A clear edge between land and sea ice remains, and the user wants the ice's texture to reach a little inland so that the edge disappears where the terrain is flat, as along much of Antarctica's coast, while mountain ranges may keep the coastline visible (B2b). B3 follows in full, and the user inspects the renders when both are done rather than after each sub-step.
-- B1 stays poleward of 50 degrees, and Franz Josef Land's islands shrink to where the Blue Marble and Natural Earth agree. These were the orchestrator's recommendations; the user did not take them up, so they stand as defaults until the decision.
+- B1 stays poleward of 50 degrees, and Franz Josef Land's islands shrink to where the Blue Marble and Natural Earth agree. These were the orchestrator's recommendations; the user did not take them up, so they carry into production as defaults.
+- After inspecting B2b and B3 (2026-10-12): the edge between land and sea ice looks good; the ice surface still has room for improvement; and waiting minutes for each harness run is too slow. The look work moved to standalone labs on synthetic data, one for closed ice and one for partial coverage, which the user reviewed round by round (departure 8), and the harness was sped up (departure 9).
+- The closed pack is settled (`2026-10-12-sea-ice-solid-research.md`, section 3): ridged relief at three detail levels, varied by large region fields in detail, strength and softness, with drift streaks in some regions only; leads thinner and fainter than B3b's, "a bit more jagged, since the ice is shifting", with en echelon and pinch preferred and zigzag and stretches least. The default is that document's r3-11, r3-08's surface with en echelon and pinch together, a combination the user has not yet seen; r3-08 with r3-02's en echelon leads alone is the reviewed fallback.
+- Partial coverage is settled (`2026-10-12-sea-ice-floes-research.md`, section 3): r3-03's cascade of whole cells with a calm zone from 40 to 70% and big floes on dark water in loose ice, r4-03's gap color (one color per water patch, the largest patches dark first, gray to dark from 95% to 45%), no edge model (departure 10), and r5-06's add-only coast rule in a 10 km band (departure 11).
+- Kept from Phase B: B1, B2, B2b and B4. B3's sub-steps are replaced by the research documents' look, and B3's fallback, a detail layer cut from MODIS scenes, is not needed.
+- Performance is not paramount, but it must not fall back to where it was before 2260387 (the performance budget below).
 
 ## Phase A: the preview harness
 
-What it does:
+Built in 5c368ed, sped up in 2260387 (departure 9). What it does:
 
 - **Inputs.** The twelve Blue Marble JPEGs of 2004 at 21600 x 10800, `ne_10m_ocean.shp`, the 24 OSI-450-a1 files, and the shipped textures as the base every variant starts from.
 - **Months.** North: March 2004 for winter, at the maximum extent, and August 2004 for summer, with the melt. South: September 2004 for winter and February 2004 for summer. The four are arguments with these defaults.
@@ -56,10 +61,11 @@ What it does:
 - **Outputs.** `tmp/sea-ice-look/<variant>/`: the four renders, the faces and mask it baked, a short `notes.md` saying what the variant changes, and `metrics.json`. `tmp/sea-ice-look/index.html` shows them.
 - **The page.** One self-contained HTML file, no network: a 2 x 2 grid of the renders labeled with pole, season and month; a variant selector; a comparison of the selected variant against the baseline (a toggle or a swipe); a click to view a render at full size and pan it; each variant's notes and metrics; and the three reference images, kept under `tmp/sea-ice-look/refs/`.
 - **Metrics,** per variant: (a) the dark texels of the mask's land, as in the evidence, on `py` and `ny` poleward of 60 degrees (baseline 1,202 and 668); (b) the coastal snow against the ice, as in the evidence, for the rendered months; (c) each rendered month's ice area on the faces against the source's, which the first plan holds within 10%; (d) a measure of the ice interior's fine detail after the encode, for the texture work.
+- **The draft.** `preview draft <variant> --place <name>` composites one region of a view's face around a named place at the working size in seconds, without the encode, the renders or the metrics (2260387).
 
 ## Phase B: the experiments
 
-Each step is one or more variants. For each, the implementer writes `notes.md` and the metrics; the orchestrator checks the result (the metrics, the renders against the baseline, nothing changed outside the ice and the coasts it means to change, no seams at the caps' or faces' edges); then the user inspects it and decides what follows.
+Done. B1, B2, B2b and B4 are kept; B3's sub-steps were superseded by the labs (departure 8). Each step is one or more variants. For each, the implementer writes `notes.md` and the metrics; the orchestrator checks the result (the metrics, the renders against the baseline, nothing changed outside the ice and the coasts it means to change, no seams at the caps' or faces' edges); then the user inspects it and decides what follows.
 
 **B1. The water from the Blue Marble itself.** A source pixel on the shapefile's land side becomes water when it is the Blue Marble's water in all twelve months and is connected to the shapefile's ocean. Polar land is bright with snow in some month, so the twelve month test separates the two; connection to the ocean leaves lakes alone. The thresholds come from measuring the Blue Marble's water over the shapefile's open ocean, not from guesses. It runs poleward of 50 degrees in both hemispheres first; the counts it would change elsewhere are reported, so the user can decide whether it runs everywhere. The Antarctic ice pass still keeps the ice shelves as land afterwards. The variant shows the mask's change as an image. Expected: metric (a) near zero, and North Greenland's strokes gone and under ice in winter.
 
@@ -78,7 +84,7 @@ Snow and flatness are read from the land's surroundings rather than from the pix
 
 - an activity field of noise at hundreds to a thousand kilometers, deciding where the pack is almost flat and where it is structured, with more structure where the concentration is below 1 and near the edge;
 - a crumple texture in place of the blobs and dots: ridged noise from a few texels up to about 30 km, drawing thin creases rather than round spots, low in contrast, slightly stretched along a slowly turning direction, scaled by the activity;
-- leads as a few long, branching, curving fracture systems hundreds of kilometers long, of varied width and darkness, fresh leads dark and refrozen ones grey, more in the Arctic than in the Antarctic;
+- leads as a few long, branching, curving fracture systems hundreds of kilometers long, of varied width and darkness, fresh leads dark and refrozen ones gray, more in the Arctic than in the Antarctic;
 - the marginal ice below about 85% concentration as floes, a cell pattern with dark water between bright floes, in place of the broken ice noise;
 - the summer melt as a smooth regional tone instead of dots.
 
@@ -88,22 +94,88 @@ The crumple has to survive the encode at quality 85, which removes faint fine de
 
 **Fallback for B3.** If the procedural texture does not convince, the fine detail can be taken from cloud free MODIS scenes of pack ice: a detail layer cut from real imagery and placed on the caps. That brings clouds and shadows in the scenes, visible repetition and a new source to document, so it is a fallback only.
 
-## Phase C: production, after the user's decision
+## The settled look
 
-Not started before the user has chosen what to keep. Then:
+What Phase C ships, part by part, with where each is specified:
 
-- the bake of all twelve months and all faces, and `textures/PROVENANCE.md` with the new command line, measurements and sizes;
-- the pipeline's tests for what is kept, and the Rust tests whose fixtures or expectations move;
-- the polar goldens on WARP, lavapipe and Metal;
-- `docs/rendering.md`, `docs/assets.md`, `docs/roadmap.md`, and the pipeline's README;
-- the shader's side: a brighter ice raises the night side's ice, which scales with the day texel's luminance up to 240; the ice gate's luminance of 52 to 76 is not affected; new water at the coasts takes the glint in summer; all three are checked in lit renders;
-- validation rounds until one reports no major finding.
+| Part | What | Specified in |
+|---|---|---|
+| Mask | The Blue Marble's own water joins the mask poleward of 50 degrees | B1, `b1-water` |
+| Color | Each hemisphere's winter color from its coastal snow | B2, `b2-color` |
+| Coast's land side | Flat snowy land within 6 to 18 km of the coast blends toward the ice; the Blue Marble's sea on the mask's land takes the sea's look | B2b and departure 4, `b2b-coast`; its coverage input changes (C1) |
+| Fast ice band | The record's concentration raised along coasts where the ice 50 to 100 km out is closed | B4 and departure 3 |
+| Closed pack surface | Ridged relief at three detail levels, region fields for detail, strength (35% to 85%) and softness, Voronoi creases in soft areas, drift in some regions; no underlayer | Solid document, sections 3.1 to 3.5 and 3.7 |
+| Leads | B3b's fracture systems, drawn thin and faint, en echelon and pinched | Solid document, section 3.6 |
+| Partial coverage | Water share calibrated against the leads, a regional target, the cascade of whole cells cut at the coastline, the calm speckle from 40 to 70%, open water at 0% | Floes document, sections 3.1 to 3.7 |
+| Gap color | One color per water patch, largest first, gray to dark from 95% to 45% | Floes document, section 3.8 |
+| Coast rule | Add-only: in the sea within 10 km of land, ice wherever the concentration is 50% or more | Floes document, section 3.9 |
+| Unchanged from the first iteration | The eddy shift the concentration is read through, the thin ice shading, the per month colors, every field fixed on the cap plane, per hemisphere seeds | Floes document, section 5.1 |
+| Season | B3d's melt tone in the Arctic summer, kept as it is; never reviewed with the new surface | `b3d-melt`; reviewed at C1 |
 
-## Gates during the experiments
+## Phase C: production
+
+Starts when the user approves this plan. In order:
+
+**C1. The settled look in the generator, as a harness variant.** In `sea_ice_look.py`, behind `Look` switches that are off by default, so the production bake and the `baseline` variant stay byte-identical until C2:
+
+- the closed pack's surface and leads, following the solid document's section 5: the ridged relief, region fields, soft activity and Voronoi creases, and drift replace the crumple's folds, plates and stretched ridges; `draw_fractures` gives way to the en echelon and pinch drawing; the octaves are drawn once, not once per detail level; the region fields are drawn on a coarser cap and zoomed; and the new streams take the numbers that document lists;
+- the floes, following the floes document's section 5: the edge model goes (its threshold and `streak`, with the eddy shift and the thin ice shading kept), the B3c floes give way to the cascade, the calm speckle, the regional target and the per patch gap color, with their fixed tables (the z table, the speckle threshold table, the cascade's per level sorts) computed once per hemisphere rather than once per month, and streams 80 to 90;
+- a land mask on the cap plane, made once per hemisphere from the faces' water masks, with the concentration set to 0 on land, the cascade tagged by it, the patches excluding it, and the coast band computed from it;
+- the coast rule applied on the cap after the leads and the gap color;
+- the coast blend's coverage rewired: each land texel takes the final coverage, after the coast rule, of its nearest sea texel, so snowy land next to the rim blends toward ice and land next to open water stays land;
+- the fast ice band kept as it is; whether the new floes need to stay shut where it raised the concentration (as `floe_fast` did) is decided by measurement, B4's metric of open water along closed coasts, before and after;
+- each new part in the per part field cache of 2260387, so a change to one part recomputes that part alone.
+
+The variant `settled` chains on `b2b-coast` (B1, B2, B2b and B4) and adds the settled look. The orchestrator checks it: metrics (a) to (e), the ice area within 10% in all four renders, the coast metrics against `b2b-coast`, the share of pack streaks (near 0 with no edge model), no seams, and the performance budget. Then the user inspects the four renders and `preview draft` crops of the places the experiments watched (North Greenland, Ellesmere, Svalbard, Franz Josef Land, the Beaufort Sea, East Antarctica, the Ronne and Ross shelf fronts, the Antarctic Peninsula). This is the first time the surface, the leads and the floes are seen together, on the real coastline, in summer and in the south; the open questions below are answered here. Changes the user asks for are made in the same variant, with the labs available for anything that needs fast iteration.
+
+**C2. The settled look becomes the default.** `LOOK`'s defaults switch to the settled look. `main.py`'s `cube` command gains what the harness does and production does not yet: B1's water, the fast ice band and the coast blend, which `main.py` calls neither of today. The code only the superseded experiments used goes: the edge model's threshold, the folds and plates, the B3c floes, the old cell leads, and the variants `b3a-crumple` to `b3d-melt`. `baseline` then means the new look, and its byte identity against `textures/` returns after C3.
+
+**C3. The production bake.** All twelve months and all faces with `cube --sea-ice`, the mask faces B1 changes included. `textures/PROVENANCE.md` gets the new command line, the measurements and the sizes. `TestRealIce` holds the drawn ice area to the source's within 10% in every month and hemisphere; the coast rule adds ice in its band by design (floes document, section 3.9) and is part of that total.
+
+**C4. The app's side.** The real face checks in the Rust tests (the tile packs store every tile with ice and flag open water), the polar goldens regenerated on WARP here and on lavapipe and Metal from CI's artifacts, as #76 did. The shader's side, checked in lit renders: the brighter ice raises the night side's ice, which scales with the day texel's luminance; the ice gate's luminance of 52 to 76 is not affected; new water at the coasts takes the glint in summer.
+
+**C5. Docs.** `docs/rendering.md`, `docs/assets.md`, `docs/testing.md` for the new tests, `docs/roadmap.md` (the first iteration's look items resolved, the open questions that remain), and the pipeline's README for the look, the harness and `preview draft`.
+
+**C6. Validation.** Rounds of adversarial review until one reports no major finding, then `ci.yml` dispatched for all three operating systems. Whether this lands in #76 or in a PR of its own after #76 merges is the user's decision.
+
+## Performance budget
+
+Performance is not paramount, but the iteration loop and the bake must not fall back to where they were before 2260387. Measured on this machine:
+
+| Measure | Before 2260387 | At 2260387 | Budget for Phase C |
+|---|---|---|---|
+| Preview run, fields cached | 150 to 160 s (`b3c-floes`) | 45 s (`b3c-floes`), 33 s (`baseline`) | 60 s for `settled` |
+| Preview run, fields cold | about 420 s (`b3c-floes`) | 169 s (`b3c-floes`), 62 s (`baseline`) | 180 s for `settled` |
+| A change to one part of the fields | every field rebuilt | that part and what reads it | the same; at most 30 s of field work for a change to the floes or the leads |
+| `preview draft` | none | about 4 s with the start | 10 s |
+| Production bake, all twelve months | 712 s (#76) | 589 s | 900 s |
+| Peak memory | 4.32 GiB commit in the production bake (#76); about 7 GiB in the harness with everything concurrent (measured by the investigation, not since) | not measured again | 8 GiB at the default worker count, with `--workers 1` kept for a serial run |
+
+The floes document extrapolates its per month cost at the cap's size to about 20 s per hemisphere if done as the lab does, which would put the production bake over budget; hoisting its fixed tables out of the month (C1) is what keeps it within. The folds, which made most of the cold field time in 2260387, go with C1. Every budget is measured, not estimated, and recorded with the variant's notes and in the PR.
+
+## Gates
+
+During the experiments:
 
 - `uv run pytest -q` in `tools/texture-pipeline`, and `uv run ruff check` and `uv run ruff format --check` on the files touched. An experiment that changes behavior a test pins records which tests and why in its notes rather than editing the tests to pass.
 - If Rust code changes: `cargo fmt --check`, `cargo clippy --all-targets` and `cargo test`.
 - The harness runs end to end for the variant and reports its metrics and time.
+
+In Phase C, in addition:
+
+- `uv run ruff check .` and `uv run ruff format --check .` over the whole pipeline, and `TestRealIce` with `TEXTURE_PIPELINE_OSI_DIR` set, every month and hemisphere within 10%.
+- Until C2, `baseline` stays byte-identical to `textures/`, faces and masks.
+- The performance budget, measured.
+- The goldens on WARP, lavapipe and Metal, and `ci.yml` green on all three operating systems.
+
+## Open questions, answered at C1
+
+- The combined en echelon and pinch leads (r3-11), and the solid look as a whole on the real map.
+- The summer: the melt tone and the summer palette with the new surface, leads and floes; no lab reviewed them.
+- The south: its lead density (the solid lab used the north's), its colors' extra headroom, the floes in the south's own seeds.
+- Coasts other than green vegetation and snow: bare rock, dark forest in winter, the ice shelves; islands and lakes, which the synthetic coast had none of.
+- The fast ice band with the new floes, and the rewired coast blend.
+- The two labs estimated the references' scale differently (2.8 and 3.8 km per pixel for the Arctic mosaics). Nothing in production depends on it.
 
 ## Departures
 
@@ -115,8 +187,16 @@ Not started before the user has chosen what to keep. Then:
 
 4. **The coast blend also gives the Blue Marble's sea on the mask's land the sea's look.** The plan has the coast's land take the ice's color where it is flat snow. In the top tenth of the south's flat coast dips after the first version, the darkest texel was mostly land on the mask (80%) holding the Blue Marble's dark sea (luminance 6 to 36), which B1's threshold of 14 had not joined, and the blend applied there was below 0.2 in 90% of them because that sea read as land without snow. Within the blend's band, pixels darker than 60 with blue above red by more than 8 are now left out of the reading of snow and relief and take what the sea beside them shows, the fill under the ice's coverage, at the band's falloff alone; the south's flat coast dip p90 fell from 66 to 51.
 
-5. **The crumple has plates.** The plan's crumple is ridged noise drawing creases. Against the May 2020 reference, which shows crisp plates of slightly different tone, the ridged shading alone read as soft wrinkles, so the snow also breaks into cells of 30 and 120 km, each a little lighter or darker (1.5% at full activity, a quarter of it on flat pack), with creases along the smaller cells' borders.
+5. **The crumple has plates.** The plan's crumple is ridged noise drawing creases. Against the May 2020 reference, which shows crisp plates of slightly different tone, the ridged shading alone read as soft wrinkles, so the snow also breaks into cells of 30 and 120 km, each a little lighter or darker (1.5% at full activity, a quarter of it on flat pack), with creases along the smaller cells' borders. Superseded by departure 8.
 
-6. **The crumple's creases are straight folds.** The plan's ridged noise, stretched three times along its direction field, drew parallel wavy ripples like dunes, and at an aspect of 1.3 it drew wormy wrinkles like stucco; per cell shades of Voronoi facets alone drew a granular stone. Neither reads as the user's crumpled sheet of paper flattened again. The shading and the creases now come mostly from straight folds (`Look.crumple_folds`): one every 30 km on average, 25 to 120 km long, at every angle, each a step in shade that fades over 10 km either side with a faint crease along it, tapering at its ends, so the creases meet at angles and enclose polygonal facets. The ridged noise keeps a quarter of the weight, the plates stay. The fields take about 35 s longer per hemisphere.
+6. **The crumple's creases are straight folds.** The plan's ridged noise, stretched three times along its direction field, drew parallel wavy ripples like dunes, and at an aspect of 1.3 it drew wormy wrinkles like stucco; per cell shades of Voronoi facets alone drew a granular stone. Neither reads as the user's crumpled sheet of paper flattened again. The shading and the creases now come mostly from straight folds (`Look.crumple_folds`): one every 30 km on average, 25 to 120 km long, at every angle, each a step in shade that fades over 10 km either side with a faint crease along it, tapering at its ends, so the creases meet at angles and enclose polygonal facets. The ridged noise keeps a quarter of the weight, the plates stay. The fields take about 35 s longer per hemisphere. Superseded by departure 8: the user found the folds too blocky and chose isotropic ridged relief.
 
-7. **The edge model's streaks leave the pack, and the floes carry its open water.** The first iteration's edge model draws the open water a concentration leaves as a threshold noise streaked along the edge, with thresholds up to 0.88, so pack at 85% to 95% held grey elongated smudges 50 to 150 km long: 4.7% to 5.0% of the pack above 0.85 in the four renders (763,000 km2 in the north's March), and they dominated the north's August. These are most likely the brush dots the user disliked. With `Look.edge_pack` at 0.7 the threshold is squeezed into 0.12 to 0.7, so the streaks stay where the concentration falls toward the ice edge, whose shape is unchanged in form, and the pack's share fell to 0.1% to 0.6%. The open water the edge model then leaves undrawn, `1 - c / drawn`, goes to the floes from 95% concentration down, all of it below 80%, rather than the floes raising the edge's coverage as B3c first did; the floes do not open where the fast ice band raised the concentration by more than 0.03, so B4's coasts stay closed. The floes themselves are filled floes: each opens at a level of its own, clustered by a noise at 60 to 250 km so loose regions and compact ones alternate, to a gap of 0.08 to 0.32 cells, on cells of varied size (a 20 km grid thinned to 35% of its points); the water between them is grey new ice at 45% of the fill above 90% concentration and open water at 95% below 60%.
+7. **The edge model's streaks leave the pack, and the floes carry its open water.** The first iteration's edge model draws the open water a concentration leaves as a threshold noise streaked along the edge, with thresholds up to 0.88, so pack at 85% to 95% held gray elongated smudges 50 to 150 km long: 4.7% to 5.0% of the pack above 0.85 in the four renders (763,000 km2 in the north's March), and they dominated the north's August. These are most likely the brush dots the user disliked. With `Look.edge_pack` at 0.7 the threshold is squeezed into 0.12 to 0.7, so the streaks stay where the concentration falls toward the ice edge, whose shape is unchanged in form, and the pack's share fell to 0.1% to 0.6%. The open water the edge model then leaves undrawn, `1 - c / drawn`, goes to the floes from 95% concentration down, all of it below 80%, rather than the floes raising the edge's coverage as B3c first did; the floes do not open where the fast ice band raised the concentration by more than 0.03, so B4's coasts stay closed. The floes themselves are filled floes: each opens at a level of its own, clustered by a noise at 60 to 250 km so loose regions and compact ones alternate, to a gap of 0.08 to 0.32 cells, on cells of varied size (a 20 km grid thinned to 35% of its points); the water between them is gray new ice at 45% of the fill above 90% concentration and open water at 95% below 60%. Superseded by departures 8 and 10.
+
+8. **The look was settled in standalone labs on synthetic data, not in the harness.** After B2b and B3 the user found the coast good, the surface not yet right, and each harness run of 5 to 7 minutes too slow to iterate on. Two labs replaced the harness for the look: synthetic squares at the cap's 2.873 km per texel, shown the way the app gets them (area averaged to about 4.9 km and through the JPEG XL round trip), regenerating every sample in seconds. The solid lab ran three rounds on closed ice, the floes lab five rounds on synthetic concentration and, in its last two, synthetic coasts; the user reviewed every round. The labs live in `tmp/sea-ice-lab/` (untracked); what they settled, their verdicts and code that reproduces their samples exactly are in the two research documents. B3's sub-steps and departures 5 to 7 are superseded by them, and the variants `b3a-crumple` to `b3d-melt` stay only until C2.
+
+9. **The harness and the generator were sped up, which the plan did not have.** A profile found the noise fields built one after the other on one core and rebuilt whole on any tunable change. In 2260387 the parts of `prepare` and both hemispheres run at once, `streak`, `month_cap` and `coast_weight` work in threaded bands, each part of the fields has its own cache key, the harness bakes, renders and measures its four views at once and caches the coast weight, the mask faces and the snow colors, and `preview draft` renders one region in seconds. The output is unchanged: both `baseline` and `b3c-floes` came out identical to the unmodified code in every face, JPEG XL file, render and metric, and a full production bake wrote all 84 files byte-identical to `textures/`. The faster folds of the investigation were left out, since C1 removes the folds.
+
+10. **The edge model goes; the floes draw all of the open water.** The plan kept the first iteration's edge model and drew floes beside it (departure 7). In the floes lab its threshold, streaked 250 km along the edge's direction, drew the "vertical brush strokes of water" the user rejected wherever the concentration sat in its range, and with the floes drawing all of the concentration's water it adds nothing: the ice edge is where the cascade's cells reach the 0% line. Its threshold and `streak` go in C1; the eddy shift the concentration is read through and the thin ice shading, which read two of its tunables, stay (floes document, section 5.1).
+
+11. **The coast gets a rule of its own: add-only ice in a 10 km band.** The plan has the coast's land side blend toward the ice (B2b) and the fast ice band close coasts the record leaves open (B4), but nothing about floes and water against the land. On a synthetic worst case coast of green vegetation with a hard edge, floes and gaps touching the land drew the coastline; the user chose r5-06: in the sea within 10 km of land, coverage is 1 wherever the concentration is 50% or more, and nothing changes below. It needs land at the cap's spacing, which the cap does not have today, so C1 adds a land mask from the faces' water masks. Its cost, by construction: the band carries about 10 points more ice than its concentration, about 3 points within 40 km, and 0.2 points over a sample's whole sea, within metric (c)'s 10%.

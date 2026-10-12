@@ -103,7 +103,7 @@ Its cost, on round 5's sample (sea only; the concentration falls along the shore
 
 r4-03's coverage against its concentration after the floes, the leads and the gap colors, on the lab's canvas: 100%: 99.8, 95%: 95.5, 90%: 90.3, 85%: 84.6, 80%: 80.0, 70%: 70.1, 60%: 60.1, 50%: 50.8, 40%: 39.7, 30%: 30.6, 20%: 21.0, 15%: 15.6; the ramp 49.8 for 50.0; the noisy field 77.3 for 78.0. Within the noisy field's 10 point bins the coverage strays further, from 6.1 points over in the 40 to 50% bin (51.0 for 44.9) to 3.0 under in the 80 to 90% bin (81.7 for 84.7); the field as a whole holds, and the bins were not investigated further. Round 5's coast sample with r5-06: the numbers in section 3.9; the reference r5-01 covered the band 50.2%.
 
-Not reviewed: land darker or lighter than green vegetation other than snow (bare rock, dark forest in winter, ice shelves), islands and lakes (round 5's coastline had neither, by construction), a coastline at the cap's real resolution and shape, the summer palette, the south winter color in the coast rows (round 5 drew the north's only), the preview harness's point sampling, the fast ice band and the coast blend together with the new floes, and the record's own concentration near coasts (the coast samples were synthetic and read without the eddy shift).
+Not reviewed: land darker or lighter than green vegetation other than snow (bare rock, dark forest in winter, ice shelves), islands and lakes (round 5's coastline had neither, by construction), a coastline at the cap's real resolution and shape, the summer palette, the south winter color in the coast rows (round 5 drew the north's only), the fast ice band and the coast blend together with the new floes, and the record's own concentration near coasts (the coast samples were synthetic and read without the eddy shift).
 
 ## 4. Code
 
@@ -555,4 +555,4 @@ The cap at 4096 has 16.8 million texels, four times the lab's canvas; at about f
 
 ### 5.9 Open
 
-Darker land other than green vegetation, islands and lakes, the cap's real coastline, the summer palette, the south winter color at the coast, the fast ice band's switch, the coast blend's coverage (section 5.4), the combination with the solid document's surface and leads (section 5.5), and the preview harness, which point samples the cap at the face's spacing where `main.py` area averages, so the speckle's fine structure aliases in the preview and averages in the shipped faces.
+Darker land other than green vegetation, islands and lakes, the cap's real coastline, the summer palette, the south winter color at the coast, the fast ice band's switch, the coast blend's coverage (section 5.4), and the combination with the solid document's surface and leads (section 5.5). The preview harness composites at the 5400 working size and area averages to 2048 as `main.py` does, so its faces show the speckle as the shipped faces will.

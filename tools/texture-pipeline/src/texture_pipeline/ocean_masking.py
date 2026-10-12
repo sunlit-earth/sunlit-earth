@@ -339,3 +339,94 @@ def reduce_mask_for_ice(
     return np.clip(
         ocean_mask.astype(np.int16) - ice_mask.astype(np.int16), 0, 255
     ).astype(np.uint8)
+
+
+REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+"""The luminance weights the water test reads the imagery with."""
+
+
+class YearlyWater:
+    """Each source pixel's brightest luminance and least blue over the year.
+
+    A pixel is water in every month exactly when its brightest luminance is
+    below a threshold and its least blue, blue less red, above one, so these
+    two arrays decide the test for any thresholds.
+    """
+
+    def __init__(self, max_luma: np.ndarray, min_blue: np.ndarray) -> None:
+        """Hold the two arrays.
+
+        :param max_luma: uint8 array ``(H, W)``, the brightest Rec. 709
+            luminance over the months added, rounded.
+        :param min_blue: int16 array ``(H, W)``, the least blue less red.
+        """
+        self.max_luma = max_luma
+        self.min_blue = min_blue
+
+    @classmethod
+    def empty(cls, height: int, width: int) -> YearlyWater:
+        """Return the statistics of no month at all."""
+        return cls(
+            np.zeros((height, width), dtype=np.uint8),
+            np.full((height, width), 255, dtype=np.int16),
+        )
+
+    def add(self, rgb: np.ndarray, band_rows: int = 540) -> None:
+        """Take one month into the statistics.
+
+        :param rgb: uint8 array ``(H, W, 3)``.
+        :param band_rows: Rows worked at once, which bounds the float
+            intermediates.
+        """
+        for start in range(0, rgb.shape[0], band_rows):
+            band = rgb[start : start + band_rows]
+            luma = np.rint(band.astype(np.float32) @ REC709).astype(np.uint8)
+            np.maximum(self.max_luma[start : start + band_rows], luma, out=luma)
+            self.max_luma[start : start + band_rows] = luma
+            blue = band[..., 2].astype(np.int16) - band[..., 0].astype(np.int16)
+            np.minimum(self.min_blue[start : start + band_rows], blue, out=blue)
+            self.min_blue[start : start + band_rows] = blue
+
+
+def latitude_rows(height: int, min_latitude: float) -> tuple[int, int]:
+    """Return the rows that bound the band within ``min_latitude`` of the equator.
+
+    :param height: Rows of an equirectangular source.
+    :param min_latitude: The latitude in degrees.
+    :returns: The first row whose center is equatorward of ``min_latitude``
+        north, and the first row whose center is at or poleward of it south.
+    """
+    centers = 90.0 - (np.arange(height) + 0.5) * 180.0 / height
+    north = int(np.count_nonzero(centers >= min_latitude))
+    south = height - int(np.count_nonzero(centers <= -min_latitude))
+    return north, south
+
+
+def water_from_imagery(
+    mask: np.ndarray,
+    water: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    """Turn the imagery's water that is connected to the ocean into ocean.
+
+    A pixel short of open ocean in the mask whose imagery is water joins the
+    ocean when it is connected to the mask's open ocean through such pixels,
+    four-connected, so that a lake stays land.
+
+    :param mask: uint8 array ``(H, W)``, 255 for open ocean. Changed in place.
+    :param water: bool array ``(H, W)``, where the imagery is water.
+    :returns: The mask, and how many pixels became ocean.
+    """
+    from scipy.ndimage import binary_dilation, label
+
+    ocean = mask == 255
+    candidate = water & ~ocean
+    labels, count = label(candidate)
+    if count == 0:
+        return mask, 0
+    touching = binary_dilation(ocean) & candidate
+    keep = np.zeros(count + 1, dtype=bool)
+    keep[np.unique(labels[touching])] = True
+    keep[0] = False
+    joined = keep[labels]
+    mask[joined] = 255
+    return mask, int(np.count_nonzero(joined))

@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sea ice look</title>
+<style>
+:root {
+  --bg: #111417; --panel: #1b2025; --line: #2c333a; --text: #e4e8ec;
+  --muted: #9aa5b0; --accent: #6fb3ff; --bad: #ff7b6b; --good: #7bd88f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap;
+  gap: 12px 20px; align-items: center; padding: 10px 16px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0 8px 0 0; }
+label { color: var(--muted); }
+select, button { font: inherit; color: var(--text); background: #252c33;
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+button.on { border-color: var(--accent); color: var(--accent); }
+main { padding: 16px; max-width: 1800px; margin: 0 auto; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+figure { margin: 0; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; overflow: hidden; }
+figcaption { padding: 6px 10px; display: flex; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap; }
+figcaption .tag { color: var(--muted); }
+.frame { position: relative; aspect-ratio: 1; cursor: zoom-in; user-select: none; }
+.frame img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.frame .base { clip-path: inset(0 0 0 100%); }
+.frame .divider { position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--accent); display: none; pointer-events: none; }
+.which { position: absolute; left: 8px; top: 8px; padding: 1px 6px; border-radius: 4px;
+  background: rgba(0,0,0,.6); font-size: 12px; pointer-events: none; }
+.which.right { left: auto; right: 8px; }
+section { margin-top: 24px; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+.notes { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 16px; }
+.notes h3 { font-size: 15px; } .notes h4 { font-size: 14px; color: var(--muted); }
+code { background: #252c33; padding: 0 4px; border-radius: 4px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.tablewrap { overflow-x: auto; }
+th, td { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: right;
+  white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; }
+tr.sel td { background: #1f2a35; }
+.bad { color: var(--bad); } .good { color: var(--good); }
+.thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
+.thumbs a { display: block; width: 200px; color: var(--muted); font-size: 12px;
+  text-decoration: none; cursor: zoom-in; }
+.thumbs img { width: 200px; height: 200px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--line); display: block; }
+details summary { cursor: pointer; color: var(--muted); }
+pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px; overflow: auto; max-height: 420px; font-size: 12px; }
+#viewer { position: fixed; inset: 0; z-index: 10; background: #000; display: none; }
+#viewer.open { display: block; }
+#stage { position: absolute; inset: 0; overflow: hidden; cursor: grab; }
+#stage.drag { cursor: grabbing; }
+#stage img { position: absolute; left: 0; top: 0; transform-origin: 0 0;
+  image-rendering: auto; max-width: none; }
+#vbase { clip-path: inset(0 0 0 100%); }
+#vbar { position: absolute; left: 0; right: 0; top: 0; display: flex; gap: 10px;
+  align-items: center; flex-wrap: wrap; padding: 8px 12px;
+  background: rgba(17,20,23,.85); z-index: 2; }
+#vbar .title { margin-right: auto; }
+#vdivider { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent);
+  display: none; z-index: 1; pointer-events: none; }
+.hint { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sea ice look</h1>
+  <label>Variant <select id="variant"></select></label>
+  <label>Against the baseline
+    <select id="mode">
+      <option value="off">off</option>
+      <option value="toggle">toggle</option>
+      <option value="swipe">swipe</option>
+    </select></label>
+  <button id="flip" title="Show the baseline (key B)">Show baseline</button>
+  <span class="hint">Click a render for full size: drag to pan, wheel to zoom,
+    B to flip, Esc to close.</span>
+</header>
+<main>
+  <div class="grid" id="grid"></div>
+  <section>
+    <h2>Notes</h2>
+    <div class="notes" id="notes"></div>
+  </section>
+  <section>
+    <h2>Metrics, every variant</h2>
+    <div class="tablewrap"><table id="table"></table></div>
+    <p class="hint">(a) dark texels of the mask's land poleward of 60 degrees.
+      (b) median ice minus median coastal snow, per channel. (c) ice area on the
+      faces against the source. (d) RMS of the interior's luminance finer than
+      about 5 km after the encode, and the share of it the encode kept.</p>
+  </section>
+  <section id="extras-section">
+    <h2>Images of the variant</h2>
+    <div class="thumbs" id="extras"></div>
+  </section>
+  <section>
+    <h2>References</h2>
+    <div class="thumbs" id="refs"></div>
+  </section>
+  <section>
+    <details><summary>metrics.json of the variant</summary><pre id="json"></pre></details>
+  </section>
+</main>
+<div id="viewer">
+  <div id="vbar">
+    <span class="title" id="vtitle"></span>
+    <button id="vflip">Show baseline (B)</button>
+    <button id="vfit">Fit</button>
+    <button id="vone">1:1</button>
+    <button id="vclose">Close (Esc)</button>
+  </div>
+  <div id="stage"><img id="vimg" alt=""><img id="vbase" alt=""><div id="vdivider"></div></div>
+</div>
+<script>
+const DATA = /*DATA*/null;
+const $ = (id) => document.getElementById(id);
+const state = { variant: null, mode: "off", flipped: false, swipe: 0.5 };
+const byName = Object.fromEntries(DATA.variants.map((v) => [v.name, v]));
+const baseline = byName["baseline"];
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem("sea-ice-look") || "{}"); } catch (e) {}
+state.variant = byName[saved.variant] ? saved.variant
+  : (DATA.variants.length ? DATA.variants[DATA.variants.length - 1].name : null);
+state.mode = saved.mode || "off";
+function save() {
+  try { localStorage.setItem("sea-ice-look",
+    JSON.stringify({ variant: state.variant, mode: state.mode })); } catch (e) {}
+}
+for (const v of DATA.variants) {
+  const o = document.createElement("option"); o.value = o.textContent = v.name;
+  $("variant").append(o);
+}
+$("variant").value = state.variant;
+$("mode").value = state.mode;
+$("variant").onchange = (e) => { state.variant = e.target.value; save(); render(); };
+$("mode").onchange = (e) => { state.mode = e.target.value; state.flipped = false; save(); render(); };
+$("flip").onclick = () => { flip(); };
+function flip() {
+  if (!baseline) return;
+  state.flipped = !state.flipped; render(); viewerUpdate();
+}
+const fmt = (n) => (n === undefined || n === null) ? "" : n.toLocaleString("en-US");
+const pct = (n) => (n > 0 ? "+" : "") + n.toFixed(1) + "%";
+
+function cellCaption(m) {
+  const b = m.coast_snow.ice_minus_snow;
+  const a = m.ice_area.difference_pct;
+  const ok = m.month_check.ok;
+  return `<span>${m.label}</span><span class="tag">` +
+    `ice-snow ${b ? b.join(", ") : "n/a"} &middot; area ` +
+    `<span class="${Math.abs(a) > 10 ? "bad" : ""}">${pct(a)}</span> &middot; month ` +
+    `<span class="${ok ? "good" : "bad"}">${ok ? "ok" : "WRONG"}</span></span>`;
+}
+
+function render() {
+  const v = byName[state.variant];
+  $("flip").style.display = state.mode === "toggle" ? "" : "none";
+  $("flip").classList.toggle("on", state.flipped);
+  $("flip").textContent = state.flipped ? "Showing baseline" : "Show baseline";
+  const grid = $("grid"); grid.innerHTML = "";
+  if (!v) return;
+  for (const view of DATA.views) {
+    const m = v.metrics.views[view.key];
+    const fig = document.createElement("figure");
+    const frame = document.createElement("div"); frame.className = "frame";
+    const showBase = baseline && state.mode === "toggle" && state.flipped;
+    const top = document.createElement("img");
+    top.src = (showBase ? baseline : v).renders[view.key].small;
+    top.alt = view.label;
+    frame.append(top);
+    const tag = document.createElement("span"); tag.className = "which";
+    tag.textContent = showBase ? "baseline" : v.name; frame.append(tag);
+    if (baseline && state.mode === "swipe" && v !== baseline) {
+      const base = document.createElement("img"); base.className = "base";
+      base.src = baseline.renders[view.key].small; frame.append(base);
+      const div = document.createElement("div"); div.className = "divider";
+      div.style.display = "block"; frame.append(div);
+      const right = document.createElement("span"); right.className = "which right";
+      right.textContent = "baseline"; frame.append(right);
+      const place = () => {
+        base.style.clipPath = `inset(0 0 0 ${state.swipe * 100}%)`;
+        div.style.left = `calc(${state.swipe * 100}% - 1px)`;
+      };
+      place();
+      frame.addEventListener("mousemove", (e) => {
+        const r = frame.getBoundingClientRect();
+        state.swipe = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+        for (const f of grid.querySelectorAll(".frame")) f._place && f._place();
+      });
+      frame._place = place;
+    }
+    frame.onclick = () => openViewer(view.key);
+    const cap = document.createElement("figcaption"); cap.innerHTML = cellCaption(m);
+    fig.append(frame, cap); grid.append(fig);
+  }
+  $("notes").innerHTML = v.notes;
+  $("json").textContent = JSON.stringify(v.metrics, null, 2);
+  const extras = $("extras"); extras.innerHTML = "";
+  for (const src of v.extras) {
+    const a = document.createElement("a"); a.href = src;
+    a.innerHTML = `<img src="${src}" alt="" loading="lazy">${src.split("/").pop()}`;
+    a.onclick = (e) => { e.preventDefault(); openImage(src, src); };
+    extras.append(a);
+  }
+  $("extras-section").style.display = v.extras.length ? "" : "none";
+  table();
+}
+
+function table() {
+  const t = $("table");
+  const head = ["variant", "(a) py", "(a) ny"];
+  for (const view of DATA.views) head.push(`${view.key}: (b) ice-snow`, "(c) area", "(e) flat dip",
+    "(d) fine", "kept", "month");
+  head.push("time s", "packs s");
+  let rows = `<tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr>`;
+  for (const v of DATA.variants) {
+    const m = v.metrics;
+    const cells = [v.name, fmt(m.dark_land.py.poleward_of_60), fmt(m.dark_land.ny.poleward_of_60)];
+    for (const view of DATA.views) {
+      const x = m.views[view.key];
+      if (!x) { cells.push("", "", "", "", "", ""); continue; }
+      const e = (x.coast_steps || {})["all-flat"] || {};
+      const d = x.fine_detail;
+      cells.push(x.coast_snow.ice_minus_snow ? x.coast_snow.ice_minus_snow.join(", ") : "",
+        pct(x.ice_area.difference_pct), e.dip_median ?? "", d.after ? d.after.fine_rms.toFixed(2) : "",
+        d.fine_kept !== undefined ? Math.round(d.fine_kept * 100) + "%" : "",
+        x.month_check.ok ? "ok" : "WRONG");
+    }
+    cells.push(m.time_s.total, m.pack_build_s);
+    rows += `<tr class="${v.name === state.variant ? "sel" : ""}">` +
+      cells.map((c) => `<td>${c}</td>`).join("") + "</tr>";
+  }
+  t.innerHTML = rows;
+}
+
+for (const r of DATA.references) {
+  const a = document.createElement("a"); a.href = r.src;
+  a.innerHTML = `<img src="${r.src}" alt="" loading="lazy">${r.label}`;
+  a.onclick = (e) => { e.preventDefault(); openImage(r.src, r.label); };
+  $("refs").append(a);
+}
+
+// The full size viewer.
+const view = { scale: 1, x: 0, y: 0, key: null, single: null };
+function openViewer(key) { view.key = key; view.single = null; $("viewer").classList.add("open");
+  viewerUpdate(true); }
+function openImage(src, title) { view.key = null; view.single = { src, title };
+  $("viewer").classList.add("open"); viewerUpdate(true); }
+function closeViewer() { $("viewer").classList.remove("open"); }
+function viewerUpdate(reset) {
+  if (!$("viewer").classList.contains("open")) return;
+  const v = byName[state.variant];
+  const img = $("vimg"), base = $("vbase");
+  let src, title, baseSrc = null;
+  if (view.single) { src = view.single.src; title = view.single.title; }
+  else {
+    const label = DATA.views.find((x) => x.key === view.key).label;
+    const showBase = baseline && state.mode !== "swipe" && state.flipped;
+    src = (showBase ? baseline : v).renders[view.key].full;
+    title = `${label}: ${showBase ? "baseline" : v.name}`;
+    if (baseline && state.mode === "swipe" && v !== baseline) {
+      baseSrc = baseline.renders[view.key].full; title += " | baseline on the right";
+    }
+  }
+  $("vtitle").textContent = title;
+  $("vflip").style.display = view.single || !baseline || state.mode === "swipe" ? "none" : "";
+  $("vflip").classList.toggle("on", state.flipped);
+  if (img.getAttribute("src") !== src) img.src = src;
+  base.style.display = baseSrc ? "block" : "none";
+  $("vdivider").style.display = baseSrc ? "block" : "none";
+  if (baseSrc && base.getAttribute("src") !== baseSrc) base.src = baseSrc;
+  const apply = () => {
+    if (reset) { fit(); reset = false; }
+    place();
+  };
+  if (img.complete && img.naturalWidth) apply(); else img.onload = apply;
+}
+function fit() {
+  const img = $("vimg"), s = $("stage");
+  const w = img.naturalWidth || 2048, h = img.naturalHeight || 2048;
+  view.scale = Math.min(s.clientWidth / w, s.clientHeight / h);
+  view.x = (s.clientWidth - w * view.scale) / 2; view.y = (s.clientHeight - h * view.scale) / 2;
+  place();
+}
+function one() {
+  const img = $("vimg"), s = $("stage");
+  const cx = s.clientWidth / 2, cy = s.clientHeight / 2;
+  zoomAt(cx, cy, 1 / view.scale);
+}
+function place() {
+  const t = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  $("vimg").style.transform = t; $("vbase").style.transform = t;
+  const s = $("stage");
+  const cut = state.swipe * s.clientWidth;
+  const img = $("vimg");
+  const local = (cut - view.x) / (view.scale * (img.naturalWidth || 2048));
+  $("vbase").style.clipPath = `inset(0 0 0 ${Math.min(100, Math.max(0, local * 100))}%)`;
+  $("vdivider").style.left = `${cut - 1}px`;
+}
+function zoomAt(cx, cy, factor) {
+  view.x = cx - (cx - view.x) * factor; view.y = cy - (cy - view.y) * factor;
+  view.scale *= factor; place();
+}
+const stage = $("stage");
+let drag = null;
+stage.addEventListener("mousedown", (e) => { drag = { x: e.clientX, y: e.clientY };
+  stage.classList.add("drag"); e.preventDefault(); });
+window.addEventListener("mouseup", () => { drag = null; stage.classList.remove("drag"); });
+stage.addEventListener("mousemove", (e) => {
+  if (drag) { view.x += e.clientX - drag.x; view.y += e.clientY - drag.y;
+    drag = { x: e.clientX, y: e.clientY }; place(); }
+  else if (state.mode === "swipe" && !view.single) {
+    state.swipe = Math.min(1, Math.max(0, e.clientX / stage.clientWidth)); place(); }
+});
+stage.addEventListener("wheel", (e) => { e.preventDefault();
+  const r = stage.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015)); },
+  { passive: false });
+$("vclose").onclick = closeViewer; $("vfit").onclick = fit; $("vone").onclick = one;
+$("vflip").onclick = () => { if (state.mode === "off") { state.mode = "toggle";
+  $("mode").value = "toggle"; } flip(); };
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeViewer();
+  if ((e.key === "b" || e.key === "B") && baseline && state.mode !== "swipe") {
+    if (state.mode === "off") { state.mode = "toggle"; $("mode").value = "toggle"; }
+    flip();
+  }
+});
+window.addEventListener("resize", () => place());
+render();
+</script>
+</body>
+</html>

@@ -22,13 +22,20 @@ keeps isotropic to within 3.5% at 60 degrees and 13% at the cap's edge; a
 feature's size is half the wavelength of the noise that draws it.
 """
 
+import dataclasses
 from collections.abc import Callable, Iterator
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import fft
-from scipy.ndimage import gaussian_filter, map_coordinates, zoom
+from scipy.ndimage import (
+    distance_transform_edt,
+    gaussian_filter,
+    map_coordinates,
+    zoom,
+)
+from scipy.spatial import cKDTree
 from scipy.special import ndtr
 
 from texture_pipeline.cube import face_directions
@@ -36,6 +43,9 @@ from texture_pipeline.sea_ice import (
     AUTHALIC_RADIUS_KM,
     HEMISPHERES,
     RHO_MAX,
+    SOURCE_CELL_KM,
+    Hemisphere,
+    cap_concentration,
     directions_to_cap,
     plane_to_texel,
     texel_km,
@@ -102,6 +112,12 @@ class Look:
     edge_softness: float = 0.08
     """Half the concentration step over which coverage goes from 0 to 1."""
 
+    edge_pack: float | None = None
+    """When set, the concentration above which the edge model draws all ice:
+    its threshold is squeezed from its range into the range's low end to this,
+    so its streaks of open water stay at the ice edge and leave the pack. The
+    open water the edge then draws too little of is the floes'."""
+
     eddy_band_km: tuple[float, float] = (50.0, 150.0)
     """Feature sizes of the swirl that shifts the concentration."""
 
@@ -162,6 +178,295 @@ class Look:
         default_factory=lambda: {"nh": _ARCTIC, "sh": _ANTARCTIC}
     )
     """The ice's color per hemisphere and month, in the day faces' sRGB."""
+
+    crumple: bool = False
+    """Whether the interior is drawn as crumpled snow, its structure varied by
+    an activity field, in place of the broad brightness noise, the texture of
+    broken ice and the melt mottling."""
+
+    activity_band_km: tuple[float, float] = (300.0, 1500.0)
+    """Feature sizes of the noise that decides where the pack is structured."""
+
+    activity_range: tuple[float, float] = (-0.3, 1.0)
+    """Values of that noise, standard deviation 1, over which the activity
+    rises from flat to fully structured."""
+
+    activity_floor: float = 0.1
+    """The least activity, so that flat pack is almost, not quite, flat."""
+
+    activity_edge: float = 0.6
+    """How far the activity rises toward full where the concentration falls."""
+
+    activity_edge_range: tuple[float, float] = (0.98, 0.75)
+    """Concentrations over which that rise goes from none to full."""
+
+    crumple_octaves: tuple[tuple[float, float, float, float], ...] = (
+        (5.0, 10.0, 0.3, 0.3),
+        (10.0, 20.0, 0.6, 1.0),
+        (20.0, 40.0, 1.0, 0.6),
+        (40.0, 80.0, 0.8, 0.0),
+    )
+    """Per octave of the crumple's ridged noise: its smallest and largest
+    feature size, the weight of its ridges in the height that is shaded, and
+    the weight of its creases."""
+
+    crumple_aspect: float = 3.0
+    """How much longer the crumple's features are along the direction field."""
+
+    crumple_turn_km: tuple[float, float] = (800.0, 3000.0)
+    """Feature sizes of the noise the direction field turns with."""
+
+    crumple_warp_km: float = 6.0
+    """Root mean square of the shift that warps the crumple."""
+
+    crumple_warp_band_km: tuple[float, float] = (30.0, 120.0)
+    """Feature sizes of that shift."""
+
+    crumple_gate: float = 0.6
+    """How much a finer octave is confined to the coarser one's ridges."""
+
+    crease_width: float = 0.4
+    """Values of an octave's noise, standard deviation 1, either side of zero
+    that its crease spans."""
+
+    crumple_facets: tuple[tuple[float, float, float], ...] = (
+        (30.0, 0.6, 0.6),
+        (120.0, 1.0, 0.2),
+    )
+    """Per level of the plates the snow breaks into: the cells' size, the
+    weight of their shades and the weight of the creases along their
+    borders."""
+
+    facet_crease_km: float = 2.0
+    """Half width of the crease along a plate's border."""
+
+    crumple_shadow: float = 0.06
+    """Darkening of the crumple's facets turned away from the light, per
+    standard deviation of their slope, at full activity."""
+
+    crumple_light: float = 0.02
+    """Brightening of the facets turned toward it."""
+
+    crumple_crease: float = 0.07
+    """Darkening at the middle of a crease, at full activity."""
+
+    crumple_plates: float = 0.015
+    """Standard deviation of the plates' shades, at full activity."""
+
+    plates_flat: float = 0.25
+    """Share of the plates' shades that flat pack keeps."""
+
+    crumple_folds: bool = False
+    """Whether the crumple's shading and creases are straight folds in every
+    direction, as in a sheet of paper crumpled and flattened again, in place
+    of the ridged noise's."""
+
+    fold_spacing_km: float = 30.0
+    """Mean distance between the folds' centers."""
+
+    fold_length_km: tuple[float, float] = (25.0, 120.0)
+    """Range of a fold's length; lengths are spread log-uniformly over it."""
+
+    fold_shade_km: float = 10.0
+    """Distance from a fold over which its step in shade fades."""
+
+    fold_line_km: float = 1.2
+    """Gaussian half width of the crease along a fold."""
+
+    fold_ridges: float = 0.25
+    """Share of the ridged noise's shading and creases kept beside the
+    folds'."""
+
+    fractures: bool = False
+    """Whether the leads are long fracture systems in place of the borders of
+    a cell pattern; open water in them shows as the sea's fill."""
+
+    fracture_systems: tuple[int, int] = (150, 70)
+    """Fracture systems seeded on the north's and the south's cap."""
+
+    fracture_length_km: tuple[float, float] = (150.0, 800.0)
+    """Range of a system's main fracture's length; lengths are spread
+    log-uniformly over it."""
+
+    fracture_turn_km: tuple[float, float] = (1500.0, 6000.0)
+    """Feature sizes of the noise the fractures' direction field turns with."""
+
+    fracture_conjugate: tuple[float, float] = (0.35, 0.6)
+    """Range of the angle, either side, between a system's fractures and the
+    direction field: fractures form along two conjugate sets that cross, and
+    a branch runs along the other set from its parent's."""
+
+    fracture_share: tuple[float, float] = (1.0, 1.0)
+    """Share of the systems drawn where the concentration is 1 and where it
+    is 0.85 or less."""
+
+    fracture_follow: float = 0.02
+    """How far a fracture turns toward the field's direction per step."""
+
+    fracture_wander: float = 0.012
+    """Standard deviation of a fracture's own turn per step, in radians."""
+
+    fracture_step_km: float = 2.5
+    """Length of a fracture's segments."""
+
+    fracture_branching_km: float = 400.0
+    """Mean distance along a fracture between branches."""
+
+    fracture_branch_angle: tuple[float, float] = (0.6, 1.1)
+    """Range of a branch's angle off its parent, in radians."""
+
+    fracture_width_km: tuple[float, float] = (1.5, 5.0)
+    """Range of a fracture's width; a branch is narrower than its parent."""
+
+    fracture_darkness: tuple[float, float] = (0.1, 0.35)
+    """Range of the share of the sea's fill in a fracture's middle: grey
+    refrozen ice at the low end, open water at the high end."""
+
+    fracture_activity: float = 0.5
+    """Seeding density where the activity is 0, against 1 where it is 1."""
+
+    fracture_open_share: float = 0.12
+    """Share of the systems that are fresh open water, darker than
+    :attr:`fracture_darkness`'s refrozen leads."""
+
+    fracture_open_darkness: tuple[float, float] = (0.45, 0.8)
+    """Range of the share of the sea's fill in an open system's middle."""
+
+    fracture_bend: float = 0.22
+    """Standard deviation, in radians, of a fracture's heading about its
+    course, a smooth noise along it, so it wanders over tens of kilometers."""
+
+    fracture_bend_km: float = 16.0
+    """Gaussian sigma, along the fracture, of the noise that bends it."""
+
+    fracture_dark_vary: float = 0.35
+    """Standard deviation of a fracture's darkness along it, relative to its
+    own, from a smooth noise over the width's swell."""
+
+    floes: bool = False
+    """Whether the marginal ice breaks into floes with water between them."""
+
+    floe_cells_km: tuple[float, float] = (20.0, 10.0)
+    """Sizes of the large floes and of the small ones nearer the edge."""
+
+    floe_keep: float = 0.35
+    """Share of the large floes' grid points kept, at random, so their sizes
+    vary, around a mean of the cell over the share's square root."""
+
+    floe_ramp: float = 0.15
+    """Range of the opening level over which a floe goes from closed to its
+    full gap. Each floe opens at a level of its own, uniform from 0 to 1, so
+    at a low share of water a few floes stand apart, filled, in their water,
+    while the rest hold together as larger floes of irregular shape."""
+
+    floe_width: tuple[float, float] = (0.08, 0.32)
+    """Range of a floe's full gap, in cells from its border; a floe whose gap
+    reaches its middle is gone."""
+
+    floe_cluster: float = 0.75
+    """Weight of a smooth noise in the level at which a floe opens, against
+    the floe's own: floes open together in loose regions and hold together in
+    compact ones."""
+
+    floe_cluster_km: tuple[float, float] = (60.0, 250.0)
+    """Feature sizes of that noise."""
+
+    floe_open: tuple[float, float] = (0.95, 0.8)
+    """Concentrations over which the floes go from taking none to all of the
+    open water the edge model leaves: what the concentration leaves open less
+    what the edge's streaks draw."""
+
+    floe_small: tuple[float, float] = (0.7, 0.35)
+    """Concentrations over which the small floes' share of that water rises
+    from none to :attr:`floe_small_share`."""
+
+    floe_small_share: float = 0.6
+    """The small floes' largest share of the water between floes."""
+
+    floe_darkness: tuple[float, float] = (0.45, 0.95)
+    """Share of the sea's fill in the water between the floes: grey new ice
+    where the concentration is high, open water toward the edge."""
+
+    floe_dark_range: tuple[float, float] = (0.9, 0.6)
+    """Concentrations over which that share goes from the first to the
+    second."""
+
+    floe_gap: float = 0.45
+    """The largest share of a texel's area between floes. The water is the
+    share of the area times its darkness, so grey gaps are wider."""
+
+    floe_fast: float = 0.03
+    """Rise of the concentration by the fast ice band above which no floes
+    are drawn: the band closes the coast."""
+
+    floe_warp_km: float = 3.0
+    """Root mean square of the shift that bends the floes' borders."""
+
+    floe_warp_band_km: tuple[float, float] = (8.0, 40.0)
+    """Feature sizes of that shift."""
+
+    fast_ice: bool = False
+    """Whether the record's concentration next to its land is replaced by the
+    one further out where that is high: a band of fast ice."""
+
+    fast_ice_km: tuple[float, float] = (25.0, 50.0)
+    """Distances from the record's land over which its concentration goes from
+    unreliable, replaced in full, to trusted."""
+
+    fast_ice_offshore_km: tuple[float, float] = (50.0, 100.0)
+    """Distances from the record's land the concentration is carried in from."""
+
+    fast_ice_closed: tuple[float, float] = (0.8, 0.9)
+    """Concentrations offshore over which the band goes from none to full."""
+
+    melt_tone: bool = False
+    """Whether the Arctic summer's melt is a smooth regional tone, with the
+    crumple, in place of the mottling."""
+
+    melt_band_km: tuple[float, float] = (50.0, 300.0)
+    """Feature sizes of the melt's tone."""
+
+    melt_color: Rgb = (150, 175, 200)
+    """The bluish grey a region of much melt leans toward."""
+
+    melt_amplitude: float = 0.5
+    """How far a region of the most melt leans from the month's color toward
+    :attr:`melt_color`, at full melt. The tone is the noise through a soft
+    step from its mean to two standard deviations above it, less its mean, so
+    most of the pack stays near the month's color, a few regions lean well
+    toward the melt color, and the month's color stays the mean."""
+
+    coast_blend: bool = False
+    """Whether the ice's color and texture reach onto flat snow along the
+    coast, so that the coastline does not show under closed ice."""
+
+    coast_reach_km: tuple[float, float] = (6.0, 18.0)
+    """Distances inland over which the blend falls from full to none."""
+
+    coast_inner_km: tuple[float, float] = (2.0, 6.0)
+    """Land nearer the water than these is not read for snow and relief, since
+    it holds the imagery's own coastline and the fronts of ice shelves: the
+    nearer where the window holds no land beyond the farther, on small
+    islands and narrow peninsulas, the farther elsewhere."""
+
+    coast_window_km: float = 8.0
+    """Gaussian sigma of the surroundings snow and relief are read over."""
+
+    coast_snow: tuple[float, float] = (190.0, 0.2)
+    """Least luminance and largest saturation of a pixel of snow."""
+
+    coast_snow_share: tuple[float, float] = (0.5, 0.9)
+    """Shares of snow in the surroundings over which the blend rises from
+    none to full."""
+
+    coast_sea: tuple[float, float] = (60.0, 8.0)
+    """Largest luminance and least blue above red of the imagery's sea: on the
+    mask's land along the coast it is not read as land, and it takes what the
+    sea beside it shows, the fill under the ice's coverage."""
+
+    coast_relief: tuple[float, float] = (6.0, 10.0)
+    """Standard deviations of the snow's luminance in the surroundings over
+    which the land goes from flat, full blend, to mountainous, none."""
 
 
 LOOK = Look()
@@ -452,6 +757,648 @@ class NearestPoints:
             values[0] = np.where(first, candidate, values[0])
 
 
+def oriented_noise(
+    size: int,
+    band_km: tuple[float, float],
+    angle: float,
+    aspect: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Return periodic band noise whose features are longer along a direction.
+
+    As :func:`band_noise`, with the frequency along the direction counted
+    ``aspect`` times, so a feature is ``aspect`` times longer along it than
+    across it.
+
+    :param size: Texels along each side of the cap.
+    :param band_km: The smallest and largest feature size across.
+    :param angle: The direction, radians from the columns toward the rows.
+    :param aspect: How much longer the features are along it.
+    :param rng: The generator of the white noise.
+    :returns: float32 array ``(size, size)``, standard deviation 1.
+    """
+    spacing = texel_km(size)
+    white = rng.standard_normal((size, size), dtype=np.float32)
+    spectrum = fft.rfft2(white, workers=-1)
+    del white
+    fy = fft.fftfreq(size, d=spacing).astype(np.float32)[:, None]
+    fx = fft.rfftfreq(size, d=spacing).astype(np.float32)[None, :]
+    along = (fx * np.float32(np.cos(angle)) + fy * np.float32(np.sin(angle))) * (
+        np.float32(aspect)
+    )
+    across = fy * np.float32(np.cos(angle)) - fx * np.float32(np.sin(angle))
+    k = np.hypot(along, across)
+    del along, across
+    k[0, 0] = 1.0
+    low, high = 1 / (2 * band_km[1]), 1 / (2 * band_km[0])
+    log_k = np.log(k)
+    outside = np.maximum(np.log(low) - log_k, 0) + np.maximum(log_k - np.log(high), 0)
+    gain = np.exp(-0.5 * (outside / 0.35) ** 2) / k
+    gain[0, 0] = 0.0
+    del log_k, outside, k
+    spectrum *= gain
+    del gain
+    return normalized(fft.irfft2(spectrum, s=(size, size), workers=-1))
+
+
+def steered_noise(
+    size: int,
+    band_km: tuple[float, float],
+    doubled: np.ndarray,
+    aspect: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Return band noise stretched along a slowly turning direction field.
+
+    Noise stretched along four directions, 45 degrees apart, is blended by
+    how close each is to the field's direction, the two nearest at most.
+
+    :param size: Texels along each side of the cap.
+    :param band_km: The smallest and largest feature size across.
+    :param doubled: float32 array ``(2, size, size)``: cosine and sine of
+        twice the field's angle, as :func:`oriented_noise` measures it.
+    :param aspect: How much longer the features are along the field.
+    :param rng: The generator of the white noise.
+    :returns: float32 array ``(size, size)``, about standard deviation 1.
+    """
+    out = np.zeros((size, size), dtype=np.float32)
+    weights = np.zeros((size, size), dtype=np.float32)
+    for step in range(4):
+        angle = step * np.pi / 4
+        weight = np.maximum(
+            doubled[0] * np.float32(np.cos(2 * angle))
+            + doubled[1] * np.float32(np.sin(2 * angle)),
+            0,
+        )
+        out += weight * oriented_noise(size, band_km, angle, aspect, rng)
+        weights += weight * weight
+    out /= np.sqrt(np.maximum(weights, 1e-6))
+    return out
+
+
+def warped(field: np.ndarray, shift: np.ndarray) -> np.ndarray:
+    """Read a periodic field through a shift.
+
+    :param field: float32 array ``(size, size)``.
+    :param shift: float32 array ``(2, size, size)`` in texels, row first.
+    :returns: float32 array of the field's shape.
+    """
+    size = field.shape[0]
+    out = np.empty_like(field)
+    for start, stop in rows(size):
+        r = np.arange(start, stop, dtype=np.float32)[:, None] + shift[0, start:stop]
+        c = np.arange(size, dtype=np.float32)[None, :] + shift[1, start:stop]
+        out[start:stop] = map_coordinates(field, [r, c], order=1, mode="grid-wrap")
+    return out
+
+
+def activity_field(size: int, look: Look, rng: np.random.Generator) -> np.ndarray:
+    """Return where the pack is flat and where it is structured.
+
+    :param size: Texels along each side of the cap.
+    :param look: The tunables.
+    :param rng: The generator of the noise.
+    :returns: float16 array ``(size, size)`` from 0, flat, to 1.
+    """
+    noise = band_noise(size, look.activity_band_km, rng)
+    return smoothstep(*look.activity_range, noise).astype(np.float16)
+
+
+def facet_cells(
+    size: int,
+    cell_km: float,
+    shift: np.ndarray,
+    rng: np.random.Generator,
+    keep: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return plates: cells around points jittered on a grid, read through a
+    shift so their borders bend.
+
+    :param size: Texels along each side of the cap.
+    :param cell_km: The grid's spacing.
+    :param shift: float32 array ``(2, size, size)`` in texels, row first.
+    :param rng: The generator of the points and the shades.
+    :param keep: The share of the points kept, at random, so the cells' sizes
+        vary more than a jittered grid's.
+    :returns: float32 arrays ``(size, size)``: each texel's plate's shade,
+        standard normal, and its distance to the plate's border in texels.
+    """
+    cell = cell_km / texel_km(size)
+    count = int(np.ceil(size / cell)) + 2
+    grid = np.stack(np.mgrid[-1 : count - 1, -1 : count - 1], axis=-1).reshape(-1, 2)
+    points = (grid + rng.random(grid.shape)) * cell
+    if keep < 1:
+        points = points[rng.random(len(points)) < keep]
+    shades = rng.standard_normal(len(points)).astype(np.float32)
+    tree = cKDTree(points)
+    shade = np.empty((size, size), dtype=np.float32)
+    border = np.empty((size, size), dtype=np.float32)
+    for start, stop in rows(size):
+        r = np.arange(start, stop, dtype=np.float32)[:, None] + shift[0, start:stop]
+        c = np.arange(size, dtype=np.float32)[None, :] + shift[1, start:stop]
+        query = np.stack([r.ravel(), c.ravel()], axis=-1)
+        distance, index = tree.query(query, k=2, workers=-1)
+        apart = np.linalg.norm(points[index[:, 1]] - points[index[:, 0]], axis=-1)
+        to_border = (distance[:, 1] ** 2 - distance[:, 0] ** 2) / (2 * apart)
+        shade[start:stop] = shades[index[:, 0]].reshape(r.shape)
+        border[start:stop] = to_border.reshape(r.shape)
+    return shade, border
+
+
+FOLD_CHUNK = 65536
+"""Fold pieces drawn at once, which bounds the intermediates."""
+
+
+def folds(
+    size: int, look: Look, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """Draw straight folds at random places, directions and lengths.
+
+    Each fold is cut into pieces about a texel long, and every texel within
+    reach of a piece, beside it rather than past its ends, takes the fold's
+    step in shade, its own sign either side and fading over
+    :attr:`Look.fold_shade_km`, and its crease. Both taper toward the fold's
+    ends. Folds wrap around the cap's edges, as the noise does.
+
+    :param size: Texels along each side of the cap.
+    :param look: The tunables.
+    :param rng: The generator of the folds.
+    :returns: float32 arrays ``(size, size)``: the shade, standard deviation
+        1, and the creases, from 0 to about 1.
+    """
+    spacing = texel_km(size)
+    count = round((size * spacing / look.fold_spacing_km) ** 2)
+    centers = rng.random((count, 2)) * size
+    angles = rng.uniform(0, np.pi, count)
+    low, high = np.log(look.fold_length_km[0]), np.log(look.fold_length_km[1])
+    lengths = np.exp(rng.uniform(low, high, count)) / spacing
+    amplitudes = rng.standard_normal(count)
+    pieces = np.maximum(np.ceil(lengths), 1).astype(np.int64)
+    owner = np.repeat(np.arange(count), pieces)
+    index = np.arange(owner.size) - np.repeat(np.cumsum(pieces) - pieces, pieces)
+    t = (index + 0.5) / pieces[owner]
+    piece = lengths[owner] / pieces[owner]
+    along = np.stack([np.sin(angles), np.cos(angles)], axis=-1)[owner]
+    middle = centers[owner] + ((t - 0.5) * lengths[owner])[:, None] * along
+    taper = np.sin(np.pi * t) ** 0.5
+    amplitude = amplitudes[owner] * taper
+    shade_width = look.fold_shade_km / spacing
+    line_width = look.fold_line_km / spacing
+    reach = int(np.ceil(2.5 * shade_width))
+    shade = np.zeros(size * size, dtype=np.float64)
+    line = np.zeros(size * size, dtype=np.float64)
+    offsets = np.arange(-reach, reach + 1)
+    for start in range(0, owner.size, FOLD_CHUNK):
+        stop = min(start + FOLD_CHUNK, owner.size)
+        base = np.floor(middle[start:stop]).astype(np.int64)
+        half = piece[start:stop] / 2
+        texels, shades, lines = [], [], []
+        for dr in offsets:
+            for dc in offsets:
+                cell = base + np.array([dr, dc])
+                rel = cell + 0.5 - middle[start:stop]
+                a = (rel * along[start:stop]).sum(axis=1)
+                d = rel[:, 0] * along[start:stop, 1] - rel[:, 1] * along[start:stop, 0]
+                beside = (np.abs(d) < 2.5 * shade_width) & (-half <= a) & (a < half)
+                d = d[beside]
+                fade = np.exp(-np.abs(d) / shade_width) * smoothstep(
+                    2.5 * shade_width, 1.5 * shade_width, np.abs(d)
+                )
+                texels.append((cell[beside, 0] % size) * size + cell[beside, 1] % size)
+                shades.append(np.sign(d) * fade * amplitude[start:stop][beside])
+                lines.append(
+                    np.exp(-((d / line_width) ** 2)) * taper[start:stop][beside]
+                )
+        flat = np.concatenate(texels)
+        shade += np.bincount(flat, np.concatenate(shades), minlength=size * size)
+        line += np.bincount(flat, np.concatenate(lines), minlength=size * size)
+    return (
+        normalized(shade.reshape(size, size).astype(np.float32)),
+        np.clip(line.reshape(size, size), 0, 1).astype(np.float32),
+    )
+
+
+def crumple(
+    size: int, look: Look, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the crumpled snow: the slope of its height, its creases and its
+    plates.
+
+    Each octave is band noise stretched along a slowly turning direction field
+    and warped by a smooth shift, folded at zero: ``(1 - |n|)**2`` is a ridge
+    along every zero crossing, and its middle a crease. Octaves are added
+    coarsest first, each finer one confined toward the coarser one's ridges by
+    :attr:`Look.crumple_gate`, so the creases branch off one another and
+    enclose facets. The height is shaded by its slope toward a fixed light.
+
+    :param size: Texels along each side of the cap.
+    :param look: The tunables.
+    :param rng: The generator of the noise.
+    The snow also breaks into plates, cells of :attr:`Look.crumple_facets`
+    each with a shade of its own and creases along their borders.
+
+    :returns: float16 arrays ``(size, size)``: the slope toward the light,
+        standard deviation 1, the creases, from 0 to about 1, and the plates'
+        shade, standard deviation 1.
+    """
+    angle = band_noise(size, look.crumple_turn_km, rng) * np.float32(np.pi / 2)
+    doubled = np.stack([np.cos(2 * angle), np.sin(2 * angle)]).astype(np.float32)
+    del angle
+    shift = curl_shift(size, look.crumple_warp_band_km, look.crumple_warp_km, rng)
+    height = np.zeros((size, size), dtype=np.float32)
+    creases = np.zeros((size, size), dtype=np.float32)
+    coarser = np.ones((size, size), dtype=np.float32)
+    for low, high, ridge_weight, crease_weight in sorted(
+        look.crumple_octaves, reverse=True
+    ):
+        noise = warped(
+            steered_noise(size, (low, high), doubled, look.crumple_aspect, rng), shift
+        )
+        folded = np.abs(noise)
+        del noise
+        gate = np.float32(1 - look.crumple_gate) + np.float32(look.crumple_gate) * (
+            coarser
+        )
+        ridge = np.clip(1 - folded, 0, 1) ** 2
+        height += np.float32(ridge_weight) * ridge * gate
+        crease = np.clip(1 - folded / np.float32(look.crease_width), 0, 1) ** 2
+        creases += np.float32(crease_weight) * crease * gate
+        coarser = ridge
+        del folded, gate, crease
+    del doubled, coarser
+    gr, gc = np.gradient(height)
+    del height
+    slope = normalized(np.float32(np.sqrt(0.5)) * (gr + gc))
+    del gr, gc
+    plates = np.zeros((size, size), dtype=np.float32)
+    width = look.facet_crease_km / texel_km(size)
+    for cell_km, shade_weight, crease_weight in look.crumple_facets:
+        shade, border = facet_cells(size, cell_km, shift, rng)
+        plates += np.float32(shade_weight) * shade
+        creases += np.float32(crease_weight) * np.clip(1 - border / width, 0, 1) ** 2
+        del shade, border
+    del shift
+    weights = [o[3] for o in look.crumple_octaves] + [f[2] for f in look.crumple_facets]
+    creases /= np.float32(max(sum(weights), 1e-6))
+    if look.crumple_folds:
+        shade, line = folds(size, look, rng)
+        keep = np.float32(look.fold_ridges)
+        slope = normalized(keep * slope + (1 - keep) * shade)
+        creases = keep * creases + (1 - keep) * line
+        del shade, line
+    return (
+        slope.astype(np.float16),
+        creases.astype(np.float16),
+        normalized(plates).astype(np.float16),
+    )
+
+
+@dataclass(frozen=True)
+class Fractures:
+    """The fracture systems drawn on the cap."""
+
+    open: np.ndarray
+    """float16 share of the sea's fill each texel's fracture shows, its
+    darkness times how much of the texel it covers."""
+
+    rank: np.ndarray
+    """float16 rank of that fracture's system, uniform from 0 to 1: a system
+    is drawn where its rank is below the share drawn there."""
+
+    systems: np.ndarray
+    """float32 array ``(n, 3)``: each system's length in kilometers, branches
+    included, its number of branches and its darkness."""
+
+
+def _wrap(angle: float) -> float:
+    return (angle + np.pi) % (2 * np.pi) - np.pi
+
+
+def fracture_paths(
+    size: int,
+    seeds: np.ndarray,
+    direction: np.ndarray,
+    look: Look,
+    rng: np.random.Generator,
+) -> list[list[tuple[np.ndarray, float, float]]]:
+    """Trace fracture systems from seeds along a direction field.
+
+    A main fracture runs both ways from its seed, half its length each way;
+    each step it turns part of the way toward the field's direction, either
+    way along it, and by a little of its own. Branches leave it at random
+    distances, at an angle to one side, and run a share of what is left of
+    their parent.
+
+    :param size: Texels along each side of the cap.
+    :param seeds: float array ``(n, 2)`` of row and column.
+    :param direction: float32 array ``(size, size)``: the field's angle,
+        radians from the columns toward the rows.
+    :param look: The tunables.
+    :param rng: The generator of lengths, turns and branches.
+    :returns: Per system, its fractures: points ``(k, 2)`` in texels, the
+        width in texels and the darkness.
+    """
+    spacing = texel_km(size)
+    step = look.fracture_step_km / spacing
+    low, high = np.log(look.fracture_length_km[0]), np.log(look.fracture_length_km[1])
+    branch_chance = look.fracture_step_km / look.fracture_branching_km
+
+    bend_steps = look.fracture_bend_km / look.fracture_step_km
+
+    def bends(steps: int) -> np.ndarray:
+        if look.fracture_bend <= 0:
+            return np.zeros(steps)
+        span = int(np.ceil(3 * bend_steps))
+        kernel = np.exp(-0.5 * (np.arange(-span, span + 1) / bend_steps) ** 2)
+        noise = np.convolve(rng.standard_normal(steps + 2 * span), kernel, "valid")
+        return look.fracture_bend * noise / max(float(np.sqrt((kernel**2).sum())), 1e-9)
+
+    def trace(
+        start: np.ndarray, heading: float, steps: int, offset: float
+    ) -> np.ndarray:
+        points = [start.copy()]
+        point = start.astype(np.float64)
+        bend = bends(steps)
+        for number in range(steps):
+            r = int(np.clip(point[0], 0, size - 1))
+            c = int(np.clip(point[1], 0, size - 1))
+            field = float(direction[r, c]) + offset
+            turn = _wrap(field - heading)
+            if abs(turn) > np.pi / 2:
+                turn = _wrap(field + np.pi - heading)
+            heading += look.fracture_follow * turn + rng.normal(0, look.fracture_wander)
+            course = heading + bend[number]
+            point = point + step * np.array([np.sin(course), np.cos(course)])
+            if not (0 <= point[0] < size and 0 <= point[1] < size):
+                break
+            points.append(point.copy())
+        return np.array(points)
+
+    systems = []
+    for seed in seeds:
+        length = np.exp(rng.uniform(low, high)) / look.fracture_step_km
+        width = rng.uniform(*look.fracture_width_km) / spacing
+        darkness = rng.uniform(*look.fracture_darkness)
+        if look.fracture_open_share > 0 and rng.random() < look.fracture_open_share:
+            darkness = rng.uniform(*look.fracture_open_darkness)
+        offset = rng.choice([-1.0, 1.0]) * rng.uniform(*look.fracture_conjugate)
+        heading = float(direction[int(seed[0]), int(seed[1])]) + offset
+        halves = [
+            trace(seed, heading, int(length / 2), offset),
+            trace(seed, heading + np.pi, int(length / 2), offset),
+        ]
+        main = np.concatenate([halves[1][::-1], halves[0][1:]])
+        fractures = [(main, width, darkness)]
+        pending = [(main, width, darkness, 0, offset)]
+        while pending:
+            path, w, dark, depth, parent_offset = pending.pop()
+            if depth >= 1 or len(path) < 8:
+                continue
+            for index in np.nonzero(rng.random(len(path)) < branch_chance)[0]:
+                if index + 2 >= len(path):
+                    continue
+                along = path[index + 1] - path[index]
+                parent = float(np.arctan2(along[0], along[1]))
+                side = -np.sign(parent_offset)
+                angle = parent + side * rng.uniform(*look.fracture_branch_angle)
+                left = len(path) - index
+                steps = int(left * rng.uniform(0.2, 0.5))
+                branch = trace(path[index], angle, steps, -parent_offset)
+                if len(branch) < 4:
+                    continue
+                fractures.append((branch, w * 0.7, dark * 0.85))
+                pending.append(
+                    (branch, w * 0.7, dark * 0.85, depth + 1, -parent_offset)
+                )
+        systems.append(fractures)
+    return systems
+
+
+def draw_fractures(
+    size: int,
+    systems: list[list[tuple[np.ndarray, float, float]]],
+    ranks: np.ndarray,
+    rng: np.random.Generator,
+    swell_km: float = 60.0,
+    dark_vary: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Draw fracture systems antialiased: each texel takes the strongest.
+
+    A fracture's width swells and narrows along it, from 0.7 to 1.3 times its
+    own, with smoothed noise over about ``swell_km``.
+
+    A fracture's segments are lines of its width whose darkness tapers to a
+    third at both of its ends. A texel's share of a line is a box filter of a
+    texel against it: the line's width less the texel's distance from it,
+    capped at the width where that is below a texel.
+
+    :param size: Texels along each side of the cap.
+    :param systems: As :func:`fracture_paths` returns them.
+    :param ranks: Each system's rank.
+    :param dark_vary: Standard deviation of the darkness along a fracture,
+        relative to its own, from smoothed noise over ``swell_km``, held
+        within 0.3 to 1.7 times.
+    :returns: float16 arrays ``(size, size)``: the share of fill, and the
+        rank of the system that gave it.
+    """
+    starts, ends, widths, darks, which = [], [], [], [], []
+    for number, fractures in enumerate(systems):
+        for path, width, darkness in fractures:
+            if len(path) < 2:
+                continue
+            n = len(path) - 1
+            t = (np.arange(n) + 0.5) / n
+            taper = 1 / 3 + 2 / 3 * np.sin(np.pi * t) ** 0.5
+            starts.append(path[:-1])
+            ends.append(path[1:])
+            span = max(int(swell_km / texel_km(size)), 1)
+            noise = np.convolve(
+                rng.standard_normal(n + 2 * span), np.hanning(2 * span + 1), "same"
+            )[span : span + n]
+            noise /= max(float(noise.std()), 1e-6)
+            widths.append(width * np.clip(1 + 0.25 * noise, 0.7, 1.3))
+            shade = darkness * taper
+            if dark_vary > 0:
+                vary = np.convolve(
+                    rng.standard_normal(n + 2 * span), np.hanning(2 * span + 1), "same"
+                )[span : span + n]
+                vary /= max(float(vary.std()), 1e-6)
+                shade = shade * np.clip(1 + dark_vary * vary, 0.3, 1.7)
+            darks.append(shade)
+            which.append(np.full(n, number))
+    a = np.concatenate(starts)
+    b = np.concatenate(ends)
+    width = np.concatenate(widths)
+    dark = np.concatenate(darks)
+    system = np.concatenate(which)
+    reach = int(np.ceil(max(float(width.max()) / 2 + 1, 1))) + 1
+    middle = np.floor((a + b) / 2).astype(np.int64)
+    ab = b - a
+    length2 = np.maximum((ab**2).sum(axis=1), 1e-9)
+    texels, values, owners = [], [], []
+    for dr in range(-reach, reach + 1):
+        for dc in range(-reach, reach + 1):
+            cell = middle + np.array([dr, dc])
+            inside = (cell >= 0).all(axis=1) & (cell < size).all(axis=1)
+            centre = cell + 0.0
+            t = np.clip(((centre - a) * ab).sum(axis=1) / length2, 0, 1)
+            distance = np.linalg.norm(centre - (a + t[:, None] * ab), axis=1)
+            share = np.clip(width / 2 + 0.5 - distance, 0, np.minimum(width, 1))
+            keep = inside & (share > 0.01)
+            texels.append(cell[keep, 0] * size + cell[keep, 1])
+            values.append(share[keep] * dark[keep])
+            owners.append(system[keep])
+    texel = np.concatenate(texels)
+    value = np.concatenate(values)
+    owner = np.concatenate(owners)
+    order = np.lexsort((value, texel))
+    texel, value, owner = texel[order], value[order], owner[order]
+    last = np.r_[texel[1:] != texel[:-1], True]
+    shade = np.zeros(size * size, dtype=np.float16)
+    rank = np.ones(size * size, dtype=np.float16)
+    shade[texel[last]] = np.clip(value[last], 0, 1)
+    rank[texel[last]] = ranks[owner[last]]
+    return shade.reshape(size, size), rank.reshape(size, size)
+
+
+def fractures(
+    size: int,
+    look: Look,
+    hemisphere: str,
+    activity: np.ndarray,
+    concentration: np.ndarray,
+    rng: np.random.Generator,
+) -> Fractures:
+    """Seed, trace and draw a hemisphere's fracture systems.
+
+    Seeds fall where there is ice in some month, denser where the activity
+    is high, and the systems follow a direction field of noise that turns
+    over :attr:`Look.fracture_turn_km`.
+
+    :param size: Texels along each side of the cap.
+    :param look: The tunables.
+    :param hemisphere: ``nh`` or ``sh``.
+    :param activity: float16 array ``(size, size)``.
+    :param concentration: float array ``(12, n, n)`` on a coarser cap.
+    :param rng: The generator of everything.
+    :returns: The fractures.
+    """
+    count = look.fracture_systems[HEMISPHERES.index(hemisphere)]
+    direction = band_noise(size, look.fracture_turn_km, rng) * np.float32(np.pi / 2)
+    iced = zoom(
+        concentration.max(axis=0),
+        size / concentration.shape[-1],
+        order=1,
+        grid_mode=True,
+        mode="nearest",
+    )
+    density = (iced > 0.5) * (
+        look.fracture_activity
+        + (1 - look.fracture_activity) * activity.astype(np.float32)
+    )
+    del iced
+    flat = density.ravel() / density.sum()
+    picked = rng.choice(size * size, size=count, p=flat)
+    seeds = np.stack([picked // size, picked % size], axis=-1) + rng.random((count, 2))
+    systems = fracture_paths(size, seeds, direction, look, rng)
+    ranks = rng.random(count).astype(np.float32)
+    shade, rank = draw_fractures(
+        size, systems, ranks, rng, dark_vary=look.fracture_dark_vary
+    )
+    summary = np.array(
+        [
+            [
+                sum((len(path) - 1) * look.fracture_step_km for path, _, _ in system),
+                len(system) - 1,
+                system[0][2],
+            ]
+            for system in systems
+        ],
+        dtype=np.float32,
+    )
+    return Fractures(shade, rank, summary)
+
+
+@dataclass(frozen=True)
+class Floes:
+    """Cells the marginal ice breaks into, in two sizes."""
+
+    border: np.ndarray
+    """float16 array ``(2, size, size)``: each texel's distance to its cell's
+    border, in cells."""
+
+    opening: np.ndarray
+    """float16 array ``(2, size, size)``: the level at which each texel's
+    floe starts to open, uniform from 0 to 1."""
+
+    width: np.ndarray
+    """float16 array ``(2, size, size)``: each texel's floe's full gap, in
+    cells."""
+
+    levels: np.ndarray
+    """float32 array ``(65,)``: the opening levels the shares are tabulated
+    at."""
+
+    shares: np.ndarray
+    """float32 array ``(2, 65)``: the share of the area that is gap at each
+    level, so a share of gap is read back as a level."""
+
+
+def floe_gap(floes: Floes, layer: int, level: np.ndarray, ramp: float, rows: slice):
+    """Return each texel's floe's gap, in cells, at an opening level.
+
+    :param floes: The floes.
+    :param layer: The floes' size, 0 for the large ones.
+    :param level: float array of the rows' shape, or a scalar.
+    :param ramp: :attr:`Look.floe_ramp`.
+    :param rows: The rows.
+    :returns: float32 array of the rows' shape.
+    """
+    opening = floes.opening[layer, rows].astype(np.float32)
+    width = floes.width[layer, rows].astype(np.float32)
+    return width * np.clip((level - opening) / np.float32(ramp), 0, 1)
+
+
+def floe_cells(size: int, look: Look, rng: np.random.Generator) -> Floes:
+    """Return the floes' cells, their borders bent by a smooth shift.
+
+    Each floe takes a level at which it opens and a full gap, and the share
+    of the area that is gap is tabulated against the level.
+
+    :param size: Texels along each side of the cap.
+    :param look: The tunables.
+    :param rng: The generator of the shift and the cells.
+    :returns: The floes.
+    """
+    shift = curl_shift(size, look.floe_warp_band_km, look.floe_warp_km, rng)
+    border = np.empty((2, size, size), dtype=np.float16)
+    opening = np.empty((2, size, size), dtype=np.float16)
+    width = np.empty((2, size, size), dtype=np.float16)
+    levels = np.linspace(0.0, 1.0 + look.floe_ramp, 65, dtype=np.float32)
+    shares = np.empty((2, len(levels)), dtype=np.float32)
+    low, high = look.floe_width
+    together = np.float32(look.floe_cluster)
+    alone = np.float32(np.sqrt(max(1 - look.floe_cluster**2, 0)))
+    for layer, cell_km in enumerate(look.floe_cells_km):
+        keep = look.floe_keep if layer == 0 else 1.0
+        shade, distance = facet_cells(size, cell_km, shift, rng, keep)
+        distance /= np.float32(cell_km / np.sqrt(keep) / texel_km(size))
+        border[layer] = distance
+        width[layer] = low + (high - low) * ((ndtr(shade) * 7919.0) % 1.0)
+        cluster = band_noise(size, look.floe_cluster_km, rng)
+        opening[layer] = ndtr(together * cluster + alone * shade)
+        del shade, cluster
+        sample = np.s_[layer, ::4, ::4]
+        d = border[sample].astype(np.float32)
+        o = opening[sample].astype(np.float32)
+        w = width[sample].astype(np.float32)
+        shares[layer] = [
+            float((d < w * np.clip((level - o) / look.floe_ramp, 0, 1)).mean())
+            for level in levels
+        ]
+    return Floes(border, opening, width, levels, shares)
+
+
 @dataclass(frozen=True)
 class Fields:
     """The noise fields of one hemisphere, the same in every month."""
@@ -473,11 +1420,40 @@ class Fields:
     leads: Leads
     """The lead network."""
 
-    brightness: np.ndarray
-    """float16 broad brightness noise, standard deviation 1."""
+    brightness: np.ndarray | None = None
+    """float16 broad brightness noise, standard deviation 1; ``None`` with the
+    crumple."""
 
-    mottle: np.ndarray
-    """float16 melt mottling noise, standard deviation 1."""
+    mottle: np.ndarray | None = None
+    """float16 melt mottling noise, standard deviation 1; ``None`` with the
+    crumple."""
+
+    activity: np.ndarray | None = None
+    """float16 from 0, flat, to 1, fully structured; with the crumple."""
+
+    slope: np.ndarray | None = None
+    """float16 slope of the crumple's height toward the light, standard
+    deviation 1; with the crumple."""
+
+    creases: np.ndarray | None = None
+    """float16 crease strength from 0 to about 1; with the crumple."""
+
+    plates: np.ndarray | None = None
+    """float16 shade of the plates, standard deviation 1; with the crumple."""
+
+    fractures: Fractures | None = None
+    """The fracture systems, in place of the lead network's use."""
+
+    floes: Floes | None = None
+    """The floes of the marginal ice."""
+
+    melt: np.ndarray | None = None
+    """float16 tone of the melt, standard deviation 1; with the melt tone."""
+
+    fast: np.ndarray | None = None
+    """float16 array ``(12, n, n)``: how much the fast ice band raised each
+    month's concentration, on the coarser cap; with the band and the
+    floes."""
 
     @property
     def size(self) -> int:
@@ -491,6 +1467,7 @@ def prepare(
     size: int,
     look: Look = LOOK,
     report: Callable[[str], None] = lambda _: None,
+    fast: np.ndarray | None = None,
 ) -> Fields:
     """Generate a hemisphere's noise fields.
 
@@ -499,6 +1476,8 @@ def prepare(
     :param size: Texels along each side of the cap the ice is generated on.
     :param look: The tunables.
     :param report: Told what is being generated.
+    :param fast: How much the fast ice band raised the concentration, as
+        :func:`fast_ice_raise` returns it; kept with the floes.
     :returns: The fields.
     """
     report("orientation")
@@ -521,6 +1500,50 @@ def prepare(
     )
     report("leads")
     network = leads(size, look, _rng(look, hemisphere, 2))
+    if look.crumple:
+        report("activity")
+        activity = activity_field(size, look, _rng(look, hemisphere, 5))
+        report("crumple")
+        slope, creases, plates = crumple(size, look, _rng(look, hemisphere, 6))
+        cracks = None
+        if look.fractures:
+            report("fractures")
+            cracks = fractures(
+                size,
+                look,
+                hemisphere,
+                activity,
+                concentration,
+                _rng(look, hemisphere, 7),
+            )
+        melt = None
+        if look.melt_tone and hemisphere == "nh":
+            report("melt")
+            melt = band_noise(size, look.melt_band_km, _rng(look, hemisphere, 9))
+            melt = melt.astype(np.float16)
+        broken = None
+        if look.floes:
+            report("floes")
+            broken = floe_cells(size, look, _rng(look, hemisphere, 8))
+        return Fields(
+            hemisphere,
+            concentration.astype(np.float32),
+            threshold,
+            shift,
+            network,
+            floes=broken,
+            activity=activity,
+            slope=slope,
+            creases=creases,
+            plates=plates,
+            melt=melt,
+            fractures=cracks,
+            fast=(
+                fast.astype(np.float16)
+                if fast is not None and broken is not None
+                else None
+            ),
+        )
     report("brightness")
     brightness = band_noise(
         size, look.brightness_band_km, _rng(look, hemisphere, 3)
@@ -553,13 +1576,37 @@ class Cap:
     color: Rgb
     """The month's color."""
 
-    def ice_rgb(self, brightness: np.ndarray) -> np.ndarray:
+    land_coverage: np.ndarray | None = None
+    """The coverage the coast's land blends with, without the open water of
+    leads and floes, which belongs to the sea; ``coverage`` when ``None``."""
+
+    land_brightness: np.ndarray | None = None
+    """The brightness the coast's land takes, without leads; ``brightness``
+    when ``None``."""
+
+    activity: np.ndarray | None = None
+    """float32 array ``(size, size)``: the month's activity, with the
+    crumple."""
+
+    tint: np.ndarray | None = None
+    """float32 array ``(size, size)``: how far each texel's color leans along
+    :attr:`tint_rgb`, with the melt tone."""
+
+    tint_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """The shift of the color per unit of the tint."""
+
+    def ice_rgb(
+        self, brightness: np.ndarray, tint: np.ndarray | None = None
+    ) -> np.ndarray:
         """Return the ice's color for sampled brightness values.
 
         :param brightness: float array of any shape.
+        :param tint: Sampled tint of that shape, if any.
         :returns: float32 array of that shape plus 3, from 0 to 255.
         """
         rgb = np.asarray(self.color, dtype=np.float32)
+        if tint is not None:
+            rgb = rgb + tint[..., None] * np.asarray(self.tint_rgb, dtype=np.float32)
         return np.clip(brightness[..., None] * rgb, 0, 255)
 
 
@@ -576,6 +1623,12 @@ def month_cap(fields: Fields, month: int, look: Look = LOOK) -> Cap:
     scale = field_.shape[-1] / size
     coverage = np.empty((size, size), dtype=np.float32)
     brightness = np.empty((size, size), dtype=np.float32)
+    land = np.empty((size, size), dtype=np.float32) if look.coast_blend else None
+    activity = np.empty((size, size), dtype=np.float32) if look.crumple else None
+    whole = None
+    opened = fields.fractures is not None or fields.floes is not None
+    if opened and look.coast_blend:
+        whole = np.empty((size, size), dtype=np.float32)
     mottle = (
         look.mottle_amplitude * look.mottle_months[month - 1]
         if fields.hemisphere == "nh"
@@ -583,6 +1636,9 @@ def month_cap(fields: Fields, month: int, look: Look = LOOK) -> Cap:
     )
     low = look.edge_center - look.edge_spread
     high = look.edge_center + look.edge_spread
+    ceiling = high if look.edge_pack is None else look.edge_pack
+    squeeze = np.float32((ceiling - low) / (high - low))
+    fast = None if fields.fast is None else fields.fast[month - 1].astype(np.float32)
     for start, stop in rows(size):
         r = (
             np.arange(start, stop, dtype=np.float32)[:, None]
@@ -597,22 +1653,146 @@ def month_cap(fields: Fields, month: int, look: Look = LOOK) -> Cap:
             prefilter=False,
         )
         t = fields.threshold[start:stop]
-        coverage[start:stop] = smoothstep(
-            t - look.edge_softness, t + look.edge_softness, conc
-        )
+        if look.edge_pack is not None:
+            t = low + (t - low) * squeeze
+        covered = smoothstep(t - look.edge_softness, t + look.edge_softness, conc)
+        coverage[start:stop] = covered
         thin = look.thin_shade + (1 - look.thin_shade) * smoothstep(low, high, conc)
         share = look.lead_share_closed + (
             look.lead_share_open - look.lead_share_closed
         ) * smoothstep(1.0, 0.85, conc)
-        drawn = fields.leads.rank[start:stop] < share
-        lead = look.lead_darkening * fields.leads.profile[start:stop] * drawn
-        broad = 1 + look.brightness_amplitude * fields.brightness[start:stop]
-        rough = look.rough_amplitude * smoothstep(
-            look.rough_range[1], look.rough_range[0], conc
+        if fields.fractures is not None:
+            closed, opened = look.fracture_share
+            share = closed + (opened - closed) * smoothstep(1.0, 0.85, conc)
+            drawn = np.clip((share - fields.fractures.rank[start:stop]) / 0.15, 0, 1)
+            gaps = fields.fractures.open[start:stop] * drawn
+            coverage[start:stop] = covered * (1 - gaps)
+            lead = 0.0
+        else:
+            drawn = fields.leads.rank[start:stop] < share
+            lead = look.lead_darkening * fields.leads.profile[start:stop] * drawn
+        if activity is not None:
+            floor = look.activity_floor
+            base = floor + (1 - floor) * fields.activity[start:stop].astype(np.float32)
+            active = 1 - (1 - base) * (
+                1
+                - look.activity_edge
+                * smoothstep(
+                    look.activity_edge_range[0], look.activity_edge_range[1], conc
+                )
+            )
+            activity[start:stop] = active
+            slope = fields.slope[start:stop].astype(np.float32)
+            relief = (
+                look.crumple_light * np.maximum(slope, 0)
+                - look.crumple_shadow * np.maximum(-slope, 0)
+                - look.crumple_crease * fields.creases[start:stop]
+            )
+            plates = (look.plates_flat + (1 - look.plates_flat) * active) * (
+                look.crumple_plates * fields.plates[start:stop]
+            )
+            texture = thin * (1 + active * relief + plates)
+        else:
+            broad = 1 + look.brightness_amplitude * fields.brightness[start:stop]
+            rough = look.rough_amplitude * smoothstep(
+                look.rough_range[1], look.rough_range[0], conc
+            )
+            melt = 1 + (mottle + rough) * fields.mottle[start:stop]
+            texture = thin * broad * melt
+        if fields.floes is not None:
+            band = None
+            if fast is not None:
+                band = map_coordinates(
+                    fast,
+                    [(r + 0.5) * scale - 0.5, (c + 0.5) * scale - 0.5],
+                    order=3,
+                    mode="nearest",
+                    prefilter=False,
+                )
+            coverage[start:stop] *= 1 - floe_water(
+                fields.floes, conc, band, look, start, stop, (low, ceiling), size
+            )
+        if whole is not None:
+            whole[start:stop] = covered
+        brightness[start:stop] = texture * (1 - lead)
+        if land is not None:
+            land[start:stop] = texture
+    color = look.colors[fields.hemisphere][month - 1]
+    tint, tint_rgb = None, (0.0, 0.0, 0.0)
+    melting = look.mottle_months[month - 1] if fields.hemisphere == "nh" else 0.0
+    if fields.melt is not None and melting > 0:
+        tone = smoothstep(0.0, 2.0, fields.melt.astype(np.float32))
+        tint = (look.melt_amplitude * melting) * (tone - np.float32(tone.mean()))
+        tint_rgb = tuple(
+            float(m - c) for m, c in zip(look.melt_color, color, strict=True)
         )
-        melt = 1 + (mottle + rough) * fields.mottle[start:stop]
-        brightness[start:stop] = thin * broad * melt * (1 - lead)
-    return Cap(coverage, brightness, look.colors[fields.hemisphere][month - 1])
+    return Cap(
+        coverage,
+        brightness,
+        color,
+        land_coverage=whole,
+        land_brightness=land,
+        activity=activity,
+        tint=tint,
+        tint_rgb=tint_rgb,
+    )
+
+
+def floe_water(
+    floes: Floes,
+    conc: np.ndarray,
+    band: np.ndarray | None,
+    look: Look,
+    start: int,
+    stop: int,
+    edge: tuple[float, float],
+    size: int,
+) -> np.ndarray:
+    """Return the share of the sea's fill between the floes in rows of a cap.
+
+    The edge model draws all of a texel as ice at its ceiling and above, and
+    the share ``(c - low) / (ceiling - low)`` of it below; what that leaves
+    of the concentration's open water, ``1 - c / drawn``, is the floes'
+    from :attr:`Look.floe_open`'s first concentration down to all of it at
+    the second, except where the fast ice band raised the concentration. The
+    water is grey new ice at high concentrations and open water toward the
+    edge, and the floes open to an area of that water over its darkness,
+    split between the large and the small floes.
+
+    :param floes: The floes' cells.
+    :param conc: The concentration in the rows.
+    :param band: How much the fast ice band raised it there, if it did.
+    :param look: The tunables.
+    :param start: The first row.
+    :param stop: The row after the last.
+    :param edge: The edge model's threshold's low end and its ceiling.
+    :param size: Texels along each side of the cap.
+    :returns: float32 array of the rows' shape: the share of each texel the
+        fill takes from the ice.
+    """
+    low, ceiling = edge
+    drawn = np.clip((conc - low) / (ceiling - low), 0, 1)
+    open_ = np.where(drawn > conc, 1 - conc / np.maximum(drawn, 1e-6), 0)
+    take = smoothstep(*look.floe_open, conc)
+    if band is not None:
+        take *= smoothstep(look.floe_fast, 0.0, band)
+    dark = look.floe_darkness[0] + (
+        look.floe_darkness[1] - look.floe_darkness[0]
+    ) * smoothstep(*look.floe_dark_range, conc)
+    area = np.minimum(open_ * take / dark, look.floe_gap)
+    small = look.floe_small_share * smoothstep(*look.floe_small, conc)
+    kept = np.ones(conc.shape, dtype=np.float32)
+    for layer, part in enumerate((area * (1 - small), area * small)):
+        level = np.interp(part, floes.shares[layer], floes.levels)
+        gap = floe_gap(floes, layer, level, look.floe_ramp, slice(start, stop))
+        cell_km = look.floe_cells_km[layer] / np.sqrt(
+            look.floe_keep if layer == 0 else 1
+        )
+        soft = np.float32(0.5 * texel_km(size) / cell_km)
+        distance = floes.border[layer, start:stop].astype(np.float32)
+        water = smoothstep(gap + soft, gap - soft, distance)
+        kept *= 1 - water * np.minimum(gap / soft, 1)
+    return (dark * (1 - kept)).astype(np.float32)
 
 
 @dataclass(frozen=True)
@@ -623,7 +1803,7 @@ class MonthIce:
     """The north's and the south's cap."""
 
     def sample(
-        self, x: np.ndarray, y: np.ndarray, z: np.ndarray
+        self, x: np.ndarray, y: np.ndarray, z: np.ndarray, land: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
         """Sample the coverage and the ice's color along directions.
 
@@ -633,6 +1813,7 @@ class MonthIce:
         :param x: Direction components toward longitude 90 E.
         :param y: Direction components toward the north pole.
         :param z: Direction components toward longitude 0.
+        :param land: Sample what the coast's land blends with instead.
         :returns: The coverage, float32 of the directions' shape, and the
             ice's color, float32 of that shape plus 3.
         """
@@ -645,11 +1826,17 @@ class MonthIce:
                 continue
             cap = self.caps[hemisphere]
             row, col = plane_to_texel(px[here], py[here], cap.coverage.shape[0])
-            coverage[here] = map_coordinates(
-                cap.coverage, [row, col], order=1, mode="nearest"
-            )
+            cover, bright = cap.coverage, cap.brightness
+            if land and cap.land_coverage is not None:
+                cover = cap.land_coverage
+            if land and cap.land_brightness is not None:
+                bright = cap.land_brightness
+            coverage[here] = map_coordinates(cover, [row, col], order=1, mode="nearest")
+            tint = None
+            if cap.tint is not None:
+                tint = map_coordinates(cap.tint, [row, col], order=1, mode="nearest")
             rgb[here] = cap.ice_rgb(
-                map_coordinates(cap.brightness, [row, col], order=1, mode="nearest")
+                map_coordinates(bright, [row, col], order=1, mode="nearest"), tint
             )
         return coverage, rgb
 
@@ -724,3 +1911,244 @@ def composite_face(
     bands = map(band, starts) if pool is None else pool.map(band, starts)
     north, south = (sum(values) for values in zip(*bands, strict=True))
     return {"nh": north, "sh": south}
+
+
+def winter_months(table: tuple[Rgb, ...]) -> list[int]:
+    """Return the months whose color is a table's brightest, its winter.
+
+    :param table: Twelve colors, January first.
+    :returns: The months, 1 to 12.
+    """
+    brightest = max(table, key=sum)
+    return [month + 1 for month, color in enumerate(table) if color == brightest]
+
+
+def rescaled_colors(table: tuple[Rgb, ...], winter: Rgb) -> tuple[Rgb, ...]:
+    """Return a table with a new winter color and every month's darkening kept.
+
+    Each month's color is the new winter color times the month's ratio to the
+    table's winter color, per channel.
+
+    :param table: Twelve colors, January first.
+    :param winter: The new color of the table's brightest months.
+    :returns: Twelve colors.
+    """
+    before = np.asarray(max(table, key=sum), dtype=np.float64)
+    after = np.asarray(winter, dtype=np.float64)
+    scaled = np.clip(
+        np.rint(after * np.asarray(table, dtype=np.float64) / before), 0, 255
+    )
+    return tuple((int(r), int(g), int(b)) for r, g, b in scaled)
+
+
+def imagery_sea(rgb: np.ndarray, look: Look = LOOK) -> np.ndarray:
+    """Return where the imagery draws its sea: dark and bluish.
+
+    :param rgb: Array of any shape ending in 3.
+    :param look: The tunables.
+    :returns: bool array without the last axis.
+    """
+    values = rgb.astype(np.float32)
+    lum = values @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    return (lum < look.coast_sea[0]) & (
+        values[..., 2] - values[..., 0] > look.coast_sea[1]
+    )
+
+
+def _surroundings(
+    lum: np.ndarray, snowy: np.ndarray, inner: np.ndarray, sigma: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read the land around each texel: how much of it there is, how much of
+    it is snow, and the standard deviation of the snow's luminance."""
+    read = gaussian_filter(inner, sigma, mode="nearest")
+    snow = inner * snowy
+    covered = gaussian_filter(snow, sigma, mode="nearest")
+    share = covered / np.maximum(read, 1e-6)
+    mean = gaussian_filter(lum * snow, sigma, mode="nearest")
+    mean /= np.maximum(covered, 1e-6)
+    square = gaussian_filter(lum * lum * snow, sigma, mode="nearest")
+    square /= np.maximum(covered, 1e-6)
+    relief = np.sqrt(np.maximum(square - mean * mean, 0.0))
+    relief[covered < 0.02] = np.inf
+    return read, share, relief
+
+
+def coast_weight(
+    source: np.ndarray,
+    water: np.ndarray,
+    look: Look = LOOK,
+    spacing_km: float | None = None,
+) -> np.ndarray:
+    """Return how far each texel's land takes the ice's color, before coverage.
+
+    The weight is the product of how much of the land around is snow, how
+    flat that snow is, and a falloff with the distance inland. Snow and
+    relief are read from the land at least :attr:`Look.coast_inner_km` from
+    the water, over a Gaussian of :attr:`Look.coast_window_km`, so the
+    imagery's own coastline pixels, part snow and part its dark water, take
+    their weight from the land behind them. The relief is the standard
+    deviation of the snow's luminance there; land without enough snow around
+    to measure it gets none.
+
+    :param source: uint8 array ``(N, N, 3)``, the face before the flatten.
+    :param water: uint8 array ``(N, N)``, the mask, 255 for open water.
+    :param look: The tunables.
+    :param spacing_km: The texels' side; a face's at its center when ``None``.
+    :returns: float32 array ``(N, N)`` from 0 to 1, 0 on open water.
+    """
+    size = water.shape[0]
+    spacing = (
+        np.pi / 2 * AUTHALIC_RADIUS_KM / size if spacing_km is None else spacing_km
+    )
+    inland = distance_transform_edt(water < 128).astype(np.float32)
+    inland *= np.float32(spacing)
+    reach = smoothstep(look.coast_reach_km[1], look.coast_reach_km[0], inland)
+    reach[water == 255] = 0
+    if not reach.any():
+        return reach
+    rgb = source.astype(np.float32)
+    lum = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    top = rgb.max(axis=-1)
+    snowy = (lum > look.coast_snow[0]) & (
+        top - rgb.min(axis=-1) < look.coast_snow[1] * np.maximum(top, 1)
+    )
+    sea = imagery_sea(source, look)
+    del rgb, top
+    sigma = look.coast_window_km / spacing
+    near_km, far_km = look.coast_inner_km
+    _, share, relief = _surroundings(
+        lum, snowy, ((inland >= near_km) & ~sea).astype(np.float32), sigma
+    )
+    read, far_share, far_relief = _surroundings(
+        lum, snowy, ((inland >= far_km) & ~sea).astype(np.float32), sigma
+    )
+    del lum, snowy
+    far = smoothstep(0.02, 0.1, read)
+    share += far * (far_share - share)
+    relief = np.where(far > 0.5, far_relief, relief)
+    del far_share, far_relief, read, far
+    flat = smoothstep(look.coast_relief[1], look.coast_relief[0], relief)
+    weight = reach * flat * smoothstep(*look.coast_snow_share, share)
+    np.maximum(weight, reach * sea, out=weight)
+    return weight.astype(np.float32)
+
+
+def blend_coast(
+    flat: np.ndarray,
+    source: np.ndarray,
+    water: np.ndarray,
+    face: str,
+    ice: MonthIce,
+    look: Look = LOOK,
+    pool: Executor | None = None,
+    band_rows: int = 256,
+    spacing_km: float | None = None,
+    fill: Rgb | None = None,
+) -> np.ndarray:
+    """Blend the land share of a flattened face toward the ice along the coast.
+
+    The land share ``(1 - w) * land`` of a texel becomes
+    ``(1 - w) * mix(land, ice, k)``, with ``k`` the :func:`coast_weight`
+    times the ice's coverage there. The ice is what the coast's land blends
+    with: its color and texture without leads and open water. Where the
+    land share holds the imagery's sea it takes the sea's color instead,
+    ``mix(fill, ice, coverage)``, at the :func:`coast_weight` alone.
+
+    :param flat: uint8 array ``(N, N, 3)``, the flattened face, changed in
+        place.
+    :param source: uint8 array ``(N, N, 3)``, the face before the flatten.
+    :param water: uint8 array ``(N, N)``, the mask, 255 for open water.
+    :param face: The face's name.
+    :param ice: The month's ice.
+    :param look: The tunables.
+    :param pool: Runs the bands concurrently when given.
+    :param band_rows: Face rows worked at once.
+    :param spacing_km: The texels' side; a face's at its center when ``None``.
+    :param fill: The ocean fill color the face was flattened with; the
+        imagery's sea is left out of the blend when ``None``.
+    :returns: float32 array ``(N, N)``: ``k`` times the land share, the share
+        of each texel the ice took.
+    """
+    size = flat.shape[0]
+    weight = coast_weight(source, water, look, spacing_km)
+    fill_rgb = np.asarray(fill if fill is not None else (0, 0, 0), dtype=np.float32)
+
+    def band(start: int) -> None:
+        stop = min(start + band_rows, size)
+        here = weight[start:stop] > 0
+        if not here.any():
+            return
+        x, y, z = (axis[here] for axis in face_directions(face, size, start, stop))
+        coverage, rgb = ice.sample(x, y, z, land=True)
+        land = 1 - water[start:stop][here].astype(np.float32) / 255
+        original = source[start:stop][here]
+        k = weight[start:stop][here] * coverage * land
+        if fill is not None:
+            sea = imagery_sea(original, look)
+            if sea.any():
+                rgb[sea] = fill_rgb + coverage[sea, None] * (rgb[sea] - fill_rgb)
+                k[sea] = weight[start:stop][here][sea] * land[sea]
+        weight[start:stop][here] = k
+        texels = flat[start:stop][here].astype(np.float32)
+        texels += k[:, None] * (rgb - original.astype(np.float32))
+        flat[start:stop][here] = np.clip(texels + 0.5, 0, 255).astype(np.uint8)
+
+    starts = range(0, size, band_rows)
+    for _ in map(band, starts) if pool is None else pool.map(band, starts):
+        pass
+    return weight
+
+
+def fast_ice(hemisphere: Hemisphere, look: Look = LOOK) -> Hemisphere:
+    """Carry the concentration offshore in to the coast where it is high.
+
+    Within :attr:`Look.fast_ice_km` of the record's land its 25 km cells mix
+    land and sea and read low along coasts the ice offshore closes. Each
+    ocean cell there is raised toward the mean of the cells
+    :attr:`Look.fast_ice_offshore_km` out, over a Gaussian of two cells,
+    fully where that mean is above :attr:`Look.fast_ice_closed`'s upper end
+    and the cell is nearer than the first distance. A cell is never lowered,
+    so open water offshore leaves the coast as the record has it.
+
+    :param hemisphere: The record.
+    :param look: The tunables; the record comes back unchanged without
+        :attr:`Look.fast_ice`.
+    :returns: The record with the band.
+    """
+    if not look.fast_ice:
+        return hemisphere
+    ocean = ~hemisphere.land
+    distance = distance_transform_edt(ocean).astype(np.float32) * SOURCE_CELL_KM
+    ring = (
+        ocean
+        & (distance >= look.fast_ice_offshore_km[0])
+        & (distance <= look.fast_ice_offshore_km[1])
+    ).astype(np.float32)
+    read = gaussian_filter(ring, 2.0, mode="constant")
+    near = smoothstep(look.fast_ice_km[1], look.fast_ice_km[0], distance) * ocean
+    means = hemisphere.means.copy()
+    for month in range(len(means)):
+        values = np.nan_to_num(means[month])
+        offshore = gaussian_filter(values * ring, 2.0, mode="constant") / np.maximum(
+            read, 1e-6
+        )
+        weight = near * smoothstep(*look.fast_ice_closed, offshore) * (read > 0.05)
+        raised = values + weight * np.maximum(offshore - values, 0)
+        means[month] = np.where(ocean, raised, means[month])
+    return dataclasses.replace(hemisphere, means=means)
+
+
+def fast_ice_raise(record: Hemisphere, banded: Hemisphere) -> np.ndarray | None:
+    """Return how much the fast ice band raised the concentration, on the cap.
+
+    :param record: The record.
+    :param banded: The record with the band, as :func:`fast_ice` returns it.
+    :returns: float32 array ``(12, n, n)`` as
+        :func:`~texture_pipeline.sea_ice.cap_concentration` resamples it, or
+        ``None`` where there is no band.
+    """
+    if banded is record:
+        return None
+    return cap_concentration(
+        dataclasses.replace(record, means=banded.means - record.means)
+    )

@@ -1068,3 +1068,100 @@ def milky_way(
             seed=seed,
         ),
     )
+
+
+preview_app = typer.Typer(
+    help="Preview the sea ice's look: bake, render and measure variants.",
+    no_args_is_help=True,
+)
+app.add_typer(preview_app, name="preview")
+
+_PREVIEW_ROOT = Path("../../tmp/sea-ice-look")
+
+
+def _validate_variant(value: str) -> str:
+    from texture_pipeline.sea_ice_preview import VARIANTS
+
+    if value not in VARIANTS:
+        msg = f"Unknown variant {value!r}; one of {', '.join(VARIANTS)}."
+        raise typer.BadParameter(msg)
+    return value
+
+
+def _validate_month(value: int) -> int:
+    if not 1 <= value <= 12:
+        raise typer.BadParameter("A month is 1 to 12.")
+    return value
+
+
+@preview_app.command("run")
+def preview_run(
+    variant: Annotated[
+        str,
+        typer.Argument(help="The variant to run.", callback=_validate_variant),
+    ],
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            help="The harness's directory, holding sources.toml.",
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = _PREVIEW_ROOT,
+    north_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's winter view.", callback=_validate_month
+        ),
+    ] = 3,
+    north_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's summer view.", callback=_validate_month
+        ),
+    ] = 8,
+    south_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's winter view.", callback=_validate_month
+        ),
+    ] = 9,
+    south_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's summer view.", callback=_validate_month
+        ),
+    ] = 2,
+) -> None:
+    """Bake, assemble, render and measure one variant of the sea ice's look.
+
+    Writes <root>/<variant>/ and rebuilds <root>/index.html.
+    """
+    from texture_pipeline import sea_ice_preview, sea_ice_preview_page
+
+    views = sea_ice_preview.default_views(
+        north_winter, north_summer, south_winter, south_summer
+    )
+    metrics = sea_ice_preview.run_variant(root, variant, views, report=typer.echo)
+    typer.echo(f"Elapsed: {metrics['time_s']['total']}s")
+    page = sea_ice_preview_page.build(root)
+    typer.echo(f"Page:    {page}")
+
+
+@preview_app.command("page")
+def preview_page(
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            help="The harness's directory.",
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = _PREVIEW_ROOT,
+) -> None:
+    """Rebuild <root>/index.html from the variants there."""
+    from texture_pipeline import sea_ice_preview_page
+
+    typer.echo(f"Page:    {sea_ice_preview_page.build(root)}")

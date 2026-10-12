@@ -1,0 +1,2543 @@
+"""A preview harness for the look of the sea ice.
+
+A variant is a set of options of the bake. Each one starts from the shipped
+textures and rebakes what four views read: the day face ``py`` in the north's
+two months and ``ny`` in the south's, with the production settings, and the
+water mask, from all twelve months. It assembles a texture directory with those
+faces in place, renders the four views through the app's headless ``render``
+with a tile cache of its own, and measures the faces. Whatever a variant does
+not change is cached under ``<root>/cache``: the shapefile's raster, the masks,
+the resampled sources and the noise fields.
+
+``<root>/sources.toml`` names the inputs, relative to the root or absolute::
+
+    blue_marble = "..."   # the twelve monthly JPEGs of 2004
+    ocean_mask = "..."    # ne_10m_ocean.shp
+    sea_ice = "..."       # the 24 OSI-450-a1 files
+    textures = "..."      # the shipped textures
+    app = "..."           # a release build of sunlit-earth
+"""
+
+import ast
+import dataclasses
+import datetime
+import functools
+import hashlib
+import inspect
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+import tomllib
+import tracemalloc
+import types
+import typing
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Executor, ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import scipy
+from PIL import Image
+from scipy.ndimage import (
+    binary_dilation,
+    binary_erosion,
+    distance_transform_edt,
+    gaussian_filter,
+    label,
+    map_coordinates,
+    zoom,
+)
+
+from texture_pipeline import ocean_masking, sea_ice, sea_ice_look
+from texture_pipeline.cube import FACES, area_average, face_directions, reproject_face
+from texture_pipeline.discovery import discover_months
+from texture_pipeline.processing import encode_jxl
+
+Image.MAX_IMAGE_PIXELS = None
+
+FACE_SIZE = 2048
+QUALITY = 85
+EFFORT = 7
+FILL: sea_ice_look.Rgb = (10, 30, 60)
+SUPERSAMPLE = 2
+ICE_LUMINANCE = 200
+ICE_LATITUDE = 60.0
+WORKERS = min(4, os.cpu_count() or 1)
+
+RENDER_SIZE = 2048
+FOV_DEG = 20.0
+FRAME_LATITUDE = 55.0
+CAMERA_LATITUDE = 89.9
+"""The app clamps the camera's latitude to 89.9 degrees, short of the pole
+where its view matrix has no up direction."""
+
+ZOOM_DISTANCE_MIN = 1.5
+ZOOM_DISTANCE_MAX = 80.0
+CONFIG_VERSION = 2
+
+OPEN_WATER = {
+    "margin_px": 10,
+    "step": 4,
+    "ice_free_below": 0.15,
+    "luma_percentile": 99.0,
+    "blue_percentile": 1.0,
+}
+"""How B1 measures the imagery's water: over the shapefile's open ocean at
+least ``margin_px`` source pixels from anything else, poleward of the
+variant's latitude, where the sea ice record's concentration stays below
+``ice_free_below`` all year, every ``step``-th pixel along both axes. The
+thresholds are the percentiles named of the brightest luminance and of the
+least blue."""
+
+POOL = 8
+"""Source pixels along each side of a pixel of the imagery water's overview."""
+DAY_MODE = 1
+YEAR = 2004
+
+REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+
+type Report = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class Sources:
+    """Where the harness reads its inputs."""
+
+    blue_marble: Path
+    ocean_mask: Path
+    sea_ice: Path
+    textures: Path
+    app: Path
+
+    @classmethod
+    def load(cls, root: Path) -> Sources:
+        """Read ``sources.toml`` under the root.
+
+        :param root: The harness's output directory.
+        :returns: The paths, relative ones resolved against the root.
+        """
+        values = tomllib.loads((root / "sources.toml").read_text(encoding="utf-8"))
+        paths = {
+            name: (root / values[name]).resolve()
+            for name in ("blue_marble", "ocean_mask", "sea_ice", "textures", "app")
+        }
+        return cls(**paths)
+
+
+@dataclass(frozen=True)
+class View:
+    """One of the four renders."""
+
+    key: str
+    hemisphere: str
+    season: str
+    month: int
+    longitude: float
+
+    @property
+    def face(self) -> str:
+        """The face that holds the pole."""
+        return "py" if self.hemisphere == "nh" else "ny"
+
+    @property
+    def latitude(self) -> float:
+        """The camera's latitude."""
+        return CAMERA_LATITUDE if self.hemisphere == "nh" else -CAMERA_LATITUDE
+
+    @property
+    def stamp(self) -> str:
+        """The month's ``YYYYMM``."""
+        return f"{YEAR}{self.month:02d}"
+
+    @property
+    def label(self) -> str:
+        """What the page calls the render."""
+        pole = "North" if self.hemisphere == "nh" else "South"
+        name = datetime.date(YEAR, self.month, 1).strftime("%B")
+        return f"{pole}, {self.season}, {name} {YEAR}"
+
+
+def default_views(
+    north_winter: int = 3,
+    north_summer: int = 8,
+    south_winter: int = 9,
+    south_summer: int = 2,
+    north_longitude: float = -40.0,
+    south_longitude: float = 0.0,
+) -> tuple[View, ...]:
+    """Return the four views.
+
+    :param north_winter: The month of the north's winter view.
+    :param north_summer: The month of the north's summer view.
+    :param south_winter: The month of the south's winter view.
+    :param south_summer: The month of the south's summer view.
+    :param north_longitude: The longitude at the bottom of the north's views,
+        where Greenland is in the references.
+    :param south_longitude: The longitude at the top of the south's views.
+    :returns: North winter, north summer, south winter, south summer.
+    """
+    return (
+        View("north-winter", "nh", "winter", north_winter, north_longitude),
+        View("north-summer", "nh", "summer", north_summer, north_longitude),
+        View("south-winter", "sh", "winter", south_winter, south_longitude),
+        View("south-summer", "sh", "summer", south_summer, south_longitude),
+    )
+
+
+@dataclass(frozen=True)
+class Variant:
+    """A set of bake options the user compares against the baseline."""
+
+    name: str
+    summary: str
+    """What the variant changes, for its notes."""
+
+    imagery_water: bool = False
+    """Turn the Blue Marble's water on the shapefile's land side into water."""
+
+    imagery_water_latitude: float = 50.0
+    """Poleward of this latitude only."""
+
+    snow_colors: bool = False
+    """Take each hemisphere's winter ice color from its coastal snow."""
+
+    look: dict[str, object] = field(default_factory=dict)
+    """Tunables of :class:`sea_ice_look.Look` that differ from the bake's."""
+
+    tests: tuple[str, ...] = ()
+    """Tests whose pinned behavior the variant changes, and why."""
+
+    parent: str | None = None
+    """The variant this one builds on, which its faces are compared with too."""
+
+    remarks: tuple[str, ...] = ()
+    """What inspecting the variant's results found, for its notes."""
+
+    def derive(
+        self,
+        name: str,
+        summary: str,
+        *,
+        look: dict[str, object] | None = None,
+        tests: tuple[str, ...] = (),
+        remarks: tuple[str, ...] = (),
+        **options: object,
+    ) -> Variant:
+        """Return a variant that builds on this one.
+
+        It takes every option of this one, its tunables merged with ``look``
+        and its tests followed by ``tests``, unless ``options`` names another
+        value; the summary and the remarks are its own.
+
+        :param name: The new variant's name.
+        :param summary: What it changes against this one.
+        :param look: Tunables that differ from this one's.
+        :param tests: Tests it changes beyond this one's.
+        :param remarks: Its own findings.
+        :param options: Other fields that differ from this one's.
+        :returns: The new variant.
+        """
+        return dataclasses.replace(
+            self,
+            name=name,
+            summary=summary,
+            look={**self.look, **(look or {})},
+            tests=self.tests + tests,
+            parent=self.name,
+            remarks=remarks,
+            **options,
+        )
+
+
+BASELINE = Variant(
+    "baseline",
+    "The shipped textures' bake, unchanged: the shapefile's mask less the "
+    "Antarctic ice shelves, and the first iteration's sea ice.",
+)
+
+B1_WATER = BASELINE.derive(
+    "b1-water",
+    "B1. A source pixel on the shapefile's land side poleward of 50 degrees "
+    "becomes water when the Blue Marble draws water there in all twelve "
+    "months and it is connected to the shapefile's ocean. The Antarctic ice "
+    "pass runs afterwards and keeps the ice shelves as land.",
+    imagery_water=True,
+    remarks=(
+        "On `py` no dark land connected to the mask's water is left at North "
+        "Greenland, Ellesmere's north coast, Svalbard or Franz Josef Land. "
+        "Of the connected texels that remain, 106 are along Norway's coast, "
+        "where dark forest and the fill share a texel; the source pixels "
+        "beside them are not water (their least blue less red is -8 at the "
+        "median), so the face measure counts them and B1 rightly leaves "
+        "them.",
+        "The lakes stay, by design: Great Bear Lake, Great Slave Lake and the "
+        "Finnish lakes are the Blue Marble's water in every month but not "
+        "connected to the ocean (plan departure 1).",
+        "At Franz Josef Land the Blue Marble draws the islands about 12 km "
+        "from where Natural Earth has them (the two overlap at an IoU of 0.34 "
+        "unshifted and 0.73 with the shapefile moved 9 km south and 8 km "
+        "west). B1 turns the shapefile's land that the Blue Marble draws as "
+        "water into water, and the Blue Marble's islands on the shapefile's "
+        "ocean were already flattened before B1, so the islands shrink to "
+        "where both sources agree: `crop-north-summer-franz-josef-land.png`. "
+        "Taking the Blue Marble's land on the shapefile's ocean as land would "
+        "have to tell glaciers from perennial sea ice and is not part of B1.",
+        "Texels that change on the land of both masks change by 1 level: "
+        "their footprint holds a share of water below half a level of the "
+        "mask. Texels that change on water without a mask change lie beside "
+        "the coast's changes and change by at most 2 levels, from changes of "
+        "the mask below a level.",
+    ),
+)
+
+B2_COLOR = B1_WATER.derive(
+    "b2-color",
+    "B2 on top of B1. Each hemisphere's winter ice color is the median of "
+    "its coastal snow in the Blue Marble; every other month keeps the "
+    "darkening the first iteration's table gives it against winter, per "
+    "channel.",
+    snow_colors=True,
+    remarks=(
+        "The coastal snow is measured on the face before the encode, the "
+        "source averaged to 2048, with the variant's mask, as metric (b) "
+        "measures it on the decoded face: land within 8 texels of open "
+        "water, brighter than 180, poleward of 70 degrees on `py` and 60 on "
+        "`ny`, pooled over the months the first iteration's table gives its "
+        "winter color.",
+        "South of 60 S the Blue Marble is the same in every month, so the "
+        "south's months all measure the same snow.",
+    ),
+)
+
+B2B_COAST = B2_COLOR.derive(
+    "b2b-coast",
+    "B2b on top of B2. Along the coast the land takes the ice's color and fine "
+    "texture, without its leads, where the land around is flat snow: the "
+    "weight is the ice's coverage there, times the share of snow in the land "
+    "around, times how flat that snow is, falling from full at 6 km inland to "
+    "none at 18 km. Snow and relief are read from the land at least 6 km "
+    "inland, or 2 km on small islands and narrow peninsulas, over a Gaussian "
+    "of 8 km, so the Blue Marble's own coastline pixels take the weight of the "
+    "land behind them. Where the Blue Marble draws its sea on the mask's land "
+    "(darker than 60, blue above red by more than 8) it is not read as land, "
+    "and within the same band it takes what the sea beside it shows: the fill "
+    "under the ice's coverage. Mountain coasts and land without snow keep "
+    "their color.",
+    look={"coast_blend": True},
+    remarks=(
+        "What the edge was, measured on `b2-color`'s working faces at 5400 "
+        "(1.85 km a texel) across flat snow coasts under closed ice: the "
+        "darkest texel sits at the coastline itself, the last land texel (a "
+        "water share near 0.1) and the first partial one (near 0.7). The Blue "
+        "Marble falls there from about 240 to 150 to 180 in the land texel and "
+        "to 20 to 80 in the partial one: its own coastline, pixels part snow "
+        "and part its dark sea, carried in the land share. The composite dipped "
+        "70 to 85 levels at the Antarctic ice shelf fronts and Wilkes Land, 59 "
+        "at North Greenland and 8 at the Canadian Arctic's western islands, "
+        "where the Blue Marble draws sea ice at the coast in March. Of the "
+        "darkest texels 57% to 91% were partial texels, the rest the land "
+        "texel beside them. The step in luminance between land and ice 10 to "
+        "20 km either side was only 2 to 9 levels after B2 (Amery 12). The "
+        "change of texture: detail finer than a texel was 3 to 6 levels on the "
+        "land against 2 on the ice at the Ross and Ronne-Filchner fronts and "
+        "North Greenland, and about equal at Wilkes Land and Queen Maud Land.",
+        "The thresholds come from the standard deviation of the snow's "
+        "luminance over a Gaussian of 8 km of land at least 6 km inland, at "
+        "the coast's texels: medians at flat coasts 2.4 (Ross Ice Shelf front), "
+        "4.8 (Ronne-Filchner), 4.0 (Amery), 7.4 (Wilkes Land), 5.2 (Queen Maud "
+        "Land's shelves), 5.6 (Larsen C), 2.5 (North Greenland), 1.9 (the "
+        "Canadian Arctic's western islands); at mountain coasts 10.2 (Victoria "
+        "Land), 14.1 (the Antarctic Peninsula's west coast), 9.0 (East "
+        "Greenland), 8.8 (Ellesmere's north coast). The blend is full below 6 "
+        "and none above 10. Svalbard reads as flat (5.9) and blends. Snow is "
+        "luminance above 190 with a saturation below 0.2: the Blue Marble's "
+        "Antarctic coast is bluish, and 0.12 left out much of Wilkes Land. "
+        "Read nearer the coast, 3.5 km in over 5.5 km, the shelf fronts' own "
+        "shading raised the relief at the coastline to 5 to 8, and the blend "
+        "at the coastline of the Ronne-Filchner front was 0 at the median.",
+        "Metric (e) on the decoded faces: the dip at flat coasts in winter fell "
+        "from 3.7 (p90 22.7) to 1.0 (4.6) in the north, North Greenland 22.7 "
+        "to 1.9, and from 45.8 (78.9) to 14.0 (51.4) in the south, "
+        "Ronne-Filchner 52 to 15, Wilkes Land 43 to 13. At mountain coasts it "
+        "fell less, 20.2 to 6.6 in the north and 44.3 to 20.7 in the south: "
+        "the Antarctic Peninsula keeps 40, and Victoria Land's coast under "
+        "closed ice is mostly its flat glacier tongues, which blend (44 to 8), "
+        "while its mountains keep their rock and relief "
+        "(`crop-south-winter-victoria-land.png`).",
+        "A first version read the Blue Marble's sea on the mask's land as land "
+        "of no snow. In the top tenth of the south's flat coast dips (p90 about "
+        "67) "
+        "the darkest texel was then mostly land on the mask (80%, water share "
+        "0.35 at the median) holding the Blue Marble's dark sea (luminance 6 "
+        "to 36), and the blend applied there was below 0.2 in 90% of them. Now "
+        "that sea is left out of the reading and takes the sea's look, and the "
+        "south's flat p90 fell from 66 to 51. What remains is mostly the "
+        "record: OSI-450's September concentration within about 15 km of the "
+        "flat fronts is 0.48 to 0.72 at the median at five of six fronts "
+        "(Ronne-Filchner 0.86) "
+        "against 0.91 to 1.0 at 50 to 100 km, so the edge model draws streaks "
+        "of open water there (`crop-south-winter-ross-ice-shelf-front.png`); "
+        "this is B4's question.",
+        "This changes land texels, which no variant did before: up to 155 "
+        "levels at the coastline (the dark rim taking the ice's color), within "
+        "18 km of the coast, so `changed_on_land` is large by design. "
+        "`*-coast-blend.png` shows the share of each texel the ice took.",
+        "B4's question, measured on the working faces: of the coast texels "
+        "poleward of 60 degrees with closed ice 15 to 30 km out, open water "
+        "(luminance below 100) within 2 to 11 km of the coast is at 0.6% in "
+        "March in the north (about 430 km of 73,000) and 4.4% in September in "
+        "the south (about 800 km of 18,000), with another 22.6% grey (100 to "
+        "180) in the south. The largest clusters of the south's lie along "
+        "Queen Maud Land, the Bellingshausen Sea's coast, the coast from Amery "
+        "to Wilkes Land and the Ross Ice Shelf, where coastal polynyas are "
+        "real. B4 is not built; it is the user's call.",
+        "The weight costs about 10 s per 5400 face and peaks at 1.66 GiB of "
+        "traced allocations on top of the bake.",
+    ),
+)
+
+B3A_CRUMPLE = B2B_COAST.derive(
+    "b3a-crumple",
+    "B3a on top of B2b. The interior is crumpled snow in place of the 60 to "
+    "300 km brightness noise, the texture of broken ice and the melt dots. An "
+    "activity field of noise at 300 to 1500 km, through a soft threshold, "
+    "decides where the pack is almost flat and where it is structured, and it "
+    "rises toward full where the concentration falls below 98%. The crumple is "
+    "a sheet of paper crumpled and flattened again: straight folds, one every "
+    "30 km on average, 25 to 120 km long, at every angle, each a step in shade "
+    "that fades over 10 km either side, with a faint crease along it, so the "
+    "creases meet at angles and enclose polygonal facets. A quarter of the "
+    "shading is still the ridged noise of four octaves from 5 to 80 km, "
+    "stretched 1.3 times along a slowly turning direction. The snow also "
+    "breaks into plates of 30 and 120 km, each a little lighter or darker. All "
+    "of it scales with the activity, which never falls below 0.1. The leads "
+    "are still the first iteration's.",
+    look={
+        "crumple": True,
+        "crumple_folds": True,
+        "crumple_aspect": 1.3,
+        "crumple_shadow": 0.05,
+        "crumple_light": 0.03,
+        "crumple_crease": 0.035,
+    },
+    remarks=(
+        "The renders and crops of this variant on the page are from an earlier "
+        "setting of the folds (one every 22 km, 15 to 90 km long, the shade "
+        "fading over 6 km, creases at 7%), which read as dark scratches; the "
+        "current setting is in `b3b-leads`, which runs it "
+        "(`crop-north-winter-beaufort-sea.png` there). Rerun before relying on "
+        "this variant's own numbers.",
+        "Tried and rejected: the ridged noise stretched three times along its "
+        "direction drew parallel wavy ripples, like dunes; at an aspect of 1.3 "
+        "it drew wormy wrinkles, like stucco; Voronoi facets of 8 to 35 km with "
+        "a shade each and no creases drew a granular stone (plan departure 6).",
+        "The folds cost about 35 s per hemisphere on top of the fields' 70 s.",
+    ),
+)
+
+B3B_LEADS = B3A_CRUMPLE.derive(
+    "b3b-leads",
+    "B3b on top of B3a. The leads are long fracture systems in place of the "
+    "borders of a cell pattern: 150 systems on the north's cap and 70 on the "
+    "south's, seeded where the concentration passes a half in some month, "
+    "twice as dense where the activity is full as where it is none. Each is a "
+    "main fracture of 150 to 800 km, traced both ways from its seed along a "
+    "direction field that turns over 1500 to 6000 km, 20 to 35 degrees off it "
+    "to one side, so the systems form two conjugate sets that cross. A smooth "
+    "noise along each bends its heading by 0.22 radians over about 16 km, so "
+    "it wanders at 20 to 100 km. Branches leave it every 400 km on average. "
+    "Most systems are refrozen leads that show the sea's fill at 10% to 35% "
+    "in their middle; 12% are fresh open water at 45% to 80%. The darkness "
+    "varies by 35% along a fracture and its width by up to 30%; both taper at "
+    "the ends. The fill is a share taken off the ice's coverage, so the coast's "
+    "land does not take it. Every system is drawn in every month.",
+    look={"fractures": True},
+    remarks=(
+        "Against the first version of this variant (fill 20% to 80%, nearly "
+        "straight), the leads' share of the pack fell from 0.39% to 0.20% in "
+        "the north's March and from 0.15% to 0.09% in the south's September; "
+        "the area (c) is +3.2%, +3.3%, +3.8% and -6.6%.",
+        "Tried and rejected before: a direction field turning by a full half "
+        "turn drew hooks; held to a sixth of a turn, fractures ran parallel like "
+        "combed hair; drawing a system only where its rank was below a share "
+        "that rises as the concentration falls broke fractures into dashes, as "
+        "did a width that swelled from 0.4 to 1.6 times.",
+        "The first iteration's cell network is still made with the fields "
+        "(10 s) although nothing reads it with the fractures.",
+    ),
+)
+
+B3C_FLOES = B3B_LEADS.derive(
+    "b3c-floes",
+    "B3c on top of B3b, with B4's fast ice band and the edge's streaks taken "
+    "out of the pack. The edge model's threshold is squeezed from 0.12 to 0.88 "
+    "into 0.12 to 0.7, so its grey streaks stay where the concentration falls "
+    "toward the ice edge and leave the pack at 85% to 95%. The open water it "
+    "then leaves undrawn, the concentration's less the edge's, is the floes': "
+    "none above 95%, all of it below 80%. The floes are filled: cells of "
+    "varied size (a 20 km grid with 35% of its points kept, 34 km on average, "
+    "and 10 km nearer the edge), each opening at a level of its own, clustered "
+    "by a noise at 60 to 250 km so loose regions and compact ones alternate, "
+    "to a gap of 0.08 to 0.32 cells from its border; the water between them "
+    "is grey new ice, 45% of the fill, above 90% concentration, and open "
+    "water, 95% of it, below 60%. B4: within 25 km of the record's land, "
+    "tapering out to 50 km, the concentration is raised toward the mean of "
+    "the cells 50 to 100 km out where that mean is above 80% to 90%, and no "
+    "floes open where the band raised it by more than 0.03.",
+    look={"floes": True, "fast_ice": True, "edge_pack": 0.7},
+    remarks=(
+        "The edge's streaks in the pack (plan departure 7), the share of the "
+        "cap above 0.85 concentration that the edge model covers less than "
+        "0.8: 5.0%, 4.9%, 4.7% and 4.7% in `b3d-melt` as it was (763,000 km2 "
+        "in the north's March), now 0.5%, 0.1%, 0.2% and 0.6% (74,000 km2).",
+        "Metric (c): +2.7%, +2.1%, +2.0% and -5.0%, against -9.2% in the "
+        "south's February with the first floes.",
+        "Tried and rejected: the first floes, every cell outlined by water, drew "
+        "a crackle glaze and cells at the coast; filled floes that open to as "
+        "much as half a cell dissolved into slate grey blotches; gaps of 0.08 to "
+        "0.32 cells on a jittered 35 km grid drew a regular jigsaw. A few "
+        "isolated floes in the pack open as rings; open item.",
+        "The Ross Sea polynya at the Ross Ice Shelf front in September is the "
+        "record's own (OSI-450 reads 0.73 to 0.76 there, and the water further "
+        "out is not closed either), so the band rightly leaves it.",
+    ),
+)
+
+B3D_MELT = B3C_FLOES.derive(
+    "b3d-melt",
+    "B3d on top of B3c, and so all of B2b and B3. The Arctic summer's melt is "
+    "a smooth regional tone instead of dots: noise at 50 to 300 km through a "
+    "soft step from its mean to two standard deviations above it leans a few "
+    "regions up to half the way from the month's color toward a bluish grey "
+    "(150, 175, 200), less the step's mean, so the month's color stays the "
+    "mean and most of the pack stays near it. The months weigh it as they "
+    "weighed the mottling: 0.3 in May and September, 1 from June to August.",
+    look={"melt_tone": True},
+    remarks=(
+        "Metric (b) in August: ice less coastal snow (-9, -9, -7), as in "
+        "`b3c-floes`; the tone keeps the month's color as its mean.",
+        "Tried and rejected: the noise itself as the tone, 35% of the way per "
+        "standard deviation either side, leaned the regions of little melt "
+        "away from the bluish grey, which is toward cream, and drew yellow "
+        "and blue blotches 100 km across.",
+        "In August the edge's streaks dominate the pack: dark grey smudges "
+        "50 to 150 km long all over the summer ice, where the concentration "
+        "is mostly below 95%. The floes cover most of the summer pack too.",
+    ),
+)
+
+VARIANTS: dict[str, Variant] = {
+    v.name: v
+    for v in (
+        BASELINE,
+        B1_WATER,
+        B2_COLOR,
+        B2B_COAST,
+        B3A_CRUMPLE,
+        B3B_LEADS,
+        B3C_FLOES,
+        B3D_MELT,
+    )
+}
+
+
+def _key(*parts: object) -> str:
+    return hashlib.sha256(repr(parts).encode()).hexdigest()[:12]
+
+
+def _timed[T](times: dict[str, float], name: str, run: Callable[[], T]) -> T:
+    started = time.monotonic()
+    result = run()
+    times[name] = round(times.get(name, 0.0) + time.monotonic() - started, 1)
+    return result
+
+
+def _open_rgb(path: Path) -> np.ndarray:
+    with Image.open(path) as image:
+        return np.asarray(image.convert("RGB"))
+
+
+def _open_gray(path: Path) -> np.ndarray:
+    with Image.open(path) as image:
+        return np.asarray(image.convert("L"))
+
+
+def luma(rgb: np.ndarray) -> np.ndarray:
+    """Return Rec. 709 luminance of RGB values.
+
+    :param rgb: Array of any shape ending in 3.
+    :returns: float32 array without the last axis.
+    """
+    return rgb.astype(np.float32) @ REC709
+
+
+def face_latitude(face: str, size: int) -> np.ndarray:
+    """Return the latitude in degrees of every texel of a face."""
+    x, y, z = face_directions(face, size, 0, size)
+    return np.degrees(np.arctan2(y, np.hypot(x, z))).astype(np.float32)
+
+
+class Cache:
+    """Arrays kept between runs, under ``<root>/cache``."""
+
+    def __init__(self, root: Path) -> None:
+        self.dir = root / "cache"
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def array(self, name: str, make: Callable[[], np.ndarray]) -> np.ndarray:
+        """Return a cached array, making and saving it when missing.
+
+        :param name: The file name without suffix.
+        :param make: Makes the array.
+        :returns: The array.
+        """
+        path = self.dir / f"{name}.npy"
+        if path.exists():
+            return np.load(path)
+        value = make()
+        partial = path.with_suffix(".partial.npy")
+        np.save(partial, value)
+        partial.replace(path)
+        return value
+
+    def arrays(
+        self, name: str, make: Callable[[], dict[str, np.ndarray]]
+    ) -> dict[str, np.ndarray]:
+        """Return cached named arrays, making and saving them when missing."""
+        path = self.dir / f"{name}.npz"
+        if path.exists():
+            with np.load(path) as data:
+                return {k: data[k] for k in data.files}
+        value = make()
+        partial = path.with_suffix(".partial.npz")
+        np.savez(partial, **value)
+        partial.replace(path)
+        return value
+
+    def record(self, name: str, make: Callable[[], dict]) -> dict:
+        """Return a cached JSON record, making and saving it when missing."""
+        path = self.dir / f"{name}.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        value = make()
+        path.write_text(json.dumps(value, indent=2), encoding="utf-8", newline="\n")
+        return value
+
+
+class Harness:
+    """Runs a variant end to end."""
+
+    def __init__(
+        self,
+        root: Path,
+        variant: Variant,
+        views: tuple[View, ...],
+        report: Report = print,
+    ) -> None:
+        self.root = root
+        self.variant = variant
+        self.views = views
+        self.report = report
+        self.sources = Sources.load(root)
+        self.cache = Cache(root)
+        self.out = root / variant.name
+        self.times: dict[str, float] = {}
+        self.months = discover_months(self.sources.blue_marble)
+        self.notes: dict[str, object] = {}
+
+    # The source raster and the masks.
+
+    def raster(self) -> np.ndarray:
+        """The shapefile rasterized at the source's size, as the bake does."""
+
+        def make() -> np.ndarray:
+            self.report("Rasterizing the shapefile")
+            width, height = self.source_size
+            return ocean_masking.rasterize_ocean_mask(
+                self.sources.ocean_mask, width, height, supersample=SUPERSAMPLE
+            )
+
+        return self.cache.array("ocean-raster", make)
+
+    @property
+    def source_size(self) -> tuple[int, int]:
+        """The monthly sources' width and height."""
+        with Image.open(next(iter(self.months.values()))) as image:
+            return image.size
+
+    def yearly_water(self) -> dict[str, np.ndarray]:
+        """Each source pixel's brightest luminance and least blue over the year."""
+
+        def make() -> dict[str, np.ndarray]:
+            stats = ocean_masking.YearlyWater.empty(*reversed(self.source_size))
+            for stamp, path in self.months.items():
+                self.report(f"Yearly water: {stamp}")
+                stats.add(_open_rgb(path))
+            return {"max_luma": stats.max_luma, "min_blue": stats.min_blue}
+
+        return self.cache.arrays("yearly-water", make)
+
+    def mask_key(self, imagery_water: bool | None = None) -> str:
+        """The key of a source mask, the variant's unless told otherwise.
+
+        :param imagery_water: Whether the mask joins the imagery's water; the
+            variant's choice when ``None``.
+        """
+        v = self.variant
+        joined = v.imagery_water if imagery_water is None else imagery_water
+        imagery = (
+            (v.imagery_water_latitude, sorted(OPEN_WATER.items())) if joined else None
+        )
+        return _key("mask", SUPERSAMPLE, ICE_LUMINANCE, ICE_LATITUDE, imagery)
+
+    def sea_ice_max(self) -> dict[str, np.ndarray]:
+        """Each hemisphere's largest concentration over the year, on its cap."""
+        out = {}
+        for hemisphere in sea_ice.HEMISPHERES:
+            read = sea_ice.read_hemisphere(self.sources.sea_ice, hemisphere)
+            out[hemisphere] = sea_ice.cap_concentration(read).max(axis=0)
+        return out
+
+    def open_water(self) -> dict:
+        """The imagery's water over the open ocean, and the thresholds from it."""
+        latitude = self.variant.imagery_water_latitude
+        key = _key("open-water-2", latitude, sorted(OPEN_WATER.items()))
+
+        def make() -> dict:
+            self.report("Measuring the open ocean's water")
+            return open_water(
+                self.source_mask(imagery_water=False),
+                self.yearly_water(),
+                self.sea_ice_max(),
+                latitude,
+                **OPEN_WATER,
+            )
+
+        return self.cache.record(f"open-water-{key}", make)
+
+    def add_imagery_water(self, mask: np.ndarray, key: str) -> None:
+        """Join the imagery's water to the ocean poleward of the variant's
+        latitude, in place, and count what it would join elsewhere."""
+        measured = self.open_water()
+        stats = self.yearly_water()
+        height, width = mask.shape
+        north, south = ocean_masking.latitude_rows(
+            height, self.variant.imagery_water_latitude
+        )
+        flags = np.zeros((height // POOL, width // POOL), dtype=np.uint8)
+        pixel_km2 = (2 * np.pi * sea_ice.AUTHALIC_RADIUS_KM / width) * (
+            np.pi * sea_ice.AUTHALIC_RADIUS_KM / height
+        )
+        counts = {}
+        for name, start, stop, apply in (
+            ("north", 0, north, True),
+            ("south", south, height, True),
+            ("elsewhere", north, south, False),
+        ):
+            water = (stats["max_luma"][start:stop] <= measured["max_luma"]) & (
+                stats["min_blue"][start:stop] >= measured["min_blue"]
+            )
+            band = mask[start:stop] if apply else mask[start:stop].copy()
+            before = band.copy()
+            _, joined = ocean_masking.water_from_imagery(band, water)
+            rows, cols = np.nonzero(band != before)
+            del water, before, band
+            rows += start
+            lat = 90.0 - (rows + 0.5) * 180.0 / height
+            counts[name] = {
+                "source_pixels": joined,
+                "km2": round(float(np.cos(np.radians(lat)).sum() * pixel_km2)),
+            }
+            flags[
+                np.minimum(rows // POOL, flags.shape[0] - 1),
+                np.minimum(cols // POOL, flags.shape[1] - 1),
+            ] = 1 if apply else 2
+        self.cache.array(f"imagery-water-flags-{key}", lambda: flags)
+        self.cache.record(
+            f"imagery-water-{key}",
+            lambda: {"thresholds": measured, "joined": counts},
+        )
+
+    def source_mask(self, imagery_water: bool | None = None) -> np.ndarray:
+        """A water mask at the source's size, the variant's unless told otherwise.
+
+        :param imagery_water: Whether the mask joins the imagery's water; the
+            variant's choice when ``None``.
+        """
+        key = self.mask_key(imagery_water)
+        joined = self.variant.imagery_water if imagery_water is None else imagery_water
+
+        def make() -> np.ndarray:
+            mask = self.raster().copy()
+            if joined:
+                self.add_imagery_water(mask, key)
+            ice = np.zeros_like(mask)
+            for stamp, path in self.months.items():
+                self.report(f"Ice pass: {stamp}")
+                found = ocean_masking.detect_ice_regions(
+                    Image.open(path).convert("RGB"),
+                    mask,
+                    latitude_threshold=ICE_LATITUDE,
+                    south_only=True,
+                    seed_luminance=ICE_LUMINANCE,
+                )
+                np.maximum(ice, found, out=ice)
+            return ocean_masking.reduce_mask_for_ice(mask, ice)
+
+        return self.cache.array(f"mask-{key}", make)
+
+    def water_faces(self, pool: Executor) -> dict[str, np.ndarray]:
+        """The variant's mask resampled to every face at the working size."""
+        key = self.mask_key()
+        work = self.work_size
+
+        def make() -> dict[str, np.ndarray]:
+            mask = self.source_mask()
+            self.report("Resampling the mask")
+            return {face: reproject_face(mask, face, work, pool) for face in FACES}
+
+        return self.cache.arrays(f"water-{key}-{work}", make)
+
+    @property
+    def work_size(self) -> int:
+        """The size the faces are resampled at before the average."""
+        width, _ = self.source_size
+        return max(width // 4, FACE_SIZE)
+
+    # The sources and the ice.
+
+    def source_face(self, stamp: str, face: str, pool: Executor) -> np.ndarray:
+        """One month's face at the working size."""
+
+        def make() -> np.ndarray:
+            self.report(f"Resampling {stamp} {face}")
+            source = _open_rgb(self.months[stamp])
+            return reproject_face(source, face, self.work_size, pool)
+
+        return self.cache.array(f"source-{stamp}-{face}-{self.work_size}", make)
+
+    def source_face_small(self, stamp: str, face: str, pool: Executor) -> np.ndarray:
+        """One month's face averaged to the face size, without the flatten.
+
+        The working size face is cached only when a view's bake made it.
+        """
+
+        def make() -> np.ndarray:
+            cached = self.cache.dir / f"source-{stamp}-{face}-{self.work_size}.npy"
+            if cached.exists():
+                return area_average(np.load(cached), FACE_SIZE)
+            self.report(f"Resampling {stamp} {face}")
+            source = _open_rgb(self.months[stamp])
+            return area_average(
+                reproject_face(source, face, self.work_size, pool), FACE_SIZE
+            )
+
+        return self.cache.array(f"source-{stamp}-{face}-{FACE_SIZE}", make)
+
+    def look(
+        self, colors: dict[str, tuple[sea_ice_look.Rgb, ...]] | None
+    ) -> sea_ice_look.Look:
+        """The variant's tunables."""
+        look = dataclasses.replace(sea_ice_look.LOOK, **self.variant.look)
+        if colors is not None:
+            look = dataclasses.replace(look, colors=colors)
+        return look
+
+    def fields(self, hemisphere: str, look: sea_ice_look.Look) -> sea_ice_look.Fields:
+        """A hemisphere's noise fields, cached by the tunables and the code that
+        make them."""
+        key = fields_key(look)
+        name = f"fields-{hemisphere}-{key}"
+        steps: dict[str, float] = {}
+
+        def make() -> dict[str, np.ndarray]:
+            self.report(f"Noise fields: {hemisphere}")
+            read = sea_ice.read_hemisphere(self.sources.sea_ice, hemisphere)
+            banded = sea_ice_look.fast_ice(read, look)
+            concentration = sea_ice.cap_concentration(banded)
+            fast = sea_ice_look.fast_ice_raise(read, banded)
+            last = [time.monotonic(), ""]
+
+            def step(what: str) -> None:
+                now = time.monotonic()
+                if last[1]:
+                    steps[last[1]] = round(now - last[0], 1)
+                last[:] = [now, what]
+
+            tracemalloc.start()
+            made = sea_ice_look.prepare(
+                concentration, hemisphere, sea_ice.CAP_SIZE, look, step, fast
+            )
+            step("")
+            peak = tracemalloc.get_traced_memory()[1]
+            tracemalloc.stop()
+            arrays = fields_to_arrays(made)
+            self.cache.record(
+                f"{name}-made",
+                lambda: {
+                    "seconds": steps,
+                    "peak_gib": round(peak / 2**30, 2),
+                    "mib": {k: round(v.nbytes / 2**20, 1) for k, v in arrays.items()},
+                },
+            )
+            return arrays
+
+        arrays = self.cache.arrays(name, make)
+        made = self.cache.dir / f"{name}-made.json"
+        if made.exists():
+            self.notes.setdefault("fields", {})[hemisphere] = json.loads(
+                made.read_text(encoding="utf-8")
+            )
+        return fields_from_arrays(hemisphere, arrays)
+
+    def source_area(self, hemisphere: str) -> np.ndarray:
+        """Each month's ice area in the source, in square kilometers."""
+        read = sea_ice.read_hemisphere(self.sources.sea_ice, hemisphere)
+        return sea_ice.source_area_km2(read)
+
+    # The run.
+
+    def run(self) -> dict:
+        """Bake, assemble, render and measure the variant.
+
+        :returns: The metrics, as written to ``metrics.json``.
+        """
+        started = time.monotonic()
+        if self.out.exists():
+            shutil.rmtree(self.out)
+        (self.out / "faces").mkdir(parents=True)
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            water = _timed(self.times, "mask", lambda: self.water_faces(pool))
+            colors = _timed(self.times, "colors", lambda: self.colors(water, pool))
+            look = self.look(colors)
+            baked = _timed(self.times, "bake", lambda: self.bake(water, look, pool))
+            masks = _timed(self.times, "mask faces", lambda: self.mask_faces(water))
+        textures = _timed(self.times, "assemble", lambda: self.assemble(baked, masks))
+        renders = self.render_all(textures)
+        metrics = _timed(
+            self.times, "metrics", lambda: self.measure(textures, baked, renders)
+        )
+        metrics["time_s"] = dict(self.times, total=round(time.monotonic() - started, 1))
+        (self.out / "metrics.json").write_text(
+            json.dumps(metrics, indent=2), encoding="utf-8", newline="\n"
+        )
+        self.write_notes(metrics)
+        return metrics
+
+    def colors(
+        self, water: dict[str, np.ndarray], pool: Executor
+    ) -> dict[str, tuple[sea_ice_look.Rgb, ...]] | None:
+        """The ice's colors when the variant takes them from the snow."""
+        if not self.variant.snow_colors:
+            return None
+        table = dataclasses.replace(sea_ice_look.LOOK, **self.variant.look).colors
+        snow = {}
+        colors = {}
+        for hemisphere, face, min_lat in (("nh", "py", 70.0), ("sh", "ny", 60.0)):
+            months = sea_ice_look.winter_months(table[hemisphere])
+            mask = area_average(water[face], FACE_SIZE)
+            pooled = []
+            per_month = {}
+            for month in months:
+                rgb = self.source_face_small(f"{YEAR}{month:02d}", face, pool)
+                found = coastal_snow(rgb, mask, face, min_lat)
+                per_month[month] = _rgb_list(np.median(found, axis=0))
+                pooled.append(found)
+            median = np.median(np.concatenate(pooled), axis=0)
+            red, green, blue = (round(float(c)) for c in median)
+            winter = (red, green, blue)
+            colors[hemisphere] = sea_ice_look.rescaled_colors(table[hemisphere], winter)
+            snow[hemisphere] = {
+                "face": face,
+                "min_latitude": min_lat,
+                "months": months,
+                "per_month_median": per_month,
+                "pooled_median": winter,
+                "texels": int(sum(len(p) for p in pooled)),
+                "table_before": [list(c) for c in table[hemisphere]],
+                "table_after": [list(c) for c in colors[hemisphere]],
+            }
+        self.notes["snow_colors"] = snow
+        return colors
+
+    def bake(
+        self, water: dict[str, np.ndarray], look: sea_ice_look.Look, pool: Executor
+    ) -> dict[str, dict]:
+        """Rebake each view's face, and measure the ice's area on every face."""
+        baked = {}
+        for view in self.views:
+            stage = time.monotonic()
+            fields = self.fields(view.hemisphere, look)
+            cap = sea_ice_look.month_cap(fields, view.month, look)
+            if fields.fractures is not None:
+                self.notes.setdefault("fractures", {})[view.hemisphere] = (
+                    fracture_stats(fields.fractures)
+                )
+            if cap.land_coverage is not None and fields.fractures is not None:
+                pack = cap.land_coverage > 0.5
+                whole = float(cap.land_coverage[pack].sum())
+                open_ = float((cap.land_coverage - cap.coverage)[pack].sum())
+                self.notes.setdefault("lead_area", {})[view.key] = round(
+                    open_ / max(whole, 1e-9), 4
+                )
+            if cap.activity is not None:
+                self.notes.setdefault("activity", {})[view.key] = activity_shares(cap)
+            if cap.land_coverage is not None:
+                self.notes.setdefault("pack_streaks", {})[view.key] = pack_streaks(
+                    fields, cap, view.month
+                )
+            ice = sea_ice_look.MonthIce({view.hemisphere: cap})
+            source = self.source_face(view.stamp, view.face, pool)
+            flat = np.array(
+                ocean_masking.apply_ocean_mask(
+                    Image.fromarray(source), water[view.face], color=FILL
+                )
+            )
+            if look.coast_blend:
+                self.blend_coast(view, flat, source, water[view.face], ice, look, pool)
+            area = sea_ice_look.composite_face(
+                flat, water[view.face], view.face, ice, FILL, pool
+            )[view.hemisphere]
+            for face in FACES:
+                if face != view.face:
+                    area += ice_area(water[face], face, ice, view.hemisphere, pool)
+            del fields, cap
+            small = area_average(flat, FACE_SIZE)
+            pre = self.out / "faces" / f"{view.stamp}-{view.face}.png"
+            Image.fromarray(small).save(pre)
+            encoded = self.out / "faces" / f"{view.stamp}-{view.face}.jxl"
+            encode_jxl(Image.fromarray(small), encoded, quality=QUALITY, effort=EFFORT)
+            source_km2 = float(self.source_area(view.hemisphere)[view.month - 1])
+            baked[view.key] = {
+                "preencode": pre,
+                "encoded": encoded,
+                "area_km2": area,
+                "source_km2": source_km2,
+            }
+            self.report(
+                f"Baked {view.key}: {time.monotonic() - stage:.1f}s, ice "
+                f"{area / 1e6:.2f} million km2 against {source_km2 / 1e6:.2f}"
+            )
+        return baked
+
+    def blend_coast(
+        self,
+        view: View,
+        flat: np.ndarray,
+        source: np.ndarray,
+        water: np.ndarray,
+        ice: sea_ice_look.MonthIce,
+        look: sea_ice_look.Look,
+        pool: Executor,
+    ) -> None:
+        """Blend the coast's land toward the ice, and draw and count the blend."""
+        started = time.monotonic()
+        applied = sea_ice_look.blend_coast(
+            flat, source, water, view.face, ice, look, pool, fill=FILL
+        )
+        seconds = time.monotonic() - started
+        small = area_average(np.rint(applied * 255).astype(np.uint8), FACE_SIZE)
+        name = f"{view.key}-coast-blend.png"
+        Image.fromarray(small).save(self.out / name)
+        blends = self.notes.setdefault("coast_blend", {})
+        blends[view.key] = {
+            "seconds": round(seconds, 1),
+            "texels_blended": int((applied > 0.01).sum()),
+            "texels_mostly_ice": int((applied > 0.5).sum()),
+            "working_size": int(water.shape[0]),
+            "image": name,
+        }
+
+    def mask_faces(self, water: dict[str, np.ndarray]) -> dict[str, Path]:
+        """Write the variant's mask faces, lossless."""
+        paths = {}
+        for face in FACES:
+            path = self.out / "faces" / f"mask-{face}.jxl"
+            encode_jxl(
+                Image.fromarray(area_average(water[face], FACE_SIZE)),
+                path,
+                quality=100,
+                effort=EFFORT,
+            )
+            paths[face] = path
+        return paths
+
+    def assemble(self, baked: dict[str, dict], masks: dict[str, Path]) -> Path:
+        """Copy the shipped textures and put the variant's faces in place."""
+        textures = self.out / "textures"
+        shutil.copytree(self.sources.textures, textures)
+        for view in self.views:
+            target = textures / "day" / view.stamp / f"{view.face}.jxl"
+            target.unlink()
+            shutil.copyfile(baked[view.key]["encoded"], target)
+        for face, path in masks.items():
+            target = textures / "mask" / f"{face}.jxl"
+            target.unlink()
+            shutil.copyfile(path, target)
+        return textures
+
+    # The renders.
+
+    def render_all(self, textures: Path) -> dict[str, dict]:
+        """Render every view with a cold tile cache, then the first one warm."""
+        cache = self.out / "tile-cache"
+        renders = {}
+        for view in self.views:
+            renders[view.key] = self.render(view, textures, cache, view.key)
+        warm = self.render(self.views[0], textures, cache, "warm-check")
+        (self.out / "warm-check.png").unlink()
+        cold = sum(r["seconds"] for r in renders.values())
+        self.times["renders"] = round(cold + warm["seconds"], 1)
+        self.notes["pack_build_s"] = round(cold - len(self.views) * warm["seconds"], 1)
+        self.notes["warm_render_s"] = warm["seconds"]
+        return renders
+
+    def render(self, view: View, textures: Path, cache: Path, name: str) -> dict:
+        """Render one view through the app."""
+        work = self.out / "render"
+        work.mkdir(exist_ok=True)
+        config = work / f"{name}.toml"
+        config.write_text(render_config(view), encoding="utf-8", newline="\n")
+        output = self.out / f"{name}.png"
+        env = dict(
+            os.environ,
+            SUNLIT_EARTH_TEXTURES=str(textures),
+            SUNLIT_EARTH_CACHE_DIR=str(cache),
+            SUNLIT_EARTH_CONFIG=str(work / "unused-config.toml"),
+            SUNLIT_EARTH_METRICS_DIR=str(work / "metrics"),
+            SUNLIT_EARTH_NO_CLOUDS="1",
+        )
+        args = [
+            str(self.sources.app),
+            "--quality",
+            "high",
+            "render",
+            "--output",
+            str(output),
+            "--width",
+            str(RENDER_SIZE),
+            "--height",
+            str(RENDER_SIZE),
+            "--config",
+            str(config),
+        ]
+        started = time.monotonic()
+        code = run_in_own_console(args, env)
+        seconds = round(time.monotonic() - started, 1)
+        if code != 0 or not output.exists():
+            msg = f"The render of {name} failed with exit code {code}."
+            raise RuntimeError(msg)
+        self.report(f"Rendered {name}: {seconds}s")
+        return {"path": output, "seconds": seconds}
+
+    # The measurements.
+
+    def measure(
+        self, textures: Path, baked: dict[str, dict], renders: dict[str, dict]
+    ) -> dict:
+        """Measure the variant's faces and renders."""
+        baseline = self.root / "baseline"
+        metrics: dict = {
+            "variant": self.variant.name,
+            "views": {},
+            "dark_land": {},
+        }
+        for face in ("py", "ny"):
+            metrics["dark_land"][face] = dark_land(textures, face)
+        for view in self.views:
+            entry = baked[view.key]
+            decoded = _open_rgb(entry["encoded"])
+            pre = _open_rgb(entry["preencode"])
+            mask = _open_gray(textures / "mask" / f"{view.face}.jxl")
+            min_lat = 70.0 if view.face == "py" else 60.0
+            m = {
+                "label": view.label,
+                "face": view.face,
+                "month": view.month,
+                "render": renders[view.key]["path"].name,
+                "render_s": renders[view.key]["seconds"],
+                "month_check": month_check(view, renders[view.key]["path"], textures),
+                "coast_snow": coast_against_ice(decoded, mask, view.face, min_lat),
+                "ice_area": {
+                    "faces_km2": round(entry["area_km2"]),
+                    "source_km2": round(entry["source_km2"]),
+                    "difference_pct": round(
+                        (entry["area_km2"] / entry["source_km2"] - 1) * 100, 1
+                    ),
+                },
+                "fine_detail": fine_detail(pre, decoded, mask, view.face),
+                "coast_steps": coast_steps(decoded, mask, view.face),
+            }
+            parent_dir = self.root / (self.variant.parent or "baseline")
+            parent_face = parent_dir / "textures" / "day" / view.stamp
+            if self.variant.parent and (parent_face / f"{view.face}.jxl").exists():
+                m["parent_coast_steps"] = coast_steps(
+                    _open_rgb(parent_face / f"{view.face}.jxl"),
+                    _open_gray(parent_dir / "textures" / "mask" / f"{view.face}.jxl"),
+                    view.face,
+                )
+            if baseline != self.out and (baseline / "faces").exists():
+                m["against_baseline"] = changes_against(
+                    baseline,
+                    self.out,
+                    view,
+                    textures,
+                    self.out / f"{view.key}-changes.png",
+                )
+            parent = self.variant.parent
+            if (
+                parent not in (None, "baseline")
+                and (self.root / parent / "faces").exists()
+            ):
+                m["against_parent"] = changes_against(
+                    self.root / parent,
+                    self.out,
+                    view,
+                    textures,
+                    self.out / f"{view.key}-changes-against-{parent}.png",
+                )
+            metrics["views"][view.key] = m
+        if baseline != self.out and (baseline / "faces").exists():
+            metrics["mask_change"] = mask_change(baseline, self.out)
+        metrics["against_shipped"] = against_shipped(
+            self.sources.textures, textures, self.views
+        )
+        metrics["pack_build_s"] = self.notes.get("pack_build_s")
+        metrics["warm_render_s"] = self.notes.get("warm_render_s")
+        if self.variant.imagery_water:
+            key = self.mask_key()
+            metrics["imagery_water"] = self.cache.record(f"imagery-water-{key}", dict)
+            flags = np.load(self.cache.dir / f"imagery-water-flags-{key}.npy")
+            imagery_water_overview(self.raster(), flags, self.out)
+        if "snow_colors" in self.notes:
+            metrics["snow_colors"] = self.notes["snow_colors"]
+        if "coast_blend" in self.notes:
+            metrics["coast_blend"] = self.notes["coast_blend"]
+        for key in ("activity", "fields", "fractures", "lead_area", "pack_streaks"):
+            if key in self.notes:
+                metrics[key] = self.notes[key]
+        thumbnails(self.out, self.views)
+        parent = self.variant.parent
+        metrics["crops"] = detail_crops(
+            self.root / "baseline",
+            self.out,
+            self.views,
+            self.root / parent if parent not in (None, "baseline") else None,
+        )
+        jsonable = _jsonable(metrics)
+        assert isinstance(jsonable, dict)
+        return jsonable
+
+    def write_notes(self, metrics: dict) -> None:
+        """Write ``notes.md``: what the variant changes and what it measured."""
+        lines = [f"# {self.variant.name}", "", self.variant.summary, ""]
+        lines += notes_body(self.variant, metrics)
+        (self.out / "notes.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8", newline="\n"
+        )
+
+
+PACKAGE = "texture_pipeline"
+
+FIELD_ROOTS: tuple[Callable[..., object], ...] = (
+    sea_ice.read_hemisphere,
+    sea_ice_look.fast_ice,
+    sea_ice_look.fast_ice_raise,
+    sea_ice.cap_concentration,
+    sea_ice_look.prepare,
+)
+"""The functions that make a hemisphere's noise fields from the record."""
+
+
+def _ours(value: object) -> bool:
+    return (
+        (inspect.isfunction(value) or inspect.isclass(value))
+        and value.__module__.startswith(PACKAGE)
+        and value is not sea_ice_look.Look
+    )
+
+
+def _code_objects(value: object) -> Iterator[types.CodeType]:
+    if inspect.isfunction(value):
+        todo = [value.__code__]
+    else:
+        todo = []
+        for member in vars(value).values():
+            if isinstance(member, staticmethod | classmethod):
+                member = member.__func__
+            if isinstance(member, property):
+                member = member.fget
+            if inspect.isfunction(member):
+                todo.append(member.__code__)
+    while todo:
+        code = todo.pop()
+        yield code
+        todo += [c for c in code.co_consts if isinstance(c, types.CodeType)]
+
+
+@functools.cache
+def _syntax(value: object) -> ast.AST:
+    return ast.parse(textwrap.dedent(inspect.getsource(value)))
+
+
+def code_closure(*roots: object) -> tuple[list[object], list[str]]:
+    """Return what functions and classes of this package reach by name.
+
+    A name a function's code reads is looked up in its module; a function or
+    class of this package found there is followed in turn, and a module of
+    this package is followed through every other name the code reads. Plain
+    values, the module's constants, are kept as ``module.name=repr``. The
+    tunables' class is not followed: a cache key holds their values.
+
+    :param roots: Functions or classes of this package.
+    :returns: The functions and classes reached, the roots among them, and
+        the constants they read.
+    """
+    reached: dict[int, object] = {}
+    constants: set[str] = set()
+    todo = list(roots)
+    while todo:
+        value = todo.pop()
+        if id(value) in reached:
+            continue
+        reached[id(value)] = value
+        namespace = vars(sys.modules[value.__module__])
+        names = {n for code in _code_objects(value) for n in code.co_names}
+        names |= {
+            node.id for node in ast.walk(_syntax(value)) if isinstance(node, ast.Name)
+        }
+        for name in names:
+            found = namespace.get(name)
+            if isinstance(found, types.ModuleType):
+                if found.__name__.startswith(PACKAGE):
+                    todo += [
+                        getattr(found, n) for n in names if _ours(getattr(found, n, 0))
+                    ]
+            elif _ours(found):
+                todo.append(found)
+            elif isinstance(
+                found, int | float | str | bytes | tuple | frozenset | dict
+            ):
+                constants.add(f"{value.__module__}.{name}={found!r}")
+    return list(reached.values()), sorted(constants)
+
+
+@functools.cache
+def code_digest(*roots: object) -> str:
+    """Return a digest of the source code roots run, constants and libraries
+    included, so that a cache made by older code is never read.
+
+    :param roots: Functions or classes of this package.
+    :returns: Twelve hex digits.
+    """
+    reached, constants = code_closure(*roots)
+    sources = sorted(
+        f"{v.__module__}.{v.__qualname__}\n{inspect.getsource(v)}" for v in reached
+    )
+    return _key(sources, constants, np.__version__, scipy.__version__)
+
+
+@functools.cache
+def tunables_read(*roots: object) -> frozenset[str]:
+    """Return the names of :class:`sea_ice_look.Look`'s tunables the code that
+    roots reach reads as attributes."""
+    reached, _ = code_closure(*roots)
+    names = {f.name for f in dataclasses.fields(sea_ice_look.Look)}
+    return frozenset(
+        node.attr
+        for value in reached
+        for node in ast.walk(_syntax(value))
+        if isinstance(node, ast.Attribute) and node.attr in names
+    )
+
+
+def field_tunables(look: sea_ice_look.Look) -> tuple[tuple[str, object], ...]:
+    """Return the tunables the noise fields depend on, by name: those the code
+    that makes them reads."""
+    read = tunables_read(*FIELD_ROOTS)
+    return tuple(
+        (f.name, getattr(look, f.name))
+        for f in dataclasses.fields(look)
+        if f.name in read
+    )
+
+
+def fields_key(look: sea_ice_look.Look) -> str:
+    """The cache key of a hemisphere's noise fields: the cap's size, the
+    tunables they read and the code that makes them."""
+    return _key(
+        "fields", sea_ice.CAP_SIZE, field_tunables(look), code_digest(*FIELD_ROOTS)
+    )
+
+
+def fields_to_arrays(fields: sea_ice_look.Fields) -> dict[str, np.ndarray]:
+    """Return a hemisphere's noise fields as named arrays, for the cache.
+
+    An array is named by its field, one of a nested dataclass by both names
+    joined with a dot; a field that is ``None`` is left out.
+    """
+    out = {}
+    for f in dataclasses.fields(fields):
+        value = getattr(fields, f.name)
+        if isinstance(value, np.ndarray):
+            out[f.name] = value
+        elif dataclasses.is_dataclass(value):
+            for g in dataclasses.fields(value):
+                out[f"{f.name}.{g.name}"] = getattr(value, g.name)
+    return out
+
+
+def fields_from_arrays(
+    hemisphere: str, arrays: dict[str, np.ndarray]
+) -> sea_ice_look.Fields:
+    """Return the noise fields :func:`fields_to_arrays` took apart."""
+    hints = typing.get_type_hints(sea_ice_look.Fields)
+    values: dict[str, object] = {}
+    for f in dataclasses.fields(sea_ice_look.Fields):
+        nested = {
+            key.split(".", 1)[1]: value
+            for key, value in arrays.items()
+            if key.startswith(f"{f.name}.")
+        }
+        if nested:
+            kind = next(
+                t
+                for t in (hints[f.name], *typing.get_args(hints[f.name]))
+                if dataclasses.is_dataclass(t)
+            )
+            values[f.name] = kind(**nested)
+        elif f.name in arrays:
+            values[f.name] = arrays[f.name]
+    return sea_ice_look.Fields(hemisphere=hemisphere, **values)
+
+
+ACTIVITY_CLASSES = (0.25, 0.6)
+"""Activity below the first is flat, from the first to the second moderate,
+above it structured."""
+
+
+def activity_shares(cap: sea_ice_look.Cap) -> dict[str, float]:
+    """Return the shares of the pack, coverage above a half, by activity.
+
+    The cap's projection keeps area, so a share of texels is a share of area.
+    """
+    assert cap.activity is not None
+    pack = cap.coverage > 0.5
+    active = cap.activity[pack]
+    flat, structured = ACTIVITY_CLASSES
+    total = max(len(active), 1)
+    return {
+        "flat": round(float((active < flat).sum()) / total, 3),
+        "moderate": round(
+            float(((active >= flat) & (active < structured)).sum()) / total, 3
+        ),
+        "structured": round(float((active >= structured).sum()) / total, 3),
+    }
+
+
+def _rgb_list(values: Iterable[float]) -> list[int]:
+    return [round(float(v)) for v in values]
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, Path):
+        return value.name
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    return value
+
+
+def run_in_own_console(args: list[str], env: dict[str, str]) -> int:
+    """Run the app with a console of its own, so it writes no log file.
+
+    The app logs to a file in the user's data directory when its standard
+    error is not a terminal. On Windows a hidden console of its own is one; on
+    other systems it inherits the harness's terminal.
+
+    :param args: The command line.
+    :param env: The environment.
+    :returns: The exit code.
+    """
+    if sys.platform != "win32":
+        return subprocess.run(args, env=env, check=False).returncode
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = 0
+    return subprocess.run(
+        args,
+        env=env,
+        check=False,
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
+        startupinfo=startup,
+    ).returncode
+
+
+def camera_distance(
+    frame_latitude: float = FRAME_LATITUDE, fov_deg: float = FOV_DEG
+) -> float:
+    """Return the distance at which a parallel touches the frame's edges.
+
+    :param frame_latitude: The latitude at the middle of each edge.
+    :param fov_deg: The vertical field of view.
+    :returns: The distance from the Earth's center in its radii.
+    """
+    colatitude = math.radians(90 - frame_latitude)
+    return math.cos(colatitude) + math.sin(colatitude) / math.tan(
+        math.radians(fov_deg / 2)
+    )
+
+
+def camera_zoom(distance: float) -> float:
+    """Return the app's normalized zoom for a camera distance."""
+    return math.log(distance / ZOOM_DISTANCE_MIN) / math.log(
+        ZOOM_DISTANCE_MAX / ZOOM_DISTANCE_MIN
+    )
+
+
+def day_of_year(month: int) -> int:
+    """Return the day of the year of the first of a month of 2004."""
+    return datetime.date(YEAR, month, 1).timetuple().tm_yday
+
+
+def render_config(view: View) -> str:
+    """Return the app config of a view: the day surface unlit, nothing else."""
+    return "\n".join(
+        [
+            f"version = {CONFIG_VERSION}",
+            "",
+            "[sunlit.earth]",
+            f"latitude = {view.latitude}",
+            f"longitude = {view.longitude}",
+            f"zoom = {camera_zoom(camera_distance()):.6f}",
+            f"camera_fov = {FOV_DEG}",
+            f"texture_index = {DAY_MODE}",
+            "texture_resolution = 8192",
+            "atmo_enabled = false",
+            "star_intensity = 0.0",
+            "milky_way_intensity = 0.0",
+            "clouds_enabled = false",
+            "cloud_opacity = 0.0",
+            "cloud_opacity_night = 0.0",
+            "sun_flare = 0.0",
+            "use_custom_datetime = true",
+            "custom_hour = 12.0",
+            f"custom_day_of_year = {day_of_year(view.month)}",
+            f"custom_year = {YEAR}",
+            "",
+        ]
+    )
+
+
+def view_directions(
+    view: View, size: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return the surface direction under every pixel of a view's render.
+
+    The camera is the app's: at the view's latitude and longitude, looking at
+    the Earth's center with +Y up, with the vertical field of view and distance
+    the render config gives it.
+
+    :param view: The view.
+    :param size: The render's edge in pixels.
+    :returns: ``x``, ``y``, ``z`` and whether the pixel shows the Earth.
+    """
+    lat, lon = math.radians(view.latitude), math.radians(view.longitude)
+    distance = camera_distance()
+    eye = distance * np.array(
+        [math.cos(lat) * math.sin(lon), math.sin(lat), math.cos(lat) * math.cos(lon)]
+    )
+    forward = -eye / np.linalg.norm(eye)
+    right = np.cross(forward, [0.0, 1.0, 0.0])
+    right /= np.linalg.norm(right)
+    up = np.cross(right, forward)
+    half = math.tan(math.radians(FOV_DEG / 2))
+    ndc = (np.arange(size) + 0.5) / size * 2 - 1
+    sx = ndc[None, :, None] * half
+    sy = -ndc[:, None, None] * half
+    ray = forward + sx * right + sy * up
+    a = np.sum(ray * ray, axis=-1)
+    b = 2 * ray @ eye
+    c = float(eye @ eye) - 1
+    disc = b * b - 4 * a * c
+    hit = disc > 0
+    t = (-b - np.sqrt(np.maximum(disc, 0))) / (2 * a)
+    point = eye + t[..., None] * ray
+    return point[..., 0], point[..., 1], point[..., 2], hit
+
+
+def polar_face_texels(
+    face: str, x: np.ndarray, y: np.ndarray, z: np.ndarray, size: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return where directions land on ``py`` or ``ny``, and whether they do.
+
+    :param face: ``py`` or ``ny``.
+    :param x: Direction components.
+    :param y: Direction components.
+    :param z: Direction components.
+    :param size: The face's edge in texels.
+    :returns: Continuous row and column, texel centers at integers, and
+        whether the direction lies on the face.
+    """
+    north = face == "py"
+    on = (y > 0 if north else y < 0) & (np.abs(y) >= np.maximum(np.abs(x), np.abs(z)))
+    scale = np.where(on, np.abs(y), 1.0)
+    s = x / scale
+    t = z / scale if north else -z / scale
+    col = (np.arctan(s) / (np.pi / 4) + 1) / 2 * size - 0.5
+    row = (np.arctan(t) / (np.pi / 4) + 1) / 2 * size - 0.5
+    return row, col, on
+
+
+def month_check(view: View, render: Path, textures: Path) -> dict:
+    """Check that a render shows its month's face rather than a neighbor's.
+
+    The render's pixels poleward of 50 degrees on the polar face are compared
+    with the face of the month and of the months either side, each sampled
+    through the app's camera; the month's own face has to be the nearest.
+
+    :param view: The view.
+    :param render: The render.
+    :param textures: The variant's texture directory.
+    :returns: The mean absolute difference per month, and whether the view's
+        month is the nearest.
+    """
+    image = _open_rgb(render).astype(np.float32)
+    x, y, z, hit = view_directions(view, image.shape[0])
+    row, col, on = polar_face_texels(view.face, x, y, z, FACE_SIZE)
+    lat = np.degrees(np.arctan2(y, np.hypot(x, z)))
+    use = hit & on & (np.abs(lat) >= 50)
+    coords = [row[use], col[use]]
+    seen = image[use]
+    errors = {}
+    for month in (view.month - 1, view.month, view.month + 1):
+        month = (month - 1) % 12 + 1
+        face = _open_rgb(textures / "day" / f"{YEAR}{month:02d}" / f"{view.face}.jxl")
+        predicted = np.stack(
+            [
+                map_coordinates(face[..., ch].astype(np.float32), coords, order=1)
+                for ch in range(3)
+            ],
+            axis=-1,
+        )
+        errors[month] = round(float(np.abs(predicted - seen).mean()), 2)
+    nearest = min(errors, key=errors.__getitem__)
+    return {
+        "mean_abs_diff": errors,
+        "pixels": int(use.sum()),
+        "ok": nearest == view.month,
+    }
+
+
+def dark_land(textures: Path, face: str) -> dict:
+    """Count the mask's land texels that are dark water in every month.
+
+    The evidence's measure: a texel the mask calls land (below 128) whose
+    brightest luminance over the twelve months is below 60 and whose blue is
+    above its red by more than 8 in every month.
+
+    :param textures: A texture directory.
+    :param face: The face.
+    :returns: The counts on the face and poleward of 60 degrees, those
+        poleward split by whether the texel is connected to the mask's water
+        through dark texels, four-connected: the coast's mismatch, or a lake.
+    """
+    mask = _open_gray(textures / "mask" / f"{face}.jxl")
+    brightest = np.zeros(mask.shape, np.float32)
+    bluest = np.full(mask.shape, 255.0, np.float32)
+    for month in sorted(p.name for p in (textures / "day").iterdir()):
+        rgb = _open_rgb(textures / "day" / month / f"{face}.jxl").astype(np.float32)
+        brightest = np.maximum(brightest, rgb @ REC709)
+        bluest = np.minimum(bluest, rgb[..., 2] - rgb[..., 0])
+    dark = (mask < 128) & (brightest < 60) & (bluest > 8)
+    polar = np.abs(face_latitude(face, mask.shape[0])) >= 60
+    water = mask >= 128
+    labels, _ = label(dark | water)
+    touching = np.isin(labels, np.unique(labels[water]))
+    return {
+        "dark_land": int(dark.sum()),
+        "poleward_of_60": int((dark & polar).sum()),
+        "connected_to_water": int((dark & touching).sum()),
+        "poleward_of_60_connected": int((dark & polar & touching).sum()),
+        "poleward_of_60_unconnected": int((dark & polar & ~touching).sum()),
+    }
+
+
+def coastal_snow(
+    rgb: np.ndarray, mask: np.ndarray, face: str, min_lat: float
+) -> np.ndarray:
+    """Return the colors of bright land within 8 texels of the mask's water.
+
+    :param rgb: A face, uint8 ``(n, n, 3)``.
+    :param mask: The mask face.
+    :param face: The face's name.
+    :param min_lat: The least absolute latitude measured.
+    :returns: uint8 array ``(k, 3)``.
+    """
+    polar = np.abs(face_latitude(face, mask.shape[0])) >= min_lat
+    coast = (mask == 0) & binary_dilation(mask == 255, iterations=8) & polar
+    return rgb[coast & (luma(rgb) > 180)]
+
+
+def coast_against_ice(rgb: np.ndarray, mask: np.ndarray, face: str, min_lat: float):
+    """The evidence's measure: coastal snow against the ice beyond 8 texels out.
+
+    :returns: The medians and counts of both, and the ice's difference.
+    """
+    snow = coastal_snow(rgb, mask, face, min_lat)
+    polar = np.abs(face_latitude(face, mask.shape[0])) >= min_lat
+    water = mask == 255
+    open_sea = water & ~binary_dilation(~water, iterations=8) & polar
+    ice = rgb[open_sea & (luma(rgb) > 180)]
+    out: dict = {
+        "min_latitude": min_lat,
+        "snow_texels": len(snow),
+        "ice_texels": len(ice),
+    }
+    if len(snow):
+        out["snow_median"] = _rgb_list(np.median(snow, axis=0))
+    if len(ice):
+        out["ice_median"] = _rgb_list(np.median(ice, axis=0))
+    if len(snow) and len(ice):
+        out["ice_minus_snow"] = [
+            i - s for i, s in zip(out["ice_median"], out["snow_median"], strict=True)
+        ]
+    return out
+
+
+def fine_detail(pre: np.ndarray, decoded: np.ndarray, mask: np.ndarray, face: str):
+    """Measure the ice interior's fine detail before and after the encode.
+
+    The interior is the mask's open water at least 8 texels from anything
+    else, poleward of 60 degrees, where the face before the encode is brighter
+    than 150, eroded by 6 texels so that no edge reaches the filters. The
+    detail is the luminance's root mean square in two bands: finer than a
+    Gaussian of 1 texel (about 5 km), and between Gaussians of 1 and 4 texels.
+
+    :returns: Both bands before and after the encode, and the interior's size.
+    """
+    water = mask == 255
+    polar = np.abs(face_latitude(face, mask.shape[0])) >= 60
+    bright = luma(pre) > 150
+    interior = water & ~binary_dilation(~water, iterations=8) & polar & bright
+    interior = binary_erosion(interior, iterations=6)
+    out: dict = {"texels": int(interior.sum())}
+    if not interior.any():
+        return out
+    for name, rgb in (("before", pre), ("after", decoded)):
+        y = luma(rgb)
+        g1 = gaussian_filter(y, 1.0)
+        g4 = gaussian_filter(y, 4.0)
+        out[name] = {
+            "fine_rms": round(float(np.sqrt(np.mean((y - g1)[interior] ** 2))), 3),
+            "mid_rms": round(float(np.sqrt(np.mean((g1 - g4)[interior] ** 2))), 3),
+        }
+    out["fine_kept"] = round(out["after"]["fine_rms"] / out["before"]["fine_rms"], 3)
+    out["mid_kept"] = round(out["after"]["mid_rms"] / out["before"]["mid_rms"], 3)
+    return out
+
+
+COASTS: dict[str, dict[str, tuple[str, tuple[float, float], tuple[float, float]]]] = {
+    "ny": {
+        "ross-ice-shelf-front": ("flat", (-78.8, -77.3), (172.0, -160.0)),
+        "ronne-filchner-front": ("flat", (-78.5, -74.5), (-62.0, -30.0)),
+        "amery-front": ("flat", (-70.0, -68.5), (70.0, 75.0)),
+        "wilkes-land": ("flat", (-67.5, -65.5), (100.0, 135.0)),
+        "queen-maud-land-shelves": ("flat", (-71.0, -69.0), (-10.0, 30.0)),
+        "larsen-c": ("flat", (-68.5, -66.0), (-63.0, -59.0)),
+        "victoria-land": ("mountain", (-77.5, -71.0), (160.0, 171.0)),
+        "antarctic-peninsula-west": ("mountain", (-68.0, -63.0), (-68.0, -60.5)),
+    },
+    "py": {
+        "north-greenland": ("flat", (81.5, 83.7), (-50.0, -20.0)),
+        "canadian-arctic-west": ("flat", (71.0, 78.0), (-126.0, -105.0)),
+        "east-greenland": ("mountain", (66.0, 72.5), (-35.0, -20.0)),
+        "ellesmere-north": ("mountain", (81.5, 83.2), (-90.0, -62.0)),
+    },
+}
+"""Coasts metric (e) measures, per polar face: flat snow coasts, ice shelf
+fronts and low islands, against mountain coasts. Each is a box of latitude and
+longitude; a longitude range from east to west crosses the date line."""
+
+COAST_OFFSETS = np.arange(-4, 5)
+"""Texels along a coast's normal metric (e) samples, positive toward the sea."""
+
+
+def face_longitude(face: str, size: int) -> np.ndarray:
+    """Return the longitude in degrees of every texel of a face."""
+    x, _, z = face_directions(face, size, 0, size)
+    return np.degrees(np.arctan2(x, z)).astype(np.float32)
+
+
+def in_box(
+    lat: np.ndarray,
+    lon: np.ndarray,
+    lats: tuple[float, float],
+    lons: tuple[float, float],
+) -> np.ndarray:
+    """Return where points lie in a box of latitude and longitude.
+
+    :param lats: The latitude range, either order.
+    :param lons: West and east; a west above the east crosses the date line.
+    """
+    inside = (lat >= min(lats)) & (lat <= max(lats))
+    west, east = lons
+    if west <= east:
+        return inside & (lon >= west) & (lon <= east)
+    return inside & ((lon >= west) | (lon <= east))
+
+
+def seaward(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the gradient of the smoothed signed distance from the coast.
+
+    :param mask: The mask face.
+    :returns: Its row and column components; they point toward the sea.
+    """
+    land = mask < 128
+    signed = np.where(
+        land,
+        0.5 - distance_transform_edt(land),
+        distance_transform_edt(~land) - 0.5,
+    ).astype(np.float32)
+    gr, gc = np.gradient(gaussian_filter(signed, 1.0))
+    return gr, gc
+
+
+def coast_profiles(
+    planes: tuple[np.ndarray, ...],
+    gradient: tuple[np.ndarray, np.ndarray],
+    rows: np.ndarray,
+    cols: np.ndarray,
+) -> list[np.ndarray]:
+    """Sample planes along the normals of coast texels at :data:`COAST_OFFSETS`.
+
+    :param planes: float32 arrays ``(n, n)`` to sample.
+    :param gradient: :func:`seaward` of the mask.
+    :param rows: Rows of the coast texels.
+    :param cols: Their columns.
+    :returns: One float32 array ``(len(rows), len(COAST_OFFSETS))`` per plane.
+    """
+    gr, gc = gradient[0][rows, cols], gradient[1][rows, cols]
+    norm = np.hypot(gr, gc) + 1e-6
+    rr = rows[:, None] + COAST_OFFSETS[None, :] * (gr / norm)[:, None]
+    cc = cols[:, None] + COAST_OFFSETS[None, :] * (gc / norm)[:, None]
+    return [map_coordinates(p, [rr, cc], order=1, mode="nearest") for p in planes]
+
+
+def coast_steps(rgb: np.ndarray, mask: np.ndarray, face: str) -> dict:
+    """Metric (e): how the coasts of :data:`COASTS` show under closed ice.
+
+    At every land texel next to the mask's water in a coast's box, luminance
+    is sampled along the coast's normal. A texel counts where the ice is
+    closed, brighter than 200 and the mask's open water 2 to 4 texels out,
+    and the land is snow, brighter than 200 2 to 4 texels in. The step is the
+    land's mean 2 and 3 texels in, 10 to 15 km, less the ice's 2 and 3 texels
+    out; the dip is the mean of the two less the darkest texel within one of
+    the coast.
+
+    :param rgb: A face, uint8 ``(n, n, 3)``.
+    :param mask: The mask face.
+    :param face: ``py`` or ``ny``.
+    :returns: Per coast and pooled per kind: the texels counted, the median
+        step, and the dip's median and 90th percentile.
+    """
+    coasts = COASTS.get(face, {})
+    if not coasts:
+        return {}
+    size = mask.shape[0]
+    lat, lon = face_latitude(face, size), face_longitude(face, size)
+    land = mask < 128
+    rim = land & binary_dilation(~land)
+    gradient = seaward(mask)
+    planes = (luma(rgb), mask.astype(np.float32) / 255)
+    o = {int(k): i for i, k in enumerate(COAST_OFFSETS)}
+    out: dict = {}
+    pooled: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+    for name, (kind, lats, lons) in coasts.items():
+        rows, cols = np.nonzero(rim & in_box(lat, lon, lats, lons))
+        lum, share = coast_profiles(planes, gradient, rows, cols)
+        sea = [o[2], o[3], o[4]]
+        inland = [o[-4], o[-3], o[-2]]
+        keep = (
+            (lum[:, sea] > 200).all(axis=1)
+            & (share[:, sea] > 0.99).all(axis=1)
+            & (lum[:, inland] > 200).all(axis=1)
+        )
+        lum = lum[keep]
+        land_side = lum[:, [o[-3], o[-2]]].mean(axis=1)
+        ice_side = lum[:, [o[2], o[3]]].mean(axis=1)
+        step = land_side - ice_side
+        dip = (land_side + ice_side) / 2 - lum[:, [o[-1], o[0], o[1]]].min(axis=1)
+        out[name] = {"kind": kind, "texels": int(keep.sum()), **_steps(step, dip)}
+        pooled.setdefault(kind, []).append((step, dip))
+    for kind, parts in pooled.items():
+        step = np.concatenate([p[0] for p in parts])
+        dip = np.concatenate([p[1] for p in parts])
+        out[f"all-{kind}"] = {"kind": kind, "texels": len(step), **_steps(step, dip)}
+    return out
+
+
+def _steps(step: np.ndarray, dip: np.ndarray) -> dict:
+    if not len(step):
+        return {}
+    return {
+        "step_median": round(float(np.median(step)), 1),
+        "dip_median": round(float(np.median(dip)), 1),
+        "dip_p90": round(float(np.percentile(dip, 90)), 1),
+    }
+
+
+def ice_area(
+    water: np.ndarray,
+    face: str,
+    ice: sea_ice_look.MonthIce,
+    hemisphere: str,
+    pool: Executor,
+    band_rows: int = 256,
+) -> float:
+    """Return a hemisphere's ice area on a face, as the composite counts it.
+
+    :returns: Coverage times the mask's share of water times the texel's area,
+        summed, in square kilometers.
+    """
+    size = water.shape[0]
+
+    def band(start: int) -> float:
+        stop = min(start + band_rows, size)
+        share = water[start:stop]
+        x, y, z = face_directions(face, size, start, stop)
+        here = (share > 0) & ((y > 0) if hemisphere == "nh" else (y < 0))
+        here &= np.abs(np.arctan2(y, np.hypot(x, z))) > np.radians(30)
+        if not here.any():
+            return 0.0
+        x, y, z = x[here], y[here], z[here]
+        coverage, _ = ice.sample(x, y, z)
+        weight = share[here].astype(np.float32) / 255 * coverage
+        area = weight * sea_ice_look.texel_solid_angles(x, y, z, size)
+        return float(area.sum()) * sea_ice.AUTHALIC_RADIUS_KM**2
+
+    return sum(pool.map(band, range(0, size, band_rows)))
+
+
+def changes_against(
+    baseline: Path, variant: Path, view: View, textures: Path, image: Path
+) -> dict:
+    """Compare a view's face before the encode with the baseline's.
+
+    :returns: Changed texels in all, on the land of both masks, where the masks
+        differ, and on the water of both.
+    """
+    name = f"{view.stamp}-{view.face}.png"
+    before = _open_rgb(baseline / "faces" / name)
+    after = _open_rgb(variant / "faces" / name)
+    mask_before = _open_gray(baseline / "textures" / "mask" / f"{view.face}.jxl")
+    mask_after = _open_gray(textures / "mask" / f"{view.face}.jxl")
+    changed = np.any(before != after, axis=-1)
+    land = (mask_before == 0) & (mask_after == 0)
+    differ = mask_before != mask_after
+    delta = np.abs(before.astype(np.int16) - after.astype(np.int16)).max(axis=-1)
+    view_image = np.repeat((luma(before) * 0.5).astype(np.uint8)[..., None], 3, -1)
+    view_image[changed] = (255, 60, 0)
+    view_image[changed & land] = (255, 255, 0)
+    Image.fromarray(view_image).save(image)
+    return {
+        "changed": int(changed.sum()),
+        "changed_on_land": int((changed & land).sum()),
+        "changed_where_mask_differs": int((changed & differ).sum()),
+        "changed_on_water": int((changed & ~land & ~differ).sum()),
+        "largest_change": int(delta.max()),
+        "largest_change_on_land": int(delta[land].max()) if land.any() else 0,
+        "image": image.name,
+    }
+
+
+def mask_change(baseline: Path, variant: Path) -> dict:
+    """Draw and count the mask faces' change against the baseline."""
+    out = {}
+    for face in ("py", "ny"):
+        before = _open_gray(baseline / "textures" / "mask" / f"{face}.jxl").astype(
+            np.int16
+        )
+        after = _open_gray(variant / "textures" / "mask" / f"{face}.jxl").astype(
+            np.int16
+        )
+        delta = after - before
+        image = np.zeros((*before.shape, 3), dtype=np.uint8)
+        image[...] = np.where(before[..., None] >= 128, (20, 40, 80), (110, 110, 110))
+        gained = delta > 0
+        lost = delta < 0
+        image[gained] = (255, 40, 0)
+        image[lost] = (0, 220, 255)
+        name = f"mask-change-{face}.png"
+        Image.fromarray(image).save(variant / name)
+        out[face] = {
+            "texels_gaining_water": int(gained.sum()),
+            "texels_losing_water": int(lost.sum()),
+            "water_gained_texel_units": round(float(delta[gained].sum()) / 255, 1),
+            "image": name,
+        }
+    return out
+
+
+PLACES: tuple[tuple[str, float, float], ...] = (
+    ("north-greenland", 82.3, -38.0),
+    ("ellesmere-north", 82.3, -75.0),
+    ("svalbard", 78.8, 17.0),
+    ("franz-josef-land", 80.8, 54.0),
+    ("canadian-arctic-west", 76.5, -120.0),
+    ("east-greenland", 71.0, -21.5),
+    ("beaufort-sea", 75.0, -145.0),
+    ("antarctic-peninsula", -66.0, -63.0),
+    ("ross-sea-coast", -72.5, 168.0),
+    ("east-antarctica", -66.5, 110.0),
+    ("ronne-ice-shelf-front", -77.6, -45.0),
+    ("ross-ice-shelf-front", -78.3, -175.0),
+    ("amery-ice-shelf", -69.5, 72.5),
+    ("victoria-land", -75.5, 163.0),
+    ("weddell-sea", -68.0, -40.0),
+)
+"""Places the detail crops are cut around: name, latitude, longitude."""
+
+CROP = 256
+"""Render pixels along each side of a detail crop, drawn at twice the size."""
+
+
+def view_pixel(view: View, latitude: float, longitude: float, size: int):
+    """Return the render pixel a point on the surface is drawn at.
+
+    :returns: Column and row, or ``None`` when the point is outside the frame
+        or on the far side.
+    """
+    lat, lon = math.radians(view.latitude), math.radians(view.longitude)
+    eye = camera_distance() * np.array(
+        [math.cos(lat) * math.sin(lon), math.sin(lat), math.cos(lat) * math.cos(lon)]
+    )
+    forward = -eye / np.linalg.norm(eye)
+    right = np.cross(forward, [0.0, 1.0, 0.0])
+    right /= np.linalg.norm(right)
+    up = np.cross(right, forward)
+    phi, lam = math.radians(latitude), math.radians(longitude)
+    point = np.array(
+        [math.cos(phi) * math.sin(lam), math.sin(phi), math.cos(phi) * math.cos(lam)]
+    )
+    if point @ (eye - point) <= 0:
+        return None
+    ray = point - eye
+    depth = ray @ forward
+    half = math.tan(math.radians(FOV_DEG / 2))
+    x = (ray @ right) / depth / half
+    y = (ray @ up) / depth / half
+    col, row = (x + 1) / 2 * size, (1 - y) / 2 * size
+    if not (0 <= col < size and 0 <= row < size):
+        return None
+    return col, row
+
+
+def detail_crops(
+    baseline: Path, out: Path, views: tuple[View, ...], parent: Path | None = None
+) -> list[str]:
+    """Cut the renders around :data:`PLACES`: the baseline's, the parent's when
+    it is not the baseline, and the variant's, left to right.
+
+    :returns: The names of the images written.
+    """
+    names = []
+    for view in views:
+        render = out / f"{view.key}.png"
+        with Image.open(render) as image:
+            size = image.width
+            after_image = image.convert("RGB")
+        others = []
+        for directory in (baseline, parent):
+            before = None if directory is None else directory / f"{view.key}.png"
+            if before is not None and directory != out and before.exists():
+                with Image.open(before) as image:
+                    others.append(image.convert("RGB"))
+        for name, latitude, longitude in PLACES:
+            if (latitude > 0) != (view.hemisphere == "nh"):
+                continue
+            at = view_pixel(view, latitude, longitude, size)
+            if at is None:
+                continue
+            left = int(min(max(at[0] - CROP / 2, 0), size - CROP))
+            top = int(min(max(at[1] - CROP / 2, 0), size - CROP))
+            box = (left, top, left + CROP, top + CROP)
+            panels = [*others, after_image]
+            sheet = Image.new("RGB", (len(panels) * (2 * CROP + 8) - 8, 2 * CROP))
+            for k, panel in enumerate(panels):
+                crop = panel.crop(box).resize(
+                    (2 * CROP, 2 * CROP), Image.Resampling.NEAREST
+                )
+                sheet.paste(crop, (k * (2 * CROP + 8), 0))
+            file = f"crop-{view.key}-{name}.png"
+            sheet.save(out / file)
+            names.append(file)
+    return names
+
+
+def thumbnails(out: Path, views: tuple[View, ...]) -> None:
+    """Write half size JPEGs of the renders for the page's grid."""
+    for view in views:
+        with Image.open(out / f"{view.key}.png") as image:
+            small = image.convert("RGB").resize(
+                (image.width // 2, image.height // 2), Image.Resampling.LANCZOS
+            )
+        small.save(out / f"{view.key}-small.jpg", quality=92)
+
+
+def notes_body(variant: Variant, metrics: dict) -> list[str]:
+    """The measured part of a variant's notes."""
+    lines = ["## Metrics", ""]
+    dark = metrics["dark_land"]
+    lines.append(
+        "- (a) Dark texels of the mask's land poleward of 60 degrees: "
+        f"py {dark['py']['poleward_of_60']:,}, ny {dark['ny']['poleward_of_60']:,} "
+        "(baseline 1,202 and 668 in the plan's evidence). Of them connected to the "
+        f"mask's water, the coast's mismatch: py "
+        f"{dark['py']['poleward_of_60_connected']:,}, ny "
+        f"{dark['ny']['poleward_of_60_connected']:,}; not connected, lakes: py "
+        f"{dark['py']['poleward_of_60_unconnected']:,}, ny "
+        f"{dark['ny']['poleward_of_60_unconnected']:,}."
+    )
+    for key, view in metrics["views"].items():
+        snow = view["coast_snow"]
+        area = view["ice_area"]
+        detail = view["fine_detail"]
+        check = view["month_check"]
+        lines.append(f"- {view['label']} (`{key}`):")
+        lines.append(
+            f"  - (b) coastal snow {snow.get('snow_median')}, ice "
+            f"{snow.get('ice_median')}, ice minus snow {snow.get('ice_minus_snow')}"
+            f" (poleward of {snow['min_latitude']:.0f})"
+        )
+        lines.append(
+            f"  - (c) ice area {area['faces_km2'] / 1e6:.3f} million km2 on the "
+            f"faces against {area['source_km2'] / 1e6:.3f} in the source, "
+            f"{area['difference_pct']:+.1f}%"
+        )
+        if "after" in detail:
+            lines.append(
+                f"  - (d) interior detail after the encode: fine "
+                f"{detail['after']['fine_rms']} ({detail['fine_kept']:.0%} of "
+                f"before), mid {detail['after']['mid_rms']} ({detail['mid_kept']:.0%}"
+                f" of before), over {detail['texels']:,} texels"
+            )
+        lines += coast_step_notes(view, variant.parent)
+        lines.append(
+            f"  - month check: {'ok' if check['ok'] else 'FAILED'}, mean "
+            f"differences {check['mean_abs_diff']}"
+        )
+        for key, name in (
+            ("against_baseline", "the baseline"),
+            ("against_parent", f"`{variant.parent}`"),
+        ):
+            if key in view:
+                c = view[key]
+                lines.append(
+                    f"  - against {name} before the encode: {c['changed']:,} "
+                    f"texels changed, {c['changed_on_land']:,} on the land of both "
+                    f"masks (by at most {c['largest_change_on_land']}), "
+                    f"{c['changed_where_mask_differs']:,} where the mask changed, "
+                    f"{c['changed_on_water']:,} on water; image `{c['image']}`"
+                )
+    times = metrics["time_s"]
+    lines += [
+        "",
+        "## Time",
+        "",
+        f"- Total {times['total']} s: "
+        + ", ".join(f"{k} {v} s" for k, v in times.items() if k != "total"),
+        f"- Tile packs built during the cold renders: about {metrics['pack_build_s']} s"
+        f" (cold renders less four warm ones of {metrics['warm_render_s']} s).",
+    ]
+    if "imagery_water" in metrics:
+        lines += imagery_water_notes(metrics)
+    if "snow_colors" in metrics:
+        lines += snow_color_notes(metrics["snow_colors"])
+    if "coast_blend" in metrics:
+        lines += coast_blend_notes(metrics["coast_blend"])
+    if "activity" in metrics:
+        lines += activity_notes(metrics["activity"])
+    if "pack_streaks" in metrics:
+        lines += pack_streak_notes(metrics["pack_streaks"])
+    if "fractures" in metrics:
+        lines += fracture_notes(metrics["fractures"], metrics.get("lead_area", {}))
+    if "fields" in metrics:
+        lines += fields_notes(metrics["fields"])
+    if variant.remarks:
+        lines += ["", "## Remarks", ""] + [f"- {r}" for r in variant.remarks]
+    if variant.tests:
+        lines += ["", "## Tests", ""] + [f"- {t}" for t in variant.tests]
+    return lines
+
+
+def coast_step_notes(view: dict, parent: str | None) -> list[str]:
+    """Metric (e) of a view, pooled per kind of coast, against the parent's."""
+    lines = []
+    for kind in ("flat", "mountain"):
+        here = view.get("coast_steps", {}).get(f"all-{kind}", {})
+        if "dip_median" not in here:
+            continue
+        line = (
+            f"  - (e) {kind} coasts under closed ice: step land less ice "
+            f"{here['step_median']}, dip {here['dip_median']} (p90 "
+            f"{here['dip_p90']}) over {here['texels']:,} texels"
+        )
+        before = view.get("parent_coast_steps", {}).get(f"all-{kind}", {})
+        if "dip_median" in before:
+            line += (
+                f"; `{parent}` step {before['step_median']}, dip "
+                f"{before['dip_median']} (p90 {before['dip_p90']})"
+            )
+        lines.append(line)
+    return lines
+
+
+def activity_notes(activity: dict) -> list[str]:
+    """The pack's shares by activity, per view."""
+    flat, structured = ACTIVITY_CLASSES
+    lines = [
+        "",
+        "## Activity",
+        "",
+        f"Shares of the pack, coverage above a half: flat below {flat}, moderate "
+        f"to {structured}, structured above.",
+        "",
+    ]
+    for key, a in activity.items():
+        lines.append(
+            f"- `{key}`: flat {a['flat']:.0%}, moderate {a['moderate']:.0%}, "
+            f"structured {a['structured']:.0%}"
+        )
+    return lines
+
+
+PACK_STREAKS = (0.85, 0.8)
+"""The pack's least concentration, and the edge model's coverage below which
+a texel of it counts as a streak."""
+
+
+def pack_streaks(
+    fields: sea_ice_look.Fields, cap: sea_ice_look.Cap, month: int
+) -> dict[str, float]:
+    """Measure the edge model's streaks of open water inside the pack.
+
+    :param fields: The hemisphere's noise fields.
+    :param cap: The month's cap, with the edge model's own coverage.
+    :param month: The month, 1 to 12.
+    :returns: Of the cap's texels where the record's concentration is at
+        least the pack's, the share where the edge model's coverage is below
+        the streak's, and their area in square kilometers; the same for the
+        band from 0.6 to the pack.
+    """
+    assert cap.land_coverage is not None
+    coarse = fields.concentration[month - 1]
+    conc = zoom(coarse, fields.size / coarse.shape[-1], order=1, grid_mode=True)
+    texel = sea_ice.texel_km(fields.size) ** 2
+    pack, below = PACK_STREAKS
+    out: dict[str, float] = {}
+    for name, inside in (
+        ("pack", conc >= pack),
+        ("inner_margin", (conc >= 0.6) & (conc < pack)),
+    ):
+        streak = inside & (cap.land_coverage < below)
+        out[f"{name}_share"] = round(float(streak.sum() / max(inside.sum(), 1)), 4)
+        out[f"{name}_km2"] = round(float(streak.sum()) * texel)
+    return out
+
+
+def pack_streak_notes(streaks: dict) -> list[str]:
+    """The edge model's streaks inside the pack, per view."""
+    pack, below = PACK_STREAKS
+    lines = [
+        "",
+        "## Streaks in the pack",
+        "",
+        f"Where the record's concentration is at least {pack}, the share of the "
+        f"cap the edge model covers less than {below}: its grey streaks. The "
+        f"band from 0.6 to {pack} in brackets.",
+        "",
+    ]
+    for key, s in streaks.items():
+        lines.append(
+            f"- `{key}`: {s['pack_share']:.1%}, {s['pack_km2'] / 1e3:,.0f} thousand "
+            f"km2 ({s['inner_margin_share']:.1%})"
+        )
+    return lines
+
+
+def fracture_stats(fractures: sea_ice_look.Fractures) -> dict:
+    """Count a hemisphere's fracture systems and measure their lengths."""
+    length, branches, darkness = fractures.systems.T
+    return {
+        "systems": len(length),
+        "branches": int(branches.sum()),
+        "total_km": round(float(length.sum())),
+        "length_km_p10_50_90": [
+            round(float(v)) for v in np.percentile(length, (10, 50, 90))
+        ],
+        "darkness_p10_50_90": [
+            round(float(v), 2) for v in np.percentile(darkness, (10, 50, 90))
+        ],
+    }
+
+
+def fracture_notes(fractures: dict, lead_area: dict) -> list[str]:
+    """The fracture systems and the share of the pack their open water takes."""
+    lines = ["", "## The fractures", ""]
+    for hemisphere, f in fractures.items():
+        lines.append(
+            f"- `{hemisphere}`: {f['systems']} systems with {f['branches']} "
+            f"branches, {f['total_km']:,} km in all; a system's length, branches "
+            f"included, {f['length_km_p10_50_90']} km at the 10th, 50th and 90th "
+            f"percentile; darkness {f['darkness_p10_50_90']}"
+        )
+    for key, share in lead_area.items():
+        lines.append(
+            f"- `{key}`: open water in the pack, fractures and floes, takes "
+            f"{share:.2%} of its ice"
+        )
+    return lines
+
+
+def fields_notes(fields: dict) -> list[str]:
+    """What making the noise fields cost, when this code made them."""
+    lines = ["", "## The noise fields", ""]
+    for hemisphere, f in fields.items():
+        steps = ", ".join(f"{k} {v} s" for k, v in f["seconds"].items())
+        total = round(sum(f["seconds"].values()), 1)
+        size = round(sum(f["mib"].values()))
+        lines.append(
+            f"- `{hemisphere}`: {total} s ({steps}); peak {f['peak_gib']} GiB of "
+            f"traced allocations; {size} MiB kept: "
+            + ", ".join(f"{k} {v}" for k, v in f["mib"].items())
+        )
+    return lines
+
+
+def coast_blend_notes(blends: dict) -> list[str]:
+    """Where the coast's land took the ice, per view."""
+    lines = ["", "## The coast's land", ""]
+    for key, b in blends.items():
+        lines.append(
+            f"- `{key}`: {b['texels_blended']:,} texels of the {b['working_size']}"
+            f" working face took more than 1% of the ice, "
+            f"{b['texels_mostly_ice']:,} more than half; {b['seconds']} s; "
+            f"image `{b['image']}` (white: the share of the texel the ice took)"
+        )
+    return lines
+
+
+def imagery_water_notes(metrics: dict) -> list[str]:
+    """What B1 measured and what it joined."""
+    water = metrics["imagery_water"]
+    t = water["thresholds"]
+    lines = [
+        "",
+        "## The water from the Blue Marble",
+        "",
+        "Measured over the open ocean of the baseline's mask (the shapefile's ocean "
+        "less the ice shelves the ice pass keeps as land; plan departure 2) "
+        f"poleward of 50 degrees, at least "
+        f"{OPEN_WATER['margin_px']} source pixels from anything else and where the "
+        f"sea ice record stays below {OPEN_WATER['ice_free_below']:.0%} all year, "
+        f"every {OPEN_WATER['step']}th pixel along both axes, {t['pixels']:,} pixels:",
+        "",
+    ]
+    for hemisphere, name in (("nh", "North"), ("sh", "South")):
+        h = t[hemisphere]
+        lines.append(
+            f"- {name}: {h['pixels']:,} pixels ({h['pixels_ever_iced']:,} left out "
+            f"as iced in some month); brightest luminance over the year "
+            f"{_quantiles(h['max_luma'])}; least blue less red "
+            f"{_quantiles(h['min_blue'])}"
+        )
+    lines += [
+        "",
+        f"Thresholds: a pixel is the imagery's water in every month when its "
+        f"brightest Rec. 709 luminance over the year is at most {t['max_luma']} (the "
+        f"{OPEN_WATER['luma_percentile']:g}th percentile) and its blue is at least "
+        f"{t['min_blue']} above its red in every month (the "
+        f"{OPEN_WATER['blue_percentile']:g}st percentile).",
+        "",
+    ]
+    for name, count in water["joined"].items():
+        where = {
+            "north": "Joined north of 50 N",
+            "south": "Joined south of 50 S",
+            "elsewhere": "Would join between 50 S and 50 N (not applied)",
+        }[name]
+        lines.append(
+            f"- {where}: {count['source_pixels']:,} source pixels, about "
+            f"{count['km2']:,} km2"
+        )
+    change = metrics.get("mask_change", {})
+    for face, c in change.items():
+        lines.append(
+            f"- Mask face `{face}`: {c['texels_gaining_water']:,} texels gain water "
+            f"({c['water_gained_texel_units']:,} texels' worth), "
+            f"{c['texels_losing_water']:,} lose it; image `{c['image']}`"
+        )
+    lines.append(
+        "- `imagery-water-world.png`: where the join applies (red) and where it "
+        "would apply elsewhere (orange), each pixel 8 source pixels square."
+    )
+    return lines
+
+
+def _quantiles(values: dict[str, float]) -> str:
+    return ", ".join(f"{k} {v:g}" for k, v in values.items())
+
+
+def snow_color_notes(snow: dict) -> list[str]:
+    """What B2 measured and the colors it gave the months."""
+    lines = ["", "## The ice's color from the coastal snow", ""]
+    for hemisphere, s in snow.items():
+        name = "North" if hemisphere == "nh" else "South"
+        months = ", ".join(f"{m}: {tuple(c)}" for m, c in s["per_month_median"].items())
+        lines += [
+            f"- {name} (`{s['face']}` poleward of {s['min_latitude']:.0f}, months "
+            f"{s['months']}): coastal snow median {tuple(s['pooled_median'])} over "
+            f"{s['texels']:,} texels; per month {months}",
+            "  - colors by month, before: "
+            + ", ".join(str(tuple(c)) for c in s["table_before"]),
+            "  - after: " + ", ".join(str(tuple(c)) for c in s["table_after"]),
+        ]
+    return lines
+
+
+def imagery_water_overview(raster: np.ndarray, flags: np.ndarray, out: Path) -> None:
+    """Draw where B1 joined water, and where it would elsewhere, on the world."""
+    height, width = flags.shape
+    pooled = raster[: height * POOL, : width * POOL].reshape(height, POOL, width, POOL)
+    ocean = pooled.mean(axis=(1, 3)) >= 128
+    image = np.where(ocean[..., None], (20, 40, 80), (110, 110, 110)).astype(np.uint8)
+    image[flags == 1] = (255, 40, 0)
+    image[flags == 2] = (255, 170, 0)
+    Image.fromarray(image).save(out / "imagery-water-world.png")
+
+
+def run_variant(
+    root: Path, name: str, views: tuple[View, ...], report: Report = print
+) -> dict:
+    """Run a variant by name.
+
+    :param root: The harness's directory.
+    :param name: One of :data:`VARIANTS`.
+    :param views: The four views.
+    :param report: Told what is happening.
+    :returns: The variant's metrics.
+    """
+    return Harness(root, VARIANTS[name], views, report).run()
+
+
+def against_shipped(shipped: Path, textures: Path, views: tuple[View, ...]) -> dict:
+    """Compare the variant's rebaked faces, decoded, with the shipped ones.
+
+    For the baseline this is the check that the harness bakes what the
+    production bake did.
+
+    :returns: Per mask face and per view's day face, the texels that differ and
+        the largest difference.
+    """
+    pairs: dict[str, Path] = {
+        f"mask-{face}": Path("mask") / f"{face}.jxl" for face in ("py", "ny")
+    }
+    for view in views:
+        pairs[view.key] = Path("day") / view.stamp / f"{view.face}.jxl"
+    out = {}
+    for name, relative in pairs.items():
+        a = _open_rgb(shipped / relative).astype(np.int16)
+        b = _open_rgb(textures / relative).astype(np.int16)
+        delta = np.abs(a - b).max(axis=-1)
+        out[name] = {
+            "texels_differing": int((delta > 0).sum()),
+            "largest_difference": int(delta.max()),
+            "bytes_identical": (shipped / relative).read_bytes()
+            == (textures / relative).read_bytes(),
+        }
+    return out
+
+
+def open_water(
+    raster: np.ndarray,
+    stats: dict[str, np.ndarray],
+    ice_max: dict[str, np.ndarray],
+    min_latitude: float,
+    *,
+    margin_px: int,
+    step: int,
+    ice_free_below: float,
+    luma_percentile: float,
+    blue_percentile: float,
+) -> dict:
+    """Measure the imagery's water over the open ocean and derive thresholds.
+
+    The open ocean is the shapefile's less the ice the bake keeps as land, so
+    that the Antarctic ice shelves, which the sea ice record has no ice on,
+    are left out.
+
+    :param raster: The baseline's mask at the source's size.
+    :param stats: The yearly water statistics.
+    :param ice_max: Each hemisphere's largest concentration on its cap.
+    :param min_latitude: Measured poleward of this latitude.
+    :returns: The distributions per hemisphere, and the thresholds
+        ``max_luma`` and ``min_blue``: a pixel is water in every month when
+        its brightest luminance is at most the first and its least blue at
+        least the second.
+    """
+    height, width = raster.shape
+    north, south = ocean_masking.latitude_rows(height, min_latitude)
+    lumas, blues = [], []
+    out: dict = {}
+    qs = (0.1, 1, 5, 50, 95, 99, 99.9)
+    for hemisphere, start, stop in (("nh", 0, north), ("sh", south, height)):
+        ocean = raster[start:stop] == 255
+        core = binary_erosion(ocean, iterations=margin_px, border_value=1)
+        del ocean
+        rr, cc = np.nonzero(core[::step, ::step])
+        del core
+        rows = rr * step + start
+        cols = cc * step
+        lat = 90.0 - (rows + 0.5) * 180.0 / height
+        lon = (cols + 0.5) * 360.0 / width - 180.0
+        _, px, py = sea_ice.latlon_to_cap(lat, lon)
+        tr, tc = sea_ice.plane_to_texel(px, py, ice_max[hemisphere].shape[0])
+        conc = map_coordinates(
+            ice_max[hemisphere], [tr, tc], order=1, mode="constant", cval=0.0
+        )
+        free = conc < ice_free_below
+        luma_here = stats["max_luma"][rows[free], cols[free]]
+        blue_here = stats["min_blue"][rows[free], cols[free]]
+        out[hemisphere] = {
+            "pixels": int(free.sum()),
+            "pixels_ever_iced": int((~free).sum()),
+            "max_luma": _percentiles(luma_here, qs),
+            "min_blue": _percentiles(blue_here, qs),
+        }
+        lumas.append(luma_here)
+        blues.append(blue_here)
+    luma_all = np.concatenate(lumas)
+    blue_all = np.concatenate(blues)
+    out["max_luma"] = int(np.ceil(np.percentile(luma_all, luma_percentile)))
+    out["min_blue"] = int(np.floor(np.percentile(blue_all, blue_percentile)))
+    out["pixels"] = len(luma_all)
+    return out
+
+
+def _percentiles(values: np.ndarray, qs: tuple[float, ...]) -> dict[str, float]:
+    return {
+        f"p{q:g}": round(float(v), 1)
+        for q, v in zip(qs, np.percentile(values, qs), strict=True)
+    }

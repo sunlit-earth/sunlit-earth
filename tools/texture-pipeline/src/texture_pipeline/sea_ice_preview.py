@@ -537,6 +537,44 @@ B3D_MELT = B3C_FLOES.derive(
     ),
 )
 
+SETTLED = B2B_COAST.derive(
+    "settled",
+    "C1: the look the two labs settled, on top of B2b, with B4's fast ice band "
+    "and B3d's melt tone. The closed pack is ridged relief at three detail "
+    "levels, octaves of 40 down to 2.5 km folded at zero and crinkled, lit from "
+    "one side, shadow twice the light; five region fields at 250 to 900 km vary "
+    "the detail level, the strength (35% to 85%), the soft regions, where the "
+    "activity fades in and out gradually and creases follow warped cells of 20, "
+    "60 and 180 km, and the drift streaks along a turning wind in about a "
+    "quarter of the pack. The leads are B3b's fracture systems drawn thin and "
+    "faint (0.7 to 2.5 km wide, 6% to 20% of the fill, open ones 25% to 50%), "
+    "in pieces of 10 to 40 km en echelon and pinched shut on a fifth of their "
+    "runs, at 0.75 of their darkness. There is no edge model: the open water "
+    "the concentration leaves, less the leads', is a cascade of whole cells "
+    "from 64 to 4 km, coarse cells leaning to ice and fine ones to water, cut "
+    "at the coastline, around a regional target that alternates loose and "
+    "compact regions at 60 to 250 km; between 40% and 70% regions of a calm "
+    "speckle take over; at 0% it is open water. Each patch of water is grey "
+    "(45% of the fill) or dark, the largest dark first, from all grey at 95% to "
+    "all dark at 45%. Along the coast, the sea within 10 km of the land is ice "
+    "wherever the concentration is 50% or more, and the coast's land blends "
+    "with the coverage of the sea beside it. The land is the mask faces' on a "
+    "cap of its own. Every field is fixed on the cap plane.",
+    look={
+        "crumple": True,
+        "ridged": True,
+        "fractures": True,
+        "jagged": True,
+        "fracture_width_km": (0.7, 2.5),
+        "fracture_darkness": (0.06, 0.2),
+        "fracture_open_darkness": (0.25, 0.5),
+        "cascade": True,
+        "coast_rule": (10.0, 0.5),
+        "fast_ice": True,
+        "melt_tone": True,
+    },
+)
+
 VARIANTS: dict[str, Variant] = {
     v.name: v
     for v in (
@@ -548,6 +586,7 @@ VARIANTS: dict[str, Variant] = {
         B3B_LEADS,
         B3C_FLOES,
         B3D_MELT,
+        SETTLED,
     )
 }
 
@@ -681,6 +720,7 @@ class Harness:
         self._fields: dict[str, tuple[sea_ice_look.Look, sea_ice_look.Fields]] = {}
         self._fields_notes: dict[str, dict] = {}
         self._locks = {h: threading.Lock() for h in sea_ice.HEMISPHERES}
+        self._coast_gap_lock = threading.Lock()
 
     # The source raster and the masks.
 
@@ -915,7 +955,10 @@ class Harness:
             if kept is not None and kept[0] == look:
                 return kept[1]
             concentration, fast, record = self.record(hemisphere, look)
-            keys = part_keys(look, hemisphere, record, sea_ice.CAP_SIZE)
+            land, land_key = None, None
+            if any(p.reads_land for p in sea_ice_look.parts_for(look, hemisphere)):
+                land, land_key = self.cap_land(hemisphere)
+            keys = part_keys(look, hemisphere, record, sea_ice.CAP_SIZE, land_key)
             tracing = self.workers == 1
 
             def cached(
@@ -961,12 +1004,34 @@ class Harness:
                 fast=fast,
                 workers=self.workers,
                 cache=cached,
+                land=land,
             )
             self._fields_notes[hemisphere] = self.fields_note(
                 hemisphere, look, keys, fields
             )
             self._fields[hemisphere] = (look, fields)
             return fields
+
+    def cap_land(self, hemisphere: str) -> tuple[np.ndarray, str]:
+        """The land on a hemisphere's cap from the variant's mask faces, and
+        the key it is kept under."""
+        key = _key(
+            "cap-land",
+            self.mask_key(),
+            self.work_size,
+            sea_ice.CAP_SIZE,
+            code_digest(sea_ice_look.cap_land),
+        )
+
+        def make() -> np.ndarray:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                water = self.water_faces(pool)
+            self.report(f"Land on the cap: {hemisphere}")
+            return sea_ice_look.cap_land(
+                water, hemisphere, sea_ice.CAP_SIZE, self.workers
+            )
+
+        return self.cache.array(f"cap-land-{hemisphere}-{key}", make), key
 
     def fields_note(
         self,
@@ -1160,9 +1225,17 @@ class Harness:
             whole = float(cap.land_coverage[pack].sum())
             open_ = float((cap.land_coverage - cap.coverage)[pack].sum())
             notes["lead_area"] = round(open_ / max(whole, 1e-9), 4)
+        if cap.floes is not None and fields.fractures is not None:
+            pack = cap.floes > 0.5
+            if fields.coast is not None:
+                pack &= ~fields.coast.land
+            leads = fields.fractures.open[pack].astype(np.float32)
+            floes = cap.floes[pack]
+            share = float((leads * floes).sum()) / max(float(floes.sum()), 1e-9)
+            notes["lead_area"] = round(share, 5)
         if cap.activity is not None:
             notes["activity"] = activity_shares(cap)
-        if cap.land_coverage is not None:
+        if cap.land_coverage is not None or cap.floes is not None:
             notes["pack_streaks"] = pack_streaks(fields, cap, view.month)
         ice = sea_ice_look.MonthIce({view.hemisphere: cap})
         source = self.source_face(view.stamp, view.face, pool)
@@ -1178,6 +1251,9 @@ class Harness:
         area = sea_ice_look.composite_face(
             flat, water[view.face], view.face, ice, FILL, pool
         )[view.hemisphere]
+        if look.coast_blend:
+            with self._coast_gap_lock:
+                notes["coast_gaps"] = coast_gaps(flat, water[view.face], view.face)
         for face in FACES:
             if face != view.face:
                 area += ice_area(water[face], face, ice, view.hemisphere, pool)
@@ -1541,7 +1617,14 @@ class Harness:
                 metrics["snow_colors"] = self.notes["snow_colors"]
             if "coast_blend" in self.notes:
                 metrics["coast_blend"] = self.notes["coast_blend"]
-            for key in ("activity", "fields", "fractures", "lead_area", "pack_streaks"):
+            for key in (
+                "activity",
+                "coast_gaps",
+                "fields",
+                "fractures",
+                "lead_area",
+                "pack_streaks",
+            ):
                 if key in self.notes:
                     metrics[key] = self.notes[key]
             metrics["crops"] = crops.result()
@@ -1796,18 +1879,24 @@ def record_key(directory: Path, hemisphere: str, look: sea_ice_look.Look) -> str
 
 
 def part_keys(
-    look: sea_ice_look.Look, hemisphere: str, record: str, size: int
+    look: sea_ice_look.Look,
+    hemisphere: str,
+    record: str,
+    size: int,
+    land: str | None = None,
 ) -> dict[str, str]:
     """Return the cache key of each part of a hemisphere's noise fields.
 
     A key holds the cap's size, the tunables the part's code reads, that code,
-    the record's key when the part reads the concentration, and the keys of
-    the parts it reads, so that a change reaches exactly the parts it affects.
+    the record's key when the part reads the concentration, the land's key
+    when it reads the land, and the keys of the parts it reads, so that a
+    change reaches exactly the parts it affects.
 
     :param look: The tunables.
     :param hemisphere: ``nh`` or ``sh``.
     :param record: The record's key, as :func:`record_key` gives it.
     :param size: Texels along each side of the cap.
+    :param land: The key of the land on the cap, when the look reads it.
     :returns: The key of each part the look needs, by the part's name.
     """
     keys: dict[str, str] = {}
@@ -1826,6 +1915,7 @@ def part_keys(
             code_digest(part.make),
             record if part.reads_record else None,
             tuple(keys[name] for name in part.needs),
+            *((land,) if part.reads_land else ()),
         )
     return keys
 
@@ -1842,7 +1932,8 @@ def part_to_arrays(part: Mapping[str, object]) -> dict[str, np.ndarray]:
             out[name] = value
         elif dataclasses.is_dataclass(value):
             for g in dataclasses.fields(value):
-                out[f"{name}.{g.name}"] = getattr(value, g.name)
+                if getattr(value, g.name) is not None:
+                    out[f"{name}.{g.name}"] = getattr(value, g.name)
     return out
 
 
@@ -1863,7 +1954,9 @@ def parts_from_arrays(arrays: dict[str, np.ndarray]) -> dict[str, object]:
                 for t in (hints[f.name], *typing.get_args(hints[f.name]))
                 if dataclasses.is_dataclass(t)
             )
-            values[f.name] = kind(**nested)
+            values[f.name] = kind(
+                **{g.name: nested.get(g.name) for g in dataclasses.fields(kind)}
+            )
         elif f.name in arrays:
             values[f.name] = arrays[f.name]
     return values
@@ -1886,6 +1979,7 @@ def fields_from_arrays(
     """Return the noise fields :func:`fields_to_arrays` took apart."""
     values = parts_from_arrays(arrays)
     values.setdefault("leads", None)
+    values.setdefault("threshold", None)
     return sea_ice_look.Fields(hemisphere=hemisphere, **values)
 
 
@@ -2708,6 +2802,8 @@ def notes_body(variant: Variant, metrics: dict) -> list[str]:
         lines += coast_blend_notes(metrics["coast_blend"])
     if "activity" in metrics:
         lines += activity_notes(metrics["activity"])
+    if "coast_gaps" in metrics:
+        lines += coast_gap_notes(metrics["coast_gaps"])
     if "pack_streaks" in metrics:
         lines += pack_streak_notes(metrics["pack_streaks"])
     if "fractures" in metrics:
@@ -2780,9 +2876,12 @@ def pack_streaks(
         the streak's, and their area in square kilometers; the same for the
         band from 0.6 to the pack.
     """
-    assert cap.land_coverage is not None
+    cover = cap.floes if cap.floes is not None else cap.land_coverage
+    assert cover is not None
     coarse = fields.concentration[month - 1]
     conc = zoom(coarse, fields.size / coarse.shape[-1], order=1, grid_mode=True)
+    if fields.coast is not None:
+        conc[fields.coast.land] = 0
     texel = sea_ice.texel_km(fields.size) ** 2
     pack, below = PACK_STREAKS
     out: dict[str, float] = {}
@@ -2790,10 +2889,83 @@ def pack_streaks(
         ("pack", conc >= pack),
         ("inner_margin", (conc >= 0.6) & (conc < pack)),
     ):
-        streak = inside & (cap.land_coverage < below)
+        streak = inside & (cover < below)
         out[f"{name}_share"] = round(float(streak.sum() / max(inside.sum(), 1)), 4)
         out[f"{name}_km2"] = round(float(streak.sum()) * texel)
     return out
+
+
+COAST_GAP_OFFSETS = np.arange(0, 17)
+"""Working face texels seaward of a coast texel that :func:`coast_gaps`
+reads, about 1.85 km apart."""
+
+
+def coast_gaps(rgb: np.ndarray, water: np.ndarray, face: str) -> dict:
+    """Measure B4's question: open water along coasts closed offshore.
+
+    From each texel of land at the coastline poleward of 60 degrees, the
+    working face is read along the coast's normal: where it is closed ice
+    15 to 30 km out (luminance above 200 on full water), the coast counts as
+    closed, and as open where it is darker than 100 within 2 to 11 km, grey
+    where it is darker than 180 there and not open.
+
+    :param rgb: uint8 array ``(N, N, 3)``, the composited working face.
+    :param water: uint8 array ``(N, N)``, its mask.
+    :param face: ``py`` or ``ny``.
+    :returns: The closed coast texels and the shares of them open and grey.
+    """
+    size = water.shape[0]
+    cut = slice(size // 6, size - size // 6)
+    lum = luma(rgb[cut, cut])
+    wet = water[cut, cut].astype(np.float32) / 255
+    latitude = face_latitude(face, size)[cut, cut]
+    land = wet < 0.5
+    inland = distance_transform_edt(land).astype(np.float32)
+    signed = np.where(
+        land, 0.5 - inland, distance_transform_edt(~land).astype(np.float32) - 0.5
+    )
+    gr, gc = np.gradient(gaussian_filter(signed, 2.0))
+    del signed
+    rows, cols = np.nonzero(land & (inland <= 1) & (np.abs(latitude) >= 60))
+    del inland, latitude
+    norm = np.hypot(gr[rows, cols], gc[rows, cols]) + 1e-6
+    offsets = COAST_GAP_OFFSETS[None, :]
+    rr = rows[:, None] + offsets * (gr[rows, cols] / norm)[:, None]
+    cc = cols[:, None] + offsets * (gc[rows, cols] / norm)[:, None]
+    del gr, gc
+    seen = map_coordinates(lum, [rr, cc], order=1, mode="nearest")
+    sea = map_coordinates(wet, [rr, cc], order=1, mode="nearest")
+    far = (COAST_GAP_OFFSETS >= 8) & (COAST_GAP_OFFSETS <= 16)
+    near = (COAST_GAP_OFFSETS >= 1) & (COAST_GAP_OFFSETS <= 6)
+    closed = (seen[:, far] > 200).all(1) & (sea[:, far] > 0.99).all(1)
+    gap = closed & (seen[:, near] < 100).any(1)
+    grey = closed & ~gap & (seen[:, near] < 180).any(1)
+    total = max(int(closed.sum()), 1)
+    return {
+        "closed": int(closed.sum()),
+        "open_share": round(float(gap.sum()) / total, 4),
+        "grey_share": round(float(grey.sum()) / total, 4),
+    }
+
+
+def coast_gap_notes(gaps: dict) -> list[str]:
+    """B4's measure per view."""
+    lines = [
+        "",
+        "## Open water along closed coasts",
+        "",
+        "Of the coast texels poleward of 60 degrees with closed ice 15 to 30 km "
+        "out, on the working face, the share with open water (luminance below "
+        "100) within 2 to 11 km of the coast, and the share only grey (100 to "
+        "180) there.",
+        "",
+    ]
+    for key, g in gaps.items():
+        lines.append(
+            f"- `{key}`: open {g['open_share']:.1%}, grey {g['grey_share']:.1%} "
+            f"of {g['closed']:,} closed coast texels"
+        )
+    return lines
 
 
 def pack_streak_notes(streaks: dict) -> list[str]:
@@ -2804,8 +2976,9 @@ def pack_streak_notes(streaks: dict) -> list[str]:
         "## Streaks in the pack",
         "",
         f"Where the record's concentration is at least {pack}, the share of the "
-        f"cap the edge model covers less than {below}: its grey streaks. The "
-        f"band from 0.6 to {pack} in brackets.",
+        f"cap the edge model covers less than {below}: its grey streaks; with "
+        "the settled floes, which have no edge model, the share their water "
+        f"leaves less than {below} of. The band from 0.6 to {pack} in brackets.",
         "",
     ]
     for key, s in streaks.items():
@@ -2845,7 +3018,8 @@ def fracture_notes(fractures: dict, lead_area: dict) -> list[str]:
     for key, share in lead_area.items():
         lines.append(
             f"- `{key}`: open water in the pack, fractures and floes, takes "
-            f"{share:.2%} of its ice"
+            f"{share:.2%} of its ice ({share * 1000:.2f} per mille); with the "
+            "settled floes, the leads' share of the fill alone"
         )
     return lines
 

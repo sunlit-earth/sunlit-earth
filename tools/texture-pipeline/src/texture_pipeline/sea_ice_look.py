@@ -612,7 +612,7 @@ class Look:
 
     cascade: bool = False
     """Whether the open water the concentration leaves is drawn by a cascade
-    of whole cells, a calm speckle between 40% and 70%, and one grey or dark
+    of whole cells, a calm speckle between 40% and 70%, and one gray or dark
     color per patch of water, in place of the edge model's threshold and the
     floes: the ice edge is where the cells reach no concentration."""
 
@@ -621,7 +621,7 @@ class Look:
     off the water they draw."""
 
     gap_gray: float = 0.45
-    """The share of the sea's fill a grey patch of water shows."""
+    """The share of the sea's fill a gray patch of water shows."""
 
     gap_dark: tuple[float, float] = (0.95, 0.45)
     """Concentrations above which no water is dark and below which all is."""
@@ -1326,7 +1326,7 @@ def ridged_reliefs(
     octaves: np.random.Generator,
     crinkle: np.random.Generator,
     workers: int | None = None,
-) -> list[np.ndarray]:
+) -> Iterator[np.ndarray]:
     """Return the ridged relief at each of :attr:`Look.ridged_levels`, shaded.
 
     Musgrave's ridged multifractal: each octave of band noise, crinkled by a
@@ -1343,8 +1343,8 @@ def ridged_reliefs(
     :param crinkle: The generator of the crinkle.
     :param workers: Threads for the bands of rows; the process's setting when
         ``None``. The result does not depend on it.
-    :returns: Per level, a float32 array ``(size, size)``: the factor's change
-        of the brightness.
+    :returns: Per level, in turn, a float32 array ``(size, size)``: the
+        factor's change of the brightness.
     """
     noises = []
     feature, finest = look.ridged_km
@@ -1376,7 +1376,8 @@ def ridged_reliefs(
         parallel.pmap(band, rows(size), workers)
         return lit(light_slope(height, look.light_angle), look.ridged_shading)
 
-    return [level(*values) for values in look.ridged_levels]
+    for values in look.ridged_levels:
+        yield level(*values)
 
 
 def voronoi_creases(size: int, look: Look, rng: np.random.Generator) -> np.ndarray:
@@ -1480,8 +1481,9 @@ def ridged_surface(
     :param size: Texels along each side of the cap.
     :param look: The tunables.
     :param noise: The activity noise, standard deviation 1.
-    :param regions: float32 arrays ``(size, size)``: the detail, softness,
-        drift, underlayer and strength fields, standard deviation 1.
+    :param regions: float32 arrays, the detail, softness, drift, underlayer
+        and strength fields, standard deviation 1, at the cap's size or a
+        coarser cap's, which is zoomed to it.
     :param rngs: The generators of the ``octaves``, the ``crinkle``, the
         ``voronoi`` cells and the ``drift``.
     :param workers: Threads; the process's setting when ``None``.
@@ -1491,28 +1493,30 @@ def ridged_surface(
         the ``drift`` and the ``base`` activity, as :class:`Surface` keeps
         them.
     """
-    detail, soft_n, drift_n, _, gain_n = regions
+    detail = _zoomed(regions[0], size)
     (lo1, hi1), (lo3, hi3) = look.detail_steps
     w3 = smoothstep(lo3, hi3, detail)
     w1 = smoothstep(lo1, hi1, detail)
-    w2 = 1 - w1 - w3
+    del detail
     hard = stepped_activity(noise, look.activity_range, look.activity_floor)
     lo, hi, floor = look.soft_activity
     gentle = stepped_activity(noise, (lo, hi), floor)
-    soft = smoothstep(*look.soft_step, soft_n)
+    soft = smoothstep(*look.soft_step, _zoomed(regions[1], size))
     base = ((1 - soft) * hard + soft * gentle).astype(np.float32)
     del hard, gentle
-    first, second, third = ridged_reliefs(
-        size, look, rngs["octaves"], rngs["crinkle"], workers
-    )
-    relief = w1 * first
-    relief += w2 * second
-    relief += w3 * third
-    del first, second, third, w1, w2, w3
+    levels = ridged_reliefs(size, look, rngs["octaves"], rngs["crinkle"], workers)
+    relief = w1 * next(levels)
+    w2 = 1 - w1 - w3
+    del w1
+    relief += w2 * next(levels)
+    del w2
+    relief += w3 * next(levels)
+    del w3, levels
     relief += soft * look.voronoi_weight * voronoi_creases(size, look, rngs["voronoi"])
+    del soft
     g0, g1 = look.strength
-    gain = g0 + (g1 - g0) * smoothstep(*look.strength_step, gain_n)
-    share = smoothstep(*look.drift_step, drift_n)
+    gain = g0 + (g1 - g0) * smoothstep(*look.strength_step, _zoomed(regions[4], size))
+    share = smoothstep(*look.drift_step, _zoomed(regions[2], size))
     drift = drift_streaks(size, look, base, share, rngs["drift"], coarse)
     return {"relief": relief, "gain": gain, "drift": drift, "base": base}
 
@@ -1531,10 +1535,7 @@ def surface(size: int, look: Look, hemisphere: str, workers: int | None) -> Surf
     """
     coarse = min(look.region_cap, size)
     regions = [
-        _zoomed(
-            band_noise(coarse, look.region_band_km, _rng(look, hemisphere, 60 + k)),
-            size,
-        )
+        band_noise(coarse, look.region_band_km, _rng(look, hemisphere, 60 + k))
         for k in range(5)
     ]
     noise = band_noise(size, look.activity_band_km, _rng(look, hemisphere, 5))
@@ -2092,9 +2093,13 @@ def cascade_cells(
     :param look: The tunables.
     :param rngs: One generator per level, which draws its shift, its points
         and its uniforms in that order.
-    :param workers: Levels made at once; the process's setting when ``None``.
+    :param workers: Threads for the queries of the cells' points; the
+        process's setting when ``None``. The levels are made in turn, which
+        bounds the memory.
     :returns: The cells.
     """
+
+    threads = parallel.workers(workers)
 
     def level(k: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rng, cell_km = rngs[k], look.cascade_km[k]
@@ -2112,13 +2117,13 @@ def cascade_cells(
             r = np.arange(start, stop, dtype=np.float32)[:, None] + shift[0, start:stop]
             c = np.arange(size, dtype=np.float32)[None, :] + shift[1, start:stop]
             query = np.stack([r.ravel(), c.ravel()], -1)
-            _, index = tree.query(query, k=1, workers=-1)
+            _, index = tree.query(query, k=1, workers=threads)
             ids[start:stop] = index.reshape(r.shape)
         u = rng.random(len(points)).astype(np.float32)
         v = rng.random(len(points)).astype(np.float32)
         return ids, u, v
 
-    made = parallel.pmap(level, range(len(look.cascade_km)), workers)
+    made = [level(k) for k in range(len(look.cascade_km))]
     lengths = [len(u) for _, u, _ in made]
     return Cascade(
         np.stack([ids for ids, _, _ in made]),
@@ -2336,7 +2341,7 @@ def dark_share(c: np.ndarray, look: Look) -> np.ndarray:
 
 
 def mean_dark(c: np.ndarray, look: Look) -> np.ndarray:
-    """The water's mean darkness at a concentration: grey and dark mixed."""
+    """The water's mean darkness at a concentration: gray and dark mixed."""
     return (look.gap_gray + (1 - look.gap_gray) * dark_share(c, look)).astype(
         np.float32
     )
@@ -2345,7 +2350,7 @@ def mean_dark(c: np.ndarray, look: Look) -> np.ndarray:
 def water_share(c: np.ndarray, lost: np.ndarray, look: Look) -> np.ndarray:
     """Return the share of each texel the floes' water takes, before its
     darkness, so that the leads' open water and the floes' together meet the
-    concentration, grey water counting as part ice.
+    concentration, gray water counting as part ice.
 
     :param c: The concentration.
     :param lost: The leads' share of the fill, smoothed.
@@ -2427,8 +2432,17 @@ def z_lookup(table: np.ndarray, c: np.ndarray, f: np.ndarray) -> np.ndarray:
     )
 
 
+CELL_CHUNK = 1 << 20
+"""Cells whose decisions one thread works out at once."""
+
+
 def cascade_whole(
-    cells: Cascade, ice: np.ndarray, c: np.ndarray, tag: np.ndarray, look: Look
+    cells: Cascade,
+    ice: np.ndarray,
+    c: np.ndarray,
+    tag: np.ndarray,
+    look: Look,
+    workers: int | None = None,
 ) -> np.ndarray:
     """Return ice (1) or water (0) per texel.
 
@@ -2440,40 +2454,65 @@ def cascade_whole(
     :param cells: The cells.
     :param ice: The regional ice target.
     :param c: The concentration.
-    :param tag: int array of ``c``'s shape, 1 on land and 0 on the sea.
+    :param tag: int or bool array of ``c``'s shape, 1 on land and 0 on the
+        sea.
     :param look: The tunables.
+    :param workers: Threads for the cells' decisions; the process's setting
+        when ``None``. The result does not depend on it.
     :returns: float32 array of ``c``'s shape.
     """
+    levels = len(look.cascade_km)
+    ntag = int(tag.max()) + 1
+    out = np.zeros(c.size, np.float32)
+    undecided = np.ones(c.size, bool)
+    flat_tag = tag.ravel()
+    for k in range(levels):
+        key = (cells.ids[k].ravel() * np.int32(ntag) + flat_tag).astype(np.intp)
+        resolved, solid = _decide(
+            cells, k, key, ntag, c.ravel(), ice.ravel(), look, workers
+        )
+        here = undecided & resolved[key]
+        out[here] = solid[key][here]
+        undecided &= ~here
+    return out.reshape(c.shape)
+
+
+def _decide(
+    cells: Cascade,
+    k: int,
+    key: np.ndarray,
+    ntag: int,
+    conc: np.ndarray,
+    share_ice: np.ndarray,
+    look: Look,
+    workers: int | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return whether each of a level's cells, by key, resolves and is ice."""
     levels = len(look.cascade_km)
     table = z_table(
         look.cascade_scale, look.cascade_deltas, look.calm_zone, look.calm_level
     )
-    ntag = int(tag.max()) + 1
-    out = np.zeros(c.shape, np.float32)
-    undecided = np.ones(c.shape, bool)
-    r = c.ravel().astype(np.float64)
-    f = ice.ravel().astype(np.float64)
-    flat_tag = tag.ravel()
-    for k in range(levels):
-        first, last = int(cells.starts[k]), int(cells.starts[k + 1])
-        span = (last - first) * ntag
-        key = cells.ids[k].ravel().astype(np.int64) * ntag + flat_tag
-        count = np.bincount(key, minlength=span)
-        present = np.flatnonzero(count)
-        many = count[present]
-        rm = (np.bincount(key, r, span)[present] / many).astype(np.float32)
-        fm = (np.bincount(key, f, span)[present] / many).astype(np.float32)
-        cell = first + present // ntag
-        share = resolving(rm, k, look) if k < levels - 1 else np.ones_like(rm)
-        resolved = np.zeros(span, bool)
-        resolved[present] = cells.u[cell] < share
-        solid = np.zeros(span, bool)
-        delta = look.cascade_deltas[k]
-        solid[present] = cells.v[cell] < ndtr(z_lookup(table, rm, fm) + delta)
-        here = undecided & resolved[key].reshape(c.shape)
-        out[here] = solid[key].reshape(c.shape)[here]
-        undecided &= ~here
-    return out
+    first, last = int(cells.starts[k]), int(cells.starts[k + 1])
+    span = (last - first) * ntag
+    count = np.bincount(key, minlength=span)
+    present = np.flatnonzero(count)
+    many = count[present]
+    rm = (np.bincount(key, conc, span)[present] / many).astype(np.float32)
+    fm = (np.bincount(key, share_ice, span)[present] / many).astype(np.float32)
+    cell = first + present // ntag
+    resolved = np.zeros(span, bool)
+    solid = np.zeros(span, bool)
+
+    def chunk(start: int) -> None:
+        here = slice(start, start + CELL_CHUNK)
+        mean, at = rm[here], present[here]
+        share = resolving(mean, k, look) if k < levels - 1 else 1.0
+        resolved[at] = cells.u[cell[here]] < share
+        z = z_lookup(table, mean, fm[here]) + look.cascade_deltas[k]
+        solid[at] = cells.v[cell[here]] < ndtr(z)
+
+    parallel.pmap(chunk, range(0, len(present), CELL_CHUNK), workers)
+    return resolved, solid
 
 
 def floes_water(
@@ -2483,6 +2522,7 @@ def floes_water(
     cells: Cascade,
     noise: FloeNoise,
     look: Look,
+    workers: int | None = None,
 ) -> np.ndarray:
     """Return the floes' water: the cascade, the calm speckle in the calm
     zone handed over region by region, and open water where the
@@ -2494,22 +2534,42 @@ def floes_water(
     :param cells: The cascade's cells.
     :param noise: The floes' noise fields.
     :param look: The tunables.
+    :param workers: Threads for the bands of rows and the cells; the
+        process's setting when ``None``. The result does not depend on it.
     :returns: float32 array of ``c``'s shape from 0 to 1.
     """
-    share = water_share(c, lost, look)
     sigma, _ = look.floe_target
-    ice = gauss_target(1 - share, noise.target, sigma)
-    water = 1 - cascade_whole(cells, ice, c, tag, look)
-    del ice
-    wet = gauss_target(share, noise.target, sigma)
-    theta = np.interp(wet, noise.wet, noise.levels).astype(np.float32)
     half = look.speckle_soft
-    specks = smoothstep(theta + half, theta - half, noise.speckle)
-    del theta, wet
-    calm = noise.pick < zone(c, *look.calm_zone)
-    water = np.where(calm, specks, water).astype(np.float32)
-    water[c <= 0] = 1
+    ice = np.empty(c.shape, np.float32)
+    specks = np.empty(c.shape, np.float32)
+
+    def targets(span: tuple[int, int]) -> None:
+        here = slice(*span)
+        share = water_share(c[here], lost[here], look)
+        ice[here] = gauss_target(1 - share, noise.target[here], sigma)
+        wet = gauss_target(share, noise.target[here], sigma)
+        theta = np.interp(wet, noise.wet, noise.levels).astype(np.float32)
+        specks[here] = smoothstep(theta + half, theta - half, noise.speckle[here])
+
+    parallel.pmap(targets, _bands(c.shape[0]), workers)
+    solid = cascade_whole(cells, ice, c, tag, look, workers)
+    water = np.empty(c.shape, np.float32)
+
+    def combine(span: tuple[int, int]) -> None:
+        here = slice(*span)
+        calm = noise.pick[here] < zone(c[here], *look.calm_zone)
+        drawn = np.where(calm, specks[here], 1 - solid[here]).astype(np.float32)
+        drawn[c[here] <= 0] = 1
+        water[here] = drawn
+
+    parallel.pmap(combine, _bands(c.shape[0]), workers)
     return water
+
+
+def _bands(size: int) -> list[tuple[int, int]]:
+    return [
+        (a, min(a + MONTH_BAND_ROWS, size)) for a in range(0, size, MONTH_BAND_ROWS)
+    ]
 
 
 def patch_dark(
@@ -2519,13 +2579,13 @@ def patch_dark(
     look: Look,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Return the water's darkness per texel: one per patch, grey or dark.
+    """Return the water's darkness per texel: one per patch, gray or dark.
 
     Patches are the 8-connected pieces of water, more than half water, land
     excluded; every texel takes the color of its nearest patch. Per bin of
     the patches' mean concentration the largest patches turn dark first,
     their sizes jittered, while that brings the dark water's area closer to
-    the share :func:`mean_dark` assumes, so small cracks stay grey into the
+    the share :func:`mean_dark` assumes, so small cracks stay gray into the
     loose ice and the first dark water is a large lead.
 
     :param water: The floes' water.
@@ -2535,11 +2595,9 @@ def patch_dark(
     :param rng: The generator of the jitter.
     :returns: float32 array of ``c``'s shape: the share of the fill.
     """
-    out = mean_dark(c, look)
-    water = np.where(land, 0, water).astype(np.float32)
-    labels, n = label(water > 0.5, structure=np.ones((3, 3), bool))
+    labels, n = label((water > 0.5) & ~land, structure=np.ones((3, 3), bool))
     if n == 0:
-        return out
+        return mean_dark(c, look)
     flat = labels.ravel()
     area = np.bincount(flat, minlength=n + 1)[1:].astype(np.float64)
     wet = np.bincount(flat, water.ravel(), n + 1)[1:]
@@ -2557,7 +2615,9 @@ def patch_dark(
                 dark[i] = True
                 got += wet[i]
     shade = np.where(dark, 1.0, look.gap_gray).astype(np.float32)
-    _, (iy, ix) = distance_transform_edt(labels == 0, return_indices=True)
+    iy, ix = distance_transform_edt(
+        labels == 0, return_distances=False, return_indices=True
+    )
     return shade[labels[iy, ix] - 1]
 
 
@@ -2615,17 +2675,20 @@ def settled_coverage(
     sea = np.where(land, 0, conc).astype(np.float32)
     lost = blurred(gaps, look.floe_lost_km / texel_km(conc.shape[0]), workers)
     water = floes_water(
-        sea, lost, land.astype(np.int32), fields.cascade, fields.floe_noise, look
+        sea, lost, land, fields.cascade, fields.floe_noise, look, workers
     )
     del lost
-    dark = patch_dark(water, sea, land, look, _rng(look, fields.hemisphere, 90))
-    floes = 1 - dark * water
-    del dark, water
-    coverage = (1 - gaps) * floes
+    floes = patch_dark(water, sea, land, look, _rng(look, fields.hemisphere, 90))
+    floes *= water
+    np.subtract(1, floes, out=floes)
+    del water
+    coverage = 1 - gaps
+    coverage *= floes
     if look.coast_rule is not None:
         coverage[fields.coast.band & (sea >= look.coast_rule[1])] = 1
+    del sea
     coverage = coverage.ravel()[fields.coast.nearest.ravel()].reshape(conc.shape)
-    return coverage.astype(np.float32), floes.astype(np.float32)
+    return coverage, floes
 
 
 @dataclass(frozen=True)
@@ -3106,12 +3169,12 @@ def month_cap(
     field_ = fields.concentration[month - 1]
     scale = field_.shape[-1] / size
     alloc = np.empty if row_range is None else np.zeros
-    coverage = alloc((size, size), dtype=np.float32)
+    settled = fields.cascade is not None
+    coverage = None if settled else alloc((size, size), dtype=np.float32)
     brightness = alloc((size, size), dtype=np.float32)
     land = alloc((size, size), dtype=np.float32) if look.coast_blend else None
     activity = alloc((size, size), dtype=np.float32) if look.crumple else None
     whole = None
-    settled = fields.cascade is not None
     opened = fields.fractures is not None or fields.floes is not None
     if opened and look.coast_blend and not settled:
         whole = alloc((size, size), dtype=np.float32)

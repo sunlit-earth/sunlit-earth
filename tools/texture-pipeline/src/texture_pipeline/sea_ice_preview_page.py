@@ -112,6 +112,9 @@ def _variant(root: Path, directory: Path) -> dict | None:
         "metrics": metrics,
         "renders": renders,
         "extras": extras,
+        "drafts": sorted(
+            p.relative_to(root).as_posix() for p in directory.glob("drafts/*.png")
+        ),
         "mtime": metrics_path.stat().st_mtime,
     }
 

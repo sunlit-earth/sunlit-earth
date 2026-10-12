@@ -248,6 +248,56 @@ class TestPartKeys:
         assert second == sp.code_digest(sp.coastal_snow, sp.face_latitude)
 
 
+def settled_look() -> sea_ice_look.Look:
+    return dataclasses.replace(sea_ice_look.LOOK, **sp.VARIANTS["settled"].look)
+
+
+def settled_keys(look: sea_ice_look.Look, land: str = "l") -> dict[str, str]:
+    return sp.part_keys(look, "nh", "r", 4096, land)
+
+
+def settled_changed(look: sea_ice_look.Look, **tunables: object) -> set[str]:
+    before = settled_keys(look)
+    after = settled_keys(dataclasses.replace(look, **tunables))
+    return {name for name in before if before[name] != after[name]}
+
+
+class TestSettledKeys:
+    def test_the_settled_parts(self) -> None:
+        names = {p.name for p in sea_ice_look.parts_for(settled_look(), "nh")}
+        assert {"surface", "cascade", "floe noise", "coast", "fractures"} <= names
+        assert not names & {"edge", "crumple", "floes", "leads"}
+
+    def test_a_surface_tunable_changes_the_surface_key_only(self) -> None:
+        assert settled_changed(settled_look(), voronoi_weight=1.2) == {"surface"}
+
+    def test_a_lead_tunable_changes_the_fractures_key_only(self) -> None:
+        assert settled_changed(settled_look(), pinch_shut=0.3) == {"fractures"}
+
+    def test_a_cell_tunable_changes_the_cascade_key_only(self) -> None:
+        assert settled_changed(settled_look(), cascade_warp=0.2) == {"cascade"}
+
+    def test_a_speckle_tunable_changes_the_floe_noise_key_only(self) -> None:
+        assert settled_changed(settled_look(), speckle_pick_km=(40.0, 150.0)) == {
+            "floe noise"
+        }
+
+    def test_the_rules_distance_changes_the_coast_key_only(self) -> None:
+        assert settled_changed(settled_look(), coast_rule=(12.0, 0.5)) == {"coast"}
+
+    def test_a_tunable_only_the_month_reads_changes_no_key(self) -> None:
+        look = settled_look()
+        assert (
+            changed(look, gap_gray=0.5, cascade_deltas=(2.0, 1.0, 0.5, 0.0, -0.5))
+            == set()
+        )
+
+    def test_the_land_changes_only_the_parts_that_read_it(self) -> None:
+        look = settled_look()
+        other = settled_keys(look, "m")
+        assert {n for n, k in settled_keys(look).items() if other[n] != k} == {"coast"}
+
+
 def bare_harness(tmp_path, concentration: np.ndarray, workers: int) -> sp.Harness:
     harness = object.__new__(sp.Harness)
     harness.cache = sp.Cache(tmp_path)

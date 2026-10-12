@@ -90,6 +90,13 @@ pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8p
 </header>
 <main>
   <div class="grid" id="grid"></div>
+  <section id="drafts-section">
+    <h2>Drafts</h2>
+    <p class="hint">Regions of the faces around the places the experiments
+      watched, at the working size before the average to the face's 2048 and
+      without the encode: about 1,900 km across, 1.85 km a texel.</p>
+    <div class="thumbs" id="drafts"></div>
+  </section>
   <section>
     <h2>Notes</h2>
     <div class="notes" id="notes"></div>
@@ -208,14 +215,16 @@ function render() {
   }
   $("notes").innerHTML = v.notes;
   $("json").textContent = JSON.stringify(v.metrics, null, 2);
-  const extras = $("extras"); extras.innerHTML = "";
-  for (const src of v.extras) {
-    const a = document.createElement("a"); a.href = src;
-    a.innerHTML = `<img src="${src}" alt="" loading="lazy">${src.split("/").pop()}`;
-    a.onclick = (e) => { e.preventDefault(); openImage(src, src); };
-    extras.append(a);
+  for (const [id, list] of [["extras", v.extras], ["drafts", v.drafts || []]]) {
+    const box = $(id); box.innerHTML = "";
+    for (const src of list) {
+      const a = document.createElement("a"); a.href = src;
+      a.innerHTML = `<img src="${src}" alt="" loading="lazy">${src.split("/").pop()}`;
+      a.onclick = (e) => { e.preventDefault(); openImage(src, src); };
+      box.append(a);
+    }
+    $(`${id}-section`).style.display = list.length ? "" : "none";
   }
-  $("extras-section").style.display = v.extras.length ? "" : "none";
   table();
 }
 

@@ -1517,10 +1517,9 @@ def coast_fields(land: np.ndarray, look: Look) -> Coast:
     """
     size = land.shape[0]
     spacing = texel_km(size)
-    km = look.coast_rule[0] if look.coast_rule is not None else 0.0
     distance = distance_transform_edt(~land).astype(np.float32) * spacing
     distance = np.where(land, 0, distance - spacing / 2).astype(np.float32)
-    band = ~land & (distance <= km)
+    band = ~land & (distance <= look.coast_rule[0])
     del distance
     _, (row, col) = distance_transform_edt(land, return_indices=True)
     nearest = (row.astype(np.int64) * size + col).astype(np.int32)
@@ -2567,7 +2566,8 @@ def blend_coast(
     pool: Executor | None = None,
     band_rows: int = 256,
     spacing_km: float | None = None,
-    fill: Rgb | None = None,
+    *,
+    fill: Rgb,
     weight: np.ndarray | None = None,
     window: Window | None = None,
 ) -> np.ndarray:
@@ -2590,8 +2590,7 @@ def blend_coast(
     :param pool: Runs the bands concurrently when given.
     :param band_rows: Face rows worked at once.
     :param spacing_km: The texels' side; a face's at its center when ``None``.
-    :param fill: The ocean fill color the face was flattened with; the
-        imagery's sea is left out of the blend when ``None``.
+    :param fill: The ocean fill color the face was flattened with.
     :param weight: The :func:`coast_weight` of ``source`` and ``water`` when
         it is at hand, changed in place as the result is; made when ``None``.
     :param window: The rectangle of the face that the arrays hold, when they
@@ -2602,7 +2601,7 @@ def blend_coast(
     size, first, columns, height = _extent(flat, window)
     if weight is None:
         weight = coast_weight(source, water, look, spacing_km)
-    fill_rgb = np.asarray(fill if fill is not None else (0, 0, 0), dtype=np.float32)
+    fill_rgb = np.asarray(fill, dtype=np.float32)
 
     def band(start: int) -> None:
         stop = min(start + band_rows, height)
@@ -2619,11 +2618,10 @@ def blend_coast(
         land = 1 - water[start:stop][here].astype(np.float32) / 255
         original = source[start:stop][here]
         k = weight[start:stop][here] * coverage * land
-        if fill is not None:
-            sea = imagery_sea(original, look)
-            if sea.any():
-                rgb[sea] = fill_rgb + coverage[sea, None] * (rgb[sea] - fill_rgb)
-                k[sea] = weight[start:stop][here][sea] * land[sea]
+        sea = imagery_sea(original, look)
+        if sea.any():
+            rgb[sea] = fill_rgb + coverage[sea, None] * (rgb[sea] - fill_rgb)
+            k[sea] = weight[start:stop][here][sea] * land[sea]
         weight[start:stop][here] = k
         texels = flat[start:stop][here].astype(np.float32)
         texels += k[:, None] * (rgb - original.astype(np.float32))

@@ -323,7 +323,11 @@ class TestCoastWeight:
         assert weight[32, 32] > 0.95
 
 
-def uniform_ice(coverage: float, color=(230, 235, 240)) -> sea_ice_look.MonthIce:
+FILL = (10, 30, 60)
+ICE = (230, 235, 240)
+
+
+def uniform_ice(coverage: float, color=ICE) -> sea_ice_look.MonthIce:
     caps = {
         name: sea_ice_look.Cap(
             np.full((8, 8), coverage, np.float32),
@@ -336,16 +340,25 @@ def uniform_ice(coverage: float, color=(230, 235, 240)) -> sea_ice_look.MonthIce
 
 
 class TestBlendCoast:
+    def blend(self, flat, source, water, coverage: float) -> None:
+        sea_ice_look.blend_coast(
+            flat,
+            source,
+            water,
+            "py",
+            uniform_ice(coverage),
+            spacing_km=SPACING_KM,
+            fill=FILL,
+        )
+
     def test_the_coast_takes_the_ice_and_the_rest_is_untouched(self) -> None:
         source, water = coast_scene((250, 250, 250))
         source[:, 32] = (60, 70, 90)
         flat = source.copy()
-        flat[water == 255] = (10, 30, 60)
+        flat[water == 255] = FILL
         before = flat.copy()
-        sea_ice_look.blend_coast(
-            flat, source, water, "py", uniform_ice(1.0), spacing_km=SPACING_KM
-        )
-        np.testing.assert_allclose(flat[48, 32], (230, 235, 240), atol=3)
+        self.blend(flat, source, water, 1.0)
+        np.testing.assert_allclose(flat[48, 32], ICE, atol=3)
         np.testing.assert_array_equal(flat[water == 255], before[water == 255])
         np.testing.assert_array_equal(flat[:, 60:], before[:, 60:])
 
@@ -353,18 +366,28 @@ class TestBlendCoast:
         source, water = coast_scene((250, 250, 250))
         flat = source.copy()
         before = flat.copy()
-        sea_ice_look.blend_coast(
-            flat, source, water, "py", uniform_ice(0.0), spacing_km=SPACING_KM
-        )
+        self.blend(flat, source, water, 0.0)
         np.testing.assert_array_equal(flat, before)
 
     def test_the_land_takes_the_coverage_it_is_given(self) -> None:
         source, water = coast_scene((250, 250, 250))
         flat = source.copy()
-        sea_ice_look.blend_coast(
-            flat, source, water, "py", uniform_ice(0.5), spacing_km=SPACING_KM
-        )
+        self.blend(flat, source, water, 0.5)
         np.testing.assert_allclose(flat[48, 33], (240, 242.5, 245), atol=3)
+
+    @pytest.mark.parametrize("coverage", [0.0, 0.5, 1.0])
+    def test_the_imagery_sea_on_the_land_shows_the_sea_beside_it(
+        self, coverage: float
+    ) -> None:
+        source, water = coast_scene((250, 250, 250))
+        source[:, 32:34] = (5, 15, 40)
+        flat = source.copy()
+        flat[water == 255] = FILL
+        before = flat.copy()
+        self.blend(flat, source, water, coverage)
+        sea = np.add(FILL, coverage * np.subtract(ICE, FILL))
+        np.testing.assert_allclose(flat[48, 32], sea, atol=3)
+        np.testing.assert_array_equal(flat[water == 255], before[water == 255])
 
 
 class TestCoastSteps:

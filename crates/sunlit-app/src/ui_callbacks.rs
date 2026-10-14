@@ -2,10 +2,16 @@
 
 use slint::ComponentHandle;
 
-use crate::MainWindow;
 use crate::displays;
 use crate::engine_client::EngineLink;
 use crate::mouse_math;
+use crate::{
+    AtmosphereSettings, CameraOrientationSettings, CameraPositionSettings, CelestialSettings,
+    CloudCoverSettings, CloudSettings, ColorCorrectionSettings, DateTimeSettings, FramingSettings,
+    HazeSettings, LightingSettings, MainWindow, MoonSettings, NightglowSettings, RayleighSettings,
+    SceneSettings, SkySettings, StarSettings, SunSettings, SunriseBandSettings,
+    TextureColorSettings,
+};
 use sunlit_core::config::{self, AppConfig};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
@@ -79,21 +85,21 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
         let mut estimator = speed.get();
         let cursor_speed = estimator.observe(dx.hypot(dy), seconds);
         speed.set(estimator);
+        let mut position = win.get_camera_position();
         let gain = mouse_math::drag_gain(
             cursor_speed,
-            mouse_math::coarse_drag_gain(win.get_camera_zoom()),
-            mouse_math::fine_drag_gain(win.get_sky_fov(), win.get_viewport_width()),
+            mouse_math::coarse_drag_gain(position.zoom),
+            mouse_math::fine_drag_gain(win.get_celestial().sky.fov, win.get_viewport_width()),
         );
-        let (lon, lat) = mouse_math::apply_globe_drag_at(
-            win.get_camera_longitude(),
-            win.get_camera_latitude(),
-            win.get_camera_tilt(),
+        (position.longitude, position.latitude) = mouse_math::apply_globe_drag_at(
+            position.longitude,
+            position.latitude,
+            win.get_camera_orientation().tilt,
             dx,
             dy,
             gain,
         );
-        win.set_camera_longitude(lon);
-        win.set_camera_latitude(lat);
+        win.set_camera_position(position);
         engine.push_params(&win);
     });
 }
@@ -110,15 +116,15 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let (new_x, new_y) = mouse_math::apply_frame_drag(
-            win.get_camera_offset_x(),
-            win.get_camera_offset_y(),
-            win.get_camera_zoom(),
+        let mut framing = win.get_framing();
+        (framing.offset_x, framing.offset_y) = mouse_math::apply_frame_drag(
+            framing.offset_x,
+            framing.offset_y,
+            win.get_camera_position().zoom,
             dx,
             dy,
         );
-        win.set_camera_offset_x(new_x);
-        win.set_camera_offset_y(new_y);
+        win.set_framing(framing);
         engine.push_params(&win);
     });
 
@@ -128,10 +134,10 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let (new_yaw, new_pitch) =
-            mouse_math::apply_orient_drag(win.get_camera_yaw(), win.get_camera_pitch(), dx, dy);
-        win.set_camera_yaw(new_yaw);
-        win.set_camera_pitch(new_pitch);
+        let mut orientation = win.get_camera_orientation();
+        (orientation.yaw, orientation.pitch) =
+            mouse_math::apply_orient_drag(orientation.yaw, orientation.pitch, dx, dy);
+        win.set_camera_orientation(orientation);
         engine.push_params(&win);
     });
 
@@ -141,7 +147,9 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        win.set_camera_tilt(mouse_math::apply_tilt_drag(win.get_camera_tilt(), dx));
+        let mut orientation = win.get_camera_orientation();
+        orientation.tilt = mouse_math::apply_tilt_drag(orientation.tilt, dx);
+        win.set_camera_orientation(orientation);
         engine.push_params(&win);
     });
 
@@ -151,7 +159,9 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        win.set_camera_zoom(mouse_math::apply_zoom_scroll(win.get_camera_zoom(), delta));
+        let mut position = win.get_camera_position();
+        position.zoom = mouse_math::apply_zoom_scroll(position.zoom, delta);
+        win.set_camera_position(position);
         engine.push_params(&win);
     });
 
@@ -164,15 +174,21 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(preset) = PRESETS.get(slider_index(index)) else {
             return;
         };
-        win.set_camera_longitude(preset.longitude);
-        win.set_camera_latitude(preset.latitude);
-        win.set_camera_zoom(preset.zoom);
-        win.set_camera_offset_x(preset.offset_x);
-        win.set_camera_offset_y(preset.offset_y);
-        win.set_camera_tilt(preset.tilt_deg);
-        win.set_camera_yaw(preset.yaw_deg);
-        win.set_camera_pitch(preset.pitch_deg);
-        win.set_camera_fov(preset.fov_deg);
+        win.set_camera_position(CameraPositionSettings {
+            longitude: preset.longitude,
+            latitude: preset.latitude,
+            zoom: preset.zoom,
+        });
+        win.set_camera_orientation(CameraOrientationSettings {
+            tilt: preset.tilt_deg,
+            yaw: preset.yaw_deg,
+            pitch: preset.pitch_deg,
+        });
+        win.set_framing(FramingSettings {
+            fov: preset.fov_deg,
+            offset_x: preset.offset_x,
+            offset_y: preset.offset_y,
+        });
         engine.push_params(&win);
     });
 }
@@ -193,14 +209,17 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
     let engine = link.clone();
     window.on_datetime_override_toggled(move || {
         if let Some(win) = window_weak.upgrade() {
-            if win.get_use_custom_datetime() {
+            let date_time = win.get_datetime();
+            if date_time.use_custom {
                 let now = time::OffsetDateTime::now_utc();
-                let hour = f32::from(now.hour())
-                    + f32::from(now.minute()) / 60.0
-                    + f32::from(now.second()) / 3600.0;
-                win.set_custom_hour(hour);
-                win.set_custom_day_of_year(f32::from(now.ordinal()));
-                win.set_custom_year_index(now.year() - base_year);
+                win.set_datetime(DateTimeSettings {
+                    hour: f32::from(now.hour())
+                        + f32::from(now.minute()) / 60.0
+                        + f32::from(now.second()) / 3600.0,
+                    day_of_year: f32::from(now.ordinal()),
+                    year_index: now.year() - base_year,
+                    ..date_time
+                });
             }
             update_datetime_labels(&win, base_year);
             engine.push_params(&win);
@@ -437,7 +456,13 @@ pub fn set_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: Comb
 /// applied only at startup so that reset/load-defaults don't move or resize
 /// the window. The `texture_index` and `aa_index` are set through
 /// `set_combobox_indices` instead, so they are not set here.
+///
+/// Every path that fills the window comes through here, so this is also where
+/// the window learns what its resets go back to: `defaults` is written from
+/// `AppConfig::default()`, whichever config the values come from, and no other
+/// place in the app or in `main.slint` states a default.
 pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
+    window.set_defaults(scene_settings(&SceneParams::default()));
     apply_params_to_window(window, &SceneParams::from_config(config));
 
     window.set_auto_refresh_enabled(config.auto_refresh_enabled);
@@ -450,82 +475,173 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     update_datetime_labels(window, datetime::base_year());
 }
 
+/// The scene as the window holds it: one struct per group of the Advanced
+/// section, nested the way its subsections are.
+///
+/// This is the one way a `SceneSettings` is built. Slint derives `Default` for
+/// the structs it generates, so `SceneSettings::default()` is all zeros rather
+/// than the app's defaults, which are `scene_settings(&SceneParams::default())`.
+/// Each struct is written out whole, so a field added on the Slint side does
+/// not compile until it is filled here.
+#[expect(clippy::too_many_lines, reason = "the length is one setting per line")]
+pub fn scene_settings(params: &SceneParams) -> SceneSettings {
+    let cam = &params.camera;
+    SceneSettings {
+        camera_position: CameraPositionSettings {
+            longitude: cam.longitude,
+            latitude: cam.latitude,
+            zoom: cam.zoom,
+        },
+        camera_orientation: CameraOrientationSettings {
+            tilt: cam.tilt_deg,
+            yaw: cam.yaw_deg,
+            pitch: cam.pitch_deg,
+        },
+        framing: FramingSettings {
+            fov: cam.fov_deg,
+            offset_x: cam.offset_x,
+            offset_y: cam.offset_y,
+        },
+        datetime: DateTimeSettings {
+            use_custom: params.datetime.use_custom,
+            hour: params.datetime.custom_hour,
+            day_of_year: f32::from(params.datetime.custom_day_of_year),
+            year_index: (params.datetime.custom_year - datetime::base_year()).clamp(0, 20),
+        },
+        clouds: CloudSettings {
+            enabled: params.clouds_enabled,
+            opacity: params.cloud_opacity,
+            opacity_night: params.cloud_opacity_night,
+            night_brightness: params.cloud_night,
+            haze: HazeSettings {
+                equator: params.cloud_haze_equator,
+                pole: params.cloud_haze_pole,
+                latitude: params.cloud_haze_latitude,
+                band: params.cloud_haze_band,
+            },
+            land: CloudCoverSettings {
+                floor: params.cloud_floor_land,
+                gamma: params.cloud_gamma_land,
+            },
+            ocean: CloudCoverSettings {
+                floor: params.cloud_floor_ocean,
+                gamma: params.cloud_gamma_ocean,
+            },
+        },
+        celestial: CelestialSettings {
+            sky: SkySettings {
+                fov: params.sky_fov,
+                milky_way: params.milky_way_intensity,
+            },
+            sun: SunSettings {
+                glow: params.sun_glow,
+                rays: params.sun_rays,
+                size: params.sun_size,
+                halo_radius: params.sun_halo_radius,
+                flare: params.sun_flare,
+                horizon_boost: params.sun_horizon_boost,
+                horizon_reach: params.sun_horizon_reach,
+                horizon_depth: params.sun_horizon_depth,
+                reddening: params.sun_reddening,
+                refraction: params.sun_refraction,
+            },
+            moon: MoonSettings {
+                brightness: params.moon_brightness,
+                size: params.moon_size,
+                earthshine: params.moon_earthshine,
+            },
+            stars: StarSettings {
+                intensity: params.star_intensity,
+                size: params.star_size,
+                glow_strength: params.star_glow_strength,
+                glow_radius: params.star_glow_radius,
+                contrast: params.star_contrast,
+                mag_limit: params.star_mag_limit,
+            },
+        },
+        atmosphere: AtmosphereSettings {
+            enabled: params.atmo_enabled,
+            rayleigh: RayleighSettings {
+                intensity: params.rayleigh_intensity,
+                sharpness: params.rayleigh_sharpness,
+                haze: params.rayleigh_haze,
+            },
+            sunrise: SunriseBandSettings {
+                glow: params.atmo_sunrise_glow,
+                width: params.atmo_sunrise_width,
+            },
+            nightglow: NightglowSettings {
+                intensity: params.nightglow_intensity,
+                balance: params.nightglow_balance,
+                falloff: params.nightglow_falloff,
+            },
+        },
+        lighting: LightingSettings {
+            terminator_width: params.terminator_width,
+            diffuse_shading: params.diffuse_shading,
+            diffuse_floor: params.diffuse_floor,
+            diffuse_ramp: params.diffuse_ramp,
+            spec_shininess: params.spec_shininess,
+            spec_intensity: params.spec_intensity,
+            fresnel_mix: params.fresnel_mix,
+            fresnel_exp: params.fresnel_exp,
+        },
+        color_correction: ColorCorrectionSettings {
+            day: TextureColorSettings {
+                gamma: gamma_value_to_slider(params.day_gamma),
+                saturation: params.day_saturation,
+            },
+            night: TextureColorSettings {
+                gamma: gamma_value_to_slider(params.night_gamma),
+                saturation: params.night_saturation,
+            },
+        },
+    }
+}
+
 /// Write scene parameters into the window's properties.
 ///
 /// The texture and AA combo boxes are deliberately left alone: their indices
 /// are applied through `set_combobox_indices`, whose second write lands after
-/// Slint has processed the model changes.
+/// Slint has processed the model changes. The destructuring names every group,
+/// so a group added to `SceneSettings` does not compile until it is written.
 pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
-    let cam = &params.camera;
-    window.set_camera_longitude(cam.longitude);
-    window.set_camera_latitude(cam.latitude);
-    window.set_camera_zoom(cam.zoom);
-    window.set_camera_offset_x(cam.offset_x);
-    window.set_camera_offset_y(cam.offset_y);
-    window.set_camera_tilt(cam.tilt_deg);
-    window.set_camera_yaw(cam.yaw_deg);
-    window.set_camera_pitch(cam.pitch_deg);
-    window.set_camera_fov(cam.fov_deg);
-    window.set_terminator_width(params.terminator_width);
-    window.set_diffuse_shading(params.diffuse_shading);
-    window.set_diffuse_floor(params.diffuse_floor);
-    window.set_diffuse_ramp(params.diffuse_ramp);
-    window.set_spec_shininess(params.spec_shininess);
-    window.set_spec_intensity(params.spec_intensity);
-    window.set_fresnel_mix(params.fresnel_mix);
-    window.set_fresnel_exp(params.fresnel_exp);
-    window.set_clouds_enabled(params.clouds_enabled);
-    window.set_cloud_opacity(params.cloud_opacity);
-    window.set_cloud_opacity_night(params.cloud_opacity_night);
-    window.set_cloud_haze_equator(params.cloud_haze_equator);
-    window.set_cloud_haze_pole(params.cloud_haze_pole);
-    window.set_cloud_haze_latitude(params.cloud_haze_latitude);
-    window.set_cloud_haze_band(params.cloud_haze_band);
-    window.set_cloud_floor_land(params.cloud_floor_land);
-    window.set_cloud_gamma_land(params.cloud_gamma_land);
-    window.set_cloud_floor_ocean(params.cloud_floor_ocean);
-    window.set_cloud_gamma_ocean(params.cloud_gamma_ocean);
-    window.set_cloud_night(params.cloud_night);
-    window.set_atmo_enabled(params.atmo_enabled);
-    window.set_rayleigh_intensity(params.rayleigh_intensity);
-    window.set_rayleigh_sharpness(params.rayleigh_sharpness);
-    window.set_rayleigh_haze(params.rayleigh_haze);
-    window.set_nightglow_intensity(params.nightglow_intensity);
-    window.set_nightglow_falloff(params.nightglow_falloff);
-    window.set_nightglow_balance(params.nightglow_balance);
-    window.set_atmo_sunrise_glow(params.atmo_sunrise_glow);
-    window.set_atmo_sunrise_width(params.atmo_sunrise_width);
-    window.set_sky_fov(params.sky_fov);
-    window.set_star_intensity(params.star_intensity);
-    window.set_star_size(params.star_size);
-    window.set_star_glow_strength(params.star_glow_strength);
-    window.set_star_glow_radius(params.star_glow_radius);
-    window.set_star_contrast(params.star_contrast);
-    window.set_star_mag_limit(params.star_mag_limit);
-    window.set_sun_glow(params.sun_glow);
-    window.set_sun_rays(params.sun_rays);
-    window.set_sun_flare(params.sun_flare);
-    window.set_sun_size(params.sun_size);
-    window.set_sun_halo_radius(params.sun_halo_radius);
-    window.set_sun_horizon_boost(params.sun_horizon_boost);
-    window.set_sun_horizon_reach(params.sun_horizon_reach);
-    window.set_sun_horizon_depth(params.sun_horizon_depth);
-    window.set_sun_reddening(params.sun_reddening);
-    window.set_sun_refraction(params.sun_refraction);
-    window.set_moon_brightness(params.moon_brightness);
-    window.set_moon_size(params.moon_size);
-    window.set_moon_earthshine(params.moon_earthshine);
-    window.set_milky_way_intensity(params.milky_way_intensity);
-    window.set_day_gamma(gamma_value_to_slider(params.day_gamma));
-    window.set_day_saturation(params.day_saturation);
-    window.set_night_gamma(gamma_value_to_slider(params.night_gamma));
-    window.set_night_saturation(params.night_saturation);
+    let SceneSettings {
+        camera_position,
+        camera_orientation,
+        framing,
+        datetime: date_time,
+        clouds,
+        celestial,
+        atmosphere,
+        lighting,
+        color_correction,
+    } = scene_settings(params);
+    window.set_camera_position(camera_position);
+    window.set_camera_orientation(camera_orientation);
+    window.set_framing(framing);
+    window.set_datetime(date_time);
+    window.set_clouds(clouds);
+    window.set_celestial(celestial);
+    window.set_atmosphere(atmosphere);
+    window.set_lighting(lighting);
+    window.set_color_correction(color_correction);
+}
 
-    window.set_use_custom_datetime(params.datetime.use_custom);
-    window.set_custom_hour(params.datetime.custom_hour);
-    window.set_custom_day_of_year(f32::from(params.datetime.custom_day_of_year));
-    let year_index = (params.datetime.custom_year - datetime::base_year()).clamp(0, 20);
-    window.set_custom_year_index(year_index);
+/// Every group the window holds, read in one literal so that a group added
+/// to `SceneSettings` does not compile until it is read.
+fn settings_from_window(window: &MainWindow) -> SceneSettings {
+    SceneSettings {
+        camera_position: window.get_camera_position(),
+        camera_orientation: window.get_camera_orientation(),
+        framing: window.get_framing(),
+        datetime: window.get_datetime(),
+        clouds: window.get_clouds(),
+        celestial: window.get_celestial(),
+        atmosphere: window.get_atmosphere(),
+        lighting: window.get_lighting(),
+        color_correction: window.get_color_correction(),
+    }
 }
 
 /// Read the window's properties into the single scene parameter struct.
@@ -535,90 +651,100 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
 /// index to an MSAA sample count.
 pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneParams {
     let aa_index = slider_index(window.get_aa_index().max(0));
+    let SceneSettings {
+        camera_position: position,
+        camera_orientation: orientation,
+        framing,
+        datetime: date_time,
+        clouds,
+        celestial,
+        atmosphere,
+        lighting,
+        color_correction: color,
+    } = settings_from_window(window);
     SceneParams {
         camera: CameraParams {
-            longitude: window.get_camera_longitude(),
-            latitude: window.get_camera_latitude(),
-            zoom: window.get_camera_zoom(),
-            offset_x: window.get_camera_offset_x(),
-            offset_y: window.get_camera_offset_y(),
-            tilt_deg: window.get_camera_tilt(),
-            yaw_deg: window.get_camera_yaw(),
-            pitch_deg: window.get_camera_pitch(),
-            fov_deg: window.get_camera_fov(),
+            longitude: position.longitude,
+            latitude: position.latitude,
+            zoom: position.zoom,
+            offset_x: framing.offset_x,
+            offset_y: framing.offset_y,
+            tilt_deg: orientation.tilt,
+            yaw_deg: orientation.yaw,
+            pitch_deg: orientation.pitch,
+            fov_deg: framing.fov,
         },
         texture_index: window.get_texture_index(),
         sample_count: aa_counts.get(aa_index).copied().unwrap_or(1),
-        terminator_width: window.get_terminator_width(),
-        diffuse_shading: window.get_diffuse_shading(),
-        diffuse_floor: window.get_diffuse_floor(),
-        diffuse_ramp: window.get_diffuse_ramp(),
-        spec_shininess: window.get_spec_shininess(),
-        spec_intensity: window.get_spec_intensity(),
-        fresnel_mix: window.get_fresnel_mix(),
-        fresnel_exp: window.get_fresnel_exp(),
-        clouds_enabled: window.get_clouds_enabled(),
-        cloud_opacity: window.get_cloud_opacity(),
-        cloud_opacity_night: window.get_cloud_opacity_night(),
-        cloud_haze_equator: window.get_cloud_haze_equator(),
-        cloud_haze_pole: window.get_cloud_haze_pole(),
-        cloud_haze_latitude: window.get_cloud_haze_latitude(),
-        cloud_haze_band: window.get_cloud_haze_band(),
-        cloud_floor_land: window.get_cloud_floor_land(),
-        cloud_gamma_land: window.get_cloud_gamma_land(),
-        cloud_floor_ocean: window.get_cloud_floor_ocean(),
-        cloud_gamma_ocean: window.get_cloud_gamma_ocean(),
-        cloud_night: window.get_cloud_night(),
-        atmo_enabled: window.get_atmo_enabled(),
-        rayleigh_intensity: window.get_rayleigh_intensity(),
-        rayleigh_sharpness: window.get_rayleigh_sharpness(),
-        rayleigh_haze: window.get_rayleigh_haze(),
-        nightglow_intensity: window.get_nightglow_intensity(),
-        nightglow_falloff: window.get_nightglow_falloff(),
-        nightglow_balance: window.get_nightglow_balance(),
-        atmo_sunrise_glow: window.get_atmo_sunrise_glow(),
-        atmo_sunrise_width: window.get_atmo_sunrise_width(),
-        sky_fov: window.get_sky_fov(),
-        star_intensity: window.get_star_intensity(),
-        star_size: window.get_star_size(),
-        star_glow_strength: window.get_star_glow_strength(),
-        star_glow_radius: window.get_star_glow_radius(),
-        star_contrast: window.get_star_contrast(),
-        star_mag_limit: window.get_star_mag_limit(),
-        sun_glow: window.get_sun_glow(),
-        sun_rays: window.get_sun_rays(),
-        sun_flare: window.get_sun_flare(),
-        sun_size: window.get_sun_size(),
-        sun_halo_radius: window.get_sun_halo_radius(),
-        sun_horizon_boost: window.get_sun_horizon_boost(),
-        sun_horizon_reach: window.get_sun_horizon_reach(),
-        sun_horizon_depth: window.get_sun_horizon_depth(),
-        sun_reddening: window.get_sun_reddening(),
-        sun_refraction: window.get_sun_refraction(),
-        moon_brightness: window.get_moon_brightness(),
-        moon_size: window.get_moon_size(),
-        moon_earthshine: window.get_moon_earthshine(),
-        milky_way_intensity: window.get_milky_way_intensity(),
-        day_gamma: gamma_slider_to_value(window.get_day_gamma()),
-        day_saturation: window.get_day_saturation(),
-        night_gamma: gamma_slider_to_value(window.get_night_gamma()),
-        night_saturation: window.get_night_saturation(),
-        datetime: read_datetime_input(window),
+        terminator_width: lighting.terminator_width,
+        diffuse_shading: lighting.diffuse_shading,
+        diffuse_floor: lighting.diffuse_floor,
+        diffuse_ramp: lighting.diffuse_ramp,
+        spec_shininess: lighting.spec_shininess,
+        spec_intensity: lighting.spec_intensity,
+        fresnel_mix: lighting.fresnel_mix,
+        fresnel_exp: lighting.fresnel_exp,
+        clouds_enabled: clouds.enabled,
+        cloud_opacity: clouds.opacity,
+        cloud_opacity_night: clouds.opacity_night,
+        cloud_haze_equator: clouds.haze.equator,
+        cloud_haze_pole: clouds.haze.pole,
+        cloud_haze_latitude: clouds.haze.latitude,
+        cloud_haze_band: clouds.haze.band,
+        cloud_floor_land: clouds.land.floor,
+        cloud_gamma_land: clouds.land.gamma,
+        cloud_floor_ocean: clouds.ocean.floor,
+        cloud_gamma_ocean: clouds.ocean.gamma,
+        cloud_night: clouds.night_brightness,
+        atmo_enabled: atmosphere.enabled,
+        rayleigh_intensity: atmosphere.rayleigh.intensity,
+        rayleigh_sharpness: atmosphere.rayleigh.sharpness,
+        rayleigh_haze: atmosphere.rayleigh.haze,
+        nightglow_intensity: atmosphere.nightglow.intensity,
+        nightglow_falloff: atmosphere.nightglow.falloff,
+        nightglow_balance: atmosphere.nightglow.balance,
+        atmo_sunrise_glow: atmosphere.sunrise.glow,
+        atmo_sunrise_width: atmosphere.sunrise.width,
+        sky_fov: celestial.sky.fov,
+        star_intensity: celestial.stars.intensity,
+        star_size: celestial.stars.size,
+        star_glow_strength: celestial.stars.glow_strength,
+        star_glow_radius: celestial.stars.glow_radius,
+        star_contrast: celestial.stars.contrast,
+        star_mag_limit: celestial.stars.mag_limit,
+        sun_glow: celestial.sun.glow,
+        sun_rays: celestial.sun.rays,
+        sun_flare: celestial.sun.flare,
+        sun_size: celestial.sun.size,
+        sun_halo_radius: celestial.sun.halo_radius,
+        sun_horizon_boost: celestial.sun.horizon_boost,
+        sun_horizon_reach: celestial.sun.horizon_reach,
+        sun_horizon_depth: celestial.sun.horizon_depth,
+        sun_reddening: celestial.sun.reddening,
+        sun_refraction: celestial.sun.refraction,
+        moon_brightness: celestial.moon.brightness,
+        moon_size: celestial.moon.size,
+        moon_earthshine: celestial.moon.earthshine,
+        milky_way_intensity: celestial.sky.milky_way,
+        day_gamma: gamma_slider_to_value(color.day.gamma),
+        day_saturation: color.day.saturation,
+        night_gamma: gamma_slider_to_value(color.night.gamma),
+        night_saturation: color.night.saturation,
+        datetime: datetime_input(&date_time),
     }
 }
 
-/// Extract datetime parameters from the Slint window for astronomical
-/// computations.
+/// The window's date and time as the input for astronomical computations.
 ///
 /// This is the thin UI-reading layer; the engine turns the result into a
 /// `scene::sky::SkyState` once per frame, which is where the sun direction,
 /// the sky rotation and the planets all come from.
-fn read_datetime_input(window: &MainWindow) -> DateTimeInput {
+fn datetime_input(settings: &DateTimeSettings) -> DateTimeInput {
     DateTimeInput {
-        use_custom: window.get_use_custom_datetime(),
-        custom_hour: window.get_custom_hour(),
-        custom_day_of_year: slider_u16(window.get_custom_day_of_year()),
-        custom_year: window.get_custom_year_index() + datetime::base_year(),
+        use_custom: settings.use_custom,
+        custom_hour: settings.hour,
+        custom_day_of_year: slider_u16(settings.day_of_year),
+        custom_year: settings.year_index + datetime::base_year(),
     }
 }
 
@@ -684,20 +810,21 @@ pub fn read_config_from_window_onto(
 /// Update the hour label, day label, and max-day-of-year on the window
 /// based on the current datetime slider values.
 fn update_datetime_labels(window: &MainWindow, base_year: i32) {
-    let h = window.get_custom_hour();
-    window.set_hour_label(datetime::hour_label(h).into());
+    let date_time = window.get_datetime();
+    window.set_hour_label(datetime::hour_label(date_time.hour).into());
 
-    let year = window.get_custom_year_index() + base_year;
+    let year = date_time.year_index + base_year;
     let max_doy = datetime::days_in_year(year);
     window.set_max_day_of_year(i32::from(max_doy));
 
     // Clamp day-of-year if it exceeds the new max (e.g. leap -> non-leap)
-    let doy = window.get_custom_day_of_year();
-    if doy > f32::from(max_doy) {
-        window.set_custom_day_of_year(f32::from(max_doy));
-    }
-
-    let doy = slider_u16(window.get_custom_day_of_year());
-    let doy = doy.max(1);
+    let day_of_year = date_time.day_of_year.min(f32::from(max_doy));
+    let doy = slider_u16(day_of_year).max(1);
     window.set_day_label(datetime::month_day_label(doy, year).into());
+    if day_of_year < date_time.day_of_year {
+        window.set_datetime(DateTimeSettings {
+            day_of_year,
+            ..date_time
+        });
+    }
 }

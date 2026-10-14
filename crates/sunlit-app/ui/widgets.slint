@@ -77,6 +77,46 @@ export component Hint inherits Rectangle {
     }
 }
 
+// The slot a reset button appears in, at the end of a row, a heading or a
+// group's title.
+//
+// The slot keeps its width while the button is gone, so nothing beside it
+// moves when a value leaves its default. The icon is an SVG rather than the
+// ↺ character, which not every desktop's font has.
+export component ResetSlot inherits Rectangle {
+    in property <bool> shown;
+    // What the button resets, which is what its accessible label names.
+    in property <string> target;
+    callback reset();
+
+    width: 16px;
+    min-height: 16px;
+
+    if root.shown : touch := TouchArea {
+        width: 16px;
+        height: 16px;
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: "Reset " + root.target;
+        accessible-action-default => { root.reset(); }
+        clicked => { root.reset(); }
+
+        Rectangle {
+            border-radius: 3px;
+            background: touch.pressed ? Palette.foreground.with-alpha(0.2)
+                : touch.has-hover ? Palette.foreground.with-alpha(0.1)
+                : transparent;
+        }
+
+        Image {
+            width: 12px;
+            height: 12px;
+            source: @image-url("icons/reset.svg");
+            colorize: Palette.foreground;
+        }
+    }
+}
+
 // One row of the settings panel: a label, a control, and the value it reads.
 //
 // The root is a Rectangle rather than the layout itself because the hover text
@@ -94,6 +134,10 @@ export component SettingRow inherits Rectangle {
     in property <float> minimum;
     in property <float> maximum;
     in-out property <float> value;
+    // What the row's reset puts back. A row that leaves it out resets to zero.
+    in property <float> default-value;
+    in property <bool> resettable: true;
+    out property <bool> modified: root.resettable && root.value != root.default-value;
     callback changed();
 
     min-height: row.min-height;
@@ -120,6 +164,14 @@ export component SettingRow inherits Rectangle {
             text: root.value-text;
             vertical-alignment: center;
             min-width: root.value-width;
+        }
+        ResetSlot {
+            shown: root.modified;
+            target: root.label;
+            reset => {
+                root.value = root.default-value;
+                root.changed();
+            }
         }
     }
 
@@ -204,7 +256,73 @@ export component SettingCombo inherits Rectangle {
     }
 }
 
-// The heading above a run of related rows inside a GroupBox.
-export component SettingHeading inherits Text {
-    font-weight: 700;
+// The heading above a run of related rows inside a group, and the reset for
+// all of them.
+export component SettingHeading inherits Rectangle {
+    in property <string> text;
+    in property <bool> modified;
+    callback reset();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 4px;
+
+        Text {
+            text: root.text;
+            font-weight: 700;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        ResetSlot {
+            shown: root.modified;
+            target: root.text;
+            reset => { root.reset(); }
+        }
+    }
+}
+
+// A titled group of settings, and the reset for everything in it.
+//
+// This is the fluent GroupBox's layout, 16px above the title, 8px under it and
+// 8px under the content, the title semi-bold at the default size and the
+// content with no horizontal padding, with a reset slot beside the title, so
+// the group's reset lines up with its rows'.
+export component SettingGroup {
+    in property <string> title;
+    in property <bool> modified;
+    callback reset();
+
+    accessible-role: groupbox;
+    accessible-label: root.title;
+
+    VerticalLayout {
+        spacing: 8px;
+        padding-top: 16px;
+        padding-bottom: 8px;
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: 4px;
+
+            Text {
+                text: root.title;
+                color: Palette.foreground;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                accessible-role: none;
+            }
+            ResetSlot {
+                shown: root.modified;
+                target: root.title;
+                reset => { root.reset(); }
+            }
+        }
+
+        @children
+    }
 }

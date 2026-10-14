@@ -1,9 +1,161 @@
-import { Slider, Button, GroupBox, Palette, ScrollView } from "std-widgets.slint";
-import { MonitorTile, Splitter, Hint, SettingRow, SettingCheck, SettingCombo, SettingHeading } from "widgets.slint";
+import { Slider, Button, Palette, ScrollView } from "std-widgets.slint";
+import { MonitorTile, Splitter, Hint, SettingRow, SettingCheck, SettingCombo, SettingHeading, SettingGroup } from "widgets.slint";
 
 export { MonitorTile, AboutBlock } from "widgets.slint";
 export { AboutWindow } from "about.slint";
 export { TrayIcon } from "tray.slint";
+
+// The settings behind the Advanced section, one struct per group, nested the
+// way the panel nests its subsections. The nesting is the one statement of
+// which setting belongs where: a subsection's heading and a group's header
+// compare and reset the struct they stand for, so a field added to a struct
+// is covered by both with no further edit.
+export struct CameraPositionSettings {
+    longitude: float,
+    latitude: float,
+    zoom: float,
+}
+
+export struct CameraOrientationSettings {
+    tilt: float,
+    yaw: float,
+    pitch: float,
+}
+
+export struct FramingSettings {
+    fov: float,
+    offset-x: float,
+    offset-y: float,
+}
+
+export struct DateTimeSettings {
+    use-custom: bool,
+    hour: float,
+    day-of-year: float,
+    year-index: int,
+}
+
+export struct HazeSettings {
+    equator: float,
+    pole: float,
+    latitude: float,
+    band: float,
+}
+
+export struct CloudCoverSettings {
+    floor: float,
+    gamma: float,
+}
+
+export struct CloudSettings {
+    enabled: bool,
+    opacity: float,
+    opacity-night: float,
+    night-brightness: float,
+    haze: HazeSettings,
+    land: CloudCoverSettings,
+    ocean: CloudCoverSettings,
+}
+
+export struct SkySettings {
+    fov: float,
+    milky-way: float,
+}
+
+export struct SunSettings {
+    glow: float,
+    rays: float,
+    size: float,
+    halo-radius: float,
+    flare: float,
+    horizon-boost: float,
+    horizon-reach: float,
+    horizon-depth: float,
+    reddening: float,
+    refraction: float,
+}
+
+export struct MoonSettings {
+    brightness: float,
+    size: float,
+    earthshine: float,
+}
+
+export struct StarSettings {
+    intensity: float,
+    size: float,
+    glow-strength: float,
+    glow-radius: float,
+    contrast: float,
+    mag-limit: float,
+}
+
+export struct CelestialSettings {
+    sky: SkySettings,
+    sun: SunSettings,
+    moon: MoonSettings,
+    stars: StarSettings,
+}
+
+export struct RayleighSettings {
+    intensity: float,
+    sharpness: float,
+    haze: float,
+}
+
+export struct SunriseBandSettings {
+    glow: float,
+    width: float,
+}
+
+export struct NightglowSettings {
+    intensity: float,
+    balance: float,
+    falloff: float,
+}
+
+export struct AtmosphereSettings {
+    enabled: bool,
+    rayleigh: RayleighSettings,
+    sunrise: SunriseBandSettings,
+    nightglow: NightglowSettings,
+}
+
+export struct LightingSettings {
+    terminator-width: float,
+    diffuse-shading: bool,
+    diffuse-floor: float,
+    diffuse-ramp: float,
+    spec-shininess: float,
+    spec-intensity: float,
+    fresnel-mix: float,
+    fresnel-exp: float,
+}
+
+// `gamma` is the slider's position on the curve rather than the gamma itself,
+// which `day-gamma-value` and `night-gamma-value` carry.
+export struct TextureColorSettings {
+    gamma: float,
+    saturation: float,
+}
+
+export struct ColorCorrectionSettings {
+    day: TextureColorSettings,
+    night: TextureColorSettings,
+}
+
+// Every group at once, which is the shape of `defaults`.
+export struct SceneSettings {
+    camera-position: CameraPositionSettings,
+    camera-orientation: CameraOrientationSettings,
+    framing: FramingSettings,
+    datetime: DateTimeSettings,
+    clouds: CloudSettings,
+    celestial: CelestialSettings,
+    atmosphere: AtmosphereSettings,
+    lighting: LightingSettings,
+    color-correction: ColorCorrectionSettings,
+}
 
 export component MainWindow inherits Window {
     title: "Sunlit Earth " + root.version;
@@ -23,104 +175,55 @@ export component MainWindow inherits Window {
     in property <image> rendered-image;
     in property <string> renderer-info: "Initializing...";
     in property <[string]> aa-options: ["None", "MSAA 4\u{d7}"];
-    in-out property <int> aa-index: 1;
+    in-out property <int> aa-index;
     in property <[string]> texture-options: ["Grid", "Day", "Night", "Day/Night Blend"];
-    in-out property <int> texture-index: 3;
+    in-out property <int> texture-index;
     in property <[string]> texture-resolution-options: ["8192", "4096", "2048"];
-    in-out property <int> texture-resolution-index: 0;
+    in-out property <int> texture-resolution-index;
     in property <string> loading-text;
 
-    in-out property <float> camera-longitude: 0;
-    in-out property <float> camera-latitude: 30;
-    in-out property <float> camera-zoom: 0.421;
-    in-out property <float> camera-offset-x: 0;
-    in-out property <float> camera-offset-y: 0;
-    in-out property <float> camera-tilt: 0;
-    in-out property <float> camera-yaw: 0;
-    in-out property <float> camera-pitch: 0;
-    in-out property <float> camera-fov: 20;
+    // One property per group rather than one for the whole scene: a write to
+    // a struct property dirties every binding that reads any part of it, so a
+    // slider tick re-evaluates its own group and nothing else. None of them
+    // has an initial value here. Rust writes them, and `defaults` with them,
+    // from the config before the window is shown, so `AppConfig::default()`
+    // is the one place a default is written.
+    in-out property <CameraPositionSettings> camera-position;
+    in-out property <CameraOrientationSettings> camera-orientation;
+    in-out property <FramingSettings> framing;
+    in-out property <DateTimeSettings> datetime;
+    in-out property <CloudSettings> clouds;
+    in-out property <CelestialSettings> celestial;
+    in-out property <AtmosphereSettings> atmosphere;
+    in-out property <LightingSettings> lighting;
+    in-out property <ColorCorrectionSettings> color-correction;
+    // What every reset in the Advanced section goes back to.
+    in property <SceneSettings> defaults;
+
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
-    in-out property <float> terminator-width: 0.1;
-    in-out property <bool> diffuse-shading: true;
-    in-out property <float> diffuse-floor: 0.70;
-    in-out property <float> diffuse-ramp: 0.20;
-    in-out property <float> spec-shininess: 100;
-    in-out property <float> spec-intensity: 0.17;
-    in-out property <float> fresnel-mix: 0.75;
-    in-out property <float> fresnel-exp: 4.0;
-    in-out property <float> day-gamma: 0.5;
-    in-out property <float> day-saturation: 1.0;
-    in-out property <float> night-gamma: 0.5;
-    in-out property <float> night-saturation: 0.85;
-    in-out property <bool> clouds-enabled: true;
-    in-out property <float> cloud-opacity: 0.85;
-    in-out property <float> cloud-opacity-night: 0.45;
-    in-out property <float> cloud-haze-equator: 0.9;
-    in-out property <float> cloud-haze-pole: 1.3;
-    in-out property <float> cloud-haze-latitude: 55.0;
-    in-out property <float> cloud-haze-band: 25.0;
-    in-out property <float> cloud-floor-land: 0.25;
-    in-out property <float> cloud-gamma-land: 0.5;
-    in-out property <float> cloud-floor-ocean: 0.1;
-    in-out property <float> cloud-gamma-ocean: 0.75;
-    in-out property <float> cloud-night: 0.20;
-    in-out property <bool> atmo-enabled: true;
-    in-out property <float> rayleigh-intensity: 0.5;
-    in-out property <float> rayleigh-sharpness: 50.0;
-    in-out property <float> rayleigh-haze: 0.55;
-    in-out property <float> nightglow-intensity: 0.25;
-    in-out property <float> nightglow-balance: 0.37;
-    in-out property <float> nightglow-falloff: 15.0;
-    in-out property <float> atmo-sunrise-glow: 1.0;
-    in-out property <float> atmo-sunrise-width: 20.0;
-    in-out property <float> sky-fov: 140.0;
     // The sky slider's own range. A hemisphere is as much sky as one screen
     // can mean, and the shader's clamp is wider, so the two numbers live here
     // rather than in the row and a test can read what the row is built from.
     out property <float> sky-fov-minimum: 60.0;
     out property <float> sky-fov-maximum: 180.0;
-    in-out property <float> star-intensity: 2.0;
-    in-out property <float> star-size: 1.0;
-    in-out property <float> star-glow-strength: 0.5;
-    in-out property <float> star-glow-radius: 8.0;
-    in-out property <float> star-contrast: 0.3;
-    in-out property <float> star-mag-limit: 6.5;
-    in-out property <float> sun-glow: 1.2;
-    in-out property <float> sun-rays: 0.75;
-    in-out property <float> sun-flare: 0.15;
-    in-out property <float> sun-size: 1.0;
-    in-out property <float> sun-halo-radius: 3.0;
-    in-out property <float> sun-horizon-boost: 3.0;
-    in-out property <float> sun-horizon-reach: 4.0;
-    in-out property <float> sun-horizon-depth: 1.0;
-    in-out property <float> sun-reddening: 1.0;
-    in-out property <float> sun-refraction: 1.0;
-    in-out property <float> moon-brightness: 1.0;
-    in-out property <float> moon-size: 2.5;
-    in-out property <float> moon-earthshine: 0.15;
-    in-out property <float> milky-way-intensity: 0.2;
 
     // What a slider's number means, derived in Rust and written here rather
     // than worked out again in this file: the camera's distance behind the
     // zoom slider, and the gamma each gamma slider stands for. The curves are
     // in `params.rs`, so a label cannot drift from the value the renderer gets.
-    in property <float> zoom-display-distance: 8.0;
-    in property <float> day-gamma-value: 1.0;
-    in property <float> night-gamma-value: 1.0;
+    in property <float> zoom-display-distance;
+    in property <float> day-gamma-value;
+    in property <float> night-gamma-value;
     callback sliders-changed();
     callback msaa-changed();
     callback texture-changed();
     callback texture-resolution-changed();
     callback set-wallpaper();
-    in-out property <bool> use-custom-datetime: false;
-    in-out property <float> custom-hour: 12.0;
-    in-out property <float> custom-day-of-year: 1.0;
-    in-out property <int> custom-year-index: 10;
     in property <[string]> year-options;
-    in property <string> hour-label: "12:00";
-    in property <string> day-label: "Jan 1";
-    in property <int> max-day-of-year: 365;
+    in property <string> hour-label;
+    in property <string> day-label;
+    in property <int> max-day-of-year;
 
     callback mouse-drag-globe(float, float);
     callback mouse-drag-globe-begin();
@@ -134,8 +237,8 @@ export component MainWindow inherits Window {
     callback datetime-override-toggled();
     callback show-about();
 
-    in-out property <bool> auto-refresh-enabled: false;
-    in-out property <float> auto-refresh-interval: 5.0;
+    in-out property <bool> auto-refresh-enabled;
+    in-out property <float> auto-refresh-interval;
     // The settled change: the schedule is updated and the config is written.
     callback auto-refresh-changed();
     // The interval while the handle is still moving: the schedule follows, the
@@ -146,12 +249,12 @@ export component MainWindow inherits Window {
     // `display-tiles` is a session whose monitors could not be enumerated at
     // all, which is macOS and any Windows session where the query failed.
     in property <[string]> display-mode-options;
-    in-out property <int> display-mode-index: 1;
+    in-out property <int> display-mode-index;
     in property <[string]> display-screen-options;
     // Parallel to `display-screen-options`, holding the id each row addresses.
     // The first row is the automatic anchor and its id is empty.
     in property <[string]> display-screen-ids;
-    in-out property <int> display-anchor-index: 0;
+    in-out property <int> display-anchor-index;
     in property <[MonitorTile]> display-tiles;
     // Width over height of the whole layout, so the diagram can keep its shape.
     in property <float> display-aspect: 1.0;
@@ -435,7 +538,7 @@ export component MainWindow inherits Window {
                     VerticalLayout {
                         spacing: 4px;
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Rendering";
                             VerticalLayout {
                                 spacing: 4px;
@@ -484,8 +587,13 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Camera Position";
+                            modified: root.camera-position != root.defaults.camera-position;
+                            reset => {
+                                root.camera-position = root.defaults.camera-position;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
@@ -494,8 +602,9 @@ export component MainWindow inherits Window {
                                     hint: "The meridian the camera hangs above, which is what turns the globe left and right.";
                                     minimum: -180;
                                     maximum: 180;
-                                    value <=> root.camera-longitude;
-                                    value-text: round(root.camera-longitude) + "°";
+                                    value <=> root.camera-position.longitude;
+                                    default-value: root.defaults.camera-position.longitude;
+                                    value-text: round(root.camera-position.longitude) + "°";
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -505,8 +614,9 @@ export component MainWindow inherits Window {
                                     hint: "How far north or south of the equator the camera hangs, from one pole to the other.";
                                     minimum: -89;
                                     maximum: 89;
-                                    value <=> root.camera-latitude;
-                                    value-text: round(root.camera-latitude) + "°";
+                                    value <=> root.camera-position.latitude;
+                                    default-value: root.defaults.camera-position.latitude;
+                                    value-text: round(root.camera-position.latitude) + "°";
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -516,7 +626,8 @@ export component MainWindow inherits Window {
                                     hint: "Distance from the Earth's centre in Earth radii, mapped exponentially so both ends of the slider stay useful.";
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.camera-zoom;
+                                    value <=> root.camera-position.zoom;
+                                    default-value: root.defaults.camera-position.zoom;
                                     value-text: round(root.zoom-display-distance * 10) / 10;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
@@ -524,8 +635,13 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Camera Orientation";
+                            modified: root.camera-orientation != root.defaults.camera-orientation;
+                            reset => {
+                                root.camera-orientation = root.defaults.camera-orientation;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
@@ -534,12 +650,13 @@ export component MainWindow inherits Window {
                                     hint: "Rolls the whole frame around the view axis, tipping the poles away from vertical.";
                                     minimum: -180;
                                     maximum: 180;
-                                    value <=> root.camera-tilt;
-                                    value-text: round(root.camera-tilt) + "°";
+                                    value <=> root.camera-orientation.tilt;
+                                    default-value: root.defaults.camera-orientation.tilt;
+                                    value-text: round(root.camera-orientation.tilt) + "°";
                                     value-width: 35px;
                                     changed => {
-                                        if root.camera-tilt > -5 && root.camera-tilt < 5 {
-                                            root.camera-tilt = 0;
+                                        if root.camera-orientation.tilt > -5 && root.camera-orientation.tilt < 5 {
+                                            root.camera-orientation.tilt = 0;
                                         }
                                         root.sliders-changed();
                                     }
@@ -550,12 +667,13 @@ export component MainWindow inherits Window {
                                     hint: "Swings the aim point sideways across the globe, so the camera looks off-centre rather than at the middle.";
                                     minimum: -90;
                                     maximum: 90;
-                                    value <=> root.camera-yaw;
-                                    value-text: round(root.camera-yaw) + "°";
+                                    value <=> root.camera-orientation.yaw;
+                                    default-value: root.defaults.camera-orientation.yaw;
+                                    value-text: round(root.camera-orientation.yaw) + "°";
                                     value-width: 35px;
                                     changed => {
-                                        if root.camera-yaw > -3 && root.camera-yaw < 3 {
-                                            root.camera-yaw = 0;
+                                        if root.camera-orientation.yaw > -3 && root.camera-orientation.yaw < 3 {
+                                            root.camera-orientation.yaw = 0;
                                         }
                                         root.sliders-changed();
                                     }
@@ -566,12 +684,13 @@ export component MainWindow inherits Window {
                                     hint: "Swings the aim point up or down across the globe, which is what puts the horizon low in the frame.";
                                     minimum: -90;
                                     maximum: 90;
-                                    value <=> root.camera-pitch;
-                                    value-text: round(root.camera-pitch) + "°";
+                                    value <=> root.camera-orientation.pitch;
+                                    default-value: root.defaults.camera-orientation.pitch;
+                                    value-text: round(root.camera-orientation.pitch) + "°";
                                     value-width: 35px;
                                     changed => {
-                                        if root.camera-pitch > -3 && root.camera-pitch < 3 {
-                                            root.camera-pitch = 0;
+                                        if root.camera-orientation.pitch > -3 && root.camera-orientation.pitch < 3 {
+                                            root.camera-orientation.pitch = 0;
                                         }
                                         root.sliders-changed();
                                     }
@@ -579,8 +698,13 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Framing";
+                            modified: root.framing != root.defaults.framing;
+                            reset => {
+                                root.framing = root.defaults.framing;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
@@ -589,8 +713,9 @@ export component MainWindow inherits Window {
                                     hint: "How wide the Earth lens is: narrow flattens the globe the way a long lens does, wide exaggerates its curvature. The sky behind it has a lens of its own.";
                                     minimum: 10.0;
                                     maximum: 170.0;
-                                    value <=> root.camera-fov;
-                                    value-text: round(root.camera-fov) + "°";
+                                    value <=> root.framing.fov;
+                                    default-value: root.defaults.framing.fov;
+                                    value-text: round(root.framing.fov) + "°";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -599,12 +724,13 @@ export component MainWindow inherits Window {
                                     hint: "Slides the finished frame left or right without moving the camera.";
                                     minimum: -3.0;
                                     maximum: 3.0;
-                                    value <=> root.camera-offset-x;
-                                    value-text: round(root.camera-offset-x * 100) / 100;
+                                    value <=> root.framing.offset-x;
+                                    default-value: root.defaults.framing.offset-x;
+                                    value-text: round(root.framing.offset-x * 100) / 100;
                                     value-width: 35px;
                                     changed => {
-                                        if root.camera-offset-x > -0.05 && root.camera-offset-x < 0.05 {
-                                            root.camera-offset-x = 0;
+                                        if root.framing.offset-x > -0.05 && root.framing.offset-x < 0.05 {
+                                            root.framing.offset-x = 0;
                                         }
                                         root.sliders-changed();
                                     }
@@ -615,12 +741,13 @@ export component MainWindow inherits Window {
                                     hint: "Slides the finished frame up or down without moving the camera.";
                                     minimum: -3.0;
                                     maximum: 3.0;
-                                    value <=> root.camera-offset-y;
-                                    value-text: round(root.camera-offset-y * 100) / 100;
+                                    value <=> root.framing.offset-y;
+                                    default-value: root.defaults.framing.offset-y;
+                                    value-text: round(root.framing.offset-y * 100) / 100;
                                     value-width: 35px;
                                     changed => {
-                                        if root.camera-offset-y > -0.05 && root.camera-offset-y < 0.05 {
-                                            root.camera-offset-y = 0;
+                                        if root.framing.offset-y > -0.05 && root.framing.offset-y < 0.05 {
+                                            root.framing.offset-y = 0;
                                         }
                                         root.sliders-changed();
                                     }
@@ -628,19 +755,24 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Date / Time";
+                            modified: root.datetime.use-custom;
+                            reset => {
+                                root.datetime = root.defaults.datetime;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
                                 SettingCheck {
                                     text: "Override date/time";
                                     hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were.";
-                                    checked <=> root.use-custom-datetime;
+                                    checked <=> root.datetime.use-custom;
                                     toggled => { root.datetime-override-toggled(); }
                                 }
 
-                                if root.use-custom-datetime :
+                                if root.datetime.use-custom :
                                 VerticalLayout {
                                     spacing: 4px;
 
@@ -650,7 +782,8 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 23.99;
-                                        value <=> root.custom-hour;
+                                        value <=> root.datetime.hour;
+                                        resettable: false;
                                         value-text: root.hour-label;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -661,7 +794,8 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 1.0;
                                         maximum: root.max-day-of-year;
-                                        value <=> root.custom-day-of-year;
+                                        value <=> root.datetime.day-of-year;
+                                        resettable: false;
                                         value-text: root.day-label;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -671,26 +805,31 @@ export component MainWindow inherits Window {
                                         hint: "Which year that day belongs to. The Sun barely notices; the Moon and the planets do.";
                                         indent: 8px;
                                         model: root.year-options;
-                                        current-index <=> root.custom-year-index;
+                                        current-index <=> root.datetime.year-index;
                                         selected => { root.sliders-changed(); }
                                     }
                                 }
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Clouds";
+                            modified: root.clouds != root.defaults.clouds;
+                            reset => {
+                                root.clouds = root.defaults.clouds;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
                                 SettingCheck {
                                     text: "Show clouds";
                                     hint: "Master switch for the cloud layer. While it is off, no new download or decode starts.";
-                                    checked <=> root.clouds-enabled;
+                                    checked <=> root.clouds.enabled;
                                     toggled => { root.sliders-changed(); }
                                 }
 
-                                if root.clouds-enabled :
+                                if root.clouds.enabled :
                                 VerticalLayout {
                                     spacing: 4px;
 
@@ -700,8 +839,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 1.0;
-                                        value <=> root.cloud-opacity;
-                                        value-text: round(root.cloud-opacity * 100) + "%";
+                                        value <=> root.clouds.opacity;
+                                        default-value: root.defaults.clouds.opacity;
+                                        value-text: round(root.clouds.opacity * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -712,8 +852,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 1.0;
-                                        value <=> root.cloud-opacity-night;
-                                        value-text: round(root.cloud-opacity-night * 100) + "%";
+                                        value <=> root.clouds.opacity-night;
+                                        default-value: root.defaults.clouds.opacity-night;
+                                        value-text: round(root.clouds.opacity-night * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -724,13 +865,21 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 0.6;
-                                        value <=> root.cloud-night;
-                                        value-text: round(root.cloud-night * 100) + "%";
+                                        value <=> root.clouds.night-brightness;
+                                        default-value: root.defaults.clouds.night-brightness;
+                                        value-text: round(root.clouds.night-brightness * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
 
-                                    SettingHeading { text: "Haze removal"; }
+                                    SettingHeading {
+                                        text: "Haze removal";
+                                        modified: root.clouds.haze != root.defaults.clouds.haze;
+                                        reset => {
+                                            root.clouds.haze = root.defaults.clouds.haze;
+                                            root.sliders-changed();
+                                        }
+                                    }
 
                                     cloud-haze-equator-slider := SettingRow {
                                         label: "Toward the equator";
@@ -738,8 +887,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 2.0;
-                                        value <=> root.cloud-haze-equator;
-                                        value-text: round(root.cloud-haze-equator * 100) + "%";
+                                        value <=> root.clouds.haze.equator;
+                                        default-value: root.defaults.clouds.haze.equator;
+                                        value-text: round(root.clouds.haze.equator * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -750,8 +900,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 2.0;
-                                        value <=> root.cloud-haze-pole;
-                                        value-text: round(root.cloud-haze-pole * 100) + "%";
+                                        value <=> root.clouds.haze.pole;
+                                        default-value: root.defaults.clouds.haze.pole;
+                                        value-text: round(root.clouds.haze.pole * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -762,8 +913,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 20.0;
                                         maximum: 80.0;
-                                        value <=> root.cloud-haze-latitude;
-                                        value-text: round(root.cloud-haze-latitude) + "°";
+                                        value <=> root.clouds.haze.latitude;
+                                        default-value: root.defaults.clouds.haze.latitude;
+                                        value-text: round(root.clouds.haze.latitude) + "°";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -774,13 +926,21 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 5.0;
                                         maximum: 90.0;
-                                        value <=> root.cloud-haze-band;
-                                        value-text: round(root.cloud-haze-band) + "°";
+                                        value <=> root.clouds.haze.band;
+                                        default-value: root.defaults.clouds.haze.band;
+                                        value-text: round(root.clouds.haze.band) + "°";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
 
-                                    SettingHeading { text: "Land"; }
+                                    SettingHeading {
+                                        text: "Land";
+                                        modified: root.clouds.land != root.defaults.clouds.land;
+                                        reset => {
+                                            root.clouds.land = root.defaults.clouds.land;
+                                            root.sliders-changed();
+                                        }
+                                    }
 
                                     cloud-floor-land-slider := SettingRow {
                                         label: "Floor";
@@ -788,8 +948,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 0.5;
-                                        value <=> root.cloud-floor-land;
-                                        value-text: round(root.cloud-floor-land * 100) + "%";
+                                        value <=> root.clouds.land.floor;
+                                        default-value: root.defaults.clouds.land.floor;
+                                        value-text: round(root.clouds.land.floor * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -800,13 +961,21 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.1;
                                         maximum: 2.0;
-                                        value <=> root.cloud-gamma-land;
-                                        value-text: round(root.cloud-gamma-land * 100) / 100;
+                                        value <=> root.clouds.land.gamma;
+                                        default-value: root.defaults.clouds.land.gamma;
+                                        value-text: round(root.clouds.land.gamma * 100) / 100;
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
 
-                                    SettingHeading { text: "Ocean"; }
+                                    SettingHeading {
+                                        text: "Ocean";
+                                        modified: root.clouds.ocean != root.defaults.clouds.ocean;
+                                        reset => {
+                                            root.clouds.ocean = root.defaults.clouds.ocean;
+                                            root.sliders-changed();
+                                        }
+                                    }
 
                                     cloud-floor-ocean-slider := SettingRow {
                                         label: "Floor";
@@ -814,8 +983,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 0.5;
-                                        value <=> root.cloud-floor-ocean;
-                                        value-text: round(root.cloud-floor-ocean * 100) + "%";
+                                        value <=> root.clouds.ocean.floor;
+                                        default-value: root.defaults.clouds.ocean.floor;
+                                        value-text: round(root.clouds.ocean.floor * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -826,8 +996,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.1;
                                         maximum: 2.0;
-                                        value <=> root.cloud-gamma-ocean;
-                                        value-text: round(root.cloud-gamma-ocean * 100) / 100;
+                                        value <=> root.clouds.ocean.gamma;
+                                        default-value: root.defaults.clouds.ocean.gamma;
+                                        value-text: round(root.clouds.ocean.gamma * 100) / 100;
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -835,12 +1006,24 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Celestial";
+                            modified: root.celestial != root.defaults.celestial;
+                            reset => {
+                                root.celestial = root.defaults.celestial;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
-                                SettingHeading { text: "Sky"; }
+                                SettingHeading {
+                                    text: "Sky";
+                                    modified: root.celestial.sky != root.defaults.celestial.sky;
+                                    reset => {
+                                        root.celestial.sky = root.defaults.celestial.sky;
+                                        root.sliders-changed();
+                                    }
+                                }
 
                                 sky-fov-slider := SettingRow {
                                     label: "Field of view";
@@ -848,8 +1031,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: root.sky-fov-minimum;
                                     maximum: root.sky-fov-maximum;
-                                    value <=> root.sky-fov;
-                                    value-text: round(root.sky-fov) + "°";
+                                    value <=> root.celestial.sky.fov;
+                                    default-value: root.defaults.celestial.sky.fov;
+                                    value-text: round(root.celestial.sky.fov) + "°";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -859,12 +1043,20 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 2.0;
-                                    value <=> root.milky-way-intensity;
-                                    value-text: round(root.milky-way-intensity * 100) / 100 + "×";
+                                    value <=> root.celestial.sky.milky-way;
+                                    default-value: root.defaults.celestial.sky.milky-way;
+                                    value-text: round(root.celestial.sky.milky-way * 100) / 100 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                SettingHeading { text: "Sun"; }
+                                SettingHeading {
+                                    text: "Sun";
+                                    modified: root.celestial.sun != root.defaults.celestial.sun;
+                                    reset => {
+                                        root.celestial.sun = root.defaults.celestial.sun;
+                                        root.sliders-changed();
+                                    }
+                                }
 
                                 sun-glow-slider := SettingRow {
                                     label: "Glare";
@@ -872,8 +1064,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 3.0;
-                                    value <=> root.sun-glow;
-                                    value-text: round(root.sun-glow * 100) / 100 + "×";
+                                    value <=> root.celestial.sun.glow;
+                                    default-value: root.defaults.celestial.sun.glow;
+                                    value-text: round(root.celestial.sun.glow * 100) / 100 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -883,8 +1076,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 2.0;
-                                    value <=> root.sun-rays;
-                                    value-text: round(root.sun-rays * 100) + "%";
+                                    value <=> root.celestial.sun.rays;
+                                    default-value: root.defaults.celestial.sun.rays;
+                                    value-text: round(root.celestial.sun.rays * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -894,8 +1088,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 1.0;
                                     maximum: 8.0;
-                                    value <=> root.sun-size;
-                                    value-text: round(root.sun-size * 10) / 10 + "×";
+                                    value <=> root.celestial.sun.size;
+                                    default-value: root.defaults.celestial.sun.size;
+                                    value-text: round(root.celestial.sun.size * 10) / 10 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -905,8 +1100,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 1.5;
                                     maximum: 8.0;
-                                    value <=> root.sun-halo-radius;
-                                    value-text: round(root.sun-halo-radius * 10) / 10 + "°";
+                                    value <=> root.celestial.sun.halo-radius;
+                                    default-value: root.defaults.celestial.sun.halo-radius;
+                                    value-text: round(root.celestial.sun.halo-radius * 10) / 10 + "°";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -916,8 +1112,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.sun-flare;
-                                    value-text: round(root.sun-flare * 100) + "%";
+                                    value <=> root.celestial.sun.flare;
+                                    default-value: root.defaults.celestial.sun.flare;
+                                    value-text: round(root.celestial.sun.flare * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -927,8 +1124,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 1.0;
                                     maximum: 8.0;
-                                    value <=> root.sun-horizon-boost;
-                                    value-text: round(root.sun-horizon-boost * 10) / 10 + "×";
+                                    value <=> root.celestial.sun.horizon-boost;
+                                    default-value: root.defaults.celestial.sun.horizon-boost;
+                                    value-text: round(root.celestial.sun.horizon-boost * 10) / 10 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -938,8 +1136,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.5;
                                     maximum: 10.0;
-                                    value <=> root.sun-horizon-reach;
-                                    value-text: round(root.sun-horizon-reach * 10) / 10;
+                                    value <=> root.celestial.sun.horizon-reach;
+                                    default-value: root.defaults.celestial.sun.horizon-reach;
+                                    value-text: round(root.celestial.sun.horizon-reach * 10) / 10;
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -949,8 +1148,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 4.0;
-                                    value <=> root.sun-horizon-depth;
-                                    value-text: round(root.sun-horizon-depth * 10) / 10;
+                                    value <=> root.celestial.sun.horizon-depth;
+                                    default-value: root.defaults.celestial.sun.horizon-depth;
+                                    value-text: round(root.celestial.sun.horizon-depth * 10) / 10;
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -960,8 +1160,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 2.0;
-                                    value <=> root.sun-reddening;
-                                    value-text: round(root.sun-reddening * 100) + "%";
+                                    value <=> root.celestial.sun.reddening;
+                                    default-value: root.defaults.celestial.sun.reddening;
+                                    value-text: round(root.celestial.sun.reddening * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -971,12 +1172,20 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 2.0;
-                                    value <=> root.sun-refraction;
-                                    value-text: round(root.sun-refraction * 100) + "%";
+                                    value <=> root.celestial.sun.refraction;
+                                    default-value: root.defaults.celestial.sun.refraction;
+                                    value-text: round(root.celestial.sun.refraction * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                SettingHeading { text: "Moon"; }
+                                SettingHeading {
+                                    text: "Moon";
+                                    modified: root.celestial.moon != root.defaults.celestial.moon;
+                                    reset => {
+                                        root.celestial.moon = root.defaults.celestial.moon;
+                                        root.sliders-changed();
+                                    }
+                                }
 
                                 moon-brightness-slider := SettingRow {
                                     label: "Brightness";
@@ -984,8 +1193,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 3.0;
-                                    value <=> root.moon-brightness;
-                                    value-text: round(root.moon-brightness * 100) / 100 + "×";
+                                    value <=> root.celestial.moon.brightness;
+                                    default-value: root.defaults.celestial.moon.brightness;
+                                    value-text: round(root.celestial.moon.brightness * 100) / 100 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -995,8 +1205,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 1.0;
                                     maximum: 8.0;
-                                    value <=> root.moon-size;
-                                    value-text: round(root.moon-size * 10) / 10 + "×";
+                                    value <=> root.celestial.moon.size;
+                                    default-value: root.defaults.celestial.moon.size;
+                                    value-text: round(root.celestial.moon.size * 10) / 10 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -1006,12 +1217,20 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 0.5;
-                                    value <=> root.moon-earthshine;
-                                    value-text: round(root.moon-earthshine * 100) + "%";
+                                    value <=> root.celestial.moon.earthshine;
+                                    default-value: root.defaults.celestial.moon.earthshine;
+                                    value-text: round(root.celestial.moon.earthshine * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                SettingHeading { text: "Stars"; }
+                                SettingHeading {
+                                    text: "Stars";
+                                    modified: root.celestial.stars != root.defaults.celestial.stars;
+                                    reset => {
+                                        root.celestial.stars = root.defaults.celestial.stars;
+                                        root.sliders-changed();
+                                    }
+                                }
 
                                 star-intensity-slider := SettingRow {
                                     label: "Brightness";
@@ -1019,8 +1238,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 5.0;
-                                    value <=> root.star-intensity;
-                                    value-text: round(root.star-intensity * 100) / 100 + "×";
+                                    value <=> root.celestial.stars.intensity;
+                                    default-value: root.defaults.celestial.stars.intensity;
+                                    value-text: round(root.celestial.stars.intensity * 100) / 100 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -1030,8 +1250,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.5;
                                     maximum: 3.0;
-                                    value <=> root.star-size;
-                                    value-text: round(root.star-size * 100) / 100 + "×";
+                                    value <=> root.celestial.stars.size;
+                                    default-value: root.defaults.celestial.stars.size;
+                                    value-text: round(root.celestial.stars.size * 100) / 100 + "×";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -1041,8 +1262,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 3.0;
-                                    value <=> root.star-glow-strength;
-                                    value-text: round(root.star-glow-strength * 100) + "%";
+                                    value <=> root.celestial.stars.glow-strength;
+                                    default-value: root.defaults.celestial.stars.glow-strength;
+                                    value-text: round(root.celestial.stars.glow-strength * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -1052,8 +1274,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 1.0;
                                     maximum: 30.0;
-                                    value <=> root.star-glow-radius;
-                                    value-text: round(root.star-glow-radius * 10) / 10 + " px";
+                                    value <=> root.celestial.stars.glow-radius;
+                                    default-value: root.defaults.celestial.stars.glow-radius;
+                                    value-text: round(root.celestial.stars.glow-radius * 10) / 10 + " px";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -1063,8 +1286,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: -1.0;
                                     maximum: 1.0;
-                                    value <=> root.star-contrast;
-                                    value-text: round(root.star-contrast * 100) + "%";
+                                    value <=> root.celestial.stars.contrast;
+                                    default-value: root.defaults.celestial.stars.contrast;
+                                    value-text: round(root.celestial.stars.contrast * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -1074,30 +1298,43 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 7.0;
-                                    value <=> root.star-mag-limit;
-                                    value-text: round(root.star-mag-limit * 10) / 10;
+                                    value <=> root.celestial.stars.mag-limit;
+                                    default-value: root.defaults.celestial.stars.mag-limit;
+                                    value-text: round(root.celestial.stars.mag-limit * 10) / 10;
                                     changed => { root.sliders-changed(); }
                                 }
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Atmosphere";
+                            modified: root.atmosphere != root.defaults.atmosphere;
+                            reset => {
+                                root.atmosphere = root.defaults.atmosphere;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
                                 SettingCheck {
                                     text: "Atmosphere glow";
                                     hint: "Master switch for the three glowing shells around the globe.";
-                                    checked <=> root.atmo-enabled;
+                                    checked <=> root.atmosphere.enabled;
                                     toggled => { root.sliders-changed(); }
                                 }
 
-                                if root.atmo-enabled :
+                                if root.atmosphere.enabled :
                                 VerticalLayout {
                                     spacing: 4px;
 
-                                    SettingHeading { text: "Rayleigh"; }
+                                    SettingHeading {
+                                        text: "Rayleigh";
+                                        modified: root.atmosphere.rayleigh != root.defaults.atmosphere.rayleigh;
+                                        reset => {
+                                            root.atmosphere.rayleigh = root.defaults.atmosphere.rayleigh;
+                                            root.sliders-changed();
+                                        }
+                                    }
 
                                     rayleigh-intensity-slider := SettingRow {
                                         label: "Intensity";
@@ -1105,8 +1342,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 1.0;
-                                        value <=> root.rayleigh-intensity;
-                                        value-text: round(root.rayleigh-intensity * 100) + "%";
+                                        value <=> root.atmosphere.rayleigh.intensity;
+                                        default-value: root.defaults.atmosphere.rayleigh.intensity;
+                                        value-text: round(root.atmosphere.rayleigh.intensity * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -1117,8 +1355,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 10.0;
                                         maximum: 100.0;
-                                        value <=> root.rayleigh-sharpness;
-                                        value-text: round(root.rayleigh-sharpness * 10) / 10;
+                                        value <=> root.atmosphere.rayleigh.sharpness;
+                                        default-value: root.defaults.atmosphere.rayleigh.sharpness;
+                                        value-text: round(root.atmosphere.rayleigh.sharpness * 10) / 10;
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -1129,13 +1368,21 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 1.0;
-                                        value <=> root.rayleigh-haze;
-                                        value-text: round(root.rayleigh-haze * 100) + "%";
+                                        value <=> root.atmosphere.rayleigh.haze;
+                                        default-value: root.defaults.atmosphere.rayleigh.haze;
+                                        value-text: round(root.atmosphere.rayleigh.haze * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
 
-                                    SettingHeading { text: "Sunrise band"; }
+                                    SettingHeading {
+                                        text: "Sunrise band";
+                                        modified: root.atmosphere.sunrise != root.defaults.atmosphere.sunrise;
+                                        reset => {
+                                            root.atmosphere.sunrise = root.defaults.atmosphere.sunrise;
+                                            root.sliders-changed();
+                                        }
+                                    }
 
                                     atmo-sunrise-glow-slider := SettingRow {
                                         label: "Brightness";
@@ -1143,8 +1390,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 3.0;
-                                        value <=> root.atmo-sunrise-glow;
-                                        value-text: round(root.atmo-sunrise-glow * 100) / 100 + "×";
+                                        value <=> root.atmosphere.sunrise.glow;
+                                        default-value: root.defaults.atmosphere.sunrise.glow;
+                                        value-text: round(root.atmosphere.sunrise.glow * 100) / 100 + "×";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -1155,13 +1403,21 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 10.0;
                                         maximum: 90.0;
-                                        value <=> root.atmo-sunrise-width;
-                                        value-text: round(root.atmo-sunrise-width) + "°";
+                                        value <=> root.atmosphere.sunrise.width;
+                                        default-value: root.defaults.atmosphere.sunrise.width;
+                                        value-text: round(root.atmosphere.sunrise.width) + "°";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
 
-                                    SettingHeading { text: "Nightglow"; }
+                                    SettingHeading {
+                                        text: "Nightglow";
+                                        modified: root.atmosphere.nightglow != root.defaults.atmosphere.nightglow;
+                                        reset => {
+                                            root.atmosphere.nightglow = root.defaults.atmosphere.nightglow;
+                                            root.sliders-changed();
+                                        }
+                                    }
 
                                     nightglow-intensity-slider := SettingRow {
                                         label: "Intensity";
@@ -1169,8 +1425,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 1.0;
-                                        value <=> root.nightglow-intensity;
-                                        value-text: round(root.nightglow-intensity * 100) + "%";
+                                        value <=> root.atmosphere.nightglow.intensity;
+                                        default-value: root.defaults.atmosphere.nightglow.intensity;
+                                        value-text: round(root.atmosphere.nightglow.intensity * 100) + "%";
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -1181,10 +1438,11 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 1.0;
-                                        value <=> root.nightglow-balance;
-                                        value-text: root.nightglow-balance <= 0.01 ? "orange" :
-                                                    root.nightglow-balance >= 0.99 ? "green" :
-                                                    round(root.nightglow-balance * 100) / 100;
+                                        value <=> root.atmosphere.nightglow.balance;
+                                        default-value: root.defaults.atmosphere.nightglow.balance;
+                                        value-text: root.atmosphere.nightglow.balance <= 0.01 ? "orange" :
+                                                    root.atmosphere.nightglow.balance >= 0.99 ? "green" :
+                                                    round(root.atmosphere.nightglow.balance * 100) / 100;
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -1195,8 +1453,9 @@ export component MainWindow inherits Window {
                                         indent: 8px;
                                         minimum: 2.0;
                                         maximum: 50.0;
-                                        value <=> root.nightglow-falloff;
-                                        value-text: round(root.nightglow-falloff * 10) / 10;
+                                        value <=> root.atmosphere.nightglow.falloff;
+                                        default-value: root.defaults.atmosphere.nightglow.falloff;
+                                        value-text: round(root.atmosphere.nightglow.falloff * 10) / 10;
                                         value-width: 35px;
                                         changed => { root.sliders-changed(); }
                                     }
@@ -1204,8 +1463,13 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Lighting";
+                            modified: root.lighting != root.defaults.lighting;
+                            reset => {
+                                root.lighting = root.defaults.lighting;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
@@ -1214,8 +1478,9 @@ export component MainWindow inherits Window {
                                     hint: "Width of the blend between the day and night maps across the day/night boundary.";
                                     minimum: 0.01;
                                     maximum: 0.3;
-                                    value <=> root.terminator-width;
-                                    value-text: round(root.terminator-width * 1000) / 1000;
+                                    value <=> root.lighting.terminator-width;
+                                    default-value: root.defaults.lighting.terminator-width;
+                                    value-text: round(root.lighting.terminator-width * 1000) / 1000;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1223,7 +1488,7 @@ export component MainWindow inherits Window {
                                 SettingCheck {
                                     text: "Dayside shading";
                                     hint: "Shade the daylit half by the Sun's angle instead of laying the map on flat.";
-                                    checked <=> root.diffuse-shading;
+                                    checked <=> root.lighting.diffuse-shading;
                                     toggled => { root.sliders-changed(); }
                                 }
 
@@ -1233,8 +1498,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.diffuse-floor;
-                                    value-text: round(root.diffuse-floor * 100) / 100;
+                                    value <=> root.lighting.diffuse-floor;
+                                    default-value: root.defaults.lighting.diffuse-floor;
+                                    value-text: round(root.lighting.diffuse-floor * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1245,8 +1511,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.1;
                                     maximum: 1.0;
-                                    value <=> root.diffuse-ramp;
-                                    value-text: round(root.diffuse-ramp * 100) / 100;
+                                    value <=> root.lighting.diffuse-ramp;
+                                    default-value: root.defaults.lighting.diffuse-ramp;
+                                    value-text: round(root.lighting.diffuse-ramp * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1256,8 +1523,9 @@ export component MainWindow inherits Window {
                                     hint: "Tightness of the specular highlight the Sun leaves on the oceans; higher makes a smaller, harder glint.";
                                     minimum: 10;
                                     maximum: 500;
-                                    value <=> root.spec-shininess;
-                                    value-text: round(root.spec-shininess);
+                                    value <=> root.lighting.spec-shininess;
+                                    default-value: root.defaults.lighting.spec-shininess;
+                                    value-text: round(root.lighting.spec-shininess);
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1267,8 +1535,9 @@ export component MainWindow inherits Window {
                                     hint: "Strength of that specular highlight.";
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.spec-intensity;
-                                    value-text: round(root.spec-intensity * 100) / 100;
+                                    value <=> root.lighting.spec-intensity;
+                                    default-value: root.defaults.lighting.spec-intensity;
+                                    value-text: round(root.lighting.spec-intensity * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1278,8 +1547,9 @@ export component MainWindow inherits Window {
                                     hint: "How much the ocean brightens where it turns away from the camera, the way water does at a glancing angle.";
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.fresnel-mix;
-                                    value-text: round(root.fresnel-mix * 100) / 100;
+                                    value <=> root.lighting.fresnel-mix;
+                                    default-value: root.defaults.lighting.fresnel-mix;
+                                    value-text: round(root.lighting.fresnel-mix * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -1289,20 +1559,33 @@ export component MainWindow inherits Window {
                                     hint: "How far in from the limb that glancing-angle brightening reaches.";
                                     minimum: 1.0;
                                     maximum: 8.0;
-                                    value <=> root.fresnel-exp;
-                                    value-text: round(root.fresnel-exp * 10) / 10;
+                                    value <=> root.lighting.fresnel-exp;
+                                    default-value: root.defaults.lighting.fresnel-exp;
+                                    value-text: round(root.lighting.fresnel-exp * 10) / 10;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
                             }
                         }
 
-                        GroupBox {
+                        SettingGroup {
                             title: "Color Correction";
+                            modified: root.color-correction != root.defaults.color-correction;
+                            reset => {
+                                root.color-correction = root.defaults.color-correction;
+                                root.sliders-changed();
+                            }
                             VerticalLayout {
                                 spacing: 4px;
 
-                                SettingHeading { text: "Day Texture"; }
+                                SettingHeading {
+                                    text: "Day Texture";
+                                    modified: root.color-correction.day != root.defaults.color-correction.day;
+                                    reset => {
+                                        root.color-correction.day = root.defaults.color-correction.day;
+                                        root.sliders-changed();
+                                    }
+                                }
 
                                 day-gamma-slider := SettingRow {
                                     label: "Gamma";
@@ -1310,7 +1593,8 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.day-gamma;
+                                    value <=> root.color-correction.day.gamma;
+                                    default-value: root.defaults.color-correction.day.gamma;
                                     value-text: round(root.day-gamma-value * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
@@ -1322,13 +1606,21 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 2.0;
-                                    value <=> root.day-saturation;
-                                    value-text: round(root.day-saturation * 100) / 100;
+                                    value <=> root.color-correction.day.saturation;
+                                    default-value: root.defaults.color-correction.day.saturation;
+                                    value-text: round(root.color-correction.day.saturation * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                SettingHeading { text: "Night Texture"; }
+                                SettingHeading {
+                                    text: "Night Texture";
+                                    modified: root.color-correction.night != root.defaults.color-correction.night;
+                                    reset => {
+                                        root.color-correction.night = root.defaults.color-correction.night;
+                                        root.sliders-changed();
+                                    }
+                                }
 
                                 night-gamma-slider := SettingRow {
                                     label: "Gamma";
@@ -1336,7 +1628,8 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 1.0;
-                                    value <=> root.night-gamma;
+                                    value <=> root.color-correction.night.gamma;
+                                    default-value: root.defaults.color-correction.night.gamma;
                                     value-text: round(root.night-gamma-value * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
@@ -1348,8 +1641,9 @@ export component MainWindow inherits Window {
                                     indent: 8px;
                                     minimum: 0.0;
                                     maximum: 2.0;
-                                    value <=> root.night-saturation;
-                                    value-text: round(root.night-saturation * 100) / 100;
+                                    value <=> root.color-correction.night.saturation;
+                                    default-value: root.defaults.color-correction.night.saturation;
+                                    value-text: round(root.color-correction.night.saturation * 100) / 100;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }

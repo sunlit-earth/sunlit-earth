@@ -7,9 +7,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use i_slint_backend_testing::ElementHandle;
+use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use slint::ComponentHandle;
-use sunlit_earth::MainWindow;
+use sunlit_core::config::AppConfig;
+use sunlit_core::params::SceneParams;
+use sunlit_earth::ui_callbacks;
+use sunlit_earth::{
+    AtmosphereSettings, CameraPositionSettings, CelestialSettings, CloudSettings, DateTimeSettings,
+    FramingSettings, LightingSettings, MainWindow, MoonSettings, SkySettings, StarSettings,
+    SunSettings, SunriseBandSettings,
+};
+
+/// The sample counts the tests' adapter offers, in the AA combo box's order.
+const AA_COUNTS: [u32; 4] = [1, 2, 4, 8];
 
 // ---------------------------------------------------------------------------
 // Initialization boilerplate
@@ -35,7 +45,11 @@ fn init() {
     });
 }
 
-/// Create a fresh `MainWindow` instance backed by the testing backend.
+/// Create a fresh `MainWindow` instance backed by the testing backend, holding
+/// the default config the way startup leaves it before the window is shown.
+///
+/// `main.slint` states no defaults, so a bare window is all zeros with the
+/// Clouds and Atmosphere rows hidden, which is a window the app never shows.
 ///
 /// The window is resized to a large height so that all controls in the
 /// `ScrollView` are within the visible viewport. Without this, the testing
@@ -46,7 +60,20 @@ fn create_window() -> MainWindow {
     window
         .window()
         .set_size(slint::PhysicalSize::new(1200, 5000));
+    let config = AppConfig::default();
+    ui_callbacks::apply_config_to_window(&window, &config);
+    ui_callbacks::set_combobox_indices(
+        &window.as_weak(),
+        ui_callbacks::ComboIndices::of(&config, &AA_COUNTS, config.texture_resolution, &[]),
+    );
     window
+}
+
+fn set_longitude(window: &MainWindow, longitude: f32) {
+    window.set_camera_position(CameraPositionSettings {
+        longitude,
+        ..window.get_camera_position()
+    });
 }
 
 #[test]
@@ -63,48 +90,66 @@ fn test_window_creates_successfully() {
 #[test]
 fn test_camera_fov_roundtrips_through_scene_params() {
     let window = create_window();
-    window.set_camera_fov(96.0);
-    let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
+    window.set_framing(FramingSettings {
+        fov: 96.0,
+        ..window.get_framing()
+    });
+    let params = ui_callbacks::read_params_from_window(&window, &AA_COUNTS);
     approx::assert_relative_eq!(params.camera.fov_deg, 96.0);
 
-    let restored = sunlit_core::params::SceneParams {
+    let restored = SceneParams {
         camera: sunlit_core::scene::camera::CameraParams {
             fov_deg: 42.0,
             ..params.camera
         },
         ..params
     };
-    sunlit_earth::ui_callbacks::apply_params_to_window(&window, &restored);
-    approx::assert_relative_eq!(window.get_camera_fov(), 42.0);
+    ui_callbacks::apply_params_to_window(&window, &restored);
+    approx::assert_relative_eq!(window.get_framing().fov, 42.0);
 }
 
 #[test]
 fn test_celestial_properties_roundtrip_through_scene_params() {
     let window = create_window();
-    window.set_sky_fov(165.0);
-    window.set_star_intensity(0.73);
-    window.set_star_size(1.6);
-    window.set_star_glow_strength(2.4);
-    window.set_star_glow_radius(26.0);
-    window.set_star_contrast(-0.67);
-    window.set_star_mag_limit(5.4);
-    window.set_sun_glow(2.4);
-    window.set_sun_rays(1.3);
-    window.set_sun_flare(0.7);
-    window.set_sun_size(4.5);
-    window.set_sun_halo_radius(5.25);
-    window.set_sun_horizon_boost(6.5);
-    window.set_sun_horizon_reach(8.5);
-    window.set_sun_horizon_depth(3.25);
-    window.set_sun_reddening(1.6);
-    window.set_sun_refraction(0.35);
-    window.set_atmo_sunrise_glow(2.4);
-    window.set_atmo_sunrise_width(72.0);
-    window.set_moon_brightness(1.7);
-    window.set_moon_size(5.5);
-    window.set_moon_earthshine(0.21);
-    window.set_milky_way_intensity(1.15);
-    let params = sunlit_earth::ui_callbacks::read_params_from_window(&window, &[1, 2, 4, 8]);
+    window.set_celestial(CelestialSettings {
+        sky: SkySettings {
+            fov: 165.0,
+            milky_way: 1.15,
+        },
+        sun: SunSettings {
+            glow: 2.4,
+            rays: 1.3,
+            size: 4.5,
+            halo_radius: 5.25,
+            flare: 0.7,
+            horizon_boost: 6.5,
+            horizon_reach: 8.5,
+            horizon_depth: 3.25,
+            reddening: 1.6,
+            refraction: 0.35,
+        },
+        moon: MoonSettings {
+            brightness: 1.7,
+            size: 5.5,
+            earthshine: 0.21,
+        },
+        stars: StarSettings {
+            intensity: 0.73,
+            size: 1.6,
+            glow_strength: 2.4,
+            glow_radius: 26.0,
+            contrast: -0.67,
+            mag_limit: 5.4,
+        },
+    });
+    window.set_atmosphere(AtmosphereSettings {
+        sunrise: SunriseBandSettings {
+            glow: 2.4,
+            width: 72.0,
+        },
+        ..window.get_atmosphere()
+    });
+    let params = ui_callbacks::read_params_from_window(&window, &AA_COUNTS);
     approx::assert_relative_eq!(params.sky_fov, 165.0);
     approx::assert_relative_eq!(params.star_intensity, 0.73);
     approx::assert_relative_eq!(params.star_size, 1.6);
@@ -133,7 +178,7 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
 #[test]
 fn test_celestial_properties_apply_from_scene_params() {
     let window = create_window();
-    let params = sunlit_core::params::SceneParams {
+    let params = SceneParams {
         sky_fov: 75.0,
         star_intensity: 3.2,
         star_size: 2.1,
@@ -157,162 +202,361 @@ fn test_celestial_properties_apply_from_scene_params() {
         moon_size: 3.5,
         moon_earthshine: 0.17,
         milky_way_intensity: 0.35,
-        ..sunlit_core::params::SceneParams::default()
+        ..SceneParams::default()
     };
-    sunlit_earth::ui_callbacks::apply_params_to_window(&window, &params);
-    approx::assert_relative_eq!(window.get_sky_fov(), 75.0);
-    approx::assert_relative_eq!(window.get_star_intensity(), 3.2);
-    approx::assert_relative_eq!(window.get_star_size(), 2.1);
-    approx::assert_relative_eq!(window.get_star_glow_strength(), 2.8);
-    approx::assert_relative_eq!(window.get_star_glow_radius(), 29.0);
-    approx::assert_relative_eq!(window.get_star_contrast(), -0.76);
-    approx::assert_relative_eq!(window.get_star_mag_limit(), 5.9);
-    approx::assert_relative_eq!(window.get_sun_glow(), 0.4);
-    approx::assert_relative_eq!(window.get_sun_rays(), 1.8);
-    approx::assert_relative_eq!(window.get_sun_flare(), 0.9);
-    approx::assert_relative_eq!(window.get_sun_size(), 2.25);
-    approx::assert_relative_eq!(window.get_sun_halo_radius(), 7.5);
-    approx::assert_relative_eq!(window.get_sun_horizon_boost(), 4.5);
-    approx::assert_relative_eq!(window.get_sun_horizon_reach(), 1.25);
-    approx::assert_relative_eq!(window.get_sun_horizon_depth(), 0.75);
-    approx::assert_relative_eq!(window.get_sun_reddening(), 0.4);
-    approx::assert_relative_eq!(window.get_sun_refraction(), 1.85);
-    approx::assert_relative_eq!(window.get_atmo_sunrise_glow(), 0.6);
-    approx::assert_relative_eq!(window.get_atmo_sunrise_width(), 18.0);
-    approx::assert_relative_eq!(window.get_moon_brightness(), 0.8);
-    approx::assert_relative_eq!(window.get_moon_size(), 3.5);
-    approx::assert_relative_eq!(window.get_moon_earthshine(), 0.17);
-    approx::assert_relative_eq!(window.get_milky_way_intensity(), 0.35);
+    ui_callbacks::apply_params_to_window(&window, &params);
+    let CelestialSettings {
+        sky,
+        sun,
+        moon,
+        stars,
+    } = window.get_celestial();
+    let sunrise = window.get_atmosphere().sunrise;
+    approx::assert_relative_eq!(sky.fov, 75.0);
+    approx::assert_relative_eq!(stars.intensity, 3.2);
+    approx::assert_relative_eq!(stars.size, 2.1);
+    approx::assert_relative_eq!(stars.glow_strength, 2.8);
+    approx::assert_relative_eq!(stars.glow_radius, 29.0);
+    approx::assert_relative_eq!(stars.contrast, -0.76);
+    approx::assert_relative_eq!(stars.mag_limit, 5.9);
+    approx::assert_relative_eq!(sun.glow, 0.4);
+    approx::assert_relative_eq!(sun.rays, 1.8);
+    approx::assert_relative_eq!(sun.flare, 0.9);
+    approx::assert_relative_eq!(sun.size, 2.25);
+    approx::assert_relative_eq!(sun.halo_radius, 7.5);
+    approx::assert_relative_eq!(sun.horizon_boost, 4.5);
+    approx::assert_relative_eq!(sun.horizon_reach, 1.25);
+    approx::assert_relative_eq!(sun.horizon_depth, 0.75);
+    approx::assert_relative_eq!(sun.reddening, 0.4);
+    approx::assert_relative_eq!(sun.refraction, 1.85);
+    approx::assert_relative_eq!(sunrise.glow, 0.6);
+    approx::assert_relative_eq!(sunrise.width, 18.0);
+    approx::assert_relative_eq!(moon.brightness, 0.8);
+    approx::assert_relative_eq!(moon.size, 3.5);
+    approx::assert_relative_eq!(moon.earthshine, 0.17);
+    approx::assert_relative_eq!(sky.milky_way, 0.35);
 }
 
-/// How close a hand-written literal in `main.slint` has to be to the config
-/// default it mirrors, for the one property that needs any slack at all.
+// ---------------------------------------------------------------------------
+// Resetting settings to their defaults
+// ---------------------------------------------------------------------------
+
+fn is_reset_button(element: &ElementHandle) -> bool {
+    element
+        .accessible_label()
+        .is_some_and(|label| label.starts_with("Reset "))
+}
+
+/// The accessible label of every reset button in the tree, which is every
+/// reset the Advanced section shows: a button is in the tree only while its
+/// value, its subsection or its group differs from the default.
+fn resets_offered(window: &MainWindow) -> Vec<String> {
+    let mut labels: Vec<String> = ElementQuery::from_root(window)
+        .match_predicate(is_reset_button)
+        .find_all()
+        .iter()
+        .filter_map(ElementHandle::accessible_label)
+        .map(|label| label.to_string())
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// The one element in the tree with this accessible label.
+fn the_button(window: &MainWindow, label: &str) -> ElementHandle {
+    let found: Vec<_> = ElementHandle::find_by_accessible_label(window, label).collect();
+    assert_eq!(found.len(), 1, "expected exactly one '{label}'");
+    found.into_iter().next().expect("one element")
+}
+
+/// Every element that is, or inherits, one of the panel's own components.
+fn all_of(window: &MainWindow, component: &str) -> Vec<ElementHandle> {
+    ElementQuery::from_root(window)
+        .match_inherits(component)
+        .find_all()
+}
+
+/// The slider inside one `SettingRow`.
+fn slider_of(row: &ElementHandle) -> ElementHandle {
+    row.query_descendants()
+        .match_accessible_role(AccessibleRole::Slider)
+        .find_first()
+        .expect("a SettingRow holds a slider")
+}
+
+fn accessible_number(element: &ElementHandle) -> f32 {
+    element
+        .accessible_value()
+        .and_then(|value| value.parse().ok())
+        .expect("a slider reports its value")
+}
+
+/// Move a slider the way a user does, through its accessibility action, to a
+/// point well inside its own range and away from where it was.
 ///
-/// `zoom` reads 0.421 in the `.slint` file where the config computes it as
-/// 0.42096078 through `distance_to_zoom`, a relative difference of 9.3e-5.
-/// Every other property agrees exactly and is compared at `f32::EPSILON`, so a
-/// literal that drifted in the fourth decimal is still a failure.
-const SLINT_LITERAL_PRECISION: f32 = 1.0e-3;
+/// The target is worked out from the range the slider reports rather than
+/// from the field behind it, so this names no setting.
+fn move_off_its_value(slider: &ElementHandle) {
+    let minimum = slider
+        .accessible_value_minimum()
+        .expect("a slider has a minimum");
+    let maximum = slider
+        .accessible_value_maximum()
+        .expect("a slider has a maximum");
+    let before = accessible_number(slider);
+    let target = [0.37, 0.63]
+        .into_iter()
+        .map(|fraction| minimum + (maximum - minimum) * fraction)
+        .find(|target| (target - before).abs() > (maximum - minimum) * 0.05)
+        .expect("one of two points a quarter of the range apart is away from the value");
+    slider.set_accessible_value(target.to_string());
+    let after = accessible_number(slider);
+    assert!(
+        (after - before).abs() > (maximum - minimum) * 0.05,
+        "a slider from {minimum} to {maximum} stayed at {before}, asked for {target}"
+    );
+}
 
-/// The window and the config have to start from the same numbers, or the first
-/// slider a user touches pushes all the others to whatever the `.slint` file
-/// happened to say.
+/// Every slider of the Advanced section moved off its default.
+fn move_every_slider(window: &MainWindow) -> usize {
+    let rows = all_of(window, "SettingRow");
+    for row in &rows {
+        move_off_its_value(&slider_of(row));
+    }
+    rows.len()
+}
+
+/// Press a reset and check that it went away, which it does only once what it
+/// covers is back at its default.
+///
+/// An `if` drops its instance when the tree is next visited rather than when
+/// its condition changes, so the visit comes before the check.
+fn press(window: &MainWindow, button: &ElementHandle) {
+    button.invoke_accessible_default_action();
+    let _ = resets_offered(window);
+    assert!(
+        !button.is_valid(),
+        "'{}' is still offered after it was pressed",
+        button.accessible_label().unwrap_or_default()
+    );
+}
+
+/// With the default config applied, the Advanced section offers nothing to
+/// reset. A row that forgot its `default-value` reads zero and fails here,
+/// unless zero is its default.
 #[test]
-#[expect(clippy::too_many_lines, reason = "one row per property of the window")]
-fn test_the_window_and_the_config_start_from_the_same_defaults() {
-    /// One row per property: the `AppConfig` field, the window getter that
-    /// mirrors it, and the tolerance the pair is compared at.
-    macro_rules! rows {
-        ($w:ident, $c:ident, $($field:ident from $getter:ident),* $(,)?) => {
-            vec![$((stringify!($field), $w.$getter(), $c.$field, f32::EPSILON)),*]
-        };
-    }
-
+fn test_the_defaults_offer_no_reset() {
     let window = create_window();
-    let config = sunlit_core::config::AppConfig::default();
-    let mut rows = rows![
-        window, config,
-        longitude from get_camera_longitude,
-        latitude from get_camera_latitude,
-        offset_x from get_camera_offset_x,
-        offset_y from get_camera_offset_y,
-        tilt from get_camera_tilt,
-        yaw from get_camera_yaw,
-        pitch from get_camera_pitch,
-        camera_fov from get_camera_fov,
-        sky_fov from get_sky_fov,
-        star_intensity from get_star_intensity,
-        star_size from get_star_size,
-        star_glow_strength from get_star_glow_strength,
-        star_glow_radius from get_star_glow_radius,
-        star_contrast from get_star_contrast,
-        star_mag_limit from get_star_mag_limit,
-        sun_glow from get_sun_glow,
-        sun_rays from get_sun_rays,
-        sun_flare from get_sun_flare,
-        sun_size from get_sun_size,
-        sun_halo_radius from get_sun_halo_radius,
-        sun_horizon_boost from get_sun_horizon_boost,
-        sun_horizon_reach from get_sun_horizon_reach,
-        sun_horizon_depth from get_sun_horizon_depth,
-        sun_reddening from get_sun_reddening,
-        sun_refraction from get_sun_refraction,
-        atmo_sunrise_glow from get_atmo_sunrise_glow,
-        atmo_sunrise_width from get_atmo_sunrise_width,
-        moon_brightness from get_moon_brightness,
-        moon_size from get_moon_size,
-        moon_earthshine from get_moon_earthshine,
-        milky_way_intensity from get_milky_way_intensity,
-        terminator_width from get_terminator_width,
-        diffuse_floor from get_diffuse_floor,
-        diffuse_ramp from get_diffuse_ramp,
-        spec_shininess from get_spec_shininess,
-        spec_intensity from get_spec_intensity,
-        fresnel_mix from get_fresnel_mix,
-        fresnel_exp from get_fresnel_exp,
-        cloud_opacity from get_cloud_opacity,
-        cloud_opacity_night from get_cloud_opacity_night,
-        cloud_haze_equator from get_cloud_haze_equator,
-        cloud_haze_pole from get_cloud_haze_pole,
-        cloud_haze_latitude from get_cloud_haze_latitude,
-        cloud_haze_band from get_cloud_haze_band,
-        cloud_floor_land from get_cloud_floor_land,
-        cloud_gamma_land from get_cloud_gamma_land,
-        cloud_floor_ocean from get_cloud_floor_ocean,
-        cloud_gamma_ocean from get_cloud_gamma_ocean,
-        cloud_night from get_cloud_night,
-        rayleigh_intensity from get_rayleigh_intensity,
-        rayleigh_sharpness from get_rayleigh_sharpness,
-        rayleigh_haze from get_rayleigh_haze,
-        nightglow_intensity from get_nightglow_intensity,
-        nightglow_falloff from get_nightglow_falloff,
-        nightglow_balance from get_nightglow_balance,
-        day_saturation from get_day_saturation,
-        night_saturation from get_night_saturation,
-    ];
+    window.set_advanced_open(true);
+    materialize(&window);
+    assert!(
+        !all_of(&window, "SettingRow").is_empty(),
+        "the Advanced section is open"
+    );
+    assert_eq!(resets_offered(&window), Vec::<String>::new());
 
-    // The two gamma sliders carry a position on the curve rather than the value
-    // itself, so what has to agree is the mapped default.
-    for (name, from_window, gamma) in [
-        ("day_gamma", window.get_day_gamma(), config.day_gamma),
-        ("night_gamma", window.get_night_gamma(), config.night_gamma),
-    ] {
-        rows.push((
-            name,
-            from_window,
-            sunlit_core::params::gamma_value_to_slider(gamma),
-            f32::EPSILON,
-        ));
+    let indices = ui_callbacks::ComboIndices::of_window(&window);
+    window.set_texture_index((indices.texture + 1) % 4);
+    window.set_aa_index(1 - indices.aa.clamp(0, 1));
+    window.set_texture_resolution_index((indices.texture_resolution + 1) % 3);
+    assert_eq!(
+        resets_offered(&window),
+        Vec::<String>::new(),
+        "the Rendering group offers no reset"
+    );
+}
+
+/// A slider inside a subsection offers three resets once it moves: its row's,
+/// its subsection's and its group's.
+#[test]
+fn test_moving_one_slider_offers_three_resets() {
+    let window = create_window();
+    window.set_advanced_open(true);
+
+    let rows: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::sun-glow-slider").collect();
+    assert_eq!(rows.len(), 1, "expected one Sun glare row");
+    move_off_its_value(&slider_of(&rows[0]));
+
+    assert_eq!(
+        resets_offered(&window),
+        ["Reset Celestial", "Reset Glare", "Reset Sun"]
+    );
+}
+
+/// Every row's reset puts back its own default and nothing else.
+///
+/// Every slider is moved first and every row's reset pressed after, so a row
+/// bound to one field and defaulting from another leaves that field off its
+/// default, and the window then disagrees with the defaults.
+#[test]
+fn test_every_row_reset_returns_its_default() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    let moved = move_every_slider(&window);
+    assert!(moved > 0, "the Advanced section has sliders");
+    assert_ne!(
+        ui_callbacks::read_params_from_window(&window, &AA_COUNTS),
+        SceneParams::default()
+    );
+
+    for row in all_of(&window, "SettingRow") {
+        let reset = row
+            .query_descendants()
+            .match_predicate(is_reset_button)
+            .find_first()
+            .expect("a moved row offers its reset");
+        press(&window, &reset);
     }
-    // The one property the `.slint` file rounds; see SLINT_LITERAL_PRECISION.
-    rows.push((
-        "zoom",
-        window.get_camera_zoom(),
-        config.zoom,
-        SLINT_LITERAL_PRECISION,
-    ));
 
-    for (name, from_window, from_config, tolerance) in rows {
-        assert!(
-            approx::relative_eq!(from_window, from_config, max_relative = tolerance),
-            "{name}: the window starts at {from_window} and the config at {from_config}"
+    assert_eq!(
+        ui_callbacks::read_params_from_window(&window, &AA_COUNTS),
+        SceneParams::default()
+    );
+    assert_eq!(resets_offered(&window), Vec::<String>::new());
+}
+
+/// Every subsection's reset and every group's puts back what it covers.
+///
+/// A heading or a group that compares one struct and assigns another still
+/// differs from its default after the press, so its button stays and `press`
+/// fails. The sliders move again before the groups, since a group whose rows
+/// all sit under headings has nothing left to reset once the headings have
+/// been pressed.
+#[test]
+fn test_every_heading_and_group_reset_clears_what_it_covers() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    move_every_slider(&window);
+
+    for heading in all_of(&window, "SettingHeading") {
+        let reset = heading
+            .query_descendants()
+            .match_predicate(is_reset_button)
+            .find_first()
+            .expect("every subsection has a moved slider in it");
+        press(&window, &reset);
+    }
+
+    move_every_slider(&window);
+    for group in all_of(&window, "SettingGroup") {
+        let has_sliders = group
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Slider)
+            .find_first()
+            .is_some();
+        let title = group.accessible_label().expect("a group has a title");
+        let own = group
+            .query_descendants()
+            .match_predicate(move |element| {
+                element
+                    .accessible_label()
+                    .is_some_and(|label| label == format!("Reset {title}"))
+            })
+            .find_first();
+        assert_eq!(
+            own.is_some(),
+            has_sliders,
+            "a group offers its reset exactly when a slider in it has moved"
         );
+        if let Some(reset) = own {
+            press(&window, &reset);
+        }
     }
+
     assert_eq!(
-        window.get_diffuse_shading(),
-        config.diffuse_shading,
-        "diffuse_shading"
+        ui_callbacks::read_params_from_window(&window, &AA_COUNTS),
+        SceneParams::default()
     );
+    assert_eq!(resets_offered(&window), Vec::<String>::new());
+}
+
+/// A group's reset puts its switch back on, and the rows the switch hides come
+/// back with it.
+#[test]
+fn test_a_group_reset_turns_its_switch_back_on() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    window.set_clouds(CloudSettings {
+        enabled: false,
+        ..window.get_clouds()
+    });
+    window.set_atmosphere(AtmosphereSettings {
+        enabled: false,
+        ..window.get_atmosphere()
+    });
+    window.set_lighting(LightingSettings {
+        diffuse_shading: false,
+        ..window.get_lighting()
+    });
     assert_eq!(
-        window.get_atmo_enabled(),
-        config.atmo_enabled,
-        "atmo_enabled"
+        resets_offered(&window),
+        ["Reset Atmosphere", "Reset Clouds", "Reset Lighting"]
     );
-    assert_eq!(
-        window.get_clouds_enabled(),
-        config.clouds_enabled,
-        "clouds_enabled"
-    );
+
+    for group in ["Clouds", "Atmosphere", "Lighting"] {
+        press(&window, &the_button(&window, &format!("Reset {group}")));
+    }
+
+    assert!(window.get_clouds().enabled);
+    assert!(window.get_atmosphere().enabled);
+    assert!(window.get_lighting().diffuse_shading);
+    for id in [
+        "MainWindow::cloud-opacity-slider",
+        "MainWindow::rayleigh-intensity-slider",
+    ] {
+        let found: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
+        assert_eq!(found.len(), 1, "{id} is back with its switch");
+    }
+    assert_eq!(resets_offered(&window), Vec::<String>::new());
+}
+
+/// The override is the whole of what Date / Time offers to reset: the instant
+/// it holds is written afresh each time it is turned on, so the hour and the
+/// day have no default to go back to.
+#[test]
+fn test_date_time_offers_a_reset_while_overridden() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    window.set_datetime(DateTimeSettings {
+        use_custom: true,
+        ..window.get_datetime()
+    });
+    for id in [
+        "MainWindow::custom-hour-slider",
+        "MainWindow::custom-day-slider",
+    ] {
+        let rows: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
+        assert_eq!(rows.len(), 1, "expected one {id}");
+        move_off_its_value(&slider_of(&rows[0]));
+    }
+
+    assert_eq!(resets_offered(&window), ["Reset Date / Time"]);
+    press(&window, &the_button(&window, "Reset Date / Time"));
+    assert!(!window.get_datetime().use_custom, "the time is live again");
+    assert_eq!(resets_offered(&window), Vec::<String>::new());
+}
+
+/// Every kind of reset reaches the engine the way a drag does, through
+/// `sliders-changed`, exactly once per press.
+#[test]
+fn test_a_reset_pushes_the_scene() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    let pushes = Rc::new(std::cell::Cell::new(0));
+    let counter = Rc::clone(&pushes);
+    window.on_sliders_changed(move || counter.set(counter.get() + 1));
+
+    let rows: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "MainWindow::sun-glow-slider").collect();
+    assert_eq!(rows.len(), 1, "expected one Sun glare row");
+    let slider = slider_of(&rows[0]);
+    for label in ["Reset Glare", "Reset Sun", "Reset Celestial"] {
+        move_off_its_value(&slider);
+        let before = pushes.get();
+        press(&window, &the_button(&window, label));
+        assert_eq!(pushes.get() - before, 1, "'{label}' pushed the scene once");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -330,31 +574,31 @@ fn test_load_defaults_fires_a_callback_that_can_reset_the_window() {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let defaults = sunlit_core::config::AppConfig::default();
-        win.set_camera_longitude(defaults.longitude);
-        win.set_camera_latitude(defaults.latitude);
-        win.set_camera_zoom(defaults.zoom);
-        win.set_camera_offset_x(defaults.offset_x);
-        win.set_camera_offset_y(defaults.offset_y);
-        win.set_camera_tilt(defaults.tilt);
-        win.set_camera_yaw(defaults.yaw);
-        win.set_camera_pitch(defaults.pitch);
-        win.set_diffuse_shading(defaults.diffuse_shading);
+        ui_callbacks::apply_params_to_window(&win, &SceneParams::default());
     });
 
-    window.set_camera_longitude(123.0);
-    window.set_camera_zoom(0.99);
-    window.set_diffuse_shading(false);
+    window.set_camera_position(CameraPositionSettings {
+        longitude: 123.0,
+        zoom: 0.99,
+        ..window.get_camera_position()
+    });
+    window.set_lighting(LightingSettings {
+        diffuse_shading: false,
+        ..window.get_lighting()
+    });
 
     let buttons: Vec<_> =
         ElementHandle::find_by_accessible_label(&window, "Load Defaults").collect();
     assert_eq!(buttons.len(), 1);
     buttons[0].invoke_accessible_default_action();
 
-    let defaults = sunlit_core::config::AppConfig::default();
-    approx::assert_relative_eq!(window.get_camera_longitude(), defaults.longitude);
-    approx::assert_relative_eq!(window.get_camera_zoom(), defaults.zoom);
-    assert_eq!(window.get_diffuse_shading(), defaults.diffuse_shading);
+    let defaults = AppConfig::default();
+    approx::assert_relative_eq!(window.get_camera_position().longitude, defaults.longitude);
+    approx::assert_relative_eq!(window.get_camera_position().zoom, defaults.zoom);
+    assert_eq!(
+        window.get_lighting().diffuse_shading,
+        defaults.diffuse_shading
+    );
 }
 
 /// Load-defaults through the callback the app registers, rather than one this
@@ -383,15 +627,20 @@ fn test_load_defaults_applies_the_whole_config_the_app_would() {
 
     let defaults = sunlit_core::config::AppConfig::default();
     let wanted = sunlit_core::params::SceneParams::from_config(&defaults);
-    window.set_camera_longitude(wanted.camera.longitude + 47.0);
-    window.set_sky_fov(wanted.sky_fov - 11.0);
+    set_longitude(&window, wanted.camera.longitude + 47.0);
+    let mut celestial = window.get_celestial();
+    celestial.sky.fov = wanted.sky_fov - 11.0;
+    window.set_celestial(celestial);
     window.set_auto_refresh_enabled(!defaults.auto_refresh_enabled);
     link.set_resolution_is_one_run_only(true);
 
     window.invoke_load_defaults();
 
-    approx::assert_relative_eq!(window.get_camera_longitude(), wanted.camera.longitude);
-    approx::assert_relative_eq!(window.get_sky_fov(), wanted.sky_fov);
+    approx::assert_relative_eq!(
+        window.get_camera_position().longitude,
+        wanted.camera.longitude
+    );
+    approx::assert_relative_eq!(window.get_celestial().sky.fov, wanted.sky_fov);
     assert_eq!(
         window.get_auto_refresh_enabled(),
         defaults.auto_refresh_enabled,
@@ -509,7 +758,10 @@ fn test_the_atmosphere_sliders_follow_the_atmosphere_switch() {
     window.set_advanced_open(true);
 
     for enabled in [true, false, true] {
-        window.set_atmo_enabled(enabled);
+        window.set_atmosphere(AtmosphereSettings {
+            enabled,
+            ..window.get_atmosphere()
+        });
         let sliders: Vec<_> =
             ElementHandle::find_by_element_id(&window, "MainWindow::rayleigh-intensity-slider")
                 .collect();
@@ -528,7 +780,10 @@ fn test_the_cloud_sliders_follow_the_cloud_switch() {
     window.set_advanced_open(true);
 
     for enabled in [true, false, true] {
-        window.set_clouds_enabled(enabled);
+        window.set_clouds(CloudSettings {
+            enabled,
+            ..window.get_clouds()
+        });
         for id in [
             "MainWindow::cloud-opacity-slider",
             "MainWindow::cloud-haze-equator-slider",
@@ -628,7 +883,7 @@ fn test_save_keeps_the_stored_resolution_while_the_cli_owns_the_combo_box() {
     };
     // The window shows something else, as an override does.
     window.set_texture_resolution_index(2);
-    window.set_camera_longitude(42.0);
+    set_longitude(&window, 42.0);
 
     let saved = sunlit_earth::ui_callbacks::read_config_from_window_onto(
         &window,
@@ -666,8 +921,11 @@ fn test_save_preserves_settings_without_a_widget() {
     use sunlit_core::config::{AppConfig, QualityTier};
 
     let window = create_window();
-    window.set_camera_longitude(42.0);
-    window.set_cloud_opacity(0.25);
+    set_longitude(&window, 42.0);
+    window.set_clouds(CloudSettings {
+        opacity: 0.25,
+        ..window.get_clouds()
+    });
 
     for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
         let stored = AppConfig {
@@ -1075,10 +1333,14 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
         let Some(preset) = usize::try_from(index).ok().and_then(|i| PRESETS.get(i)) else {
             return;
         };
-        win.set_camera_longitude(preset.longitude);
-        win.set_camera_latitude(preset.latitude);
-        win.set_camera_zoom(preset.zoom);
-        win.set_camera_pitch(preset.pitch_deg);
+        win.set_camera_position(CameraPositionSettings {
+            longitude: preset.longitude,
+            latitude: preset.latitude,
+            zoom: preset.zoom,
+        });
+        let mut orientation = win.get_camera_orientation();
+        orientation.pitch = preset.pitch_deg;
+        win.set_camera_orientation(orientation);
     });
 
     for (label, index) in [
@@ -1105,10 +1367,11 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
         // one: a button wired to the wrong index, or a handler that ignored the
         // index, would leave the window on a different continent.
         let expected = &PRESETS[usize::try_from(index).expect("a preset index")];
-        approx::assert_relative_eq!(window.get_camera_longitude(), expected.longitude);
-        approx::assert_relative_eq!(window.get_camera_latitude(), expected.latitude);
-        approx::assert_relative_eq!(window.get_camera_zoom(), expected.zoom);
-        approx::assert_relative_eq!(window.get_camera_pitch(), expected.pitch_deg);
+        let position = window.get_camera_position();
+        approx::assert_relative_eq!(position.longitude, expected.longitude);
+        approx::assert_relative_eq!(position.latitude, expected.latitude);
+        approx::assert_relative_eq!(position.zoom, expected.zoom);
+        approx::assert_relative_eq!(window.get_camera_orientation().pitch, expected.pitch_deg);
     }
 }
 

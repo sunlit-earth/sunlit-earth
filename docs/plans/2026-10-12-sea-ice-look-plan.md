@@ -183,6 +183,8 @@ Done locally on 2026-10-14; the lavapipe and Metal goldens and `ci.yml` wait for
 
 **C5. Docs.** `docs/rendering.md`, `docs/assets.md`, `docs/testing.md` for the new tests, `docs/roadmap.md` (the first iteration's look items resolved, the open questions that remain), and the pipeline's README for the look, the harness and `preview draft`.
 
+Done on 2026-10-14: `docs/rendering.md` (the look in a paragraph, the gate's ramp, the night ice's change, the day tile counts, the mask's joined water and its glint), `docs/assets.md`, `docs/testing.md` (the pipeline's tests, `TestRealIce`'s rule, the regenerated fixture and WARP set), `docs/roadmap.md` (the second look done; the first look's refinements resolved; what remains, departures 13 and 18 among it) and the pipeline's README (`--imagery-water`, the command's steps, the harness, its caches, the draft and the memory). The lavapipe and Metal golden runs, once CI has made them, go into `docs/testing.md` with their run numbers.
+
 **C6. Validation.** Rounds of adversarial review until one reports no major finding, then `ci.yml` dispatched for all three operating systems. Whether this lands in #76 or in a PR of its own after #76 merges is the user's decision.
 
 ## Performance budget

@@ -11,7 +11,7 @@ git lfs pull
 
 The app uses these files:
 
-- `day/2004MM/`, `night/` and `mask/` supply the Earth's surface as 84 cube faces, 2048 pixels on a side: twelve monthly day sets, the night lights and the water mask. Each month's day set carries that month's sea ice of 2004, baked in from EUMETSAT OSI SAF's OSI-450-a1 by the texture pipeline's `cube --sea-ice`; nothing about the ice is fetched or loaded at run time.
+- `day/2004MM/`, `night/` and `mask/` supply the Earth's surface as 84 cube faces, 2048 pixels on a side: twelve monthly day sets, the night lights and the water mask. Each month's day set carries that month's sea ice of 2004, baked in from EUMETSAT OSI SAF's OSI-450-a1 by the texture pipeline's `cube --sea-ice`; nothing about the ice is fetched or loaded at run time. The water mask is Natural Earth's ocean joined by the Blue Marble's own water poleward of 50 degrees.
 - `lroc_color_poles_1k.jxl` supplies the Moon's surface.
 - `milkyway_2020_4k.jxl` supplies the Milky Way panorama.
 
@@ -51,7 +51,7 @@ The icon bake writes `assets/icon/baked/`; the review option produces a contact 
 
 Two standalone Python tools under `tools/` use uv and are separate from the Rust build:
 
-- [texture-pipeline](../tools/texture-pipeline/README.md) bakes the Earth's cube faces from the monthly Blue Marble maps, the Black Marble night map, an ocean shapefile and the 24 monthly sea ice files of 2004 (`cube`), converts surface maps (`earth`) and prepares the Milky Way panorama (`milky-way`), all as JPEG XL.
+- [texture-pipeline](../tools/texture-pipeline/README.md) bakes the Earth's cube faces from the monthly Blue Marble maps, the Black Marble night map, an ocean shapefile and the 24 monthly sea ice files of 2004 (`cube`), converts surface maps (`earth`) and prepares the Milky Way panorama (`milky-way`), all as JPEG XL. Its `preview` harness rebakes and renders four polar views of a variant of the sea ice's look, for work on the look.
 - [cloud-fetch](../tools/cloud-fetch/README.md) fetches and processes cloud imagery from the Matteason composite or NOAA GMGSI.
 
 ## Licenses and attribution

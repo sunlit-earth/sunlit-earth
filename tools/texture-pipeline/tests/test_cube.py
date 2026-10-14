@@ -11,7 +11,9 @@ import geopandas as gpd
 import numpy as np
 import pillow_jxl  # noqa: F401 - registers the JPEG XL plugin with Pillow
 import pytest
+from conftest import synthetic_concentration, write_osi_monthly
 from PIL import Image
+from scipy.ndimage import binary_dilation
 from shapely.geometry import box
 from shapely.ops import unary_union
 from typer.testing import CliRunner
@@ -28,6 +30,7 @@ from texture_pipeline.cube import (
     working_size,
 )
 from texture_pipeline.main import app
+from texture_pipeline.sea_ice import HEMISPHERES, MONTHS, file_name
 
 runner = CliRunner()
 
@@ -326,6 +329,25 @@ def plain_bake(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return out
 
 
+def write_open_coast_record(directory: Path) -> Path:
+    """Write the synthetic year with the ocean cells beside the north's land
+    at 30% of their concentration, as the record's cells that mix land and
+    sea read. In January that land lies in closed ice.
+
+    :param directory: Where the files are written.
+    :returns: ``directory``.
+    """
+    directory.mkdir(parents=True)
+    for hemisphere in HEMISPHERES:
+        for month in MONTHS:
+            conc = synthetic_concentration(hemisphere, month)
+            if hemisphere == "nh":
+                land = np.isnan(conc)
+                conc[binary_dilation(land) & ~land] *= 0.3
+            write_osi_monthly(directory / file_name(hemisphere, month), conc)
+    return directory
+
+
 def texel_at(bake: Path, part: str, lon: float, lat: float) -> np.ndarray:
     """Return the texel of ``part`` of a bake, ``mask`` or a day set's
     directory relative to the bake, at a longitude and latitude."""
@@ -352,6 +374,26 @@ class TestBakeOptions:
                     decode(fixture_bake / part / f"{face}.jxl"),
                     err_msg=f"{part}/{face}",
                 )
+
+    def test_a_coast_the_record_reads_open_in_closed_ice_bakes_closed(
+        self, fixture_bake: Path, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        out = tmp_path / "out"
+        arguments = [
+            *bake_arguments(days, night, shapefile, out),
+            "--sea-ice",
+            str(write_open_coast_record(tmp_path / "osi")),
+            "--sea-ice-cap-size",
+            str(FIXTURE_CAP),
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        for face in FACES:
+            opened = decode(out / "day" / "200401" / f"{face}.jxl")
+            closed = decode(fixture_bake / "day" / "200401" / f"{face}.jxl")
+            difference = np.abs(opened.astype(np.int16) - closed).max()
+            assert difference <= 2, (face, difference)
 
     def test_the_worker_count_reaches_the_sea_ice(
         self,

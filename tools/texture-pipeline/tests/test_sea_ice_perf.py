@@ -1,17 +1,22 @@
 """Tests for the parallel generator, the per-part field caches and the draft path."""
 
 import dataclasses
+import os
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pytest
 from PIL import Image
+from shapely.geometry import box
 
-from texture_pipeline import parallel, sea_ice, sea_ice_look
+from texture_pipeline import ocean_masking, parallel, sea_ice, sea_ice_look
 from texture_pipeline import sea_ice_preview as sp
 from texture_pipeline.cube import face_directions
+from texture_pipeline.discovery import discover_months
 from texture_pipeline.ocean_masking import apply_ocean_mask
 
 FILL = (10, 30, 60)
@@ -318,6 +323,75 @@ class TestFieldCache:
         assert isinstance(again.fractures, sea_ice_look.Fractures)
         assert isinstance(again.cascade, sea_ice_look.Cascade)
         arrays_equal(fields, again)
+
+
+def source_harness(root: Path) -> tuple[sp.Harness, list[str]]:
+    """A harness over the two small months and the shapefile under ``root``,
+    written when missing, and what it reports making."""
+    made: list[str] = []
+    marble = root / "marble"
+    shapefile = root / "ocean.shp"
+    if not marble.exists():
+        marble.mkdir(parents=True)
+        for month in (1, 2):
+            Image.new("RGB", (64, 32), (5 * month, 20, 60)).save(
+                marble / f"world.topo.2004{month:02d}.png"
+            )
+        ocean = gpd.GeoDataFrame(geometry=[box(-180, -90, 0, 90)], crs="EPSG:4326")
+        ocean.to_file(shapefile)
+    harness = object.__new__(sp.Harness)
+    harness.cache = sp.Cache(root)
+    harness.report = made.append
+    harness.variant = sp.VARIANTS["baseline"]
+    harness.sources = sp.Sources(marble, shapefile, root, root, root)
+    harness.months = discover_months(marble)
+    return harness, made
+
+
+def touch(path: Path) -> None:
+    """Move a file's modification time a second on, as an edit would."""
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+
+
+class TestSourceCaches:
+    def test_the_raster_is_made_again_when_the_shapefile_changes(
+        self, tmp_path
+    ) -> None:
+        first, made = source_harness(tmp_path)
+        first.raster()
+        assert made == ["Rasterizing the shapefile"]
+        again, made = source_harness(tmp_path)
+        mask = again.mask_key()
+        again.raster()
+        assert made == []
+        touch(tmp_path / "ocean.dbf")
+        edited, made = source_harness(tmp_path)
+        edited.raster()
+        assert made == ["Rasterizing the shapefile"]
+        assert edited.mask_key() != mask
+
+    def test_the_yearly_water_is_made_again_when_a_month_changes(
+        self, tmp_path
+    ) -> None:
+        first, made = source_harness(tmp_path)
+        first.yearly_water()
+        assert made == ["Yearly water: 200401", "Yearly water: 200402"]
+        again, made = source_harness(tmp_path)
+        mask = again.mask_key()
+        again.yearly_water()
+        assert made == []
+        touch(tmp_path / "marble" / "world.topo.200402.png")
+        edited, made = source_harness(tmp_path)
+        edited.yearly_water()
+        assert made == ["Yearly water: 200401", "Yearly water: 200402"]
+        assert edited.mask_key() != mask
+
+    def test_an_array_the_code_reads_is_part_of_its_digest(self, monkeypatch) -> None:
+        digest = sp.code_digest.__wrapped__
+        before = digest(ocean_masking.YearlyWater)
+        monkeypatch.setattr(ocean_masking, "REC709", ocean_masking.REC709 + 0.01)
+        assert digest(ocean_masking.YearlyWater) != before
 
 
 def coast_face(size: int) -> tuple[np.ndarray, np.ndarray]:

@@ -285,6 +285,16 @@ def _key(*parts: object) -> str:
     return hashlib.sha256(repr(parts).encode()).hexdigest()[:12]
 
 
+def files_key(paths: Iterable[Path]) -> list[tuple[str, int, int]]:
+    """Return what a cache key holds of files in place of their bytes: each
+    one's name, size and modification time."""
+    held = []
+    for path in paths:
+        stat = path.stat()
+        held.append((path.name, stat.st_size, stat.st_mtime_ns))
+    return held
+
+
 def _timed[T](times: dict[str, float], name: str, run: Callable[[], T]) -> T:
     started = time.monotonic()
     result = run()
@@ -415,6 +425,18 @@ class Harness:
 
     # The source raster and the masks.
 
+    def raster_key(self) -> str:
+        """The key of the shapefile's raster: the shapefile's files, the size,
+        the supersampling and the rasterizer's code."""
+        shapefile = self.sources.ocean_mask
+        return _key(
+            "ocean-raster",
+            files_key(sorted(shapefile.parent.glob(f"{shapefile.stem}.*"))),
+            self.source_size,
+            SUPERSAMPLE,
+            code_digest(ocean_masking.rasterize_ocean_mask),
+        )
+
     def raster(self) -> np.ndarray:
         """The shapefile rasterized at the source's size, as the bake does."""
 
@@ -425,13 +447,22 @@ class Harness:
                 self.sources.ocean_mask, width, height, supersample=SUPERSAMPLE
             )
 
-        return self.cache.array("ocean-raster", make)
+        return self.cache.array(f"ocean-raster-{self.raster_key()}", make)
 
     @property
     def source_size(self) -> tuple[int, int]:
         """The monthly sources' width and height."""
         with Image.open(next(iter(self.months.values()))) as image:
             return image.size
+
+    def yearly_key(self) -> str:
+        """The key of the yearly water statistics: the monthly sources and the
+        code that reads them."""
+        return _key(
+            "yearly-water",
+            files_key(self.months.values()),
+            code_digest(ocean_masking.YearlyWater, _open_rgb),
+        )
 
     def yearly_water(self) -> dict[str, np.ndarray]:
         """Each source pixel's brightest luminance and least blue over the year."""
@@ -443,10 +474,12 @@ class Harness:
                 stats.add(_open_rgb(path))
             return {"max_luma": stats.max_luma, "min_blue": stats.min_blue}
 
-        return self.cache.arrays("yearly-water", make)
+        return self.cache.arrays(f"yearly-water-{self.yearly_key()}", make)
 
     def mask_key(self, imagery_water: bool | None = None) -> str:
-        """The key of a source mask, the variant's unless told otherwise.
+        """The key of a source mask, the variant's unless told otherwise: the
+        raster's, the yearly water's when the mask joins it, and the monthly
+        sources and code of the ice pass.
 
         :param imagery_water: Whether the mask joins the imagery's water; the
             variant's choice when ``None``.
@@ -458,11 +491,22 @@ class Harness:
                 v.imagery_water_latitude,
                 ocean_masking.IMAGERY_WATER,
                 code_digest(ocean_masking.join_imagery_water),
+                self.yearly_key(),
             )
             if joined
             else None
         )
-        return _key("mask", SUPERSAMPLE, ICE_LUMINANCE, ICE_LATITUDE, imagery)
+        return _key(
+            "mask",
+            self.raster_key(),
+            ICE_LUMINANCE,
+            ICE_LATITUDE,
+            files_key(self.months.values()),
+            code_digest(
+                ocean_masking.detect_ice_regions, ocean_masking.reduce_mask_for_ice
+            ),
+            imagery,
+        )
 
     def add_imagery_water(self, mask: np.ndarray, key: str) -> None:
         """Join the imagery's water to the ocean poleward of the variant's
@@ -1447,9 +1491,13 @@ def _syntax(value: typing.Any) -> ast.AST:
 
 
 def _stable(value: object) -> str:
-    """Return a constant's text without the addresses a function's repr has."""
+    """Return a constant's text without the addresses a function's repr has,
+    and an array's as its type, shape and a digest of its values."""
     if inspect.isfunction(value):
         return f"{value.__qualname__}:{inspect.getsource(value)}"
+    if isinstance(value, np.ndarray):
+        values = hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
+        return f"ndarray({value.dtype}, {value.shape}, {values[:12]})"
     if isinstance(value, dict):
         items = ", ".join(f"{k!r}: {_stable(v)}" for k, v in value.items())
         return "{" + items + "}"
@@ -1505,7 +1553,7 @@ def code_closure(*roots: object) -> tuple[list[typing.Any], list[str]]:
             elif _ours(found):
                 todo.append(found)
             elif isinstance(
-                found, int | float | str | bytes | tuple | frozenset | dict
+                found, int | float | str | bytes | tuple | frozenset | dict | np.ndarray
             ):
                 constants.add(f"{value.__module__}.{name}={_stable(found)}")
     return list(reached.values()), sorted(constants)

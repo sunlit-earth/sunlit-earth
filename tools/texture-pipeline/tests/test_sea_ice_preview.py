@@ -127,17 +127,12 @@ class TestJoinImageryWater:
 
 
 class TestRescaledColors:
-    def test_the_winter_months_are_the_brightest(self) -> None:
-        assert sea_ice_look.winter_months(sea_ice_look.LOOK.colors["nh"]) == [
-            1,
-            2,
-            3,
-            4,
-            12,
-        ]
-        assert sea_ice_look.winter_months(sea_ice_look.LOOK.colors["sh"]) == list(
-            range(4, 11)
-        )
+    def test_the_winter_is_every_month_of_the_brightest_color(self) -> None:
+        table: list[sea_ice_look.Rgb] = [(200, 205, 210)] * 12
+        for month in (2, 3, 11):
+            table[month - 1] = (240, 245, 250)
+        table[6] = (250, 240, 240)
+        assert sea_ice_look.winter_months(tuple(table)) == [2, 3, 11]
 
     @pytest.mark.parametrize("hemisphere", ["nh", "sh"])
     def test_winter_takes_the_new_color_and_the_rest_keep_their_ratio(

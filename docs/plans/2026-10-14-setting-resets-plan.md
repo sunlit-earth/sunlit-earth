@@ -312,4 +312,6 @@ None.
 
 ## Validation Record
 
-None yet.
+Round 1: 0 major, 1 minor.
+
+1. `test_every_heading_and_group_reset_clears_what_it_covers` presses the headings and groups in tree order and passes a press once its own button is gone, so a reset that also puts back something an earlier press had already put back went unseen: the Stars heading also assigning `celestial.moon`, or the Color Correction group also assigning `lighting`, passed every test. Success criterion 4's "nothing outside it" was tested in one direction only. Added `test_each_heading_and_group_reset_changes_exactly_what_it_covers`, which presses each heading's and each group's reset alone in a freshly moved window and holds every row to having lost its reset exactly when the pressed one covers it, with what a heading or a group covers read off the tree rather than named. Each of the two over-reaches, applied to `main.slint` by hand, failed that case and nothing else.

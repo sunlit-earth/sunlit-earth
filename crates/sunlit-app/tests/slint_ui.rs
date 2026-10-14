@@ -471,6 +471,155 @@ fn test_every_heading_and_group_reset_clears_what_it_covers() {
     assert_eq!(resets_offered(&window), Vec::<String>::new());
 }
 
+/// What an element of the Advanced section is, read off the component it is
+/// an instance of.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Part {
+    Group,
+    Heading,
+    Row,
+}
+
+fn part_of(element: &ElementHandle) -> Option<Part> {
+    let names: Vec<_> = element
+        .type_name()
+        .into_iter()
+        .chain(element.bases().into_iter().flatten())
+        .collect();
+    [
+        ("SettingGroup", Part::Group),
+        ("SettingHeading", Part::Heading),
+        ("SettingRow", Part::Row),
+    ]
+    .into_iter()
+    .find(|(name, _)| names.iter().any(|candidate| candidate == name))
+    .map(|(_, part)| part)
+}
+
+/// The section's groups, headings and rows in tree order, which is the order
+/// the panel draws them in.
+fn panel_parts(window: &MainWindow) -> Vec<(Part, ElementHandle)> {
+    ElementQuery::from_root(window)
+        .match_predicate(|element| part_of(element).is_some())
+        .find_all()
+        .into_iter()
+        .filter_map(|element| part_of(&element).map(|part| (part, element)))
+        .collect()
+}
+
+/// Whether each row, in tree order, is one the heading or group at `target`
+/// covers: a group's rows are the ones up to the next group, and a heading's
+/// the ones up to the next heading or the end of its group.
+fn rows_covered_by(parts: &[(Part, ElementHandle)], target: usize) -> Vec<bool> {
+    let kind = parts[target].0;
+    let mut inside = false;
+    let mut covered = Vec::new();
+    for (index, (part, _)) in parts.iter().enumerate() {
+        match part {
+            Part::Row => covered.push(inside),
+            Part::Group => inside = index == target,
+            Part::Heading if index == target => inside = true,
+            Part::Heading if kind == Part::Heading => inside = false,
+            Part::Heading => {}
+        }
+    }
+    covered
+}
+
+/// The reset a heading or a group offers for itself, rather than one of its
+/// rows'.
+fn own_reset(part: Part, element: &ElementHandle) -> Option<ElementHandle> {
+    match part {
+        Part::Heading => element
+            .query_descendants()
+            .match_predicate(is_reset_button)
+            .find_first(),
+        Part::Group => {
+            let wanted = format!("Reset {}", element.accessible_label()?);
+            element
+                .query_descendants()
+                .match_predicate(move |found| {
+                    found
+                        .accessible_label()
+                        .is_some_and(|label| label == wanted.as_str())
+                })
+                .find_first()
+        }
+        Part::Row => None,
+    }
+}
+
+/// Each heading's and each group's reset, pressed alone with every slider
+/// moved, takes away the reset of exactly the rows it covers, which are read
+/// off the tree rather than named.
+///
+/// Every press starts from a freshly moved window, so a reset that also puts
+/// back something it does not cover takes that row's reset away wherever in
+/// the panel the row is.
+#[test]
+fn test_each_heading_and_group_reset_changes_exactly_what_it_covers() {
+    let targets = {
+        let window = create_window();
+        window.set_advanced_open(true);
+        panel_parts(&window)
+            .iter()
+            .filter(|(part, _)| *part != Part::Row)
+            .count()
+    };
+    assert!(targets > 0, "the Advanced section has headings and groups");
+
+    let mut pressed = 0;
+    for nth in 0..targets {
+        let window = create_window();
+        window.set_advanced_open(true);
+        move_every_slider(&window);
+        let parts = panel_parts(&window);
+        let (target, (kind, element)) = parts
+            .iter()
+            .enumerate()
+            .filter(|(_, (part, _))| *part != Part::Row)
+            .nth(nth)
+            .expect("the same panel as the first window");
+        let covered = rows_covered_by(&parts, target);
+        let Some(reset) = own_reset(*kind, element) else {
+            assert!(
+                !covered.contains(&true),
+                "a {kind:?} with a moved slider in it offers no reset"
+            );
+            continue;
+        };
+        assert!(
+            covered.contains(&true),
+            "a {kind:?} with no slider in it offers a reset"
+        );
+        let label = reset.accessible_label().unwrap_or_default();
+        press(&window, &reset);
+        pressed += 1;
+
+        let rows = parts.iter().filter(|(part, _)| *part == Part::Row);
+        for ((_, row), covered) in rows.zip(&covered) {
+            let offered = row
+                .query_descendants()
+                .match_predicate(is_reset_button)
+                .find_first()
+                .is_some();
+            let name = row
+                .query_descendants()
+                .match_type_name("Text")
+                .find_first()
+                .and_then(|text| text.accessible_label())
+                .unwrap_or_default();
+            assert_eq!(
+                offered,
+                !covered,
+                "after '{label}', the '{name}' row's reset is {}",
+                if offered { "still offered" } else { "gone" }
+            );
+        }
+    }
+    assert!(pressed > 0, "some heading or group offered its reset");
+}
+
 /// A group's reset puts its switch back on, and the rows the switch hides come
 /// back with it.
 #[test]

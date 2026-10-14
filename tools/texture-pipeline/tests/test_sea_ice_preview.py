@@ -8,11 +8,12 @@ import pytest
 from texture_pipeline import sea_ice_look
 from texture_pipeline.cube import face_directions
 from texture_pipeline.ocean_masking import (
+    IMAGERY_WATER,
     YearlyWater,
+    join_imagery_water,
     latitude_rows,
     water_from_imagery,
 )
-from texture_pipeline.sea_ice import texel_km
 from texture_pipeline.sea_ice_preview import (
     COAST_OFFSETS,
     FIELD_ROOTS,
@@ -23,9 +24,7 @@ from texture_pipeline.sea_ice_preview import (
     code_closure,
     code_digest,
     default_views,
-    fields_from_arrays,
     fields_key,
-    fields_to_arrays,
     in_box,
     polar_face_texels,
     render_config,
@@ -96,6 +95,37 @@ class TestWaterFromImagery:
         assert mask[1, 2] == 255
 
 
+class TestJoinImageryWater:
+    @staticmethod
+    def scene(luma: int, blue: int) -> tuple[np.ndarray, YearlyWater]:
+        """An ocean along the west and, beside it on land, a strip the
+        imagery draws with a luminance and a blue above red in every row."""
+        mask = np.zeros((18, 8), dtype=np.uint8)
+        mask[:, :2] = 255
+        stats = YearlyWater.empty(18, 8)
+        stats.max_luma[:] = 120
+        stats.min_blue[:] = -20
+        stats.max_luma[:, 2:4] = luma
+        stats.min_blue[:, 2:4] = blue
+        return mask, stats
+
+    def test_dark_blue_water_joins_poleward_of_the_latitude(self) -> None:
+        mask, stats = self.scene(*IMAGERY_WATER)
+        joined = join_imagery_water(mask, stats, 50.0)
+        north, south = latitude_rows(18, 50.0)
+        assert (mask[:north, 2:4] == 255).all()
+        assert (mask[south:, 2:4] == 255).all()
+        assert not mask[north:south, 2:].any()
+        assert joined == {"north": north * 2, "south": (18 - south) * 2}
+
+    def test_brighter_or_less_blue_land_stays(self) -> None:
+        max_luma, min_blue = IMAGERY_WATER
+        for luma, blue in ((max_luma + 1, min_blue), (max_luma, min_blue - 1)):
+            mask, stats = self.scene(luma, blue)
+            assert join_imagery_water(mask, stats, 50.0) == {"north": 0, "south": 0}
+            assert not mask[:, 2:].any()
+
+
 class TestRescaledColors:
     def test_the_winter_months_are_the_brightest(self) -> None:
         assert sea_ice_look.winter_months(sea_ice_look.LOOK.colors["nh"]) == [
@@ -125,7 +155,8 @@ class TestRescaledColors:
 
     def test_its_own_winter_leaves_the_table_alone(self) -> None:
         table = sea_ice_look.LOOK.colors["nh"]
-        assert sea_ice_look.rescaled_colors(table, max(table, key=sum)) == table
+        winter = table[sea_ice_look.winter_months(table)[0] - 1]
+        assert sea_ice_look.rescaled_colors(table, winter) == table
 
 
 class TestViews:
@@ -173,50 +204,67 @@ class TestMarkdown:
 
 
 class TestFieldsKey:
-    def test_the_closure_reaches_what_prepare_calls(self) -> None:
-        reached, constants = code_closure(sea_ice_look.prepare)
+    def test_the_closure_reaches_what_the_parts_call(self) -> None:
+        reached, constants = code_closure(sea_ice_look.make_surface)
         names = {f"{v.__module__}.{v.__qualname__}" for v in reached}
         assert "texture_pipeline.sea_ice_look.band_noise" in names
-        assert "texture_pipeline.sea_ice_look.leads" in names
+        assert "texture_pipeline.sea_ice_look.ridged_reliefs" in names
         assert "texture_pipeline.sea_ice.texel_km" in names
         assert "texture_pipeline.sea_ice_look.month_cap" not in names
         assert "texture_pipeline.sea_ice_look.BAND_ROWS=512" in constants
 
+    def test_the_parts_are_followed_from_prepare(self) -> None:
+        _, constants = code_closure(sea_ice_look.prepare)
+        (parts,) = [
+            c for c in constants if c.startswith("texture_pipeline.sea_ice_look.PARTS=")
+        ]
+        assert "def make_cascade" in parts
+        assert " at 0x" not in parts
+
     def test_a_tunable_the_fields_read_changes_the_key(self) -> None:
         look = sea_ice_look.LOOK
-        changed = dataclasses.replace(look, edge_spread=look.edge_spread / 2)
+        changed = dataclasses.replace(look, fracture_wander=look.fracture_wander / 2)
         assert fields_key(changed) != fields_key(look)
 
     def test_a_tunable_only_the_month_reads_keeps_the_key(self) -> None:
         look = sea_ice_look.LOOK
         changed = dataclasses.replace(
-            look, thin_shade=look.thin_shade / 2, coast_blend=not look.coast_blend
+            look, thin_shade=look.thin_shade / 2, coast_window_km=4.0
         )
         assert fields_key(changed) == fields_key(look)
 
     def test_the_tunables_read_are_the_fields_ones(self) -> None:
         read = tunables_read(*FIELD_ROOTS)
-        assert "edge_band_km" in read
+        assert "ridged_km" in read
+        assert "fast_ice_closed" in read
         assert "colors" not in read
         assert "coast_relief" not in read
 
     def test_different_code_digests_differently(self) -> None:
-        assert code_digest(sea_ice_look.band_noise) != code_digest(sea_ice_look.streak)
+        assert code_digest(sea_ice_look.band_noise) != code_digest(
+            sea_ice_look.curl_shift
+        )
 
 
 class TestDerive:
     def test_a_child_takes_its_parents_options(self) -> None:
-        parent = Variant("p", "parent", imagery_water=True, look={"seed": 1})
+        parent = Variant("p", "parent", snow_colors=True, look={"seed": 1})
         child = parent.derive("c", "child", look={"thin_shade": 0.5}, tests=("t",))
-        assert child.imagery_water
+        assert child.snow_colors
         assert child.look == {"seed": 1, "thin_shade": 0.5}
         assert child.parent == "p"
         assert child.tests == ("t",)
         assert child.remarks == ()
 
     def test_a_child_may_override_an_option(self) -> None:
-        parent = Variant("p", "parent", imagery_water=True)
-        assert not parent.derive("c", "child", imagery_water=False).imagery_water
+        parent = Variant("p", "parent", snow_colors=True)
+        assert not parent.derive("c", "child", snow_colors=False).snow_colors
+
+    def test_the_baseline_is_the_production_bake(self) -> None:
+        baseline = VARIANTS["baseline"]
+        assert baseline.imagery_water
+        assert not baseline.snow_colors
+        assert baseline.look == {}
 
     def test_every_variant_chain_ends_at_the_baseline(self) -> None:
         for variant in VARIANTS.values():
@@ -310,18 +358,13 @@ class TestBlendCoast:
         )
         np.testing.assert_array_equal(flat, before)
 
-    def test_the_land_takes_the_ice_without_its_leads(self) -> None:
+    def test_the_land_takes_the_coverage_it_is_given(self) -> None:
         source, water = coast_scene((250, 250, 250))
         flat = source.copy()
-        ice = uniform_ice(1.0)
-        cap = ice.caps["nh"]
-        ice.caps["nh"] = dataclasses.replace(
-            cap,
-            brightness=np.full((8, 8), 0.5, np.float32),
-            land_brightness=np.full((8, 8), 1.0, np.float32),
+        sea_ice_look.blend_coast(
+            flat, source, water, "py", uniform_ice(0.5), spacing_km=SPACING_KM
         )
-        sea_ice_look.blend_coast(flat, source, water, "py", ice, spacing_km=SPACING_KM)
-        np.testing.assert_allclose(flat[48, 33], (230, 235, 240), atol=3)
+        np.testing.assert_allclose(flat[48, 33], (240, 242.5, 245), atol=3)
 
 
 class TestCoastSteps:
@@ -340,68 +383,20 @@ class TestCoastSteps:
         np.testing.assert_allclose(profile[0], 15 + COAST_OFFSETS, atol=1e-4)
 
 
-def b3_look() -> sea_ice_look.Look:
-    return dataclasses.replace(sea_ice_look.LOOK, **VARIANTS["b3d-melt"].look)
-
-
 @pytest.fixture(scope="module")
-def b3_fields() -> sea_ice_look.Fields:
+def fields() -> sea_ice_look.Fields:
     stack = np.full((12, 32, 32), 0.9, dtype=np.float32)
     stack[:, :, :8] = 0.4
-    return sea_ice_look.prepare(stack, "nh", 512, b3_look())
+    return sea_ice_look.prepare(stack, "nh", 512, land=np.zeros((512, 512), bool))
 
 
 class TestInterior:
-    def test_the_fields_survive_the_cache(self, b3_fields) -> None:
-        again = fields_from_arrays("nh", fields_to_arrays(b3_fields))
-        assert isinstance(again.fractures, sea_ice_look.Fractures)
-        assert isinstance(again.floes, sea_ice_look.Floes)
-        np.testing.assert_array_equal(again.creases, b3_fields.creases)
-        np.testing.assert_array_equal(again.floes.opening, b3_fields.floes.opening)
-        assert again.brightness is None
-
-    def test_the_activity_spans_flat_to_structured(self, b3_fields) -> None:
-        cap = sea_ice_look.month_cap(b3_fields, 3, b3_look())
+    def test_the_activity_spans_flat_to_structured(self, fields) -> None:
+        cap = sea_ice_look.month_cap(fields, 3)
         shares = activity_shares(cap)
         assert sum(shares.values()) == pytest.approx(1.0, abs=0.01)
         assert cap.activity is not None
-        assert cap.activity.min() >= b3_look().activity_floor - 1e-6
-
-    def test_open_water_takes_coverage_and_the_land_keeps_it(self, b3_fields) -> None:
-        cap = sea_ice_look.month_cap(b3_fields, 3, b3_look())
-        assert cap.land_coverage is not None
-        assert np.all(cap.coverage <= cap.land_coverage + 1e-6)
-        assert (cap.coverage < cap.land_coverage - 0.01).any()
-
-    def test_the_edge_streaks_stay_out_of_the_pack(self, b3_fields) -> None:
-        cap = sea_ice_look.month_cap(b3_fields, 3, b3_look())
-        assert cap.land_coverage is not None
-        pack = cap.land_coverage[:, 256:]
-        assert float(pack.min()) > 0.99
-
-    def test_the_pack_opens_no_more_than_the_record_leaves(self, b3_fields) -> None:
-        cap = sea_ice_look.month_cap(b3_fields, 3, b3_look())
-        drawn = float(cap.coverage[:, 256:].mean())
-        assert 0.9 - 0.01 <= drawn < 1.0
-
-    def test_the_melt_tone_keeps_the_months_color_as_its_mean(self, b3_fields) -> None:
-        august = sea_ice_look.month_cap(b3_fields, 8, b3_look())
-        march = sea_ice_look.month_cap(b3_fields, 3, b3_look())
-        assert august.tint is not None
-        assert abs(float(august.tint.mean())) < 1e-3
-        assert march.tint is None
-
-
-class TestFractures:
-    def test_a_line_shows_its_width_times_its_darkness_across(self) -> None:
-        path = np.stack([np.full(41, 20.3), np.linspace(5, 45, 41)], axis=-1)
-        shade, rank = sea_ice_look.draw_fractures(
-            64, [[(path, 0.6, 0.8)]], np.array([0.25]), np.random.default_rng(0)
-        )
-        across = shade[:, 25].astype(np.float32).sum()
-        assert 0.6 * 0.8 * 0.7 <= across <= 0.6 * 0.8 * 1.3
-        assert rank[20, 25] == 0.25
-        assert rank[50, 25] == 1
+        assert cap.activity.min() >= sea_ice_look.LOOK.activity_floor - 1e-6
 
 
 def record(conc: float, offshore: float):
@@ -417,48 +412,20 @@ def record(conc: float, offshore: float):
 
 class TestFastIce:
     def test_a_low_coast_under_closed_ice_is_raised(self) -> None:
-        look = dataclasses.replace(sea_ice_look.LOOK, fast_ice=True)
-        raised = sea_ice_look.fast_ice(record(0.6, 0.97), look)
+        raised = sea_ice_look.fast_ice(record(0.6, 0.97))
         assert raised.means[8, 4, 2] > 0.9
         assert np.isnan(raised.means[8, 4, 0])
 
     def test_open_water_offshore_leaves_the_coast_alone(self) -> None:
-        look = dataclasses.replace(sea_ice_look.LOOK, fast_ice=True)
         before = record(0.6, 0.5)
-        after = sea_ice_look.fast_ice(before, look)
+        after = sea_ice_look.fast_ice(before)
         np.testing.assert_array_equal(after.means, before.means)
 
-    def test_without_the_band_the_record_is_unchanged(self) -> None:
-        before = record(0.6, 0.97)
-        assert sea_ice_look.fast_ice(before) is before
-
-
-class TestFolds:
-    def test_the_creases_run_every_way(self) -> None:
-        look = dataclasses.replace(sea_ice_look.LOOK, fold_spacing_km=200.0)
-        shade, line = sea_ice_look.folds(256, look, np.random.default_rng(1))
-        assert float(shade.std()) == pytest.approx(1.0, abs=1e-3)
-        assert float(line.min()) >= 0
-        assert float(line.max()) <= 1
-        gr, gc = np.gradient(line)
-        weight = gr * gr + gc * gc
-        doubled = (gc * gc - gr * gr + 2j * gr * gc) / np.maximum(weight, 1e-12)
-        assert abs(complex((weight * doubled).sum() / weight.sum())) < 0.2
-
-    def test_a_fold_is_straight(self) -> None:
-        look = dataclasses.replace(
-            sea_ice_look.LOOK,
-            fold_spacing_km=512 * texel_km(512),
-            fold_length_km=(4000.0, 4000.0),
-            fold_line_km=30.0,
-        )
-        _, line = sea_ice_look.folds(512, look, np.random.default_rng(2))
-        rows, cols = np.nonzero(line > 0.5)
-        points = np.stack([rows, cols], axis=-1).astype(float)
-        points -= points.mean(axis=0)
-        across = np.linalg.svd(points, compute_uv=False)[-1] / np.sqrt(len(points))
-        assert len(points) > 20
-        assert across < 1.0
+    def test_the_concentration_is_never_lowered(self) -> None:
+        before = record(0.95, 0.85)
+        after = sea_ice_look.fast_ice(before)
+        ocean = ~before.land
+        assert (after.means[:, ocean] >= before.means[:, ocean]).all()
 
 
 def straight_field(size: int) -> np.ndarray:
@@ -466,10 +433,9 @@ def straight_field(size: int) -> np.ndarray:
 
 
 class TestFractureLook:
-    def test_most_leads_are_grey_and_few_open(self, b3_fields) -> None:
-        assert b3_fields.fractures is not None
-        darkness = b3_fields.fractures.systems[:, 2]
-        high = b3_look().fracture_darkness[1]
+    def test_most_leads_are_grey_and_few_open(self, fields) -> None:
+        darkness = fields.fractures.systems[:, 2]
+        high = sea_ice_look.LOOK.fracture_darkness[1]
         assert np.mean(darkness <= high) > 0.75
         assert np.mean(darkness > high) > 0
 
@@ -497,54 +463,3 @@ class TestFractureLook:
             assert float(across.max()) < 0.01
         else:
             assert float(across.max()) > 1.0
-
-
-def floe_look(**changes: object) -> sea_ice_look.Look:
-    return dataclasses.replace(
-        sea_ice_look.LOOK,
-        floes=True,
-        edge_pack=0.7,
-        floe_cells_km=(300.0, 100.0),
-        **changes,
-    )
-
-
-@pytest.fixture(scope="module")
-def floes() -> sea_ice_look.Floes:
-    return sea_ice_look.floe_cells(512, floe_look(), np.random.default_rng(5))
-
-
-class TestFloes:
-    def water(self, floes, conc: float, band: float | None = None) -> np.ndarray:
-        look = floe_look()
-        low = look.edge_center - look.edge_spread
-        values = np.full((512, 512), conc, dtype=np.float32)
-        raised = None if band is None else np.full_like(values, band)
-        return sea_ice_look.floe_water(
-            floes, values, raised, look, 0, 512, (low, 0.7), 512
-        )
-
-    def test_closed_pack_has_no_floes(self, floes) -> None:
-        assert float(self.water(floes, 0.99).max()) == 0
-
-    def test_the_gaps_are_grey_in_the_pack_and_dark_at_the_edge(self, floes) -> None:
-        look = floe_look()
-        grey = self.water(floes, 0.9)
-        dark = self.water(floes, 0.5)
-        assert 0 < float(grey.max()) <= look.floe_darkness[0] + 1e-3
-        assert float(dark.max()) > 0.9
-
-    def test_the_floes_take_what_the_edge_leaves_open(self, floes) -> None:
-        look = floe_look()
-        low = look.edge_center - look.edge_spread
-        drawn = (0.75 - low) / (0.7 - low)
-        left = 1 - 0.75 / min(drawn, 1)
-        assert float(self.water(floes, 0.75).mean()) == pytest.approx(left, abs=0.03)
-
-    def test_most_floes_hold_together_where_few_open(self, floes) -> None:
-        water = self.water(floes, 0.9)
-        assert float((water > 0).mean()) < 0.5
-
-    def test_the_fast_ice_band_closes_the_floes(self, floes) -> None:
-        assert float(self.water(floes, 0.75).max()) > 0
-        assert float(self.water(floes, 0.75, band=0.1).max()) == 0

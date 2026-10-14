@@ -369,6 +369,32 @@ class TestBakeOptions:
             texel_at(plain_bake, "mask", -100, -66)
         )
 
+    def test_the_imagery_water_joins_the_mask_poleward_of_50(
+        self, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        for path in days.iterdir():
+            rgb = np.array(Image.open(path))
+            rgb[4:7, 45:49] = (5, 10, 30)
+            Image.fromarray(rgb).save(path)
+        joined, kept = tmp_path / "joined", tmp_path / "kept"
+        for out, extra in ((joined, []), (kept, ["--no-imagery-water"])):
+            arguments = [*bake_arguments(days, night, shapefile, out), *extra]
+            result = runner.invoke(app, arguments)
+            assert result.exit_code == 0, f"CLI failed: {result.output}"
+        north = [
+            decode(out / "mask" / "py.jxl").astype(np.int64) for out in (joined, kept)
+        ]
+        assert north[0].sum() > north[1].sum()
+        assert (north[0] >= north[1]).all()
+        for face in FACES:
+            if face != "py":
+                np.testing.assert_array_equal(
+                    decode(joined / "mask" / f"{face}.jxl"),
+                    decode(kept / "mask" / f"{face}.jxl"),
+                    err_msg=face,
+                )
+
     def test_missing_sea_ice_files_are_refused_before_anything_is_written(
         self, tmp_path: Path
     ) -> None:

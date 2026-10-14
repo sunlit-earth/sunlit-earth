@@ -127,7 +127,10 @@ def build(root: Path) -> Path:
     """
     variants: list[dict] = []
     for directory in sorted(root.iterdir()):
-        if directory.is_dir() and (variant := _variant(root, directory)) is not None:
+        if not directory.is_dir():
+            continue
+        variant = _variant(root, directory)
+        if variant is not None:
             variants.append(variant)
     order = {name: i for i, name in enumerate(VARIANTS)}
     variants.sort(key=lambda v: (order.get(v["name"], len(order)), v["mtime"]))

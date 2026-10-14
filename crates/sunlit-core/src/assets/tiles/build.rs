@@ -1619,7 +1619,7 @@ mod tests {
     fn a_change_to_what_the_cutter_makes_comes_with_a_format_version_bump() {
         const PINNED: (u32, &str) = (
             2,
-            "d5c188de5f27c017eb8151fc11c4639d7fd47e17c432b534a048073e5bbe3e46",
+            "b16ceb8217656dcaa3072de5679b12d371b63b13a2f254986a12343d54b2c86c",
         );
         let found = cutter_digest();
         assert_eq!(

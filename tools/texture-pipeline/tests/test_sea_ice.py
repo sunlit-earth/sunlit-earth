@@ -4,7 +4,9 @@ The real monthly files are not in the repository; ``conftest`` writes a
 synthetic year of them on the 25 km EASE2 grid. Point
 ``TEXTURE_PIPELINE_OSI_DIR`` at a directory holding the 24 files of 2004
 (``texture-pipeline cube --sea-ice <dir> --fetch`` fills one) to run the case
-that holds the real bake's area to the source's; without it that case skips.
+that holds the real bake's area to the area the floes are asked to draw; run
+it with ``-s`` to see the area against the record too. Without the directory
+that case skips.
 """
 
 import csv
@@ -34,10 +36,17 @@ def north(osi_monthly_dir: Path) -> sea_ice.Hemisphere:
     return sea_ice.read_hemisphere(osi_monthly_dir, "nh")
 
 
+def no_land(size: int) -> np.ndarray:
+    """A cap without land."""
+    return np.zeros((size, size), dtype=bool)
+
+
 @pytest.fixture(scope="module")
 def north_fields(north: sea_ice.Hemisphere) -> sea_ice_look.Fields:
     """The synthetic north's noise fields on a small cap."""
-    return sea_ice_look.prepare(sea_ice.cap_concentration(north, 128), "nh", SMALL_CAP)
+    return sea_ice_look.prepare(
+        sea_ice.cap_concentration(north, 128), "nh", SMALL_CAP, land=no_land(SMALL_CAP)
+    )
 
 
 def pinned_points() -> list[dict[str, str]]:
@@ -217,43 +226,38 @@ class TestNoise:
         self, north: sea_ice.Hemisphere, north_fields: sea_ice_look.Fields
     ) -> None:
         again = sea_ice_look.prepare(
-            sea_ice.cap_concentration(north, 128), "nh", SMALL_CAP
+            sea_ice.cap_concentration(north, 128),
+            "nh",
+            SMALL_CAP,
+            land=no_land(SMALL_CAP),
         )
-        np.testing.assert_array_equal(again.threshold, north_fields.threshold)
-        np.testing.assert_array_equal(again.leads.rank, north_fields.leads.rank)
-        np.testing.assert_array_equal(again.brightness, north_fields.brightness)
-
-    def test_the_threshold_spans_its_range(
-        self, north_fields: sea_ice_look.Fields
-    ) -> None:
-        look = sea_ice_look.LOOK
-        low = look.edge_center - look.edge_spread
-        high = look.edge_center + look.edge_spread
-        threshold = north_fields.threshold
-        assert threshold.min() >= low - 1e-6
-        assert threshold.max() <= high + 1e-6
-        assert float(np.median(threshold)) == pytest.approx(look.edge_center, abs=0.05)
+        np.testing.assert_array_equal(again.fractures.open, north_fields.fractures.open)
+        np.testing.assert_array_equal(again.surface.relief, north_fields.surface.relief)
+        np.testing.assert_array_equal(again.cascade.ids, north_fields.cascade.ids)
 
 
 def uniform_fields(conc: float, size: int = 512) -> sea_ice_look.Fields:
     stack = np.full((12, 32, 32), conc, dtype=np.float32)
-    return sea_ice_look.prepare(stack, "sh", size)
+    return sea_ice_look.prepare(stack, "sh", size, land=no_land(size))
 
 
 class TestCoverage:
-    @pytest.mark.parametrize("conc", [0.3, 0.5, 0.7])
-    def test_the_threshold_is_uniform_over_its_range(self, conc: float) -> None:
-        """Over a uniform concentration the drawn share is the share of the
-        threshold's range below it, so across an edge zone it averages out to
-        the concentration, and at the center it is half."""
-        look = sea_ice_look.LOOK
-        low = look.edge_center - look.edge_spread
+    @pytest.mark.parametrize("conc", [0.3, 0.5, 0.78])
+    def test_the_coverage_follows_the_toned_concentration(self, conc: float) -> None:
+        """Over a uniform concentration the floes and the leads together draw
+        the concentration the tone curve reads, which is the concentration
+        itself below the curve's start and more above it."""
         cap = sea_ice_look.month_cap(uniform_fields(conc), 9)
-        expected = np.clip((conc - low) / (2 * look.edge_spread), 0, 1)
-        assert float(cap.coverage.mean()) == pytest.approx(expected, abs=0.05)
+        expected = float(
+            sea_ice_look.toned(np.array(conc, np.float32), sea_ice_look.LOOK.floe_tone)
+        )
+        assert float(cap.coverage.mean()) == pytest.approx(expected, abs=0.04)
 
-    def test_full_ice_is_covered_and_open_water_is_not(self) -> None:
-        assert sea_ice_look.month_cap(uniform_fields(1.0, 128), 9).coverage.min() == 1
+    def test_full_ice_has_no_floes_water_and_open_water_no_ice(self) -> None:
+        full = sea_ice_look.month_cap(uniform_fields(1.0, 128), 9)
+        assert full.floes is not None
+        assert full.floes.min() == 1
+        assert full.coverage.mean() > 0.99
         assert sea_ice_look.month_cap(uniform_fields(0.0, 128), 9).coverage.max() == 0
 
     def test_a_month_moves_the_edge_and_keeps_the_interior(
@@ -263,7 +267,8 @@ class TestCoverage:
         november = sea_ice_look.month_cap(north_fields, 11)
         assert march.coverage.sum() > november.coverage.sum()
         pole = slice(SMALL_CAP // 2 - 16, SMALL_CAP // 2 + 16)
-        np.testing.assert_array_equal(march.coverage[pole, pole], 1)
+        assert march.floes is not None
+        np.testing.assert_array_equal(march.floes[pole, pole], 1)
         np.testing.assert_array_equal(
             march.brightness[pole, pole], november.brightness[pole, pole]
         )
@@ -372,20 +377,28 @@ def shipped_mask() -> dict[str, np.ndarray]:
 
 
 class TestRealIce:
-    def test_the_drawn_area_follows_the_source_in_every_month(self) -> None:
+    def test_the_drawn_area_follows_the_toned_source_in_every_month(self) -> None:
         """The coverage over the shipped mask's water, weighted by its share
-        of water and the texels' area, against the source's concentration
-        times its cells' area."""
+        of water and the texels' area, against the area the floes are asked to
+        draw: the source's concentration read through the tone curve, times
+        its cells' area. The curve adds ice against the record itself by
+        design, so that comparison is printed rather than held."""
         directory = osi_directory()
         masks = shipped_mask()
         fields = {}
-        source = {}
+        record = {}
+        toned = {}
         for name in sea_ice.HEMISPHERES:
             hemisphere = sea_ice.read_hemisphere(directory, name)
-            source[name] = sea_ice.source_area_km2(hemisphere)
+            record[name] = sea_ice.source_area_km2(hemisphere)
+            toned[name] = sea_ice_look.toned_area_km2(hemisphere)
             fields[name] = sea_ice_look.prepare(
-                sea_ice.cap_concentration(hemisphere), name, sea_ice.CAP_SIZE
+                sea_ice.cap_concentration(sea_ice_look.fast_ice(hemisphere)),
+                name,
+                sea_ice.CAP_SIZE,
+                land=sea_ice_look.cap_land(masks, name, sea_ice.CAP_SIZE),
             )
+        failures = []
         for month in sea_ice.MONTHS:
             ice = sea_ice_look.MonthIce(
                 {n: sea_ice_look.month_cap(f, month) for n, f in fields.items()}
@@ -397,8 +410,15 @@ class TestRealIce:
                 for name, km2 in found.items():
                     drawn[name] += km2
             for name in sea_ice.HEMISPHERES:
-                expected = float(source[name][month - 1])
-                assert abs(drawn[name] / expected - 1) <= AREA_TOLERANCE, (
-                    f"{name} {month:02d}: drawn {drawn[name] / 1e6:.2f} against "
-                    f"{expected / 1e6:.2f} million km2"
+                asked = float(toned[name][month - 1])
+                source = float(record[name][month - 1])
+                line = (
+                    f"{name} {month:02d}: drawn {drawn[name] / 1e6:.3f} million km2, "
+                    f"toned source {asked / 1e6:.3f} "
+                    f"({(drawn[name] / asked - 1) * 100:+.1f}%), record "
+                    f"{source / 1e6:.3f} ({(drawn[name] / source - 1) * 100:+.1f}%)"
                 )
+                print(line)
+                if abs(drawn[name] / asked - 1) > AREA_TOLERANCE:
+                    failures.append(line)
+        assert not failures, failures

@@ -82,23 +82,9 @@ ZOOM_DISTANCE_MIN = 1.5
 ZOOM_DISTANCE_MAX = 80.0
 CONFIG_VERSION = 2
 
-OPEN_WATER = {
-    "margin_px": 10,
-    "step": 4,
-    "ice_free_below": 0.15,
-    "luma_percentile": 99.0,
-    "blue_percentile": 1.0,
-}
-"""How B1 measures the imagery's water: over the shapefile's open ocean at
-least ``margin_px`` source pixels from anything else, poleward of the
-variant's latitude, where the sea ice record's concentration stays below
-``ice_free_below`` all year, every ``step``-th pixel along both axes. The
-thresholds are the percentiles named of the brightest luminance and of the
-least blue."""
-
 MONTHS_AT_ONCE = 2
-"""Views whose month a bake makes at once: a settled month holds about 2 GiB
-while it is made."""
+"""Views whose month a bake makes at once: a month holds about 2 GiB while it
+is made."""
 
 DRAFT_HALF = 512
 """Half the side of a draft's region, in texels of the working size: about
@@ -207,14 +193,17 @@ class Variant:
     summary: str
     """What the variant changes, for its notes."""
 
-    imagery_water: bool = False
-    """Turn the Blue Marble's water on the shapefile's land side into water."""
+    imagery_water: bool = True
+    """Turn the Blue Marble's water on the shapefile's land side into water,
+    as the production bake does."""
 
-    imagery_water_latitude: float = 50.0
+    imagery_water_latitude: float = ocean_masking.IMAGERY_WATER_LATITUDE
     """Poleward of this latitude only."""
 
     snow_colors: bool = False
-    """Take each hemisphere's winter ice color from its coastal snow."""
+    """Measure each hemisphere's winter ice color from its coastal snow
+    again, in place of the colors of :data:`sea_ice_look.LOOK`, and move
+    every month by the same ratio."""
 
     south_toward_north: float = 0.0
     """With :attr:`snow_colors`, how far the south's winter color moves from
@@ -274,510 +263,12 @@ class Variant:
 
 BASELINE = Variant(
     "baseline",
-    "The shipped textures' bake, unchanged: the shapefile's mask less the "
-    "Antarctic ice shelves, and the first iteration's sea ice.",
+    "The production bake, unchanged: the shapefile's mask joined by the Blue "
+    "Marble's own water poleward of 50 degrees, less the Antarctic ice "
+    "shelves, and the sea ice of `cube --sea-ice`.",
 )
 
-B1_WATER = BASELINE.derive(
-    "b1-water",
-    "B1. A source pixel on the shapefile's land side poleward of 50 degrees "
-    "becomes water when the Blue Marble draws water there in all twelve "
-    "months and it is connected to the shapefile's ocean. The Antarctic ice "
-    "pass runs afterwards and keeps the ice shelves as land.",
-    imagery_water=True,
-    remarks=(
-        "On `py` no dark land connected to the mask's water is left at North "
-        "Greenland, Ellesmere's north coast, Svalbard or Franz Josef Land. "
-        "Of the connected texels that remain, 106 are along Norway's coast, "
-        "where dark forest and the fill share a texel; the source pixels "
-        "beside them are not water (their least blue less red is -8 at the "
-        "median), so the face measure counts them and B1 rightly leaves "
-        "them.",
-        "The lakes stay, by design: Great Bear Lake, Great Slave Lake and the "
-        "Finnish lakes are the Blue Marble's water in every month but not "
-        "connected to the ocean (plan departure 1).",
-        "At Franz Josef Land the Blue Marble draws the islands about 12 km "
-        "from where Natural Earth has them (the two overlap at an IoU of 0.34 "
-        "unshifted and 0.73 with the shapefile moved 9 km south and 8 km "
-        "west). B1 turns the shapefile's land that the Blue Marble draws as "
-        "water into water, and the Blue Marble's islands on the shapefile's "
-        "ocean were already flattened before B1, so the islands shrink to "
-        "where both sources agree: `crop-north-summer-franz-josef-land.png`. "
-        "Taking the Blue Marble's land on the shapefile's ocean as land would "
-        "have to tell glaciers from perennial sea ice and is not part of B1.",
-        "Texels that change on the land of both masks change by 1 level: "
-        "their footprint holds a share of water below half a level of the "
-        "mask. Texels that change on water without a mask change lie beside "
-        "the coast's changes and change by at most 2 levels, from changes of "
-        "the mask below a level.",
-    ),
-)
-
-B2_COLOR = B1_WATER.derive(
-    "b2-color",
-    "B2 on top of B1. Each hemisphere's winter ice color is the median of "
-    "its coastal snow in the Blue Marble; every other month keeps the "
-    "darkening the first iteration's table gives it against winter, per "
-    "channel.",
-    snow_colors=True,
-    remarks=(
-        "The coastal snow is measured on the face before the encode, the "
-        "source averaged to 2048, with the variant's mask, as metric (b) "
-        "measures it on the decoded face: land within 8 texels of open "
-        "water, brighter than 180, poleward of 70 degrees on `py` and 60 on "
-        "`ny`, pooled over the months the first iteration's table gives its "
-        "winter color.",
-        "South of 60 S the Blue Marble is the same in every month, so the "
-        "south's months all measure the same snow.",
-    ),
-)
-
-B2B_COAST = B2_COLOR.derive(
-    "b2b-coast",
-    "B2b on top of B2. Along the coast the land takes the ice's color and fine "
-    "texture, without its leads, where the land around is flat snow: the "
-    "weight is the ice's coverage there, times the share of snow in the land "
-    "around, times how flat that snow is, falling from full at 6 km inland to "
-    "none at 18 km. Snow and relief are read from the land at least 6 km "
-    "inland, or 2 km on small islands and narrow peninsulas, over a Gaussian "
-    "of 8 km, so the Blue Marble's own coastline pixels take the weight of the "
-    "land behind them. Where the Blue Marble draws its sea on the mask's land "
-    "(darker than 60, blue above red by more than 8) it is not read as land, "
-    "and within the same band it takes what the sea beside it shows: the fill "
-    "under the ice's coverage. Mountain coasts and land without snow keep "
-    "their color.",
-    look={"coast_blend": True},
-    remarks=(
-        "What the edge was, measured on `b2-color`'s working faces at 5400 "
-        "(1.85 km a texel) across flat snow coasts under closed ice: the "
-        "darkest texel sits at the coastline itself, the last land texel (a "
-        "water share near 0.1) and the first partial one (near 0.7). The Blue "
-        "Marble falls there from about 240 to 150 to 180 in the land texel and "
-        "to 20 to 80 in the partial one: its own coastline, pixels part snow "
-        "and part its dark sea, carried in the land share. The composite dipped "
-        "70 to 85 levels at the Antarctic ice shelf fronts and Wilkes Land, 59 "
-        "at North Greenland and 8 at the Canadian Arctic's western islands, "
-        "where the Blue Marble draws sea ice at the coast in March. Of the "
-        "darkest texels 57% to 91% were partial texels, the rest the land "
-        "texel beside them. The step in luminance between land and ice 10 to "
-        "20 km either side was only 2 to 9 levels after B2 (Amery 12). The "
-        "change of texture: detail finer than a texel was 3 to 6 levels on the "
-        "land against 2 on the ice at the Ross and Ronne-Filchner fronts and "
-        "North Greenland, and about equal at Wilkes Land and Queen Maud Land.",
-        "The thresholds come from the standard deviation of the snow's "
-        "luminance over a Gaussian of 8 km of land at least 6 km inland, at "
-        "the coast's texels: medians at flat coasts 2.4 (Ross Ice Shelf front), "
-        "4.8 (Ronne-Filchner), 4.0 (Amery), 7.4 (Wilkes Land), 5.2 (Queen Maud "
-        "Land's shelves), 5.6 (Larsen C), 2.5 (North Greenland), 1.9 (the "
-        "Canadian Arctic's western islands); at mountain coasts 10.2 (Victoria "
-        "Land), 14.1 (the Antarctic Peninsula's west coast), 9.0 (East "
-        "Greenland), 8.8 (Ellesmere's north coast). The blend is full below 6 "
-        "and none above 10. Svalbard reads as flat (5.9) and blends. Snow is "
-        "luminance above 190 with a saturation below 0.2: the Blue Marble's "
-        "Antarctic coast is bluish, and 0.12 left out much of Wilkes Land. "
-        "Read nearer the coast, 3.5 km in over 5.5 km, the shelf fronts' own "
-        "shading raised the relief at the coastline to 5 to 8, and the blend "
-        "at the coastline of the Ronne-Filchner front was 0 at the median.",
-        "Metric (e) on the decoded faces: the dip at flat coasts in winter fell "
-        "from 3.7 (p90 22.7) to 1.0 (4.6) in the north, North Greenland 22.7 "
-        "to 1.9, and from 45.8 (78.9) to 14.0 (51.4) in the south, "
-        "Ronne-Filchner 52 to 15, Wilkes Land 43 to 13. At mountain coasts it "
-        "fell less, 20.2 to 6.6 in the north and 44.3 to 20.7 in the south: "
-        "the Antarctic Peninsula keeps 40, and Victoria Land's coast under "
-        "closed ice is mostly its flat glacier tongues, which blend (44 to 8), "
-        "while its mountains keep their rock and relief "
-        "(`crop-south-winter-victoria-land.png`).",
-        "A first version read the Blue Marble's sea on the mask's land as land "
-        "of no snow. In the top tenth of the south's flat coast dips (p90 about "
-        "67) "
-        "the darkest texel was then mostly land on the mask (80%, water share "
-        "0.35 at the median) holding the Blue Marble's dark sea (luminance 6 "
-        "to 36), and the blend applied there was below 0.2 in 90% of them. Now "
-        "that sea is left out of the reading and takes the sea's look, and the "
-        "south's flat p90 fell from 66 to 51. What remains is mostly the "
-        "record: OSI-450's September concentration within about 15 km of the "
-        "flat fronts is 0.48 to 0.72 at the median at five of six fronts "
-        "(Ronne-Filchner 0.86) "
-        "against 0.91 to 1.0 at 50 to 100 km, so the edge model draws streaks "
-        "of open water there (`crop-south-winter-ross-ice-shelf-front.png`); "
-        "this is B4's question.",
-        "This changes land texels, which no variant did before: up to 155 "
-        "levels at the coastline (the dark rim taking the ice's color), within "
-        "18 km of the coast, so `changed_on_land` is large by design. "
-        "`*-coast-blend.png` shows the share of each texel the ice took.",
-        "B4's question, measured on the working faces: of the coast texels "
-        "poleward of 60 degrees with closed ice 15 to 30 km out, open water "
-        "(luminance below 100) within 2 to 11 km of the coast is at 0.6% in "
-        "March in the north (about 430 km of 73,000) and 4.4% in September in "
-        "the south (about 800 km of 18,000), with another 22.6% grey (100 to "
-        "180) in the south. The largest clusters of the south's lie along "
-        "Queen Maud Land, the Bellingshausen Sea's coast, the coast from Amery "
-        "to Wilkes Land and the Ross Ice Shelf, where coastal polynyas are "
-        "real. B4 is not built; it is the user's call.",
-        "The weight costs about 10 s per 5400 face and peaks at 1.66 GiB of "
-        "traced allocations on top of the bake.",
-    ),
-)
-
-B3A_CRUMPLE = B2B_COAST.derive(
-    "b3a-crumple",
-    "B3a on top of B2b. The interior is crumpled snow in place of the 60 to "
-    "300 km brightness noise, the texture of broken ice and the melt dots. An "
-    "activity field of noise at 300 to 1500 km, through a soft threshold, "
-    "decides where the pack is almost flat and where it is structured, and it "
-    "rises toward full where the concentration falls below 98%. The crumple is "
-    "a sheet of paper crumpled and flattened again: straight folds, one every "
-    "30 km on average, 25 to 120 km long, at every angle, each a step in shade "
-    "that fades over 10 km either side, with a faint crease along it, so the "
-    "creases meet at angles and enclose polygonal facets. A quarter of the "
-    "shading is still the ridged noise of four octaves from 5 to 80 km, "
-    "stretched 1.3 times along a slowly turning direction. The snow also "
-    "breaks into plates of 30 and 120 km, each a little lighter or darker. All "
-    "of it scales with the activity, which never falls below 0.1. The leads "
-    "are still the first iteration's.",
-    look={
-        "crumple": True,
-        "crumple_folds": True,
-        "crumple_aspect": 1.3,
-        "crumple_shadow": 0.05,
-        "crumple_light": 0.03,
-        "crumple_crease": 0.035,
-    },
-    remarks=(
-        "The renders and crops of this variant on the page are from an earlier "
-        "setting of the folds (one every 22 km, 15 to 90 km long, the shade "
-        "fading over 6 km, creases at 7%), which read as dark scratches; the "
-        "current setting is in `b3b-leads`, which runs it "
-        "(`crop-north-winter-beaufort-sea.png` there). Rerun before relying on "
-        "this variant's own numbers.",
-        "Tried and rejected: the ridged noise stretched three times along its "
-        "direction drew parallel wavy ripples, like dunes; at an aspect of 1.3 "
-        "it drew wormy wrinkles, like stucco; Voronoi facets of 8 to 35 km with "
-        "a shade each and no creases drew a granular stone (plan departure 6).",
-        "The folds cost about 35 s per hemisphere on top of the fields' 70 s.",
-    ),
-)
-
-B3B_LEADS = B3A_CRUMPLE.derive(
-    "b3b-leads",
-    "B3b on top of B3a. The leads are long fracture systems in place of the "
-    "borders of a cell pattern: 150 systems on the north's cap and 70 on the "
-    "south's, seeded where the concentration passes a half in some month, "
-    "twice as dense where the activity is full as where it is none. Each is a "
-    "main fracture of 150 to 800 km, traced both ways from its seed along a "
-    "direction field that turns over 1500 to 6000 km, 20 to 35 degrees off it "
-    "to one side, so the systems form two conjugate sets that cross. A smooth "
-    "noise along each bends its heading by 0.22 radians over about 16 km, so "
-    "it wanders at 20 to 100 km. Branches leave it every 400 km on average. "
-    "Most systems are refrozen leads that show the sea's fill at 10% to 35% "
-    "in their middle; 12% are fresh open water at 45% to 80%. The darkness "
-    "varies by 35% along a fracture and its width by up to 30%; both taper at "
-    "the ends. The fill is a share taken off the ice's coverage, so the coast's "
-    "land does not take it. Every system is drawn in every month.",
-    look={"fractures": True},
-    remarks=(
-        "Against the first version of this variant (fill 20% to 80%, nearly "
-        "straight), the leads' share of the pack fell from 0.39% to 0.20% in "
-        "the north's March and from 0.15% to 0.09% in the south's September; "
-        "the area (c) is +3.2%, +3.3%, +3.8% and -6.6%.",
-        "Tried and rejected before: a direction field turning by a full half "
-        "turn drew hooks; held to a sixth of a turn, fractures ran parallel like "
-        "combed hair; drawing a system only where its rank was below a share "
-        "that rises as the concentration falls broke fractures into dashes, as "
-        "did a width that swelled from 0.4 to 1.6 times.",
-        "The first iteration's cell network is still made with the fields "
-        "(10 s) although nothing reads it with the fractures.",
-    ),
-)
-
-B3C_FLOES = B3B_LEADS.derive(
-    "b3c-floes",
-    "B3c on top of B3b, with B4's fast ice band and the edge's streaks taken "
-    "out of the pack. The edge model's threshold is squeezed from 0.12 to 0.88 "
-    "into 0.12 to 0.7, so its grey streaks stay where the concentration falls "
-    "toward the ice edge and leave the pack at 85% to 95%. The open water it "
-    "then leaves undrawn, the concentration's less the edge's, is the floes': "
-    "none above 95%, all of it below 80%. The floes are filled: cells of "
-    "varied size (a 20 km grid with 35% of its points kept, 34 km on average, "
-    "and 10 km nearer the edge), each opening at a level of its own, clustered "
-    "by a noise at 60 to 250 km so loose regions and compact ones alternate, "
-    "to a gap of 0.08 to 0.32 cells from its border; the water between them "
-    "is grey new ice, 45% of the fill, above 90% concentration, and open "
-    "water, 95% of it, below 60%. B4: within 25 km of the record's land, "
-    "tapering out to 50 km, the concentration is raised toward the mean of "
-    "the cells 50 to 100 km out where that mean is above 80% to 90%, and no "
-    "floes open where the band raised it by more than 0.03.",
-    look={"floes": True, "fast_ice": True, "edge_pack": 0.7},
-    remarks=(
-        "The edge's streaks in the pack (plan departure 7), the share of the "
-        "cap above 0.85 concentration that the edge model covers less than "
-        "0.8: 5.0%, 4.9%, 4.7% and 4.7% in `b3d-melt` as it was (763,000 km2 "
-        "in the north's March), now 0.5%, 0.1%, 0.2% and 0.6% (74,000 km2).",
-        "Metric (c): +2.7%, +2.1%, +2.0% and -5.0%, against -9.2% in the "
-        "south's February with the first floes.",
-        "Tried and rejected: the first floes, every cell outlined by water, drew "
-        "a crackle glaze and cells at the coast; filled floes that open to as "
-        "much as half a cell dissolved into slate grey blotches; gaps of 0.08 to "
-        "0.32 cells on a jittered 35 km grid drew a regular jigsaw. A few "
-        "isolated floes in the pack open as rings; open item.",
-        "The Ross Sea polynya at the Ross Ice Shelf front in September is the "
-        "record's own (OSI-450 reads 0.73 to 0.76 there, and the water further "
-        "out is not closed either), so the band rightly leaves it.",
-    ),
-)
-
-B3D_MELT = B3C_FLOES.derive(
-    "b3d-melt",
-    "B3d on top of B3c, and so all of B2b and B3. The Arctic summer's melt is "
-    "a smooth regional tone instead of dots: noise at 50 to 300 km through a "
-    "soft step from its mean to two standard deviations above it leans a few "
-    "regions up to half the way from the month's color toward a bluish grey "
-    "(150, 175, 200), less the step's mean, so the month's color stays the "
-    "mean and most of the pack stays near it. The months weigh it as they "
-    "weighed the mottling: 0.3 in May and September, 1 from June to August.",
-    look={"melt_tone": True},
-    remarks=(
-        "Metric (b) in August: ice less coastal snow (-9, -9, -7), as in "
-        "`b3c-floes`; the tone keeps the month's color as its mean.",
-        "Tried and rejected: the noise itself as the tone, 35% of the way per "
-        "standard deviation either side, leaned the regions of little melt "
-        "away from the bluish grey, which is toward cream, and drew yellow "
-        "and blue blotches 100 km across.",
-        "In August the edge's streaks dominate the pack: dark grey smudges "
-        "50 to 150 km long all over the summer ice, where the concentration "
-        "is mostly below 95%. The floes cover most of the summer pack too.",
-    ),
-)
-
-SETTLED = B2B_COAST.derive(
-    "settled",
-    "C1: the look the two labs settled, on top of B2b, with B4's fast ice band "
-    "and B3d's melt tone. The closed pack is ridged relief at three detail "
-    "levels, octaves of 40 down to 2.5 km folded at zero and crinkled, lit from "
-    "one side, shadow twice the light; five region fields at 250 to 900 km vary "
-    "the detail level, the strength (35% to 85%), the soft regions, where the "
-    "activity fades in and out gradually and creases follow warped cells of 20, "
-    "60 and 180 km, and the drift streaks along a turning wind in about a "
-    "quarter of the pack. The leads are B3b's fracture systems drawn thin and "
-    "faint (0.7 to 2.5 km wide, 6% to 20% of the fill, open ones 25% to 50%), "
-    "in pieces of 10 to 40 km en echelon and pinched shut on a fifth of their "
-    "runs, at 0.75 of their darkness. There is no edge model: the open water "
-    "the concentration leaves, less the leads', is a cascade of whole cells "
-    "from 64 to 4 km, coarse cells leaning to ice and fine ones to water, cut "
-    "at the coastline, around a regional target that alternates loose and "
-    "compact regions at 60 to 250 km; between 40% and 70% regions of a calm "
-    "speckle take over; at 0% it is open water. Each patch of water is gray "
-    "(45% of the fill) or dark, the largest dark first, from all gray at 95% to "
-    "all dark at 45%. Along the coast, the sea within 10 km of the land is ice "
-    "wherever the concentration is 50% or more, and the coast's land blends "
-    "with the coverage of the sea beside it. The land is the mask faces' on a "
-    "cap of its own. Every field is fixed on the cap plane.",
-    look={
-        "crumple": True,
-        "ridged": True,
-        "fractures": True,
-        "jagged": True,
-        "fracture_width_km": (0.7, 2.5),
-        "fracture_darkness": (0.06, 0.2),
-        "fracture_open_darkness": (0.25, 0.5),
-        "cascade": True,
-        "coast_rule": (10.0, 0.5),
-        "fast_ice": True,
-        "melt_tone": True,
-    },
-    remarks=(
-        "Ported from the two research documents' code and checked against it: "
-        "run on the labs' generators, the reliefs, creases, drift, surface, "
-        "leads (0.925 per mille, as r3-11), cascade cells, noises, water, gap "
-        "colors, coast band and coverage differ from the documents' by 0. On "
-        "the cap the region fields and the drift's wind are drawn on a 1024 cap "
-        "and zoomed, so the realization differs from the labs'.",
-        "Performance, measured on this machine: fields cold 109.0 s for the "
-        "whole run (fields 55 s of it), warm 55.5 s; field work after one "
-        "tunable change, both hemispheres: a lead tunable (pinch) 5.1 s, a cell "
-        "tunable 16.5 s, a speckle tunable 7.5 s, the coast rule's distance "
-        "3.1 s, a surface tunable 31.4 s, and none for the month's tunables "
-        "(gap colors, cascade schedule, calm zone, rim); `preview draft` 7.3 to "
-        "7.9 s; peak working set 6.39 GiB cold and 6.69 GiB warm, peak commit "
-        "7.52 and 7.77 GiB, at the default worker count (the baseline 4.13 and "
-        "5.15). A month costs 5.3 to 5.8 s per hemisphere at the cap's 4096 "
-        "against the baseline's 0.5 to 0.6 s, so the production bake of 589 s "
-        "at 2260387 projects to about 740 s with the settled look (24 months "
-        "times 5.1 s, and about 30 s more of fields), before C2 adds the coast "
-        "blend, which costs about 10 s per working face here.",
-        "Metric (c): +0.5%, -0.2%, -2.9% and -7.2%, within 10% in all four.",
-        "B4's question with the new floes: of the coast texels poleward of 60 "
-        "degrees with closed ice 15 to 30 km out, 0.2%, 0.5%, 0.9% and 0.4% "
-        "have open water within 2 to 11 km (gray 0.9%, 6.0%, 6.9% and 8.5%), "
-        "against 0.6% in the north's March and 4.4% (gray 22.6%) in the south's "
-        "September for `b2b-coast` without the band. The floes therefore stay "
-        "open where the band raised the concentration; no exclusion like the "
-        "old floes' `floe_fast` is needed.",
-        "Streaks: the edge model is not drawn, so its streaks are 0 by "
-        "construction. What the streak measure reports for this variant is the "
-        "floes' own water in the pack, gray gaps sized to the concentration: "
-        "at 85% to 100% the floes leave (1 - c) / 0.45 of the area gray, 6.9% "
-        "to 17.9% of the pack below 0.8 coverage.",
-        "The leads take 0.52 and 0.54 per mille of the north's pack and 0.25 "
-        "and 0.30 of the south's, against 0.93 on the solid lab's square: the "
-        "cap's 150 and 70 systems also run over land and open water, and the "
-        "south's 70 cover a larger ice area. The south's density was never "
-        "reviewed.",
-        "The land on the cap, from the mask faces, disagrees with the 5400 "
-        "faces' masks on 0.44% of `py` and 0.08% of `ny` poleward of 60 "
-        "degrees, all within 3 km of the faces' coastline. Islands smaller "
-        "than two cap texels (647 of 1,294 on `py`) are mostly sea on the cap, "
-        "so the cells are not cut there and the coast rule does not reach them.",
-        "Seams: every field is fixed on the cap plane and each face samples the "
-        "cap by direction, so faces meet without a seam by construction. The "
-        "harness bakes `py` and `ny` only; the shipped side faces keep the "
-        "first iteration's ice beyond 45 degrees, outside the renders' frame. "
-        "The straight edge near Nares Strait in the north's August draft is in "
-        "the Blue Marble's own August mosaic.",
-        "To look at first: the gray patches across the central pack at 95% to "
-        "99%, which the concentration's open water draws there by design; the "
-        "summer palette at the ice shelf fronts, where the February sea ice is "
-        "darker than the shelf beside it; the melt tone with the new surface "
-        "in August; and the south's lead density.",
-        "Drafts under `drafts/`: North Greenland, Ellesmere, Svalbard, Franz "
-        "Josef Land and the Beaufort Sea in March and August; East Antarctica "
-        "in September; the Ronne and Ross shelf fronts and the Antarctic "
-        "Peninsula in September and February. East Antarctica in February is "
-        "left out: 5% of its draft's sea has ice.",
-    ),
-)
-
-TONE_80_90 = SETTLED.derive(
-    "tone-80-90",
-    "C1b on top of `settled`: the changes the review of `settled` asked for. "
-    "The south's winter color is the midpoint of the two hemispheres' coastal "
-    "snow, every southern month keeping its ratio to winter per channel; each "
-    "northern month keeps two thirds of its darkening against winter, per "
-    "channel. No melt tone. No gap color: every gap between the floes is the "
-    "sea's fill, and the floes' water is the shortfall the leads leave, "
-    "1 - kept, no longer divided by a gray's darkness. The floes read the "
-    "concentration through a tone curve, c + (1 - c) smoothstep(0.8, 0.9, c), "
-    "in the water share, the regional target, the cascade's schedule and its "
-    "cells' means, and the calm zone; at 90% and above they draw no water, "
-    "since the cascade's cells are cut at the 90% line as at the coastline and "
-    "the closed side is ice. The leads, the coast rule's 50%, the fast ice "
-    "band, the thin ice shading and the activity read the record's "
-    "concentration.",
-    look={"melt_tone": False, "dark_gaps": True, "floe_tone": (0.8, 0.9)},
-    south_toward_north=0.5,
-    north_darkening=2 / 3,
-    remarks=(
-        "Metric (c): +3.9%, +7.6%, +3.7% and -2.5% (`settled` +0.5%, -0.2%, "
-        "-2.9% and -7.2%), within 10% in all four. Measured on the cap against "
-        "`settled`'s months, one at a time: the dark gaps alone add 1.0% of ice "
-        "in March, 2.1% in August and in September and 2.6% in February, and "
-        "with the curve the total is 3.3%, 7.8%, 6.8% and 5.1%, so the curve "
-        "adds 2.3%, 5.6%, 4.6% and 2.4% on top of the dark gaps (the plan "
-        "estimated 2.5% to 5.0% for the curve alone).",
-        "Streaks (plan departures 15 and 16): of the pack at 85% and more, the "
-        "floes leave less than 0.8 of 0.4%, 1.2%, 0.8% and 1.2% (`settled` "
-        "6.9% to 17.9%) on the record's concentration without the eddy shift, "
-        "and 0.3%, 1.0%, 0.7% and 0.8% where the concentration the floes read "
-        "through the shift is 85% and more: the dark water the curve still "
-        "draws from 85% to 90%.",
-        "The colors: the south's winter is (242, 245, 248), the midpoint of "
-        "the north's (247, 250, 251) and the south's (236, 240, 244) coastal "
-        "snow, and February (229, 231, 233); the north's August is (223, 228, "
-        "230), from (211, 217, 219), and its winter months are unchanged. "
-        "Metric (b), ice less coastal snow: (0, 1, 1) in March, (0, 0, 2) in "
-        "August (`settled` (-8, -6, -4)), (4, 4, 3) in September (`settled` "
-        "(0, 0, 0)) and (-8, -10, -11) in February (`settled` (-14, -16, "
-        "-15)).",
-        "Performance, measured on this machine: warm 58.0 s (2.0 s of it "
-        "measuring the colors once), peak working set 6.85 GiB and peak "
-        "commit 7.93 GiB at the default worker count (`settled` 55.5 s, 6.69 "
-        "and 7.77 GiB warm). The fields are `settled`'s from the cache: no "
-        "part reads the new tunables, and the melt part is no longer made. A "
-        "month costs 3.6 to 3.8 s per hemisphere at the cap's 4096 against "
-        "`settled`'s 4.7 to 5.4 s measured the same way, since the gap colors' "
-        "labeling and distance transform are gone; by `settled`'s projection "
-        "the production bake comes to about 705 s (589 s, 24 months times "
-        "3.6 s, and about 30 s more of fields). `preview draft` 4.1 to 7.2 s.",
-        "Metric (e) against `settled`: at flat coasts the dip is 1.1 (p90 "
-        "3.6), 1.5 (10.8), 8.0 (42.7) and 9.1 (37.9) against 1.0 (3.3), 2.8 "
-        "(13.4), 9.4 (39.9) and 10.9 (38.4); at mountain coasts 6.5 (36.9), "
-        "10.4 (30.8), 15.1 (66.4) and 16.9 (44.3) against 6.4 (33.9), 13.9 "
-        "(29.6), 10.0 (57.9) and 22.7 (52.5): the south's September mountain "
-        "coasts dip deeper beside ice that is now 4 to 6 levels brighter. Open "
-        "water along closed coasts: 0.2%, 1.3%, 1.0% and 0.7% (gray 0.7%, "
-        "4.8%, 5.9% and 7.6%) against 0.2%, 0.5%, 0.9% and 0.4% (gray 0.9%, "
-        "6.0%, 6.9% and 8.5%), over more closed coast texels (38,870 against "
-        "33,516 in March).",
-        "Metric (d), fine detail after the encode: 1.45, 1.57, 1.49 and 1.86, "
-        "71% to 72% of before, against `settled`'s 1.96 to 2.10 and 76% to "
-        "83%. The surface is unchanged; the gray patches and the melt tone, "
-        "which `settled`'s interior held, are gone.",
-        "The closed pack shares the land's tag in the cascade, so the cut at "
-        "90% costs no memory: a cell over both land and the closed pack is not "
-        "cut between them, and neither side reads its decision, since the "
-        "land takes its nearest sea texel's coverage and the closed side is "
-        "ice.",
-        "Seams: as in `settled`, every field and the cut at 90% are on the "
-        "cap plane and each face samples the cap by direction, so the faces "
-        "meet without a seam by construction; none shows in the renders.",
-        "To look at first: how the floes meet the closed pack behind the "
-        "margin, and whether water cut along the 90% line shows that line; "
-        "the north's August against the land's snow; the south's September "
-        "and February beside the ice shelves.",
-        "Drafts under `drafts/`: the same 17 as `settled`'s.",
-    ),
-)
-
-TONE_70_85 = TONE_80_90.derive(
-    "tone-70-85",
-    "C1b's second curve, on top of `tone-80-90` and differing in the curve "
-    "alone: the floes read c + (1 - c) smoothstep(0.7, 0.85, c), and at 85% "
-    "and above they draw no water.",
-    look={"floe_tone": (0.7, 0.85)},
-    remarks=(
-        "Metric (c): +4.6%, +10.3%, +5.9% and -1.4%: the north's August is "
-        "over the 10% limit by 0.3 points. Measured on the cap against "
-        "`settled`'s months, the total is 4.0%, 10.5%, 9.0% and 6.3%, of which "
-        "the curve adds 3.0%, 8.2%, 6.8% and 3.6% on top of the dark gaps "
-        "(the plan estimated 3.7% to 7.8%).",
-        "Streaks (plan departures 15 and 16): of the pack at 85% and more, "
-        "the floes leave less than 0.8 of 0.1%, 0.1%, 0.1% and 0.8% on the "
-        "record's concentration without the eddy shift, and of 0.0% (0 km2) "
-        "in all four where the concentration the floes read through the "
-        "shift is 85% and more: the closed pack draws no floes' water on the "
-        "real bake.",
-        "Performance: warm 50.9 s, peak working set 6.44 GiB and peak commit "
-        "7.61 GiB; a month 3.6 s per hemisphere, as `tone-80-90`.",
-        "Metric (e) against `settled`: at flat coasts the dip is 1.1 (p90 "
-        "3.6), 1.6 (11.0), 9.4 (42.7) and 9.3 (37.9); at mountain coasts 6.5 "
-        "(36.5), 9.3 (27.3), 14.8 (66.7) and 16.6 (46.4); `settled`'s are in "
-        "`tone-80-90`'s remarks. Open water along closed coasts: 0.2%, 1.2%, "
-        "1.1% and 0.8% (gray 0.7%, 4.7%, 5.9% and 7.6%).",
-        "Metric (d), fine detail after the encode: 1.46, 1.58, 1.46 and 1.82, "
-        "71% to 72% of before.",
-        "Against `tone-80-90` the page shows the curve alone: the pack closes "
-        "from 85%, and below it the floes' water falls, at 80% from 20% to "
-        "5.2% before the leads, so the margin of floes narrows.",
-        "Drafts under `drafts/`: the same 17 as `settled`'s.",
-    ),
-)
-
-VARIANTS: dict[str, Variant] = {
-    v.name: v
-    for v in (
-        BASELINE,
-        B1_WATER,
-        B2_COLOR,
-        B2B_COAST,
-        B3A_CRUMPLE,
-        B3B_LEADS,
-        B3C_FLOES,
-        B3D_MELT,
-        SETTLED,
-        TONE_80_90,
-        TONE_70_85,
-    )
-}
+VARIANTS: dict[str, Variant] = {v.name: v for v in (BASELINE,)}
 
 
 _NETCDF = threading.Lock()
@@ -860,7 +351,7 @@ class Cache:
                 return {k: data[k] for k in data.files}
         value = make()
         partial = path.with_suffix(".partial.npz")
-        np.savez(partial, **value)
+        np.savez(partial, **typing.cast("dict[str, typing.Any]", value))
         partial.replace(path)
         return value
 
@@ -916,7 +407,7 @@ class Harness:
         self.out = root / variant.name
         self.times: dict[str, float] = {}
         self.months = discover_months(self.sources.blue_marble)
-        self.notes: dict[str, object] = {}
+        self.notes: dict[str, typing.Any] = {}
         self._fields: dict[str, tuple[sea_ice_look.Look, sea_ice_look.Fields]] = {}
         self._fields_notes: dict[str, dict] = {}
         self._locks = {h: threading.Lock() for h in sea_ice.HEMISPHERES}
@@ -964,76 +455,59 @@ class Harness:
         v = self.variant
         joined = v.imagery_water if imagery_water is None else imagery_water
         imagery = (
-            (v.imagery_water_latitude, sorted(OPEN_WATER.items())) if joined else None
+            (
+                v.imagery_water_latitude,
+                ocean_masking.IMAGERY_WATER,
+                code_digest(ocean_masking.join_imagery_water),
+            )
+            if joined
+            else None
         )
         return _key("mask", SUPERSAMPLE, ICE_LUMINANCE, ICE_LATITUDE, imagery)
 
-    def sea_ice_max(self) -> dict[str, np.ndarray]:
-        """Each hemisphere's largest concentration over the year, on its cap."""
-        out = {}
-        for hemisphere in sea_ice.HEMISPHERES:
-            read = read_record(self.sources.sea_ice, hemisphere)
-            out[hemisphere] = sea_ice.cap_concentration(read).max(axis=0)
-        return out
-
-    def open_water(self) -> dict:
-        """The imagery's water over the open ocean, and the thresholds from it."""
-        latitude = self.variant.imagery_water_latitude
-        key = _key("open-water-2", latitude, sorted(OPEN_WATER.items()))
-
-        def make() -> dict:
-            self.report("Measuring the open ocean's water")
-            return open_water(
-                self.source_mask(imagery_water=False),
-                self.yearly_water(),
-                self.sea_ice_max(),
-                latitude,
-                **OPEN_WATER,
-            )
-
-        return self.cache.record(f"open-water-{key}", make)
-
     def add_imagery_water(self, mask: np.ndarray, key: str) -> None:
         """Join the imagery's water to the ocean poleward of the variant's
-        latitude, in place, and count what it would join elsewhere."""
-        measured = self.open_water()
-        stats = self.yearly_water()
+        latitude, in place, as the production bake does, and count it."""
+        yearly = self.yearly_water()
+        stats = ocean_masking.YearlyWater(yearly["max_luma"], yearly["min_blue"])
         height, width = mask.shape
-        north, south = ocean_masking.latitude_rows(
-            height, self.variant.imagery_water_latitude
+        before = mask.copy()
+        joined = ocean_masking.join_imagery_water(
+            mask, stats, self.variant.imagery_water_latitude
         )
-        flags = np.zeros((height // POOL, width // POOL), dtype=np.uint8)
+        rows, cols = np.nonzero(mask != before)
+        del before, stats, yearly
         pixel_km2 = (2 * np.pi * sea_ice.AUTHALIC_RADIUS_KM / width) * (
             np.pi * sea_ice.AUTHALIC_RADIUS_KM / height
         )
+        flags = np.zeros((height // POOL, width // POOL), dtype=np.uint8)
+        flags[
+            np.minimum(rows // POOL, flags.shape[0] - 1),
+            np.minimum(cols // POOL, flags.shape[1] - 1),
+        ] = 1
         counts = {}
-        for name, start, stop, apply in (
-            ("north", 0, north, True),
-            ("south", south, height, True),
-            ("elsewhere", north, south, False),
+        for name, here in (
+            ("north", rows < height // 2),
+            ("south", rows >= height // 2),
         ):
-            water = (stats["max_luma"][start:stop] <= measured["max_luma"]) & (
-                stats["min_blue"][start:stop] >= measured["min_blue"]
-            )
-            band = mask[start:stop] if apply else mask[start:stop].copy()
-            before = band.copy()
-            _, joined = ocean_masking.water_from_imagery(band, water)
-            rows, cols = np.nonzero(band != before)
-            del water, before, band
-            rows += start
-            lat = 90.0 - (rows + 0.5) * 180.0 / height
+            lat = 90.0 - (rows[here] + 0.5) * 180.0 / height
             counts[name] = {
-                "source_pixels": joined,
+                "source_pixels": joined[name],
                 "km2": round(float(np.cos(np.radians(lat)).sum() * pixel_km2)),
             }
-            flags[
-                np.minimum(rows // POOL, flags.shape[0] - 1),
-                np.minimum(cols // POOL, flags.shape[1] - 1),
-            ] = 1 if apply else 2
         self.cache.array(f"imagery-water-flags-{key}", lambda: flags)
         self.cache.record(
             f"imagery-water-{key}",
-            lambda: {"thresholds": measured, "joined": counts},
+            lambda: {
+                "thresholds": dict(
+                    zip(
+                        ("max_luma", "min_blue"),
+                        ocean_masking.IMAGERY_WATER,
+                        strict=True,
+                    )
+                ),
+                "joined": counts,
+            },
         )
 
     def source_mask(self, imagery_water: bool | None = None) -> np.ndarray:
@@ -1131,22 +605,16 @@ class Harness:
 
     def record(
         self, hemisphere: str, look: sea_ice_look.Look
-    ) -> tuple[np.ndarray, np.ndarray | None, str]:
-        """A hemisphere's concentration on the coarse cap, the fast ice band's
-        raise of it, and the key they are kept under."""
+    ) -> tuple[np.ndarray, str]:
+        """A hemisphere's concentration on the coarse cap, with the fast ice
+        band, and the key it is kept under."""
         key = record_key(self.sources.sea_ice, hemisphere, look)
 
-        def make() -> dict[str, np.ndarray]:
+        def make() -> np.ndarray:
             read = read_record(self.sources.sea_ice, hemisphere)
-            banded = sea_ice_look.fast_ice(read, look)
-            out = {"concentration": sea_ice.cap_concentration(banded)}
-            raise_ = sea_ice_look.fast_ice_raise(read, banded)
-            if raise_ is not None:
-                out["fast"] = raise_
-            return out
+            return sea_ice.cap_concentration(sea_ice_look.fast_ice(read, look))
 
-        arrays = self.cache.arrays(f"record-{hemisphere}-{key}", make)
-        return arrays["concentration"], arrays.get("fast"), key
+        return self.cache.array(f"record-{hemisphere}-{key}", make), key
 
     def fields(self, hemisphere: str, look: sea_ice_look.Look) -> sea_ice_look.Fields:
         """A hemisphere's noise fields, each part of them cached by the
@@ -1155,18 +623,16 @@ class Harness:
             kept = self._fields.get(hemisphere)
             if kept is not None and kept[0] == look:
                 return kept[1]
-            concentration, fast, record = self.record(hemisphere, look)
-            land, land_key = None, None
-            if any(p.reads_land for p in sea_ice_look.parts_for(look, hemisphere)):
-                land, land_key = self.cap_land(hemisphere)
-            keys = part_keys(look, hemisphere, record, sea_ice.CAP_SIZE, land_key)
+            concentration, record = self.record(hemisphere, look)
+            land, land_key = self.cap_land(hemisphere)
+            keys = part_keys(look, record, sea_ice.CAP_SIZE, land_key)
             tracing = self.workers == 1
 
             def cached(
                 part: sea_ice_look.Part, make: Callable[[], dict[str, object]]
             ) -> dict[str, object]:
                 name = f"fields-{hemisphere}-{part.name}-{keys[part.name]}"
-                made: dict[str, object] = {}
+                made: dict[str, typing.Any] = {}
 
                 def build() -> dict[str, np.ndarray]:
                     self.report(f"Noise fields: {hemisphere}, {part.name}")
@@ -1202,7 +668,6 @@ class Harness:
                 hemisphere,
                 sea_ice.CAP_SIZE,
                 look,
-                fast=fast,
                 workers=self.workers,
                 cache=cached,
                 land=land,
@@ -1244,7 +709,7 @@ class Harness:
         """What the parts of a hemisphere's fields cost when they were made."""
         seconds: dict[str, float] = {}
         peaks: list[float] = []
-        for part in sea_ice_look.parts_for(look, hemisphere):
+        for part in sea_ice_look.PARTS:
             path = (
                 self.cache.dir
                 / f"fields-{hemisphere}-{part.name}-{keys[part.name]}-made.json"
@@ -1271,11 +736,6 @@ class Harness:
         ]
         parallel.pmap(lambda h: self.fields(h, look), names, self.workers)
         self.notes["fields"] = {h: self._fields_notes[h] for h in names}
-
-    def source_area(self, hemisphere: str) -> np.ndarray:
-        """Each month's ice area in the source, in square kilometers."""
-        read = read_record(self.sources.sea_ice, hemisphere)
-        return sea_ice.source_area_km2(read)
 
     # The run.
 
@@ -1431,25 +891,15 @@ class Harness:
         fields = self.fields(view.hemisphere, look)
         with self._months:
             cap = sea_ice_look.month_cap(fields, view.month, look, workers=self.workers)
-        if fields.fractures is not None:
-            notes["fractures"] = fracture_stats(fields.fractures)
-        if cap.land_coverage is not None and fields.fractures is not None:
-            pack = cap.land_coverage > 0.5
-            whole = float(cap.land_coverage[pack].sum())
-            open_ = float((cap.land_coverage - cap.coverage)[pack].sum())
-            notes["lead_area"] = round(open_ / max(whole, 1e-9), 4)
-        if cap.floes is not None and fields.fractures is not None:
-            pack = cap.floes > 0.5
-            if fields.coast is not None:
-                pack &= ~fields.coast.land
-            leads = fields.fractures.open[pack].astype(np.float32)
-            floes = cap.floes[pack]
-            share = float((leads * floes).sum()) / max(float(floes.sum()), 1e-9)
-            notes["lead_area"] = round(share, 5)
-        if cap.activity is not None:
-            notes["activity"] = activity_shares(cap)
-        if cap.land_coverage is not None or cap.floes is not None:
-            notes["pack_streaks"] = pack_streaks(fields, cap, view.month, self.workers)
+        notes["fractures"] = fracture_stats(fields.fractures)
+        assert cap.floes is not None
+        pack = (cap.floes > 0.5) & ~fields.coast.land
+        leads = fields.fractures.open[pack].astype(np.float32)
+        floes = cap.floes[pack]
+        share = float((leads * floes).sum()) / max(float(floes.sum()), 1e-9)
+        notes["lead_area"] = round(share, 5)
+        notes["activity"] = activity_shares(cap)
+        notes["pack_streaks"] = pack_streaks(fields, cap, view.month, self.workers)
         cap = dataclasses.replace(cap, activity=None, floes=None)
         ice = sea_ice_look.MonthIce({view.hemisphere: cap})
         source = self.source_face(view.stamp, view.face, pool)
@@ -1458,16 +908,14 @@ class Harness:
                 Image.fromarray(source), water[view.face], color=FILL
             )
         )
-        if look.coast_blend:
-            notes["coast_blend"] = self.blend_coast(
-                view, flat, source, water[view.face], ice, look, pool
-            )
+        notes["coast_blend"] = self.blend_coast(
+            view, flat, source, water[view.face], ice, look, pool
+        )
         area = sea_ice_look.composite_face(
             flat, water[view.face], view.face, ice, FILL, pool
         )[view.hemisphere]
-        if look.coast_blend:
-            with self._coast_gap_lock:
-                notes["coast_gaps"] = coast_gaps(flat, water[view.face], view.face)
+        with self._coast_gap_lock:
+            notes["coast_gaps"] = coast_gaps(flat, water[view.face], view.face)
         for face in FACES:
             if face != view.face:
                 area += ice_area(water[face], face, ice, view.hemisphere, pool)
@@ -1477,16 +925,20 @@ class Harness:
         Image.fromarray(small).save(pre)
         encoded = self.out / "faces" / f"{view.stamp}-{view.face}.jxl"
         encode_jxl(Image.fromarray(small), encoded, quality=QUALITY, effort=EFFORT)
-        source_km2 = float(self.source_area(view.hemisphere)[view.month - 1])
+        record = read_record(self.sources.sea_ice, view.hemisphere)
+        source_km2 = float(sea_ice.source_area_km2(record)[view.month - 1])
+        toned_km2 = float(sea_ice_look.toned_area_km2(record, look)[view.month - 1])
         self.report(
             f"Baked {view.key}: {time.monotonic() - stage:.1f}s, ice "
-            f"{area / 1e6:.2f} million km2 against {source_km2 / 1e6:.2f}"
+            f"{area / 1e6:.2f} million km2 against {source_km2 / 1e6:.2f} in the "
+            f"record and {toned_km2 / 1e6:.2f} toned"
         )
         entry = {
             "preencode": pre,
             "encoded": encoded,
             "area_km2": area,
             "source_km2": source_km2,
+            "toned_km2": toned_km2,
         }
         return entry, notes
 
@@ -1750,24 +1202,23 @@ class Harness:
                 )
             )
             tick("slice")
-            if look.coast_blend:
-                weight = sea_ice_look.coast_weight(
-                    slab_source, slab_water, look, spacing, workers=self.workers
-                )
-                tick("coast weight")
-                sea_ice_look.blend_coast(
-                    flat,
-                    source,
-                    water,
-                    view.face,
-                    ice,
-                    look,
-                    pool,
-                    fill=FILL,
-                    weight=np.ascontiguousarray(weight[inner]),
-                    window=window,
-                )
-                tick("blend")
+            weight = sea_ice_look.coast_weight(
+                slab_source, slab_water, look, spacing, workers=self.workers
+            )
+            tick("coast weight")
+            sea_ice_look.blend_coast(
+                flat,
+                source,
+                water,
+                view.face,
+                ice,
+                look,
+                pool,
+                fill=FILL,
+                weight=np.ascontiguousarray(weight[inner]),
+                window=window,
+            )
+            tick("blend")
             sea_ice_look.composite_face(
                 flat, water, view.face, ice, FILL, pool, window=window
             )
@@ -1874,6 +1325,10 @@ class Harness:
                 "difference_pct": round(
                     (entry["area_km2"] / entry["source_km2"] - 1) * 100, 1
                 ),
+                "toned_km2": round(entry["toned_km2"]),
+                "toned_difference_pct": round(
+                    (entry["area_km2"] / entry["toned_km2"] - 1) * 100, 1
+                ),
             },
             "fine_detail": fine_detail(pre, decoded, mask, view.face),
             "coast_steps": coast_steps(decoded, mask, view.face),
@@ -1931,11 +1386,10 @@ def snow_tables(
     :param north_darkening: The share of the north's darkening its months keep.
     :returns: The colors, and the winter color each hemisphere's took.
     """
-    winters = {h: tuple(int(c) for c in rgb) for h, rgb in measured.items()}
+    winters = {h: _rgb(rgb) for h, rgb in measured.items()}
     if south_toward_north:
         north, south = (np.asarray(winters[h], np.float64) for h in ("nh", "sh"))
-        moved = np.rint(south + (north - south) * south_toward_north)
-        winters["sh"] = tuple(int(c) for c in moved)
+        winters["sh"] = _rgb(np.rint(south + (north - south) * south_toward_north))
     colors = {
         h: sea_ice_look.rescaled_colors(
             table[h], winters[h], north_darkening if h == "nh" else 1.0
@@ -1950,7 +1404,6 @@ PACKAGE = "texture_pipeline"
 FIELD_ROOTS: tuple[Callable[..., object], ...] = (
     sea_ice.read_hemisphere,
     sea_ice_look.fast_ice,
-    sea_ice_look.fast_ice_raise,
     sea_ice.cap_concentration,
     sea_ice_look.prepare,
 )
@@ -1984,7 +1437,7 @@ def _code_objects(value: object) -> Iterator[types.CodeType]:
 
 
 @functools.cache
-def _syntax(value: object) -> ast.AST:
+def _syntax(value: typing.Any) -> ast.AST:
     return ast.parse(textwrap.dedent(inspect.getsource(value)))
 
 
@@ -2002,10 +1455,16 @@ def _stable(value: object) -> str:
             + ", ".join(sorted(parts) if isinstance(value, frozenset) else parts)
             + ")"
         )
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        fields_ = ", ".join(
+            f"{f.name}={_stable(getattr(value, f.name))}"
+            for f in dataclasses.fields(value)
+        )
+        return f"{type(value).__qualname__}({fields_})"
     return repr(value)
 
 
-def code_closure(*roots: object) -> tuple[list[object], list[str]]:
+def code_closure(*roots: object) -> tuple[list[typing.Any], list[str]]:
     """Return what functions and classes of this package reach by name.
 
     A name a function's code reads is looked up in its module; a function or
@@ -2018,7 +1477,7 @@ def code_closure(*roots: object) -> tuple[list[object], list[str]]:
     :returns: The functions and classes reached, the roots among them, and
         the constants they read.
     """
-    reached: dict[int, object] = {}
+    reached: dict[int, typing.Any] = {}
     constants: set[str] = set()
     todo = list(roots)
     while todo:
@@ -2098,11 +1557,10 @@ def fields_key(look: sea_ice_look.Look) -> str:
 RECORD_ROOTS: tuple[Callable[..., object], ...] = (
     sea_ice.read_hemisphere,
     sea_ice_look.fast_ice,
-    sea_ice_look.fast_ice_raise,
     sea_ice.cap_concentration,
 )
-"""The functions that make a hemisphere's concentration, and the fast ice
-band's raise of it, from the record."""
+"""The functions that make a hemisphere's concentration, with the fast ice
+band, from the record."""
 
 
 def record_key(directory: Path, hemisphere: str, look: sea_ice_look.Look) -> str:
@@ -2124,11 +1582,7 @@ def record_key(directory: Path, hemisphere: str, look: sea_ice_look.Look) -> str
 
 
 def part_keys(
-    look: sea_ice_look.Look,
-    hemisphere: str,
-    record: str,
-    size: int,
-    land: str | None = None,
+    look: sea_ice_look.Look, record: str, size: int, land: str
 ) -> dict[str, str]:
     """Return the cache key of each part of a hemisphere's noise fields.
 
@@ -2138,14 +1592,13 @@ def part_keys(
     change reaches exactly the parts it affects.
 
     :param look: The tunables.
-    :param hemisphere: ``nh`` or ``sh``.
     :param record: The record's key, as :func:`record_key` gives it.
     :param size: Texels along each side of the cap.
-    :param land: The key of the land on the cap, when the look reads it.
-    :returns: The key of each part the look needs, by the part's name.
+    :param land: The key of the land on the cap.
+    :returns: The key of each part, by the part's name.
     """
     keys: dict[str, str] = {}
-    for part in sea_ice_look.parts_for(look, hemisphere):
+    for part in sea_ice_look.PARTS:
         read = tunables_read(part.make)
         tunables = tuple(
             (f.name, getattr(look, f.name))
@@ -2182,11 +1635,11 @@ def part_to_arrays(part: Mapping[str, object]) -> dict[str, np.ndarray]:
     return out
 
 
-def parts_from_arrays(arrays: dict[str, np.ndarray]) -> dict[str, object]:
+def parts_from_arrays(arrays: dict[str, np.ndarray]) -> dict[str, typing.Any]:
     """Return the attributes of the fields that :func:`part_to_arrays` took
     apart."""
     hints = typing.get_type_hints(sea_ice_look.Fields)
-    values: dict[str, object] = {}
+    values: dict[str, typing.Any] = {}
     for f in dataclasses.fields(sea_ice_look.Fields):
         nested = {
             key.split(".", 1)[1]: value
@@ -2223,8 +1676,6 @@ def fields_from_arrays(
 ) -> sea_ice_look.Fields:
     """Return the noise fields :func:`fields_to_arrays` took apart."""
     values = parts_from_arrays(arrays)
-    values.setdefault("leads", None)
-    values.setdefault("threshold", None)
     return sea_ice_look.Fields(hemisphere=hemisphere, **values)
 
 
@@ -2238,7 +1689,8 @@ def activity_shares(cap: sea_ice_look.Cap) -> dict[str, float]:
 
     The cap's projection keeps area, so a share of texels is a share of area.
     """
-    assert cap.activity is not None
+    if cap.activity is None:
+        return {}
     pack = cap.coverage > 0.5
     active = cap.activity[pack]
     flat, structured = ACTIVITY_CLASSES
@@ -2250,6 +1702,11 @@ def activity_shares(cap: sea_ice_look.Cap) -> dict[str, float]:
         ),
         "structured": round(float((active >= structured).sum()) / total, 3),
     }
+
+
+def _rgb(values: Iterable[float]) -> sea_ice_look.Rgb:
+    red, green, blue = (int(v) for v in values)
+    return red, green, blue
 
 
 def _rgb_list(values: Iterable[float]) -> list[int]:
@@ -2997,7 +2454,9 @@ def notes_body(variant: Variant, metrics: dict) -> list[str]:
         )
         lines.append(
             f"  - (c) ice area {area['faces_km2'] / 1e6:.3f} million km2 on the "
-            f"faces against {area['source_km2'] / 1e6:.3f} in the source, "
+            f"faces against {area['toned_km2'] / 1e6:.3f} in the source read "
+            f"through the tone curve, {area['toned_difference_pct']:+.1f}%, and "
+            f"{area['source_km2'] / 1e6:.3f} in the record, "
             f"{area['difference_pct']:+.1f}%"
         )
         if "after" in detail:
@@ -3104,8 +2563,8 @@ def activity_notes(activity: dict) -> list[str]:
 
 
 PACK_STREAKS = (0.85, 0.8)
-"""The pack's least concentration, and the edge model's coverage below which
-a texel of it counts as a streak."""
+"""The pack's least concentration, and the floes' coverage below which a
+texel of it counts as water in the pack."""
 
 
 def pack_streaks(
@@ -3114,26 +2573,25 @@ def pack_streaks(
     month: int,
     workers: int | None = None,
 ) -> dict[str, float]:
-    """Measure the edge model's streaks of open water inside the pack.
+    """Measure the floes' water inside the pack.
 
     :param fields: The hemisphere's noise fields.
-    :param cap: The month's cap, with the edge model's own coverage.
+    :param cap: The month's cap, with the floes' own coverage.
     :param month: The month, 1 to 12.
     :param workers: Threads for reading the concentration through the eddy
         shift; the process's setting when ``None``.
     :returns: Of the cap's texels where the record's concentration is at
-        least the pack's, the share where the edge model's coverage is below
-        the streak's, and their area in square kilometers; the same for the
-        band from 0.6 to the pack. With the settled floes, the share and the
-        area also where the concentration they read, through the eddy shift,
-        is at least the pack's, as ``read_pack_share`` and ``read_pack_km2``.
+        least the pack's, the share where the floes' coverage is below the
+        streak's, and their area in square kilometers; the same for the band
+        from 0.6 to the pack, and, as ``read_pack_share`` and
+        ``read_pack_km2``, where the concentration the floes read, through
+        the eddy shift, is at least the pack's.
     """
-    cover = cap.floes if cap.floes is not None else cap.land_coverage
+    cover = cap.floes
     assert cover is not None
     coarse = fields.concentration[month - 1]
     conc = zoom(coarse, fields.size / coarse.shape[-1], order=1, grid_mode=True)
-    if fields.coast is not None:
-        conc[fields.coast.land] = 0
+    conc[fields.coast.land] = 0
     texel = sea_ice.texel_km(fields.size) ** 2
     pack, below = PACK_STREAKS
     insides = [
@@ -3141,19 +2599,15 @@ def pack_streaks(
         ("inner_margin", (conc >= 0.6) & (conc < pack)),
     ]
     del conc
-    if fields.cascade is not None:
-        read = np.empty((fields.size, fields.size), np.float32)
+    read = np.empty((fields.size, fields.size), np.float32)
 
-        def band(span: tuple[int, int]) -> None:
-            read[span[0] : span[1]] = sea_ice_look.read_concentration(
-                fields, month, *span
-            )[2]
+    def band(span: tuple[int, int]) -> None:
+        _, _, conc = sea_ice_look.read_concentration(fields, month, *span)
+        read[span[0] : span[1]] = conc
 
-        parallel.pmap(band, sea_ice_look.rows(fields.size), workers)
-        if fields.coast is not None:
-            read[fields.coast.land] = 0
-        insides.append(("read_pack", read >= pack))
-        del read
+    parallel.pmap(band, sea_ice_look.rows(fields.size), workers)
+    read[fields.coast.land] = 0
+    insides.append(("read_pack", read >= pack))
     out: dict[str, float] = {}
     for name, inside in insides:
         streak = inside & (cover < below)
@@ -3234,24 +2688,19 @@ def coast_gap_notes(gaps: dict) -> list[str]:
 
 
 def pack_streak_notes(streaks: dict) -> list[str]:
-    """The edge model's streaks inside the pack, per view."""
+    """The floes' water inside the pack, per view."""
     pack, below = PACK_STREAKS
     lines = [
         "",
-        "## Streaks in the pack",
+        "## Water in the pack",
         "",
         f"Where the record's concentration is at least {pack}, the share of the "
-        f"cap the edge model covers less than {below}: its grey streaks; with "
-        "the settled floes, which have no edge model, the share their water "
-        f"leaves less than {below} of. The band from 0.6 to {pack} in brackets.",
+        f"cap the floes' water leaves less than {below} of; the band from 0.6 "
+        f"to {pack} in brackets. Then, after the semicolon, the same where the "
+        f"concentration the floes read through the eddy shift is at least "
+        f"{pack}.",
         "",
     ]
-    if any("read_pack_share" in s for s in streaks.values()):
-        lines += [
-            f"Then, after the semicolon, the same where the concentration the "
-            f"floes read through the eddy shift is at least {pack}.",
-            "",
-        ]
     for key, s in streaks.items():
         read = ""
         if "read_pack_share" in s:
@@ -3294,9 +2743,8 @@ def fracture_notes(fractures: dict, lead_area: dict) -> list[str]:
         )
     for key, share in lead_area.items():
         lines.append(
-            f"- `{key}`: open water in the pack, fractures and floes, takes "
-            f"{share:.2%} of its ice ({share * 1000:.2f} per mille); with the "
-            "settled floes, the leads' share of the fill alone"
+            f"- `{key}`: the leads' share of the fill takes {share:.2%} of the "
+            f"pack's ice ({share * 1000:.2f} per mille)"
         )
     return lines
 
@@ -3334,64 +2782,37 @@ def coast_blend_notes(blends: dict) -> list[str]:
 
 
 def imagery_water_notes(metrics: dict) -> list[str]:
-    """What B1 measured and what it joined."""
+    """What B1 joined."""
     water = metrics["imagery_water"]
     t = water["thresholds"]
     lines = [
         "",
         "## The water from the Blue Marble",
         "",
-        "Measured over the open ocean of the baseline's mask (the shapefile's ocean "
-        "less the ice shelves the ice pass keeps as land; plan departure 2) "
-        f"poleward of 50 degrees, at least "
-        f"{OPEN_WATER['margin_px']} source pixels from anything else and where the "
-        f"sea ice record stays below {OPEN_WATER['ice_free_below']:.0%} all year, "
-        f"every {OPEN_WATER['step']}th pixel along both axes, {t['pixels']:,} pixels:",
-        "",
-    ]
-    for hemisphere, name in (("nh", "North"), ("sh", "South")):
-        h = t[hemisphere]
-        lines.append(
-            f"- {name}: {h['pixels']:,} pixels ({h['pixels_ever_iced']:,} left out "
-            f"as iced in some month); brightest luminance over the year "
-            f"{_quantiles(h['max_luma'])}; least blue less red "
-            f"{_quantiles(h['min_blue'])}"
-        )
-    lines += [
-        "",
-        f"Thresholds: a pixel is the imagery's water in every month when its "
-        f"brightest Rec. 709 luminance over the year is at most {t['max_luma']} (the "
-        f"{OPEN_WATER['luma_percentile']:g}th percentile) and its blue is at least "
-        f"{t['min_blue']} above its red in every month (the "
-        f"{OPEN_WATER['blue_percentile']:g}st percentile).",
+        f"A pixel is the imagery's water in every month when its brightest Rec. "
+        f"709 luminance over the year is at most {t['max_luma']} and its blue is "
+        f"at least {t['min_blue']} above its red in every month; where it is "
+        "connected to the ocean it joins it.",
         "",
     ]
     for name, count in water["joined"].items():
-        where = {
-            "north": "Joined north of 50 N",
-            "south": "Joined south of 50 S",
-            "elsewhere": "Would join between 50 S and 50 N (not applied)",
-        }[name]
         lines.append(
-            f"- {where}: {count['source_pixels']:,} source pixels, about "
-            f"{count['km2']:,} km2"
+            f"- Joined in the {name}: {count['source_pixels']:,} source pixels, "
+            f"about {count['km2']:,} km2"
         )
     change = metrics.get("mask_change", {})
     for face, c in change.items():
         lines.append(
-            f"- Mask face `{face}`: {c['texels_gaining_water']:,} texels gain water "
+            f"- Mask face `{face}` against the baseline: "
+            f"{c['texels_gaining_water']:,} texels gain water "
             f"({c['water_gained_texel_units']:,} texels' worth), "
             f"{c['texels_losing_water']:,} lose it; image `{c['image']}`"
         )
     lines.append(
-        "- `imagery-water-world.png`: where the join applies (red) and where it "
-        "would apply elsewhere (orange), each pixel 8 source pixels square."
+        "- `imagery-water-world.png`: where the join applies (red), each pixel 8 "
+        "source pixels square."
     )
     return lines
-
-
-def _quantiles(values: dict[str, float]) -> str:
-    return ", ".join(f"{k} {v:g}" for k, v in values.items())
 
 
 def snow_color_notes(snow: dict) -> list[str]:
@@ -3422,13 +2843,12 @@ def snow_color_notes(snow: dict) -> list[str]:
 
 
 def imagery_water_overview(raster: np.ndarray, flags: np.ndarray, out: Path) -> None:
-    """Draw where B1 joined water, and where it would elsewhere, on the world."""
+    """Draw where B1 joined water on the world."""
     height, width = flags.shape
     pooled = raster[: height * POOL, : width * POOL].reshape(height, POOL, width, POOL)
     ocean = pooled.mean(axis=(1, 3)) >= 128
     image = np.where(ocean[..., None], (20, 40, 80), (110, 110, 110)).astype(np.uint8)
     image[flags == 1] = (255, 40, 0)
-    image[flags == 2] = (255, 170, 0)
     Image.fromarray(image).save(out / "imagery-water-world.png")
 
 
@@ -3479,76 +2899,3 @@ def against_shipped(shipped: Path, textures: Path, views: tuple[View, ...]) -> d
             == (textures / relative).read_bytes(),
         }
     return out
-
-
-def open_water(
-    raster: np.ndarray,
-    stats: dict[str, np.ndarray],
-    ice_max: dict[str, np.ndarray],
-    min_latitude: float,
-    *,
-    margin_px: int,
-    step: int,
-    ice_free_below: float,
-    luma_percentile: float,
-    blue_percentile: float,
-) -> dict:
-    """Measure the imagery's water over the open ocean and derive thresholds.
-
-    The open ocean is the shapefile's less the ice the bake keeps as land, so
-    that the Antarctic ice shelves, which the sea ice record has no ice on,
-    are left out.
-
-    :param raster: The baseline's mask at the source's size.
-    :param stats: The yearly water statistics.
-    :param ice_max: Each hemisphere's largest concentration on its cap.
-    :param min_latitude: Measured poleward of this latitude.
-    :returns: The distributions per hemisphere, and the thresholds
-        ``max_luma`` and ``min_blue``: a pixel is water in every month when
-        its brightest luminance is at most the first and its least blue at
-        least the second.
-    """
-    height, width = raster.shape
-    north, south = ocean_masking.latitude_rows(height, min_latitude)
-    lumas, blues = [], []
-    out: dict = {}
-    qs = (0.1, 1, 5, 50, 95, 99, 99.9)
-    for hemisphere, start, stop in (("nh", 0, north), ("sh", south, height)):
-        ocean = raster[start:stop] == 255
-        core = binary_erosion(ocean, iterations=margin_px, border_value=1)
-        del ocean
-        rr, cc = np.nonzero(core[::step, ::step])
-        del core
-        rows = rr * step + start
-        cols = cc * step
-        lat = 90.0 - (rows + 0.5) * 180.0 / height
-        lon = (cols + 0.5) * 360.0 / width - 180.0
-        _, px, py = sea_ice.latlon_to_cap(lat, lon)
-        tr, tc = sea_ice.plane_to_texel(px, py, ice_max[hemisphere].shape[0])
-        conc = map_coordinates(
-            ice_max[hemisphere], [tr, tc], order=1, mode="constant", cval=0.0
-        )
-        free = conc < ice_free_below
-        luma_here = stats["max_luma"][rows[free], cols[free]]
-        blue_here = stats["min_blue"][rows[free], cols[free]]
-        out[hemisphere] = {
-            "pixels": int(free.sum()),
-            "pixels_ever_iced": int((~free).sum()),
-            "max_luma": _percentiles(luma_here, qs),
-            "min_blue": _percentiles(blue_here, qs),
-        }
-        lumas.append(luma_here)
-        blues.append(blue_here)
-    luma_all = np.concatenate(lumas)
-    blue_all = np.concatenate(blues)
-    out["max_luma"] = int(np.ceil(np.percentile(luma_all, luma_percentile)))
-    out["min_blue"] = int(np.floor(np.percentile(blue_all, blue_percentile)))
-    out["pixels"] = len(luma_all)
-    return out
-
-
-def _percentiles(values: np.ndarray, qs: tuple[float, ...]) -> dict[str, float]:
-    return {
-        f"p{q:g}": round(float(v), 1)
-        for q, v in zip(qs, np.percentile(values, qs), strict=True)
-    }

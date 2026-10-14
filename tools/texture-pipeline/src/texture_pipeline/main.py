@@ -387,6 +387,11 @@ def earth(
     )
 
 
+POLAR_FACES = ("py", "ny")
+"""The faces the coast's land is blended toward the ice on: they hold every
+coast poleward of 45 degrees."""
+
+
 def _open_rgb(path: Path) -> Image.Image:
     image = Image.open(path)
     return image if image.mode == "RGB" else image.convert("RGB")
@@ -434,15 +439,19 @@ def _read_sea_ice(
 
 
 def _sea_ice_fields(
-    hemispheres: dict[str, sea_ice.Hemisphere] | None, cap_size: int
+    hemispheres: dict[str, sea_ice.Hemisphere] | None,
+    cap_size: int,
+    water: dict[str, np.ndarray],
 ) -> dict[str, sea_ice_look.Fields] | None:
     if hemispheres is None:
         return None
     fields = {}
     for name, hemisphere in hemispheres.items():
         stage = time.monotonic()
+        land = sea_ice_look.cap_land(water, name, cap_size)
+        banded = sea_ice_look.fast_ice(hemisphere)
         fields[name] = sea_ice_look.prepare(
-            sea_ice.cap_concentration(hemisphere), name, cap_size
+            sea_ice.cap_concentration(banded), name, cap_size, land=land
         )
         typer.echo(
             f"Ice:     {name} fields at {cap_size}, {time.monotonic() - stage:.1f}s"
@@ -469,10 +478,13 @@ def _report_ice_area(
         return
     for name, hemisphere in hemispheres.items():
         source = float(sea_ice.source_area_km2(hemisphere)[month - 1])
+        toned = float(sea_ice_look.toned_area_km2(hemisphere)[month - 1])
         ratio = area[name] / source if source else float(area[name] == 0)
+        against = area[name] / toned if toned else float(area[name] == 0)
         typer.echo(
             f"Ice:     {name} {area[name] / 1e6:.2f} million km2 over water, "
-            f"source {source / 1e6:.2f}, {(ratio - 1) * 100:+.1f}%"
+            f"source {source / 1e6:.2f}, {(ratio - 1) * 100:+.1f}%, toned "
+            f"{toned / 1e6:.2f}, {(against - 1) * 100:+.1f}%"
         )
 
 
@@ -496,20 +508,24 @@ def run_cube(
     sea_ice_dir: Path | None = None,
     sea_ice_fetch: bool = False,
     sea_ice_cap_size: int = sea_ice.CAP_SIZE,
+    imagery_water: bool = True,
 ) -> None:
     """Bake the monthly day cubes, the night cube and the water mask cube.
 
     One water mask serves every month. It is rasterized once from the
-    shapefile at the day maps' size, less the ice the detector finds in any
-    month, and resampled once to the working size. Each month is resampled at
-    that size, flattened through the mask with the fill color, and
-    area-averaged down to the face size; the mask faces are the same average
-    of the same mask. The night is resampled and averaged the same way from its
-    own source, without flattening.
+    shapefile at the day maps' size, joined by the imagery's own water
+    poleward of 50 degrees, less the ice the detector finds in any month, and
+    resampled once to the working size. Each month is resampled at that size,
+    flattened through the mask with the fill color, and area-averaged down to
+    the face size; the mask faces are the same average of the same mask. The
+    night is resampled and averaged the same way from its own source, without
+    flattening.
 
     With ``sea_ice_dir`` each month's sea ice is generated from its OSI-450-a1
-    mean on the polar caps and composited into the water share of the
-    flattened faces before the average.
+    mean on the polar caps, with the fast ice band and the land on the caps
+    from the mask, and composited into the water share of the flattened faces
+    before the average; on the polar faces the coast's flat snowy land is
+    blended toward the ice first.
 
     :param input_dir: Directory of monthly day maps carrying ``.YYYYMM.`` stamps.
     :param night_path: The equirectangular night map.
@@ -530,15 +546,19 @@ def run_cube(
     :param sea_ice_fetch: Download the files missing from ``sea_ice_dir``.
     :param sea_ice_cap_size: Texels along each side of a cap the ice is
         generated on.
+    :param imagery_water: Join the imagery's water connected to the ocean
+        poleward of 50 degrees to the mask.
     :raises typer.BadParameter: If the sources are missing, not 2:1, of
         different sizes, or too small for the face size.
     :raises typer.Exit: If monthly sea ice files are missing.
     """
     from texture_pipeline.ocean_masking import (
+        YearlyWater,
         apply_ocean_mask,
         clear_mask_cache,
         detect_ice_regions,
         get_or_create_mask,
+        join_imagery_water,
         reduce_mask_for_ice,
     )
 
@@ -576,6 +596,18 @@ def run_cube(
         clear_mask_cache()
         typer.echo(f"Ocean:   rasterized in {time.monotonic() - stage:.1f}s")
 
+        if imagery_water:
+            stage = time.monotonic()
+            stats = YearlyWater.empty(height, width)
+            for path in months.values():
+                stats.add(np.asarray(_open_rgb(path)))
+            joined = join_imagery_water(mask, stats)
+            del stats
+            typer.echo(
+                f"Water:   {joined['north']:,} source pixels joined in the north, "
+                f"{joined['south']:,} in the south, {time.monotonic() - stage:.1f}s"
+            )
+
         if ocean_preserve_ice:
             stage = time.monotonic()
             ice = np.zeros_like(mask)
@@ -611,7 +643,7 @@ def run_cube(
             f"Mask:    {written['mask']:,} bytes, {time.monotonic() - stage:.1f}s"
         )
 
-        fields = _sea_ice_fields(hemispheres, sea_ice_cap_size)
+        fields = _sea_ice_fields(hemispheres, sea_ice_cap_size, water)
 
         for stamp, path in months.items():
             stage = time.monotonic()
@@ -620,13 +652,23 @@ def run_cube(
             area = dict.fromkeys(sea_ice.HEMISPHERES, 0.0)
             month_bytes = 0
             for face in FACES:
+                resampled = reproject_face(source, face, work, pool)
                 flat = np.array(
                     apply_ocean_mask(
-                        Image.fromarray(reproject_face(source, face, work, pool)),
-                        water[face],
-                        color=ocean_color,
+                        Image.fromarray(resampled), water[face], color=ocean_color
                     )
                 )
+                if ice is not None and face in POLAR_FACES:
+                    sea_ice_look.blend_coast(
+                        flat,
+                        resampled,
+                        water[face],
+                        face,
+                        ice,
+                        pool=pool,
+                        fill=ocean_color,
+                    )
+                del resampled
                 if ice is not None:
                     found = sea_ice_look.composite_face(
                         flat, water[face], face, ice, ocean_color, pool
@@ -849,6 +891,16 @@ def cube(
             callback=_validate_cap_size,
         ),
     ] = sea_ice.CAP_SIZE,
+    imagery_water: Annotated[
+        bool,
+        typer.Option(
+            "--imagery-water/--no-imagery-water",
+            help=(
+                "Join the day maps' own water connected to the ocean poleward "
+                "of 50 degrees to the mask."
+            ),
+        ),
+    ] = True,
 ) -> None:
     """Bake equi-angular cube faces of the Earth's surface as JPEG XL.
 
@@ -876,6 +928,7 @@ def cube(
         sea_ice_dir=sea_ice_dir,
         sea_ice_fetch=fetch,
         sea_ice_cap_size=sea_ice_cap_size,
+        imagery_water=imagery_water,
     )
 
 

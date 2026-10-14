@@ -430,3 +430,47 @@ def water_from_imagery(
     joined = keep[labels]
     mask[joined] = 255
     return mask, int(np.count_nonzero(joined))
+
+
+IMAGERY_WATER_LATITUDE = 50.0
+"""The imagery's water joins the ocean poleward of this latitude."""
+
+IMAGERY_WATER = (14, 7)
+"""The brightest Rec. 709 luminance over the year, at most, and the least
+blue above red in every month, at least, of a pixel the imagery draws as
+water: the 99th and the 1st percentile of the Blue Marble of 2004 over the
+open ocean poleward of 50 degrees, at least 10 pixels from anything else and
+where OSI-450-a1's concentration stays below 15% all year."""
+
+
+def join_imagery_water(
+    mask: np.ndarray,
+    stats: YearlyWater,
+    min_latitude: float = IMAGERY_WATER_LATITUDE,
+    thresholds: tuple[int, int] = IMAGERY_WATER,
+) -> dict[str, int]:
+    """Join the imagery's water to the ocean poleward of a latitude, in place.
+
+    A pixel is the imagery's water in every month when its brightest
+    luminance is at most the first threshold and its least blue above red at
+    least the second. In the north's band and in the south's, such water
+    joins the ocean where :func:`water_from_imagery` connects it, so a lake
+    stays land.
+
+    :param mask: uint8 array ``(H, W)``, 255 for open ocean, equirectangular.
+        Changed in place.
+    :param stats: The imagery's statistics over the year.
+    :param min_latitude: The bands' equatorward edge, in degrees.
+    :param thresholds: The luminance and the blue above red.
+    :returns: The pixels joined in the ``north`` and in the ``south``.
+    """
+    height = mask.shape[0]
+    north, south = latitude_rows(height, min_latitude)
+    max_luma, min_blue = thresholds
+    joined = {}
+    for name, start, stop in (("north", 0, north), ("south", south, height)):
+        water = (stats.max_luma[start:stop] <= max_luma) & (
+            stats.min_blue[start:stop] >= min_blue
+        )
+        _, joined[name] = water_from_imagery(mask[start:stop], water)
+    return joined

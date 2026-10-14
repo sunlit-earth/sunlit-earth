@@ -666,6 +666,66 @@ TONE_80_90 = SETTLED.derive(
     look={"melt_tone": False, "dark_gaps": True, "floe_tone": (0.8, 0.9)},
     south_toward_north=0.5,
     north_darkening=2 / 3,
+    remarks=(
+        "Metric (c): +3.9%, +7.6%, +3.7% and -2.5% (`settled` +0.5%, -0.2%, "
+        "-2.9% and -7.2%), within 10% in all four. Measured on the cap against "
+        "`settled`'s months, one at a time: the dark gaps alone add 1.0% of ice "
+        "in March, 2.1% in August and in September and 2.6% in February, and "
+        "with the curve the total is 3.3%, 7.8%, 6.8% and 5.1%, so the curve "
+        "adds 2.3%, 5.6%, 4.6% and 2.4% on top of the dark gaps (the plan "
+        "estimated 2.5% to 5.0% for the curve alone).",
+        "Streaks (plan departures 15 and 16): of the pack at 85% and more, the "
+        "floes leave less than 0.8 of 0.4%, 1.2%, 0.8% and 1.2% (`settled` "
+        "6.9% to 17.9%) on the record's concentration without the eddy shift, "
+        "and 0.3%, 1.0%, 0.7% and 0.8% where the concentration the floes read "
+        "through the shift is 85% and more: the dark water the curve still "
+        "draws from 85% to 90%.",
+        "The colors: the south's winter is (242, 245, 248), the midpoint of "
+        "the north's (247, 250, 251) and the south's (236, 240, 244) coastal "
+        "snow, and February (229, 231, 233); the north's August is (223, 228, "
+        "230), from (211, 217, 219), and its winter months are unchanged. "
+        "Metric (b), ice less coastal snow: (0, 1, 1) in March, (0, 0, 2) in "
+        "August (`settled` (-8, -6, -4)), (4, 4, 3) in September (`settled` "
+        "(0, 0, 0)) and (-8, -10, -11) in February (`settled` (-14, -16, "
+        "-15)).",
+        "Performance, measured on this machine: warm 58.0 s (2.0 s of it "
+        "measuring the colors once), peak working set 6.85 GiB and peak "
+        "commit 7.93 GiB at the default worker count (`settled` 55.5 s, 6.69 "
+        "and 7.77 GiB warm). The fields are `settled`'s from the cache: no "
+        "part reads the new tunables, and the melt part is no longer made. A "
+        "month costs 3.6 to 3.8 s per hemisphere at the cap's 4096 against "
+        "`settled`'s 4.7 to 5.4 s measured the same way, since the gap colors' "
+        "labeling and distance transform are gone; by `settled`'s projection "
+        "the production bake comes to about 705 s (589 s, 24 months times "
+        "3.6 s, and about 30 s more of fields). `preview draft` 4.1 to 7.2 s.",
+        "Metric (e) against `settled`: at flat coasts the dip is 1.1 (p90 "
+        "3.6), 1.5 (10.8), 8.0 (42.7) and 9.1 (37.9) against 1.0 (3.3), 2.8 "
+        "(13.4), 9.4 (39.9) and 10.9 (38.4); at mountain coasts 6.5 (36.9), "
+        "10.4 (30.8), 15.1 (66.4) and 16.9 (44.3) against 6.4 (33.9), 13.9 "
+        "(29.6), 10.0 (57.9) and 22.7 (52.5): the south's September mountain "
+        "coasts dip deeper beside ice that is now 4 to 6 levels brighter. Open "
+        "water along closed coasts: 0.2%, 1.3%, 1.0% and 0.7% (gray 0.7%, "
+        "4.8%, 5.9% and 7.6%) against 0.2%, 0.5%, 0.9% and 0.4% (gray 0.9%, "
+        "6.0%, 6.9% and 8.5%), over more closed coast texels (38,870 against "
+        "33,516 in March).",
+        "Metric (d), fine detail after the encode: 1.45, 1.57, 1.49 and 1.86, "
+        "71% to 72% of before, against `settled`'s 1.96 to 2.10 and 76% to "
+        "83%. The surface is unchanged; the gray patches and the melt tone, "
+        "which `settled`'s interior held, are gone.",
+        "The closed pack shares the land's tag in the cascade, so the cut at "
+        "90% costs no memory: a cell over both land and the closed pack is not "
+        "cut between them, and neither side reads its decision, since the "
+        "land takes its nearest sea texel's coverage and the closed side is "
+        "ice.",
+        "Seams: as in `settled`, every field and the cut at 90% are on the "
+        "cap plane and each face samples the cap by direction, so the faces "
+        "meet without a seam by construction; none shows in the renders.",
+        "To look at first: how the floes meet the closed pack behind the "
+        "margin, and whether water cut along the 90% line shows that line; "
+        "the north's August against the land's snow; the south's September "
+        "and February beside the ice shelves.",
+        "Drafts under `drafts/`: the same 17 as `settled`'s.",
+    ),
 )
 
 TONE_70_85 = TONE_80_90.derive(
@@ -674,6 +734,32 @@ TONE_70_85 = TONE_80_90.derive(
     "alone: the floes read c + (1 - c) smoothstep(0.7, 0.85, c), and at 85% "
     "and above they draw no water.",
     look={"floe_tone": (0.7, 0.85)},
+    remarks=(
+        "Metric (c): +4.6%, +10.3%, +5.9% and -1.4%: the north's August is "
+        "over the 10% limit by 0.3 points. Measured on the cap against "
+        "`settled`'s months, the total is 4.0%, 10.5%, 9.0% and 6.3%, of which "
+        "the curve adds 3.0%, 8.2%, 6.8% and 3.6% on top of the dark gaps "
+        "(the plan estimated 3.7% to 7.8%).",
+        "Streaks (plan departures 15 and 16): of the pack at 85% and more, "
+        "the floes leave less than 0.8 of 0.1%, 0.1%, 0.1% and 0.8% on the "
+        "record's concentration without the eddy shift, and of 0.0% (0 km2) "
+        "in all four where the concentration the floes read through the "
+        "shift is 85% and more: the closed pack draws no floes' water on the "
+        "real bake.",
+        "Performance: warm 50.9 s, peak working set 6.44 GiB and peak commit "
+        "7.61 GiB; a month 3.6 s per hemisphere, as `tone-80-90`.",
+        "Metric (e) against `settled`: at flat coasts the dip is 1.1 (p90 "
+        "3.6), 1.6 (11.0), 9.4 (42.7) and 9.3 (37.9); at mountain coasts 6.5 "
+        "(36.5), 9.3 (27.3), 14.8 (66.7) and 16.6 (46.4); `settled`'s are in "
+        "`tone-80-90`'s remarks. Open water along closed coasts: 0.2%, 1.2%, "
+        "1.1% and 0.8% (gray 0.7%, 4.7%, 5.9% and 7.6%).",
+        "Metric (d), fine detail after the encode: 1.46, 1.58, 1.46 and 1.82, "
+        "71% to 72% of before.",
+        "Against `tone-80-90` the page shows the curve alone: the pack closes "
+        "from 85%, and below it the floes' water falls, at 80% from 20% to "
+        "5.2% before the leads, so the margin of floes narrows.",
+        "Drafts under `drafts/`: the same 17 as `settled`'s.",
+    ),
 )
 
 VARIANTS: dict[str, Variant] = {

@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import typing
 from concurrent.futures import ThreadPoolExecutor
 from math import atan, pi
 from pathlib import Path
@@ -15,6 +16,7 @@ from shapely.geometry import box
 from shapely.ops import unary_union
 from typer.testing import CliRunner
 
+from texture_pipeline import parallel, sea_ice_look
 from texture_pipeline.cube import (
     BAND_ROWS,
     FACES,
@@ -350,6 +352,42 @@ class TestBakeOptions:
                     decode(fixture_bake / part / f"{face}.jxl"),
                     err_msg=f"{part}/{face}",
                 )
+
+    def test_the_worker_count_reaches_the_sea_ice(
+        self,
+        tmp_path: Path,
+        osi_monthly_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        steps = ("prepare", "month_cap", "blend_coast", "composite_face")
+        seen: dict[str, set[int]] = {name: set() for name in steps}
+
+        def record(name: str) -> None:
+            step = getattr(sea_ice_look, name)
+
+            def recorded(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+                seen[name].add(parallel.workers())
+                return step(*args, **kwargs)
+
+            monkeypatch.setattr(sea_ice_look, name, recorded)
+
+        for name in steps:
+            record(name)
+        monkeypatch.setenv(parallel.ENV, "5")
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        arguments = [
+            *bake_arguments(days, night, shapefile, tmp_path / "out"),
+            "--sea-ice",
+            str(osi_monthly_dir),
+            "--sea-ice-cap-size",
+            "64",
+            "--workers",
+            "1",
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert seen == {name: {1} for name in steps}
+        assert parallel.workers() == 5
 
     def test_both_poles_keeps_the_arctic_ice_the_detector_finds_as_land(
         self, plain_bake: Path, tmp_path: Path

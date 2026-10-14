@@ -485,7 +485,8 @@ def band_noise(
     white = rng.standard_normal((size, size), dtype=np.float32)
     if band_km[1] < spacing:
         return np.zeros((size, size), dtype=np.float32)
-    spectrum = fft.rfft2(white, workers=-1)
+    threads = parallel.workers()
+    spectrum = fft.rfft2(white, workers=threads)
     del white
     fy = fft.fftfreq(size, d=spacing).astype(np.float32)
     fx = fft.rfftfreq(size, d=spacing).astype(np.float32)
@@ -498,7 +499,7 @@ def band_noise(
     gain[0, 0] = 0.0
     spectrum *= gain
     del gain, log_k, outside, k
-    noise = fft.irfft2(spectrum, s=(size, size), workers=-1).astype(np.float32)
+    noise = fft.irfft2(spectrum, s=(size, size), workers=threads).astype(np.float32)
     return normalized(noise)
 
 
@@ -560,7 +561,8 @@ def oriented_noise(
     """
     spacing = texel_km(size)
     white = rng.standard_normal((size, size), dtype=np.float32)
-    spectrum = fft.rfft2(white, workers=-1)
+    threads = parallel.workers()
+    spectrum = fft.rfft2(white, workers=threads)
     del white
     fy = fft.fftfreq(size, d=spacing).astype(np.float32)[:, None]
     fx = fft.rfftfreq(size, d=spacing).astype(np.float32)[None, :]
@@ -579,7 +581,7 @@ def oriented_noise(
     del log_k, outside, k
     spectrum *= gain
     del gain
-    return normalized(fft.irfft2(spectrum, s=(size, size), workers=-1))
+    return normalized(fft.irfft2(spectrum, s=(size, size), workers=threads))
 
 
 def steered_noise(
@@ -658,11 +660,12 @@ def facet_cells(
     tree = KDTree(points)
     shade = np.empty((size, size), dtype=np.float32)
     border = np.empty((size, size), dtype=np.float32)
+    threads = parallel.workers()
     for start, stop in rows(size):
         r = np.arange(start, stop, dtype=np.float32)[:, None] + shift[0, start:stop]
         c = np.arange(size, dtype=np.float32)[None, :] + shift[1, start:stop]
         query = np.stack([r.ravel(), c.ravel()], axis=-1)
-        distance, index = tree.query(query, k=2, workers=-1)
+        distance, index = tree.query(query, k=2, workers=threads)
         apart = np.linalg.norm(points[index[:, 1]] - points[index[:, 0]], axis=-1)
         to_border = (distance[:, 1] ** 2 - distance[:, 0] ** 2) / (2 * apart)
         shade[start:stop] = shades[index[:, 0]].reshape(r.shape)

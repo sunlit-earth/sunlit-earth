@@ -748,19 +748,22 @@ class Harness:
         if self.out.exists():
             shutil.rmtree(self.out)
         (self.out / "faces").mkdir(parents=True)
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            water = _timed(self.times, "mask", lambda: self.water_faces(pool))
-            colors = _timed(self.times, "colors", lambda: self.colors(water, pool))
-            look = self.look(colors)
-            _timed(self.times, "fields", lambda: self.fields_both(look))
-            baked = _timed(self.times, "bake", lambda: self.bake(water, look, pool))
-            masks = _timed(self.times, "mask faces", lambda: self.mask_faces(water))
-        self._fields.clear()
-        textures = _timed(self.times, "assemble", lambda: self.assemble(baked, masks))
-        renders = self.render_all(textures)
-        metrics = _timed(
-            self.times, "metrics", lambda: self.measure(textures, baked, renders)
-        )
+        with parallel.configured(self.workers):
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                water = _timed(self.times, "mask", lambda: self.water_faces(pool))
+                colors = _timed(self.times, "colors", lambda: self.colors(water, pool))
+                look = self.look(colors)
+                _timed(self.times, "fields", lambda: self.fields_both(look))
+                baked = _timed(self.times, "bake", lambda: self.bake(water, look, pool))
+                masks = _timed(self.times, "mask faces", lambda: self.mask_faces(water))
+            self._fields.clear()
+            textures = _timed(
+                self.times, "assemble", lambda: self.assemble(baked, masks)
+            )
+            renders = self.render_all(textures)
+            metrics = _timed(
+                self.times, "metrics", lambda: self.measure(textures, baked, renders)
+            )
         metrics["time_s"] = dict(self.times, total=round(time.monotonic() - started, 1))
         (self.out / "metrics.json").write_text(
             json.dumps(metrics, indent=2), encoding="utf-8", newline="\n"
@@ -1160,7 +1163,10 @@ class Harness:
             raise ValueError(msg)
         size = self.work_size
         window = region_window(view.face, latitude, longitude, size, half)
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+        with (
+            parallel.configured(self.workers),
+            ThreadPoolExecutor(max_workers=self.workers) as pool,
+        ):
             look = self.look(self.colors(None, pool))
             tick("colors")
             fields = self.fields(view.hemisphere, look)

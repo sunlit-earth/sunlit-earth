@@ -9,8 +9,9 @@ cores up to :data:`LIMIT`; ``1`` runs everything on the calling thread.
 """
 
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 ENV = "TEXTURE_PIPELINE_WORKERS"
 """The environment variable that sets the worker count; blank is unset."""
@@ -37,6 +38,23 @@ def configure(count: int | None) -> None:
         msg = f"The worker count is at least 1, not {count}."
         raise ValueError(msg)
     _setting.value = count
+
+
+@contextmanager
+def configured(count: int | None) -> Iterator[None]:
+    """Set the worker count for a block, as :func:`configure` does, and put
+    the setting back as it was after it.
+
+    :param count: The count, or ``None`` to leave the setting as it is.
+    :raises ValueError: If the count is below 1.
+    """
+    previous = _setting.value
+    if count is not None:
+        configure(count)
+    try:
+        yield
+    finally:
+        _setting.value = previous
 
 
 def workers(requested: int | None = None) -> int:

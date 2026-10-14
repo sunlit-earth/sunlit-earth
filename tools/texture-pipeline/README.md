@@ -99,7 +99,7 @@ uv run texture-pipeline cube \
 
 `--effort`, `-e`: JPEG XL encoding effort, 1 to 9 (default: 7).
 
-`--workers`: Threads that resample the bands of a face (default: the CPU count, at most 4).
+`--workers`: Threads for each parallel step, the resampling and the sea ice alike; `1` runs everything in turn. Without it the CPU count, at most 4, resamples a face, and the sea ice takes the `TEXTURE_PIPELINE_WORKERS` environment variable or else the logical cores up to 16. The count changes no byte of the output.
 
 `--sea-ice`: Directory of the 24 OSI-450-a1 monthly files of 2004, both hemispheres, as the OSI SAF THREDDS server names them (`ice_conc_nh_ease2-250_cdr-v3p1_200403.nc`). With it, every month's sea ice is generated and composited into the month's open water. Without it the faces have no sea ice.
 
@@ -208,7 +208,7 @@ The other cached pieces are keyed the same way: the concentration read from the 
 
 ### Threads
 
-Bands of rows, the independent parts of the fields, the two hemispheres, the four views, the four renders and the measurements run on threads. None of it changes a byte of the output: every part draws from a random stream of its own, and each band computes what it would compute alone. `--workers N`, the `TEXTURE_PIPELINE_WORKERS` environment variable, or `texture_pipeline.parallel.configure(N)` sets the thread count (default: the logical cores up to 16), and `1` runs everything in turn. Peak memory is about 6.5 GiB of working set and 7.7 GiB of commit with everything at once, measured on `baseline`; a smaller machine should take a lower count. The renders run at once, each on a tile cache of its own; `--warm-check` renders in turn on one tile cache and once more warm, which is how `pack_build_s` and `warm_render_s` are measured.
+Bands of rows, the independent parts of the fields, the two hemispheres, the four views, the four renders and the measurements run on threads. None of it changes a byte of the output: every part draws from a random stream of its own, and each band computes what it would compute alone. `--workers N`, the `TEXTURE_PIPELINE_WORKERS` environment variable, or `texture_pipeline.parallel.configure(N)` sets the thread count of every step, the noise's Fourier transforms and the cells' tree queries included (default: the logical cores up to 16), and `1` runs everything in turn. Peak memory is about 6.5 GiB of working set and 7.7 GiB of commit with everything at once, measured on `baseline`; a smaller machine should take a lower count. The renders run at once, each on a tile cache of its own; `--warm-check` renders in turn on one tile cache and once more warm, which is how `pack_build_s` and `warm_render_s` are measured.
 
 ### The draft
 

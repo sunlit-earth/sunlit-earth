@@ -18,7 +18,7 @@ from rich.progress import (
     TextColumn,
 )
 
-from texture_pipeline import sea_ice, sea_ice_look
+from texture_pipeline import parallel, sea_ice, sea_ice_look
 from texture_pipeline.cube import FACES, area_average, reproject_face, working_size
 from texture_pipeline.discovery import (
     compute_output_path,
@@ -391,6 +391,9 @@ POLAR_FACES = ("py", "ny")
 """The faces the coast's land is blended toward the ice on: they hold every
 coast poleward of 45 degrees."""
 
+RESAMPLE_WORKERS = min(4, os.cpu_count() or 1)
+"""The threads that resample a face when the bake is given no worker count."""
+
 
 def _open_rgb(path: Path) -> Image.Image:
     image = Image.open(path)
@@ -503,7 +506,7 @@ def run_cube(
     ocean_preserve_ice: bool,
     ocean_ice_luminance: int,
     ocean_ice_latitude: float,
-    workers: int,
+    workers: int | None = None,
     ocean_ice_south_only: bool = True,
     sea_ice_dir: Path | None = None,
     sea_ice_fetch: bool = False,
@@ -540,7 +543,10 @@ def run_cube(
     :param ocean_preserve_ice: Whether to keep detected polar ice as land.
     :param ocean_ice_luminance: Seed luminance threshold for ice detection.
     :param ocean_ice_latitude: Minimum absolute latitude for polar gate.
-    :param workers: Threads that resample the bands of a face.
+    :param workers: Threads for every parallel step, the resampling and the
+        sea ice alike; ``1`` runs everything in turn. When ``None`` the
+        resampling takes :data:`RESAMPLE_WORKERS` and the sea ice the
+        process's setting, :func:`parallel.workers`.
     :param ocean_ice_south_only: Look for ice south of the gate alone.
     :param sea_ice_dir: Directory of the OSI-450-a1 monthly files of 2004.
     :param sea_ice_fetch: Download the files missing from ``sea_ice_dir``.
@@ -584,7 +590,10 @@ def run_cube(
         f"and averaged to {face_size}"
     )
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with (
+        parallel.configured(workers),
+        ThreadPoolExecutor(max_workers=workers or RESAMPLE_WORKERS) as pool,
+    ):
         stage = time.monotonic()
         mask = get_or_create_mask(
             ocean_shapefile,
@@ -717,9 +726,9 @@ def _validate_face_size(value: int) -> int:
     return value
 
 
-def _validate_workers(value: int) -> int:
-    if value < 1:
-        raise typer.BadParameter("Workers must be at least 1.")
+def _validate_workers(value: int | None) -> int | None:
+    if value is not None and value < 1:
+        raise typer.BadParameter("A worker count is at least 1.")
     return value
 
 
@@ -852,13 +861,18 @@ def cube(
         ),
     ] = 60.0,
     workers: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--workers",
-            help="Threads that resample a face.",
+            help=(
+                "Threads for each parallel step. 1 runs everything in turn. "
+                "Default: the cores up to 4 resample a face, and the sea ice "
+                "takes the TEXTURE_PIPELINE_WORKERS environment variable, else "
+                "the cores up to 16."
+            ),
             callback=_validate_workers,
         ),
-    ] = min(4, os.cpu_count() or 1),
+    ] = None,
     ocean_ice_south_only: Annotated[
         bool,
         typer.Option(
@@ -1147,12 +1161,6 @@ def _validate_month(value: int) -> int:
     return value
 
 
-def _validate_preview_workers(value: int | None) -> int | None:
-    if value is not None and value < 1:
-        raise typer.BadParameter("A worker count is at least 1.")
-    return value
-
-
 _WORKERS_HELP = (
     "Threads for each parallel step, and the most views, renders and "
     "measurements at once. 1 runs everything in turn. Default: the "
@@ -1201,7 +1209,7 @@ def preview_run(
     ] = 2,
     workers: Annotated[
         int | None,
-        typer.Option(help=_WORKERS_HELP, callback=_validate_preview_workers),
+        typer.Option(help=_WORKERS_HELP, callback=_validate_workers),
     ] = None,
     warm_check: Annotated[
         bool,
@@ -1313,7 +1321,7 @@ def preview_draft(
     ] = 2,
     workers: Annotated[
         int | None,
-        typer.Option(help=_WORKERS_HELP, callback=_validate_preview_workers),
+        typer.Option(help=_WORKERS_HELP, callback=_validate_workers),
     ] = None,
 ) -> None:
     """Draw a region of a variant around a place in seconds.

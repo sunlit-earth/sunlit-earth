@@ -68,6 +68,21 @@ class TestWorkers:
         with pytest.raises(ValueError, match="at least 1"):
             parallel.configure(0)
 
+    def test_a_block_sets_the_count_and_puts_it_back(self, monkeypatch) -> None:
+        monkeypatch.setenv(parallel.ENV, "5")
+        with parallel.configured(2):
+            assert parallel.workers() == 2
+        assert parallel.workers() == 5
+        parallel.configure(3)
+        try:
+            with parallel.configured(None):
+                assert parallel.workers() == 3
+            with pytest.raises(KeyError), parallel.configured(1):
+                raise KeyError
+            assert parallel.workers() == 3
+        finally:
+            parallel.configure(None)
+
     def test_results_come_back_in_the_items_order(self) -> None:
         assert parallel.pmap(lambda n: n * n, range(20), 4) == [
             n * n for n in range(20)
@@ -92,6 +107,23 @@ class TestSerialEqualsParallel:
         serial = sea_ice_look.prepare(stack(), "nh", 512, workers=1, land=land())
         threaded = sea_ice_look.prepare(stack(), "nh", 512, workers=6, land=land())
         arrays_equal(serial, threaded)
+
+    def test_the_noise_does_not_depend_on_the_process_setting(self) -> None:
+        def noise() -> list[np.ndarray]:
+            rng = np.random.default_rng(4)
+            shift = np.zeros((2, 256, 256), dtype=np.float32)
+            return [
+                sea_ice_look.band_noise(256, (20.0, 200.0), rng),
+                sea_ice_look.oriented_noise(256, (20.0, 200.0), 0.5, 3.0, rng),
+                *sea_ice_look.facet_cells(256, 60.0, shift, rng),
+            ]
+
+        with parallel.configured(1):
+            one = noise()
+        with parallel.configured(6):
+            many = noise()
+        for a, b in zip(one, many, strict=True):
+            np.testing.assert_array_equal(a, b)
 
     def test_the_month_does_not_depend_on_the_workers(self, fields) -> None:
         one = sea_ice_look.month_cap(fields, 3, workers=1)

@@ -177,7 +177,7 @@ class Look:
     """Range of a fracture's width; a branch is narrower than its parent."""
 
     fracture_darkness: tuple[float, float] = (0.06, 0.2)
-    """Range of the share of the sea's fill in a fracture's middle: grey
+    """Range of the share of the sea's fill in a fracture's middle: gray
     refrozen ice at the low end, open water at the high end."""
 
     fracture_activity: float = 0.5

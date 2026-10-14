@@ -451,7 +451,7 @@ def straight_field(size: int) -> np.ndarray:
 
 
 class TestFractureLook:
-    def test_most_leads_are_grey_and_few_open(self, fields) -> None:
+    def test_most_leads_are_gray_and_few_open(self, fields) -> None:
         darkness = fields.fractures.systems[:, 2]
         high = sea_ice_look.LOOK.fracture_darkness[1]
         assert np.mean(darkness <= high) > 0.75

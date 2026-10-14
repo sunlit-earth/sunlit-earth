@@ -262,6 +262,8 @@ The change is one feature branch. Before release, reverting it is enough. After 
 
 11. **The amounts are blended, not the strengths, and the band has a width setting.** Departure 10 blended the two strengths across a fixed 20 degrees and took the amount from the blend. In the app the band read too narrow, and narrower still with either value above 100 percent: above 1 the amount stops growing once the lifted cap passes the level, so with 100 and 200 percent over ground at 0.92 the change was over nearly half of the way through the strengths, at 147 percent, and with the smoothstep, before the middle of the band. `fs_cloud` now works out the amount for each strength through `haze_removed` and blends the two, so the change runs across the whole band whatever the values. The width became `cloud_haze_band`, 5 to 90 degrees, in `_pad10`, so the uniform block still is 576 bytes, and `CLOUD_SETTINGS_V2` carries it. `a_haze_above_one_changes_across_the_whole_band` fails with the strengths blended.
 
+12. **The defaults retuned before release.** After the merge, and before any release carried version 2, the user retuned the defaults: haze removal toward the poles 130 percent, land gamma 0.5, ocean floor 10 percent, ocean gamma 0.75, and the night opacity 45 percent. `CLOUD_SETTINGS_V2` carries the first four, since no released file holds the old ones. The night opacity was outside the step (departure 9); `v1_to_v2` now moves it from 0.55 to 0.45 with `change_default`, so a value somebody chose survives.
+
 ## Open items
 
 - Whether frozen sea keeps a veil, and the ice concentration as land once the sea ice atlas exists (Relation to the sea ice plan).

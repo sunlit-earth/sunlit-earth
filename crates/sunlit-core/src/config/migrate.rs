@@ -36,26 +36,34 @@ fn v0_to_v1(earth: &mut Table, log: &mut ChangeLog) {
 /// The cloud settings version 2 shipped with.
 const CLOUD_SETTINGS_V2: [(&str, f64); 8] = [
     ("cloud_haze_equator", 0.9),
-    ("cloud_haze_pole", 1.25),
+    ("cloud_haze_pole", 1.3),
     ("cloud_haze_latitude", 55.0),
     ("cloud_haze_band", 25.0),
     ("cloud_floor_land", 0.25),
-    ("cloud_gamma_land", 0.6),
-    ("cloud_floor_ocean", 0.0),
-    ("cloud_gamma_ocean", 0.8),
+    ("cloud_gamma_land", 0.5),
+    ("cloud_floor_ocean", 0.1),
+    ("cloud_gamma_ocean", 0.75),
 ];
 
 /// Haze removal, and the cloud floor and gamma split into land and ocean.
 ///
 /// The old floor and gamma go, and every file takes the new settings whatever
 /// it held: an old floor or gamma tuned without haze removal says nothing about
-/// the picture with it.
+/// the picture with it. The night opacity, which the haze removal does not
+/// touch, moves only from its old default.
 fn v1_to_v2(earth: &mut Table, log: &mut ChangeLog) {
     remove_key(earth, "cloud_floor", log);
     remove_key(earth, "cloud_gamma", log);
     for (key, value) in CLOUD_SETTINGS_V2 {
         override_value(earth, key, Value::Float(value), log);
     }
+    change_default(
+        earth,
+        "cloud_opacity_night",
+        Value::Float(0.55),
+        Value::Float(0.45),
+        log,
+    );
 }
 
 /// Take `key` out of the file, when it is there.
@@ -375,6 +383,19 @@ mod tests {
                     "{source}: {key} is not in the log"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_night_opacity_moves_only_from_its_old_default() {
+        for (source, expected) in [
+            ("cloud_opacity_night = 0.55", "cloud_opacity_night = 0.45"),
+            ("cloud_opacity_night = 0.7", "cloud_opacity_night = 0.7"),
+            ("", ""),
+        ] {
+            let mut table = earth(source);
+            apply(v1_to_v2, &mut table);
+            assert_eq!(table, with_cloud_settings_v2(expected), "{source}");
         }
     }
 

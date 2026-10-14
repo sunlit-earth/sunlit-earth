@@ -429,15 +429,15 @@ impl Default for AppConfig {
             fresnel_exp: 4.0,
             clouds_enabled: true,
             cloud_opacity: 0.85,
-            cloud_opacity_night: 0.55,
+            cloud_opacity_night: 0.45,
             cloud_haze_equator: 0.9,
-            cloud_haze_pole: 1.25,
+            cloud_haze_pole: 1.3,
             cloud_haze_latitude: 55.0,
             cloud_haze_band: 25.0,
             cloud_floor_land: 0.25,
-            cloud_gamma_land: 0.6,
-            cloud_floor_ocean: 0.0,
-            cloud_gamma_ocean: 0.8,
+            cloud_gamma_land: 0.5,
+            cloud_floor_ocean: 0.1,
+            cloud_gamma_ocean: 0.75,
             cloud_night: 0.20,
             atmo_enabled: true,
             rayleigh_intensity: 0.5,
@@ -1171,8 +1171,12 @@ sky_fov = 111.0
         let as_written: ConfigFile = toml::from_str(V0_2_2).unwrap();
         let as_written = as_written.sunlit.earth;
         assert_eq!(
-            (as_written.texture_resolution, as_written.sample_count),
-            (4096, 8),
+            (
+                as_written.texture_resolution,
+                as_written.sample_count,
+                as_written.cloud_opacity_night
+            ),
+            (4096, 8, 0.55),
             "the fixture holds 0.2.2's defaults"
         );
         let defaults = AppConfig::default();
@@ -1181,6 +1185,7 @@ sky_fov = 111.0
             AppConfig {
                 texture_resolution: defaults.texture_resolution,
                 sample_count: defaults.sample_count,
+                cloud_opacity_night: defaults.cloud_opacity_night,
                 ..as_written
             }
         );

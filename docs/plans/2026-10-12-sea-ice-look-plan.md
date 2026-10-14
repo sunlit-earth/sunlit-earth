@@ -2,7 +2,7 @@
 
 Follows `docs/plans/2026-10-11-baked-sea-ice-plan.md` (PR #76), whose bake the user accepted as a first iteration. This plan improves the look of the baked sea ice in three ways the user found by comparing the app with MODIS true color imagery. The experiments came first: through a preview harness of the real bake (phases A and B), and then, because each harness run took minutes, in two standalone labs on synthetic data. The labs' settled results are recorded, with code that reproduces them, in `docs/plans/2026-10-12-sea-ice-solid-research.md` (closed pack and leads) and `docs/plans/2026-10-12-sea-ice-floes-research.md` (partial coverage and the coast). Phase C moves that settled look into the pipeline and ships it, with tests, goldens, docs and validation.
 
-Worktree `.worktrees/sea-ice-look`, branch `feature/sea-ice-look`, from `feature/baked-sea-ice` at 75055b3. It is rebased onto `main` once #76 is merged. Commits so far: 5c368ed (the harness and the variants B1 to B3d), 843b035 (the two research documents), 2260387 (the harness and generator speedups).
+Worktree `.worktrees/sea-ice-look`, branch `feature/sea-ice-look`, from `feature/baked-sea-ice` at 75055b3. It is rebased onto `main` once #76 is merged. Commits so far: 5c368ed (the harness and the variants B1 to B3d), 843b035 (the two research documents), 2260387 (the harness and generator speedups), 670faad (this plan for Phase C), 4f399db and ab83636 (C1, the `settled` variant).
 
 ## The three imperfections
 
@@ -47,6 +47,12 @@ Measured on 2026-10-12 on the shipped faces at 75055b3.
 - Partial coverage is settled (`2026-10-12-sea-ice-floes-research.md`, section 3): r3-03's cascade of whole cells with a calm zone from 40 to 70% and big floes on dark water in loose ice, r4-03's gap color (one color per water patch, the largest patches dark first, gray to dark from 95% to 45%), no edge model (departure 10), and r5-06's add-only coast rule in a 10 km band (departure 11).
 - Kept from Phase B: B1, B2, B2b and B4. B3's sub-steps are replaced by the research documents' look, and B3's fallback, a detail layer cut from MODIS scenes, is not needed.
 - Performance is not paramount, but it must not fall back to where it was before 2260387 (the performance budget below).
+- After inspecting `settled` (2026-10-14): "edge between land and sea ice now looks good. sea ice itself also looks good." Five changes follow, made in C1b:
+  - The south's September color is "a bit off". The south's winter color goes halfway toward the north's first, the midpoint of the two.
+  - The north's summer gray is fine but "could be a little brighter": the summer darkening is cut by a third.
+  - "the random blue-ish brush strokes mixed into the ice sheet look bad; they also have no reference in satellite imagery, let's just remove those": the melt tone goes.
+  - "the grey pools of water on ice sheets with low water percentage don't really work, I think we should remove them completely for now": the gap color goes, and every gap is the dark fill.
+  - Most of the pack showed gaps, while "it's rare to see gaps far away from the edge of the ice sheet". Measured on the record: beyond 400 km from open water the median concentration is 98% in the north's March and 95% in the south's September, and the cascade drew every missing percent as cells of water 16 to 64 km across. The shortfall is mostly what passive microwave reads as part water (thin new ice in refrozen leads, melt ponds, the leads themselves), with a percent or two of retrieval noise: above 90%, a quarter of the north's March cells read over 100% before the product clipped them, and more than twice as many read 95% to 99%. The user agreed to draw no gaps above 90% and chose a tone curve on the concentration the floes read, in two variants to compare: a fade from 80% to 90% and one from 70% to 85%.
 
 ## Phase A: the preview harness
 
@@ -101,16 +107,17 @@ What Phase C ships, part by part, with where each is specified:
 | Part | What | Specified in |
 |---|---|---|
 | Mask | The Blue Marble's own water joins the mask poleward of 50 degrees | B1, `b1-water` |
-| Color | Each hemisphere's winter color from its coastal snow | B2, `b2-color` |
+| Color | Each hemisphere's winter color from its coastal snow, the south's then moved halfway toward the north's; the north's summer darkening cut by a third | B2, `b2-color`; C1b |
 | Coast's land side | Flat snowy land within 6 to 18 km of the coast blends toward the ice; the Blue Marble's sea on the mask's land takes the sea's look | B2b and departure 4, `b2b-coast`; its coverage input changes (C1) |
 | Fast ice band | The record's concentration raised along coasts where the ice 50 to 100 km out is closed | B4 and departure 3 |
 | Closed pack surface | Ridged relief at three detail levels, region fields for detail, strength (35% to 85%) and softness, Voronoi creases in soft areas, drift in some regions; no underlayer | Solid document, sections 3.1 to 3.5 and 3.7 |
 | Leads | B3b's fracture systems, drawn thin and faint, en echelon and pinched | Solid document, section 3.6 |
 | Partial coverage | Water share calibrated against the leads, a regional target, the cascade of whole cells cut at the coastline, the calm speckle from 40 to 70%, open water at 0% | Floes document, sections 3.1 to 3.7 |
-| Gap color | One color per water patch, largest first, gray to dark from 95% to 45% | Floes document, section 3.8 |
+| Tone curve | The floes read the concentration through a curve that closes the pack: no floes' water at or above its top, 90% or 85% | C1b |
+| Gap color | None: every gap is the dark fill. The floes document's per patch gray (section 3.8) was removed at the review of `settled` | C1b |
 | Coast rule | Add-only: in the sea within 10 km of land, ice wherever the concentration is 50% or more | Floes document, section 3.9 |
 | Unchanged from the first iteration | The eddy shift the concentration is read through, the thin ice shading, the per month colors, every field fixed on the cap plane, per hemisphere seeds | Floes document, section 5.1 |
-| Season | B3d's melt tone in the Arctic summer, kept as it is; never reviewed with the new surface | `b3d-melt`; reviewed at C1 |
+| Season | The per month colors alone; B3d's melt tone was removed at the review of `settled` | C1b |
 
 ## Phase C: production
 
@@ -128,9 +135,28 @@ Starts when the user approves this plan. In order:
 
 The variant `settled` chains on `b2b-coast` (B1, B2, B2b and B4) and adds the settled look. The orchestrator checks it: metrics (a) to (e), the ice area within 10% in all four renders, the coast metrics against `b2b-coast`, the share of pack streaks (near 0 with no edge model), no seams, and the performance budget. Then the user inspects the four renders and `preview draft` crops of the places the experiments watched (North Greenland, Ellesmere, Svalbard, Franz Josef Land, the Beaufort Sea, East Antarctica, the Ronne and Ross shelf fronts, the Antarctic Peninsula). This is the first time the surface, the leads and the floes are seen together, on the real coastline, in summer and in the south; the open questions below are answered here. Changes the user asks for are made in the same variant, with the labs available for anything that needs fast iteration.
 
-**C2. The settled look becomes the default.** `LOOK`'s defaults switch to the settled look. `main.py`'s `cube` command gains what the harness does and production does not yet: B1's water, the fast ice band and the coast blend, which `main.py` calls neither of today. The code only the superseded experiments used goes: the edge model's threshold, the folds and plates, the B3c floes, the old cell leads, and the variants `b3a-crumple` to `b3d-melt`. `baseline` then means the new look, and its byte identity against `textures/` returns after C3.
+**C1b. The first review's changes, as two variants.** C1 is done (4f399db, ab83636), and the user's review of `settled` asked for five changes (see "Settled with the user"). They go behind `Look` switches or variant options that are off by default, as in C1, so `baseline` stays byte-identical. `tone-80-90` chains on `settled`; `tone-70-85` chains on `tone-80-90` and differs in the curve alone, so its comparison against its parent shows the curve and nothing else.
 
-**C3. The production bake.** All twelve months and all faces with `cube --sea-ice`, the mask faces B1 changes included. `textures/PROVENANCE.md` gets the new command line, the measurements and the sizes. `TestRealIce` holds the drawn ice area to the source's within 10% in every month and hemisphere; the coast rule adds ice in its band by design (floes document, section 3.9) and is part of that total.
+- **The south's colors.** The south's winter color is the midpoint of the two hemispheres' winter colors as B2 measures them, today (247, 250, 251) and (236, 240, 244), so about (242, 245, 248). Every southern month keeps its ratio to winter per channel, as in B2, so February becomes about (229, 231, 233).
+- **The north's summer.** Each northern month's ratio to winter, per channel, becomes `1 - (1 - r) * 2 / 3`, so the winter months are unchanged and August goes from (211, 217, 219) to about (223, 228, 230).
+- **No melt tone.**
+- **No gap color.** Every texel of the floes' water is the fill. The water share no longer divides by the gray's mean darkness, so it is `1 - kept`, and `patch_dark` is not run.
+- **The tone curve.** The floes read `c' = c + (1 - c) * smoothstep(lo, hi, c)` in place of the concentration wherever they read it: the water share, the regional target, the cascade's schedule and its cells' means, and the calm zone. Open water at 0% stays, since `c'` is 0 where `c` is. Everything else keeps reading the record: the leads, the coast rule's 50%, the fast ice band, the thin ice shading and the activity. At and above `hi` the floes draw no water, guaranteed rather than likely: the cascade's cells are cut at the `hi` line the way they are cut at the coastline, and the closed side is ice. `tone-80-90` has (0.8, 0.9) and `tone-70-85` has (0.7, 0.85).
+
+  | Concentration | 50% | 70% | 75% | 80% | 85% | 88% | 90% |
+  |---|---|---|---|---|---|---|---|
+  | Floes' water before the leads, `settled` | 50% | 30% | 25% | 20% | 15% | 12% | 10% |
+  | `tone-80-90` | 50% | 30% | 25% | 20% | 7.5% | 1.2% | 0 |
+  | `tone-70-85` | 50% | 30% | 18.5% | 5.2% | 0 | 0 | 0 |
+
+  `settled` divided these by the gray's darkness as well, so it drew more water than this row at high concentration. Estimated on the record's own grid, the curves add 2.5% to 5.0% (`tone-80-90`) and 3.7% to 7.8% (`tone-70-85`) to the ice area of the four rendered months, the summer months most. Added to `settled`'s +0.5%, -0.2%, -2.9% and -7.2%, both stay within metric (c)'s 10%; the harness reports what the faces actually draw. The pack streak measure (departure 15) then counts the floes' dark water at 85% and more, expected small for `tone-80-90` and 0 for `tone-70-85`.
+- **The cache.** Every new tunable in its part's key, as in C1. Removing the gap color drops its labeling and distance transform from every month.
+
+The orchestrator checks both variants as it did `settled`: metrics (a) to (e), no seams, the performance budget, and `baseline` still byte-identical. Then the user inspects both on the page, with the drafts, and chooses a curve. No validation round.
+
+**C2. The settled look becomes the default.** `LOOK`'s defaults switch to the settled look, with C1b's changes and the curve the user chose. `main.py`'s `cube` command gains what the harness does and production does not yet: B1's water, the fast ice band and the coast blend, which `main.py` calls neither of today. The code only the superseded experiments used goes: the edge model's threshold, the folds and plates, the B3c floes, the old cell leads, and the variants `b3a-crumple` to `b3d-melt`. `baseline` then means the new look, and its byte identity against `textures/` returns after C3.
+
+**C3. The production bake.** All twelve months and all faces with `cube --sea-ice`, the mask faces B1 changes included. `textures/PROVENANCE.md` gets the new command line, the measurements and the sizes. `TestRealIce` holds the drawn ice area to the source's within 10% in every month and hemisphere; the coast rule adds ice in its band by design (floes document, section 3.9), and so does the tone curve (C1b); both are part of that total.
 
 **C4. The app's side.** The real face checks in the Rust tests (the tile packs store every tile with ice and flag open water), the polar goldens regenerated on WARP here and on lavapipe and Metal from CI's artifacts, as #76 did. The shader's side, checked in lit renders: the brighter ice raises the night side's ice, which scales with the day texel's luminance; the ice gate's luminance of 52 to 76 is not affected; new water at the coasts takes the glint in summer.
 
@@ -176,6 +202,8 @@ In Phase C, in addition:
 - Coasts other than green vegetation and snow: bare rock, dark forest in winter, the ice shelves; islands and lakes, which the synthetic coast had none of.
 - The fast ice band with the new floes, and the rewired coast blend.
 - The two labs estimated the references' scale differently (2.8 and 3.8 km per pixel for the Arctic mosaics). Nothing in production depends on it.
+
+Answered at the review of `settled` (2026-10-14): the solid look on the real map, its combined leads included, and the coasts look good; the melt tone goes and the summer gets a little brighter; the south's colors move halfway toward the north's; the gray gaps go, and the pack closes above a tone curve's top (C1b). The user did not comment on the south's lead density, which stays as it is.
 
 ## Departures
 

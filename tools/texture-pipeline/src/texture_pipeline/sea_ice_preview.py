@@ -69,7 +69,6 @@ FILL: sea_ice_look.Rgb = (10, 30, 60)
 SUPERSAMPLE = 2
 ICE_LUMINANCE = 200
 ICE_LATITUDE = 60.0
-WORKERS = min(4, os.cpu_count() or 1)
 
 RENDER_SIZE = 2048
 FOV_DEG = 20.0
@@ -2596,7 +2595,9 @@ def pack_streaks(
     cover = cap.floes
     assert cover is not None
     coarse = fields.concentration[month - 1]
-    conc = zoom(coarse, fields.size / coarse.shape[-1], order=1, grid_mode=True)
+    conc = zoom(
+        coarse, fields.size / coarse.shape[-1], order=1, mode="nearest", grid_mode=True
+    )
     conc[fields.coast.land] = 0
     texel = sea_ice.texel_km(fields.size) ** 2
     pack, below = PACK_STREAKS

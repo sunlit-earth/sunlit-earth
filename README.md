@@ -214,4 +214,4 @@ I'm also sharing the outcome of conversations with AI agents that resulted in th
 
 ## License and credits
 
-Sunlit Earth is free software, distributed under the terms of the [GPLv3](LICENSE) (or later). It was built with public data, freely licensed imagery and open source libraries. Check out [ATTRIBUTION.md](assets/ATTRIBUTION.md) to learn more.
+Sunlit Earth is free software, distributed under the terms of the [GPLv3](LICENSE) (or later). It was built with public data, freely licensed imagery and open source libraries. Check out [ATTRIBUTION.md](assets/ATTRIBUTION.md) to learn more. If you plan to publish a fork of this project with your own changes, please give it a different name and logo to avoid confusion.

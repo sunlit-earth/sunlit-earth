@@ -351,7 +351,7 @@ fn a_resolution_switch_purges_the_tiles_and_takes_the_new_cap() {
 
 /// The centers of two patches of the Earth fixture's March ice, by latitude
 /// and longitude in degrees: the pack north of Franz Josef Land, and the
-/// marginal ice of the Barents Sea, streaks of ice and open water.
+/// marginal ice of the Barents Sea, floes and open water.
 const PACK: (f64, f64) = (85.0, 40.0);
 const MARGINAL_ICE: (f64, f64) = (75.0, 44.0);
 

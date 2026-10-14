@@ -2114,8 +2114,9 @@ def prepare(
     :param size: Texels along each side of the cap the ice is generated on.
     :param look: The tunables.
     :param report: Told the name of each part as its making starts.
-    :param workers: Threads; the process's setting when ``None``, and ``1``
-        makes the fields serially.
+    :param workers: Threads for the parts and their bands; the process's
+        setting when ``None``. The Fourier transforms and tree queries inside
+        the parts take the process's setting, :func:`parallel.workers`.
     :param cache: Takes each part and its maker, and returns the part from
         wherever it was kept or by calling the maker.
     :param land: The land on the cap, as :func:`cap_land` makes it.

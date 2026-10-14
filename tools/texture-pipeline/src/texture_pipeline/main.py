@@ -544,7 +544,8 @@ def run_cube(
     :param ocean_ice_luminance: Seed luminance threshold for ice detection.
     :param ocean_ice_latitude: Minimum absolute latitude for polar gate.
     :param workers: Threads for every parallel step, the resampling and the
-        sea ice alike; ``1`` runs everything in turn. When ``None`` the
+        sea ice alike; ``1`` runs them in turn, while the JPEG XL encoder
+        keeps threads of its own. When ``None`` the
         resampling takes :data:`RESAMPLE_WORKERS` and the sea ice the
         process's setting, :func:`parallel.workers`.
     :param ocean_ice_south_only: Look for ice south of the gate alone.
@@ -865,7 +866,8 @@ def cube(
         typer.Option(
             "--workers",
             help=(
-                "Threads for each parallel step. 1 runs everything in turn. "
+                "Threads for each parallel step. 1 runs them in turn; the "
+                "JPEG XL encoder keeps threads of its own. "
                 "Default: the cores up to 4 resample a face, and the sea ice "
                 "takes the TEXTURE_PIPELINE_WORKERS environment variable, else "
                 "the cores up to 16."
@@ -1163,7 +1165,8 @@ def _validate_month(value: int) -> int:
 
 _WORKERS_HELP = (
     "Threads for each parallel step, and the most views, renders and "
-    "measurements at once. 1 runs everything in turn. Default: the "
+    "measurements at once. 1 runs them in turn; the JPEG XL encoder keeps "
+    "threads of its own. Default: the "
     "TEXTURE_PIPELINE_WORKERS environment variable, else the cores up to 16."
 )
 

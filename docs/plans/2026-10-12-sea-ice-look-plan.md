@@ -282,3 +282,8 @@ Answered at the review of `settled` (2026-10-14): the solid look on the real map
 9. The harness's unused `WORKERS` went, and the pack measure's zoom pads with the nearest value, which leaves the zoomed concentration the same to the bit in every month of both hemispheres and stops scipy's warning (ff10214).
 
 After the fixes a cold `preview run baseline`, 248.9 s since the new keys remade the mask and every field part, came out byte-identical to `textures/` in both mask faces and all four views, and every metric but the timings equals the run before the fixes.
+
+**Round 2**, 7e7f964..a8f33a7, on 2026-10-14: 0 MAJOR, 2 MINOR. All nine of round 1's findings are resolved, each checked by breaking what its fix guards and seeing the test fail. A warm `preview run baseline` took 48 s, byte-identical to `textures/`; the default thread counts are unchanged on this machine.
+
+1. The `cube` and `preview` help, `run_cube`'s docstring and the pipeline README said `--workers 1` runs everything in turn, but `processing.encode_jxl` leaves the JPEG XL encoder its own threads. Declined as a code change: the encoder's threads are not what `--workers 1` exists for, and passing a count into it would put the encoded bytes of every face at risk for no gain in memory. The texts now say the encoder keeps threads of its own.
+2. `prepare`'s docstring said `workers=1` makes the fields serially, while the Fourier transforms and tree queries inside the parts read the process's setting. The docstring now says so; `cube` and the harness set the process's count, so neither was affected.

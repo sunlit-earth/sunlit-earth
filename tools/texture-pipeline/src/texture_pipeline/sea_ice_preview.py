@@ -216,6 +216,14 @@ class Variant:
     snow_colors: bool = False
     """Take each hemisphere's winter ice color from its coastal snow."""
 
+    south_toward_north: float = 0.0
+    """With :attr:`snow_colors`, how far the south's winter color moves from
+    its coastal snow's toward the north's: 0.5 is the midpoint."""
+
+    north_darkening: float = 1.0
+    """With :attr:`snow_colors`, the share of the north's darkening against
+    its winter color that each month keeps, per channel."""
+
     look: dict[str, object] = field(default_factory=dict)
     """Tunables of :class:`sea_ice_look.Look` that differ from the bake's."""
 
@@ -639,6 +647,35 @@ SETTLED = B2B_COAST.derive(
     ),
 )
 
+TONE_80_90 = SETTLED.derive(
+    "tone-80-90",
+    "C1b on top of `settled`: the changes the review of `settled` asked for. "
+    "The south's winter color is the midpoint of the two hemispheres' coastal "
+    "snow, every southern month keeping its ratio to winter per channel; each "
+    "northern month keeps two thirds of its darkening against winter, per "
+    "channel. No melt tone. No gap color: every gap between the floes is the "
+    "sea's fill, and the floes' water is the shortfall the leads leave, "
+    "1 - kept, no longer divided by a gray's darkness. The floes read the "
+    "concentration through a tone curve, c + (1 - c) smoothstep(0.8, 0.9, c), "
+    "in the water share, the regional target, the cascade's schedule and its "
+    "cells' means, and the calm zone; at 90% and above they draw no water, "
+    "since the cascade's cells are cut at the 90% line as at the coastline and "
+    "the closed side is ice. The leads, the coast rule's 50%, the fast ice "
+    "band, the thin ice shading and the activity read the record's "
+    "concentration.",
+    look={"melt_tone": False, "dark_gaps": True, "floe_tone": (0.8, 0.9)},
+    south_toward_north=0.5,
+    north_darkening=2 / 3,
+)
+
+TONE_70_85 = TONE_80_90.derive(
+    "tone-70-85",
+    "C1b's second curve, on top of `tone-80-90` and differing in the curve "
+    "alone: the floes read c + (1 - c) smoothstep(0.7, 0.85, c), and at 85% "
+    "and above they draw no water.",
+    look={"floe_tone": (0.7, 0.85)},
+)
+
 VARIANTS: dict[str, Variant] = {
     v.name: v
     for v in (
@@ -651,6 +688,8 @@ VARIANTS: dict[str, Variant] = {
         B3C_FLOES,
         B3D_MELT,
         SETTLED,
+        TONE_80_90,
+        TONE_70_85,
     )
 }
 
@@ -1192,6 +1231,7 @@ class Harness:
             return None
         table = dataclasses.replace(sea_ice_look.LOOK, **self.variant.look).colors
         sources = [(m, p.name, p.stat().st_size) for m, p in self.months.items()]
+        moved = (self.variant.south_toward_north, self.variant.north_darkening)
         key = _key(
             "snow-colors",
             self.mask_key(),
@@ -1199,10 +1239,12 @@ class Harness:
             FACE_SIZE,
             table,
             sources,
+            moved,
             code_digest(
                 coastal_snow,
                 sea_ice_look.winter_months,
                 sea_ice_look.rescaled_colors,
+                snow_tables,
                 area_average,
                 luma,
                 face_latitude,
@@ -1227,9 +1269,10 @@ class Harness:
         water: dict[str, np.ndarray],
         pool: Executor,
     ) -> tuple[dict, dict]:
-        """Measure the coastal snow of each hemisphere's winter months."""
+        """Measure the coastal snow of each hemisphere's winter months, and
+        move the winter colors and the north's darkening as the variant
+        says."""
         snow = {}
-        colors = {}
         for hemisphere, face, min_lat in (("nh", "py", 70.0), ("sh", "ny", 60.0)):
             months = sea_ice_look.winter_months(table[hemisphere])
             mask = area_average(water[face], FACE_SIZE)
@@ -1242,18 +1285,25 @@ class Harness:
                 pooled.append(found)
             median = np.median(np.concatenate(pooled), axis=0)
             red, green, blue = (round(float(c)) for c in median)
-            winter = (red, green, blue)
-            colors[hemisphere] = sea_ice_look.rescaled_colors(table[hemisphere], winter)
             snow[hemisphere] = {
                 "face": face,
                 "min_latitude": min_lat,
                 "months": months,
                 "per_month_median": per_month,
-                "pooled_median": winter,
+                "pooled_median": (red, green, blue),
                 "texels": int(sum(len(p) for p in pooled)),
                 "table_before": [list(c) for c in table[hemisphere]],
-                "table_after": [list(c) for c in colors[hemisphere]],
             }
+        colors, winters = snow_tables(
+            table,
+            {h: s["pooled_median"] for h, s in snow.items()},
+            self.variant.south_toward_north,
+            self.variant.north_darkening,
+        )
+        for hemisphere, s in snow.items():
+            s["winter"] = winters[hemisphere]
+            s["darkening"] = self.variant.north_darkening if hemisphere == "nh" else 1
+            s["table_after"] = [list(c) for c in colors[hemisphere]]
         return colors, snow
 
     def bake(
@@ -1313,7 +1363,7 @@ class Harness:
         if cap.activity is not None:
             notes["activity"] = activity_shares(cap)
         if cap.land_coverage is not None or cap.floes is not None:
-            notes["pack_streaks"] = pack_streaks(fields, cap, view.month)
+            notes["pack_streaks"] = pack_streaks(fields, cap, view.month, self.workers)
         cap = dataclasses.replace(cap, activity=None, floes=None)
         ice = sea_ice_look.MonthIce({view.hemisphere: cap})
         source = self.source_face(view.stamp, view.face, pool)
@@ -1776,6 +1826,37 @@ class Harness:
         (self.out / "notes.md").write_text(
             "\n".join(lines) + "\n", encoding="utf-8", newline="\n"
         )
+
+
+def snow_tables(
+    table: Mapping[str, tuple[sea_ice_look.Rgb, ...]],
+    measured: Mapping[str, sea_ice_look.Rgb],
+    south_toward_north: float = 0.0,
+    north_darkening: float = 1.0,
+) -> tuple[dict[str, tuple[sea_ice_look.Rgb, ...]], dict[str, sea_ice_look.Rgb]]:
+    """Return each hemisphere's colors from its coastal snow, as B2 makes
+    them, with the moves of :attr:`Variant.south_toward_north` and
+    :attr:`Variant.north_darkening`.
+
+    :param table: The colors the months had, twelve per hemisphere.
+    :param measured: Each hemisphere's coastal snow, its new winter color.
+    :param south_toward_north: How far the south's winter color moves toward
+        the north's.
+    :param north_darkening: The share of the north's darkening its months keep.
+    :returns: The colors, and the winter color each hemisphere's took.
+    """
+    winters = {h: tuple(int(c) for c in rgb) for h, rgb in measured.items()}
+    if south_toward_north:
+        north, south = (np.asarray(winters[h], np.float64) for h in ("nh", "sh"))
+        moved = np.rint(south + (north - south) * south_toward_north)
+        winters["sh"] = tuple(int(c) for c in moved)
+    colors = {
+        h: sea_ice_look.rescaled_colors(
+            table[h], winters[h], north_darkening if h == "nh" else 1.0
+        )
+        for h in winters
+    }
+    return colors, winters
 
 
 PACKAGE = "texture_pipeline"
@@ -2942,17 +3023,24 @@ a texel of it counts as a streak."""
 
 
 def pack_streaks(
-    fields: sea_ice_look.Fields, cap: sea_ice_look.Cap, month: int
+    fields: sea_ice_look.Fields,
+    cap: sea_ice_look.Cap,
+    month: int,
+    workers: int | None = None,
 ) -> dict[str, float]:
     """Measure the edge model's streaks of open water inside the pack.
 
     :param fields: The hemisphere's noise fields.
     :param cap: The month's cap, with the edge model's own coverage.
     :param month: The month, 1 to 12.
+    :param workers: Threads for reading the concentration through the eddy
+        shift; the process's setting when ``None``.
     :returns: Of the cap's texels where the record's concentration is at
         least the pack's, the share where the edge model's coverage is below
         the streak's, and their area in square kilometers; the same for the
-        band from 0.6 to the pack.
+        band from 0.6 to the pack. With the settled floes, the share and the
+        area also where the concentration they read, through the eddy shift,
+        is at least the pack's, as ``read_pack_share`` and ``read_pack_km2``.
     """
     cover = cap.floes if cap.floes is not None else cap.land_coverage
     assert cover is not None
@@ -2962,11 +3050,26 @@ def pack_streaks(
         conc[fields.coast.land] = 0
     texel = sea_ice.texel_km(fields.size) ** 2
     pack, below = PACK_STREAKS
-    out: dict[str, float] = {}
-    for name, inside in (
+    insides = [
         ("pack", conc >= pack),
         ("inner_margin", (conc >= 0.6) & (conc < pack)),
-    ):
+    ]
+    del conc
+    if fields.cascade is not None:
+        read = np.empty((fields.size, fields.size), np.float32)
+
+        def band(span: tuple[int, int]) -> None:
+            read[span[0] : span[1]] = sea_ice_look.read_concentration(
+                fields, month, *span
+            )[2]
+
+        parallel.pmap(band, sea_ice_look.rows(fields.size), workers)
+        if fields.coast is not None:
+            read[fields.coast.land] = 0
+        insides.append(("read_pack", read >= pack))
+        del read
+    out: dict[str, float] = {}
+    for name, inside in insides:
         streak = inside & (cover < below)
         out[f"{name}_share"] = round(float(streak.sum() / max(inside.sum(), 1)), 4)
         out[f"{name}_km2"] = round(float(streak.sum()) * texel)
@@ -3057,10 +3160,22 @@ def pack_streak_notes(streaks: dict) -> list[str]:
         f"leaves less than {below} of. The band from 0.6 to {pack} in brackets.",
         "",
     ]
+    if any("read_pack_share" in s for s in streaks.values()):
+        lines += [
+            f"Then, after the semicolon, the same where the concentration the "
+            f"floes read through the eddy shift is at least {pack}.",
+            "",
+        ]
     for key, s in streaks.items():
+        read = ""
+        if "read_pack_share" in s:
+            read = (
+                f"; {s['read_pack_share']:.1%}, {s['read_pack_km2'] / 1e3:,.0f} "
+                "thousand km2"
+            )
         lines.append(
             f"- `{key}`: {s['pack_share']:.1%}, {s['pack_km2'] / 1e3:,.0f} thousand "
-            f"km2 ({s['inner_margin_share']:.1%})"
+            f"km2 ({s['inner_margin_share']:.1%}){read}"
         )
     return lines
 
@@ -3199,10 +3314,20 @@ def snow_color_notes(snow: dict) -> list[str]:
     for hemisphere, s in snow.items():
         name = "North" if hemisphere == "nh" else "South"
         months = ", ".join(f"{m}: {tuple(c)}" for m, c in s["per_month_median"].items())
-        lines += [
+        lines.append(
             f"- {name} (`{s['face']}` poleward of {s['min_latitude']:.0f}, months "
             f"{s['months']}): coastal snow median {tuple(s['pooled_median'])} over "
-            f"{s['texels']:,} texels; per month {months}",
+            f"{s['texels']:,} texels; per month {months}"
+        )
+        winter = tuple(s.get("winter", s["pooled_median"]))
+        if winter != tuple(s["pooled_median"]):
+            lines.append(f"  - winter color moved to {winter}")
+        if s.get("darkening", 1.0) != 1.0:
+            lines.append(
+                f"  - each month keeps {s['darkening']:.3g} of its darkening "
+                "against winter, per channel"
+            )
+        lines += [
             "  - colors by month, before: "
             + ", ".join(str(tuple(c)) for c in s["table_before"]),
             "  - after: " + ", ".join(str(tuple(c)) for c in s["table_after"]),

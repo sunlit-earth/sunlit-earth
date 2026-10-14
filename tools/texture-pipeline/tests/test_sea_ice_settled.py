@@ -1,5 +1,6 @@
 """Tests for the settled sea ice look: the ridged surface, the jagged leads, the
-cascade of floes, the land on the cap and the coast rule."""
+cascade of floes, the land on the cap, the coast rule, and the review's
+changes: the tone curve, the dark gaps and the colors."""
 
 import dataclasses
 
@@ -309,3 +310,142 @@ class TestWorkers:
         assert left.keys() == right.keys()
         for name in left:
             np.testing.assert_array_equal(left[name], right[name], err_msg=name)
+
+
+TONES = [sp.VARIANTS[name].look["floe_tone"] for name in ("tone-80-90", "tone-70-85")]
+
+
+def toned_look(**changes: object) -> sea_ice_look.Look:
+    look = dataclasses.replace(sea_ice_look.LOOK, **sp.VARIANTS["tone-80-90"].look)
+    return dataclasses.replace(look, **changes)
+
+
+def floes_of(fields, c: np.ndarray, look: sea_ice_look.Look) -> np.ndarray:
+    gaps = np.zeros_like(c)
+    return sea_ice_look.settled_coverage(c, gaps, fields, look)[1]
+
+
+STEP_ROW = SIZE // 2 + 7
+
+
+def step_rows(low: float, high: float) -> np.ndarray:
+    return np.where(np.arange(SIZE) < STEP_ROW, low, high).astype(np.float32)
+
+
+class TestToneCurve:
+    @pytest.mark.parametrize("tone", TONES)
+    def test_the_curve_rises_from_0_to_1(self, tone) -> None:
+        lo, hi = tone
+        c = np.linspace(0, 1, 2001, dtype=np.float32)
+        read = sea_ice_look.toned(c, tone)
+        assert read[0] == 0
+        assert read[-1] == 1
+        assert (np.diff(read) >= 0).all()
+        assert (read >= c).all()
+        assert (read[c >= hi] == 1).all()
+        np.testing.assert_array_equal(read[c <= lo], c[c <= lo])
+
+    @pytest.mark.parametrize("tone", TONES)
+    @pytest.mark.parametrize("profile", ["ramp", "step"])
+    def test_no_floes_water_at_and_above_the_top(self, fields, tone, profile) -> None:
+        _, hi = tone
+        if profile == "ramp":
+            rows = np.linspace(0.6, 1.0, SIZE, dtype=np.float32)
+        else:
+            rows = step_rows(0.3, 0.95)
+        c = np.repeat(rows[:, None], SIZE, axis=1)
+        floes = floes_of(fields, c, toned_look(floe_tone=tone))
+        sea = ~fields.coast.land
+        above, below = sea & (c >= hi), sea & (c < hi)
+        ids = fields.cascade.ids[0]
+        straddling = np.isin(ids, np.intersect1d(ids[above], ids[below]))
+        assert (above & straddling).sum() > 1000
+        assert floes[above].min() == 1
+        assert floes[below].min() < 1
+
+    @pytest.mark.parametrize("tone", TONES)
+    def test_the_open_side_is_cut_at_the_top(self, fields, tone) -> None:
+        c = np.repeat(step_rows(0.75, 0.95)[:, None], SIZE, axis=1)
+        look = toned_look(floe_tone=tone, coast_rule=None)
+        floes = floes_of(fields, c, look)
+        alone = floes_of(fields, np.full_like(c, 0.75), look)
+        row = np.arange(SIZE)[:, None]
+        sea = ~fields.coast.land
+        near = sea & (row >= STEP_ROW - 12) & (row < STEP_ROW)
+        assert (floes[near] < 1).any()
+        assert (floes[near] == alone[near]).mean() > 0.99
+
+    def test_the_floes_follow_the_curve(self, fields) -> None:
+        tone = (0.7, 0.85)
+        c = np.full((SIZE, SIZE), 0.78, np.float32)
+        read = float(sea_ice_look.toned(c[:1, :1], tone)[0, 0])
+        look = toned_look(floe_tone=tone, coast_rule=None)
+        floes = floes_of(fields, c, look)[~fields.coast.land]
+        assert abs(float(floes.mean()) - read) < 0.04
+        assert float(floes.mean()) > 0.78 + 0.06
+
+    def test_the_curves_differ_in_the_curve_alone(self) -> None:
+        first, second = sp.VARIANTS["tone-80-90"], sp.VARIANTS["tone-70-85"]
+        assert second.parent == first.name
+        assert first.parent == "settled"
+        same = {"name", "summary", "parent", "remarks", "look"}
+        for f in dataclasses.fields(sp.Variant):
+            if f.name not in same:
+                assert getattr(first, f.name) == getattr(second, f.name), f.name
+        changed = {
+            k
+            for k in first.look.keys() | second.look.keys()
+            if first.look.get(k) != second.look.get(k)
+        }
+        assert changed == {"floe_tone"}
+
+
+class TestDarkGaps:
+    def test_the_water_share_is_the_shortfall(self) -> None:
+        c = np.linspace(0, 1, 101, dtype=np.float32)
+        look = toned_look()
+        for lost in (0.0, 0.2):
+            share = sea_ice_look.water_share(c, np.full_like(c, lost), look)
+            expected = 1 - np.minimum(c / (1 - lost), 1)
+            np.testing.assert_allclose(share, expected, atol=1e-6)
+
+    def test_every_gap_is_the_fill(self, fields) -> None:
+        c = np.full((SIZE, SIZE), 0.85, np.float32)
+        sea = ~fields.coast.land
+        dark = floes_of(fields, c, toned_look(floe_tone=None))[sea]
+        gray = floes_of(fields, c, toned_look(floe_tone=None, dark_gaps=False))[sea]
+        assert set(np.unique(dark)) == {0.0, 1.0}
+        assert ((gray > 0) & (gray < 1)).any()
+        assert abs(float(dark.mean()) - 0.85) < 0.04
+
+
+MEASURED = {"nh": (247, 250, 251), "sh": (236, 240, 244)}
+
+
+class TestColors:
+    table = sea_ice_look.LOOK.colors
+
+    def ratios(self, table: tuple) -> np.ndarray:
+        rgb = np.asarray(table, np.float64)
+        return rgb / np.asarray(max(table, key=sum), np.float64)
+
+    def test_the_south_takes_the_midpoint_and_keeps_its_ratios(self) -> None:
+        colors, winters = sp.snow_tables(self.table, MEASURED, south_toward_north=0.5)
+        middle = (np.asarray(MEASURED["nh"]) + np.asarray(MEASURED["sh"])) / 2
+        assert np.abs(np.asarray(winters["sh"]) - middle).max() <= 0.5
+        expected = np.asarray(winters["sh"]) * self.ratios(self.table["sh"])
+        assert np.abs(np.asarray(colors["sh"]) - expected).max() <= 0.5
+        plain, _ = sp.snow_tables(self.table, MEASURED)
+        assert colors["nh"] == plain["nh"]
+
+    def test_the_summer_lift_leaves_winter_unchanged(self) -> None:
+        lifted, _ = sp.snow_tables(self.table, MEASURED, north_darkening=2 / 3)
+        plain, _ = sp.snow_tables(self.table, MEASURED)
+        assert lifted["sh"] == plain["sh"]
+        for month in sea_ice_look.winter_months(self.table["nh"]):
+            assert lifted["nh"][month - 1] == MEASURED["nh"]
+        r = self.ratios(self.table["nh"])
+        expected = np.asarray(MEASURED["nh"]) * (1 - (1 - r) * 2 / 3)
+        assert np.abs(np.asarray(lifted["nh"]) - expected).max() <= 0.5
+        darkest = int(np.argmin(r.sum(axis=1)))
+        assert (np.asarray(lifted["nh"][darkest]) > plain["nh"][darkest]).all()

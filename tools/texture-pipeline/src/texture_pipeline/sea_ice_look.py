@@ -634,6 +634,18 @@ class Look:
     """Standard deviation of the noise on the logarithm of a patch's area in
     that order."""
 
+    dark_gaps: bool = False
+    """Whether every gap between the settled floes is the sea's fill, in place
+    of one gray or dark color per patch: the floes' water is then what the
+    leads leave of the concentration's shortfall, all of it dark."""
+
+    floe_tone: tuple[float, float] | None = None
+    """When set, ``(lo, hi)``: the settled floes read the concentration ``c``
+    as ``c + (1 - c) smoothstep(lo, hi, c)``, and at ``hi`` and above they
+    draw no water, their cells cut at that line as at the coastline. The
+    leads, the coast rule, the thin ice shading and the activity read ``c``
+    itself."""
+
     floe_target: tuple[float, tuple[float, float]] = (0.8, (60.0, 250.0))
     """The regional ice target: the weight of its noise and the noise's
     feature sizes, so loose and compact regions alternate."""
@@ -2352,13 +2364,32 @@ def water_share(c: np.ndarray, lost: np.ndarray, look: Look) -> np.ndarray:
     darkness, so that the leads' open water and the floes' together meet the
     concentration, gray water counting as part ice.
 
+    With :attr:`Look.dark_gaps` all of the water is dark, so its share is
+    the shortfall itself.
+
     :param c: The concentration.
     :param lost: The leads' share of the fill, smoothed.
     :param look: The tunables.
     :returns: float32 array of ``c``'s shape.
     """
     kept = np.clip(c / np.maximum(1 - lost, 1e-4), 0, 1)
+    if look.dark_gaps:
+        return (1 - kept).astype(np.float32)
     return np.clip((1 - kept) / mean_dark(c, look), 0, 1).astype(np.float32)
+
+
+def toned(c: np.ndarray, tone: tuple[float, float]) -> np.ndarray:
+    """Return the concentration the settled floes read through
+    :attr:`Look.floe_tone`: ``c + (1 - c) smoothstep(lo, hi, c)``, which
+    rises with ``c``, is 0 where ``c`` is and 1 from ``hi`` up.
+
+    :param c: The concentration, from 0 to 1.
+    :param tone: ``(lo, hi)``.
+    :returns: float32 array of ``c``'s shape.
+    """
+    lo, hi = tone
+    c = np.asarray(c, np.float32)
+    return (c + (1 - c) * smoothstep(lo, hi, c)).astype(np.float32)
 
 
 def _resolving(
@@ -2454,8 +2485,8 @@ def cascade_whole(
     :param cells: The cells.
     :param ice: The regional ice target.
     :param c: The concentration.
-    :param tag: int or bool array of ``c``'s shape, 1 on land and 0 on the
-        sea.
+    :param tag: int or bool array of ``c``'s shape, 1 on land, and on the
+        closed pack with :attr:`Look.floe_tone`, and 0 on the sea.
     :param look: The tunables.
     :param workers: Threads for the cells' decisions; the process's setting
         when ``None``. The result does not depend on it.
@@ -2523,19 +2554,23 @@ def floes_water(
     noise: FloeNoise,
     look: Look,
     workers: int | None = None,
+    closed: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return the floes' water: the cascade, the calm speckle in the calm
-    zone handed over region by region, and open water where the
-    concentration is 0.
+    zone handed over region by region, open water where the concentration
+    is 0, and none where the pack is closed.
 
     :param c: The concentration, 0 on land.
     :param lost: The leads' share of the fill, smoothed.
-    :param tag: int array, 1 on land and 0 on the sea.
+    :param tag: int or bool array, 1 where the cells are cut off from the
+        open sea, on land and on the closed pack, and 0 on the open sea.
     :param cells: The cascade's cells.
     :param noise: The floes' noise fields.
     :param look: The tunables.
     :param workers: Threads for the bands of rows and the cells; the
         process's setting when ``None``. The result does not depend on it.
+    :param closed: bool array of ``c``'s shape: the closed pack, which is ice
+        whatever the cells decide; none when ``None``.
     :returns: float32 array of ``c``'s shape from 0 to 1.
     """
     sigma, _ = look.floe_target
@@ -2560,6 +2595,8 @@ def floes_water(
         calm = noise.pick[here] < zone(c[here], *look.calm_zone)
         drawn = np.where(calm, specks[here], 1 - solid[here]).astype(np.float32)
         drawn[c[here] <= 0] = 1
+        if closed is not None:
+            drawn[closed[here]] = 0
         water[here] = drawn
 
     parallel.pmap(combine, _bands(c.shape[0]), workers)
@@ -2653,11 +2690,14 @@ def settled_coverage(
     """Return a month's coverage of the settled floes over a whole cap.
 
     The floes' water is calibrated against the leads, drawn by the cascade
-    and the calm speckle, and colored one patch at a time; the coverage is
-    what the leads and that water leave of the ice, and the coast rule adds
-    ice along the coast. A texel of land takes the coverage of its nearest
-    texel of sea, which is what the coast's land blends with and what a face
-    texel of sea beside the coast reads of it.
+    and the calm speckle, and colored one patch at a time, or all dark with
+    :attr:`Look.dark_gaps`; the coverage is what the leads and that water
+    leave of the ice, and the coast rule adds ice along the coast. With
+    :attr:`Look.floe_tone` the floes read the concentration through its
+    curve, and the pack at its top and above is cut off from the cells and
+    closed. A texel of land takes the coverage of its nearest texel of sea,
+    which is what the coast's land blends with and what a face texel of sea
+    beside the coast reads of it.
 
     :param conc: The concentration through the eddy shift, the record's
         extended into land.
@@ -2674,14 +2714,22 @@ def settled_coverage(
     land = fields.coast.land
     sea = np.where(land, 0, conc).astype(np.float32)
     lost = blurred(gaps, look.floe_lost_km / texel_km(conc.shape[0]), workers)
+    read, tag, closed = sea, land, None
+    if look.floe_tone is not None:
+        read = toned(sea, look.floe_tone)
+        closed = sea >= look.floe_tone[1]
+        tag = land | closed
     water = floes_water(
-        sea, lost, land, fields.cascade, fields.floe_noise, look, workers
+        read, lost, tag, fields.cascade, fields.floe_noise, look, workers, closed
     )
-    del lost
-    floes = patch_dark(water, sea, land, look, _rng(look, fields.hemisphere, 90))
-    floes *= water
-    np.subtract(1, floes, out=floes)
-    del water
+    del lost, tag, closed
+    if look.dark_gaps:
+        floes = np.subtract(1, water, out=water)
+    else:
+        floes = patch_dark(water, read, land, look, _rng(look, fields.hemisphere, 90))
+        floes *= water
+        np.subtract(1, floes, out=floes)
+    del water, read
     coverage = 1 - gaps
     coverage *= floes
     if look.coast_rule is not None:
@@ -3147,6 +3195,34 @@ MONTH_BAND_ROWS = 128
 """Cap rows :func:`month_cap` hands to a thread at once."""
 
 
+def read_concentration(
+    fields: Fields, month: int, start: int, stop: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read a month's concentration through the eddy shift in rows of a cap,
+    as the ice is drawn from it.
+
+    :param fields: The hemisphere's noise fields.
+    :param month: The month, 1 to 12.
+    :param start: The first row.
+    :param stop: The row after the last.
+    :returns: The rows and the columns read from, in texels of the cap, and
+        the concentration there; float arrays ``(stop - start, size)``.
+    """
+    size = fields.size
+    field_ = fields.concentration[month - 1]
+    scale = field_.shape[-1] / size
+    r = np.arange(start, stop, dtype=np.float32)[:, None] + fields.shift[0, start:stop]
+    c = np.arange(size, dtype=np.float32)[None, :] + fields.shift[1, start:stop]
+    conc = map_coordinates(
+        field_,
+        [(r + 0.5) * scale - 0.5, (c + 0.5) * scale - 0.5],
+        order=3,
+        mode="nearest",
+        prefilter=False,
+    )
+    return r, c, conc
+
+
 def month_cap(
     fields: Fields,
     month: int,
@@ -3191,19 +3267,7 @@ def month_cap(
     fast = None if fields.fast is None else fields.fast[month - 1].astype(np.float32)
 
     def shifted(start: int, stop: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        r = (
-            np.arange(start, stop, dtype=np.float32)[:, None]
-            + fields.shift[0, start:stop]
-        )
-        c = np.arange(size, dtype=np.float32)[None, :] + fields.shift[1, start:stop]
-        conc = map_coordinates(
-            field_,
-            [(r + 0.5) * scale - 0.5, (c + 0.5) * scale - 0.5],
-            order=3,
-            mode="nearest",
-            prefilter=False,
-        )
-        return r, c, conc
+        return read_concentration(fields, month, start, stop)
 
     def read(span: tuple[int, int]) -> None:
         assert concs is not None
@@ -3565,21 +3629,30 @@ def winter_months(table: tuple[Rgb, ...]) -> list[int]:
     return [month + 1 for month, color in enumerate(table) if color == brightest]
 
 
-def rescaled_colors(table: tuple[Rgb, ...], winter: Rgb) -> tuple[Rgb, ...]:
+def rescaled_colors(
+    table: tuple[Rgb, ...], winter: Rgb, darkening: float = 1.0
+) -> tuple[Rgb, ...]:
     """Return a table with a new winter color and every month's darkening kept.
 
     Each month's color is the new winter color times the month's ratio to the
-    table's winter color, per channel.
+    table's winter color, per channel; with a ``darkening`` other than 1 the
+    ratio ``r`` becomes ``1 - (1 - r) darkening``, so the winter months keep
+    the new winter color and the others darken by that share of what they
+    did.
 
     :param table: Twelve colors, January first.
     :param winter: The new color of the table's brightest months.
+    :param darkening: The share of each month's darkening kept.
     :returns: Twelve colors.
     """
     before = np.asarray(max(table, key=sum), dtype=np.float64)
     after = np.asarray(winter, dtype=np.float64)
-    scaled = np.clip(
-        np.rint(after * np.asarray(table, dtype=np.float64) / before), 0, 255
-    )
+    months = np.asarray(table, dtype=np.float64)
+    if darkening == 1:
+        scaled = after * months / before
+    else:
+        scaled = after * (1 - (1 - months / before) * darkening)
+    scaled = np.clip(np.rint(scaled), 0, 255)
     return tuple((int(r), int(g), int(b)) for r, g, b in scaled)
 
 

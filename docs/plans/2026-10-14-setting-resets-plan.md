@@ -300,7 +300,11 @@ Revert the change. Nothing persisted is touched, so a revert leaves no trace on 
 
 ## Departures
 
-None yet.
+1. `display-anchor-index: 0` loses its literal too, although decision 5's list leaves it out. Row 0 is the automatic anchor, which is what `AppConfig::default()`'s empty `anchor_monitor` comes to, so the literal restated a config default the way `display-mode-index: 1` did, and success criterion 7 rules it out. An `int` without an initializer is 0, so nothing changes for a window that has not been given a config, and startup writes the index through `set_combobox_indices` before the window is shown.
+
+2. `test_every_heading_and_group_reset_clears_what_it_covers` moves every slider a second time between the headings and the groups. Celestial and Color Correction have every row under a heading, so once the headings have been pressed those two groups have nothing left to reset and their own ↺ would never be exercised. With the second round of moves every group that holds a slider offers its ↺ and is pressed, and the case asserts that a group offers one exactly when it holds a slider, which is every group but Rendering and, with the override off, Date / Time.
+
+3. `docs/rendering.md`'s `ui_callbacks.rs` row now names `scene_settings` and `read_params_from_window`, and `CLAUDE.md`'s recipe line says the same. Step 6 named only the `ui/main.slint` row, but adding a field to an existing group no longer touches `apply_params_to_window`, which only distributes the nine groups; the field goes into the literal in `scene_settings`. The count stays fourteen edits in seven files.
 
 ## Open items
 

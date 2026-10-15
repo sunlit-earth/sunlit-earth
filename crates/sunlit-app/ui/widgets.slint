@@ -89,6 +89,8 @@ export component ResetSlot inherits Rectangle {
     in property <bool> shown;
     // What the button resets, which is what its accessible label names.
     in property <string> target;
+    // The button's hover text, which is also its accessible description.
+    in property <string> hint;
     callback reset();
 
     width: 12px;
@@ -101,6 +103,7 @@ export component ResetSlot inherits Rectangle {
         mouse-cursor: pointer;
         accessible-role: button;
         accessible-label: "Reset " + root.target;
+        accessible-description: root.hint;
         accessible-action-default => { root.reset(); }
         clicked => { root.reset(); }
 
@@ -117,14 +120,19 @@ export component ResetSlot inherits Rectangle {
             source: @image-url("icons/reset.svg");
             colorize: Palette.foreground;
         }
+
+        Tooltip {
+            text: @markdown("\{root.hint}");
+        }
     }
 }
 
 // One row of the settings panel: a label, a control, and the value it reads.
 //
-// The root is a Rectangle rather than the layout itself because the hover text
-// covers the whole row: a `Tooltip` lowers to a full-size child area, which
-// inside a layout would claim a cell of its own.
+// The row's hover text covers everything but the reset, which has its own; a
+// hover text over both would open both. A `Tooltip` lowers to a full-size
+// child area, which inside a layout would claim a cell of its own, so the
+// label, the slider and the value sit in a Rectangle that carries it.
 export component SettingRow inherits Rectangle {
     in property <string> label;
     in property <string> hint;
@@ -149,42 +157,51 @@ export component SettingRow inherits Rectangle {
     row := HorizontalLayout {
         width: 100%;
         height: 100%;
-        spacing: 4px;
-        padding-left: root.indent;
+        spacing: 2px;
 
-        Text {
-            text: root.label;
-            vertical-alignment: center;
-            min-width: root.label-width - root.indent;
-        }
-        Slider {
-            minimum: root.minimum;
-            maximum: root.maximum;
-            value <=> root.value;
-            changed => { root.changed(); }
-        }
-        HorizontalLayout {
-            horizontal-stretch: 0;
-            spacing: 2px;
+        Rectangle {
+            min-width: setting.min-width;
+            preferred-width: setting.preferred-width;
+            min-height: setting.min-height;
+            preferred-height: setting.preferred-height;
 
-            Text {
-                text: root.value-text;
-                vertical-alignment: center;
-                min-width: root.value-width;
-            }
-            ResetSlot {
-                shown: root.modified;
-                target: root.label;
-                reset => {
-                    root.value = root.default-value;
-                    root.changed();
+            setting := HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 4px;
+                padding-left: root.indent;
+
+                Text {
+                    text: root.label;
+                    vertical-alignment: center;
+                    min-width: root.label-width - root.indent;
+                }
+                Slider {
+                    minimum: root.minimum;
+                    maximum: root.maximum;
+                    value <=> root.value;
+                    changed => { root.changed(); }
+                }
+                Text {
+                    text: root.value-text;
+                    vertical-alignment: center;
+                    min-width: root.value-width;
                 }
             }
-        }
-    }
 
-    Tooltip {
-        Hint { text: root.hint; }
+            Tooltip {
+                Hint { text: root.hint; }
+            }
+        }
+        ResetSlot {
+            shown: root.modified;
+            target: root.label;
+            hint: "Reset to default";
+            reset => {
+                root.value = root.default-value;
+                root.changed();
+            }
+        }
     }
 }
 
@@ -288,6 +305,7 @@ export component SettingHeading inherits Rectangle {
         ResetSlot {
             shown: root.modified;
             target: root.text;
+            hint: "Reset " + root.text + " to defaults";
             reset => { root.reset(); }
         }
     }
@@ -327,6 +345,7 @@ export component SettingGroup {
             ResetSlot {
                 shown: root.modified;
                 target: root.title;
+                hint: "Reset " + root.title + " to defaults";
                 reset => { root.reset(); }
             }
         }

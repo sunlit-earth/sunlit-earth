@@ -706,6 +706,42 @@ fn test_date_time_offers_a_reset_while_overridden() {
     assert_eq!(resets_offered(&window), Vec::<String>::new());
 }
 
+/// Every reset carries a hover text of its own, which is also its accessible
+/// description, and a heading's or a group's names what it covers.
+#[test]
+fn test_every_reset_says_what_it_does() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    move_every_slider(&window);
+    let resets = ElementQuery::from_root(&window)
+        .match_predicate(is_reset_button)
+        .find_all();
+    assert!(!resets.is_empty(), "the moved sliders offer resets");
+
+    let rows: Vec<String> = all_of(&window, "SettingRow")
+        .iter()
+        .filter_map(|row| {
+            row.query_descendants()
+                .match_type_name("Text")
+                .find_first()
+                .and_then(|text| text.accessible_label())
+                .map(|label| label.to_string())
+        })
+        .collect();
+    for reset in resets {
+        let label = reset.accessible_label().unwrap_or_default();
+        let target = label.trim_start_matches("Reset ");
+        let description = reset.accessible_description().unwrap_or_default();
+        assert!(!description.is_empty(), "'{label}' has no hover text");
+        if !rows.iter().any(|row| row == target) {
+            assert!(
+                description.contains(target),
+                "'{label}' says '{description}', which does not name {target}"
+            );
+        }
+    }
+}
+
 /// The camera's position offers nothing to reset, neither its rows nor its
 /// group, however far it moves.
 #[test]

@@ -187,6 +187,8 @@ Done on 2026-10-14: `docs/rendering.md` (the look in a paragraph, the gate's ram
 
 **C6. Validation.** Rounds of adversarial review until one reports no major finding, then `ci.yml` dispatched for all three operating systems. Whether this lands in #76 or in a PR of its own after #76 merges is the user's decision.
 
+Done on 2026-10-15: two rounds (see Validation), then `ci.yml` run 38762037655 at 219d9ad, green on all three operating systems. The user chose a PR of its own, #78, stacked on #76.
+
 ## Performance budget
 
 Performance is not paramount, but the iteration loop and the bake must not fall back to where they were before 2260387. Measured on this machine:

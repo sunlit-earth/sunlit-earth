@@ -589,11 +589,6 @@ export component MainWindow inherits Window {
 
                         SettingGroup {
                             title: "Camera Position";
-                            modified: root.camera-position != root.defaults.camera-position;
-                            reset => {
-                                root.camera-position = root.defaults.camera-position;
-                                root.sliders-changed();
-                            }
                             VerticalLayout {
                                 spacing: 4px;
 
@@ -603,7 +598,7 @@ export component MainWindow inherits Window {
                                     minimum: -180;
                                     maximum: 180;
                                     value <=> root.camera-position.longitude;
-                                    default-value: root.defaults.camera-position.longitude;
+                                    resettable: false;
                                     value-text: round(root.camera-position.longitude) + "°";
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
@@ -615,7 +610,7 @@ export component MainWindow inherits Window {
                                     minimum: -89;
                                     maximum: 89;
                                     value <=> root.camera-position.latitude;
-                                    default-value: root.defaults.camera-position.latitude;
+                                    resettable: false;
                                     value-text: round(root.camera-position.latitude) + "°";
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
@@ -627,7 +622,7 @@ export component MainWindow inherits Window {
                                     minimum: 0.0;
                                     maximum: 1.0;
                                     value <=> root.camera-position.zoom;
-                                    default-value: root.defaults.camera-position.zoom;
+                                    resettable: false;
                                     value-text: round(root.zoom-display-distance * 10) / 10;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }

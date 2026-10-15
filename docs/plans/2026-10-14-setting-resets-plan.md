@@ -306,6 +306,10 @@ Revert the change. Nothing persisted is touched, so a revert leaves no trace on 
 
 3. `docs/rendering.md`'s `ui_callbacks.rs` row now names `scene_settings` and `read_params_from_window`, and `CLAUDE.md`'s recipe line says the same. Step 6 named only the `ui/main.slint` row, but adding a field to an existing group no longer touches `apply_params_to_window`, which only distributes the nine groups; the field goes into the literal in `scene_settings`. The count stays fourteen edits in seven files.
 
+4. Camera Position offers no reset, at the user's call after trying the branch (Step 7): its `SettingGroup` sets no `modified` and its three rows set `resettable: false` in place of a `default-value`. Decision 3's table row still holds for Camera Orientation and Framing. The tests know the three rows by element id in `FIXED_ROWS` and leave them out of the rows they move, and `test_the_camera_position_offers_no_reset` moves them and holds the window to no reset.
+
+5. The slot is 12px, the icon's own width, 2px after the value, in place of decision 2's 16px at 4px, at the user's request for less space on both sides of the ↺ (Step 7). The ↺ now ends where the panel's buttons end, 4px nearer the value and 2px nearer the panel's edge than before; the button's hover tint and click area stay 16px and reach 2px past the slot on each side. The value and the slot share an inner layout with its own spacing, held at `horizontal-stretch: 0` so it takes no width from the slider. The slot now costs the slider 14px, not 20px: at the default 360px a row with a 45px value column has a 175px slider and at the 262px floor a 77px one, and the row's own floor is 155px.
+
 ## Open items
 
 None.
@@ -315,3 +319,5 @@ None.
 Round 1: 0 major, 1 minor.
 
 1. `test_every_heading_and_group_reset_clears_what_it_covers` presses the headings and groups in tree order and passes a press once its own button is gone, so a reset that also puts back something an earlier press had already put back went unseen: the Stars heading also assigning `celestial.moon`, or the Color Correction group also assigning `lighting`, passed every test. Success criterion 4's "nothing outside it" was tested in one direction only. Added `test_each_heading_and_group_reset_changes_exactly_what_it_covers`, which presses each heading's and each group's reset alone in a freshly moved window and holds every row to having lost its reset exactly when the pressed one covers it, with what a heading or a group covers read off the tree rather than named. Each of the two over-reaches, applied to `main.slint` by hand, failed that case and nothing else.
+
+Step 7: the user tried the branch in the app and found it works well, with two changes asked for: no resets for Camera Position (departure 4) and less space on both sides of the ↺ (departure 5). The screenshots in the Linux guest and the `SLINT_DEBUG_PERFORMANCE` comparison with `main` were not taken. The spacing was checked instead in renders of the panel through Slint's software renderer, before and after.

@@ -81,18 +81,21 @@ export component Hint inherits Rectangle {
 // group's title.
 //
 // The slot keeps its width while the button is gone, so nothing beside it
-// moves when a value leaves its default. The icon is an SVG rather than the
-// ↺ character, which not every desktop's font has.
+// moves when a value leaves its default. It is as wide as the icon, which
+// then ends where the panel's buttons end; the button around it is wider and
+// reaches past the slot on both sides. The icon is an SVG rather than the ↺
+// character, which not every desktop's font has.
 export component ResetSlot inherits Rectangle {
     in property <bool> shown;
     // What the button resets, which is what its accessible label names.
     in property <string> target;
     callback reset();
 
-    width: 16px;
+    width: 12px;
     min-height: 16px;
 
     if root.shown : touch := TouchArea {
+        x: (root.width - self.width) / 2;
         width: 16px;
         height: 16px;
         mouse-cursor: pointer;
@@ -160,17 +163,22 @@ export component SettingRow inherits Rectangle {
             value <=> root.value;
             changed => { root.changed(); }
         }
-        Text {
-            text: root.value-text;
-            vertical-alignment: center;
-            min-width: root.value-width;
-        }
-        ResetSlot {
-            shown: root.modified;
-            target: root.label;
-            reset => {
-                root.value = root.default-value;
-                root.changed();
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 2px;
+
+            Text {
+                text: root.value-text;
+                vertical-alignment: center;
+                min-width: root.value-width;
+            }
+            ResetSlot {
+                shown: root.modified;
+                target: root.label;
+                reset => {
+                    root.value = root.default-value;
+                    root.changed();
+                }
             }
         }
     }

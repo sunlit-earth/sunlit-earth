@@ -276,6 +276,25 @@ fn all_of(window: &MainWindow, component: &str) -> Vec<ElementHandle> {
         .find_all()
 }
 
+/// The Camera Position rows, which offer no reset however far they move.
+const FIXED_ROWS: [&str; 3] = [
+    "MainWindow::longitude-slider",
+    "MainWindow::latitude-slider",
+    "MainWindow::zoom-slider",
+];
+
+fn is_fixed(row: &ElementHandle) -> bool {
+    row.id().is_some_and(|id| FIXED_ROWS.contains(&id.as_str()))
+}
+
+/// Every row of the Advanced section that offers a reset once it moves.
+fn resettable_rows(window: &MainWindow) -> Vec<ElementHandle> {
+    all_of(window, "SettingRow")
+        .into_iter()
+        .filter(|row| !is_fixed(row))
+        .collect()
+}
+
 /// The slider inside one `SettingRow`.
 fn slider_of(row: &ElementHandle) -> ElementHandle {
     row.query_descendants()
@@ -317,9 +336,10 @@ fn move_off_its_value(slider: &ElementHandle) {
     );
 }
 
-/// Every slider of the Advanced section moved off its default.
+/// Every slider of the Advanced section that offers a reset moved off its
+/// default.
 fn move_every_slider(window: &MainWindow) -> usize {
-    let rows = all_of(window, "SettingRow");
+    let rows = resettable_rows(window);
     for row in &rows {
         move_off_its_value(&slider_of(row));
     }
@@ -400,7 +420,7 @@ fn test_every_row_reset_returns_its_default() {
         SceneParams::default()
     );
 
-    for row in all_of(&window, "SettingRow") {
+    for row in resettable_rows(&window) {
         let reset = row
             .query_descendants()
             .match_predicate(is_reset_button)
@@ -442,7 +462,7 @@ fn test_every_heading_and_group_reset_clears_what_it_covers() {
     for group in all_of(&window, "SettingGroup") {
         let has_sliders = group
             .query_descendants()
-            .match_accessible_role(AccessibleRole::Slider)
+            .match_predicate(|element| part_of(element) == Some(Part::Row) && !is_fixed(element))
             .find_first()
             .is_some();
         let title = group.accessible_label().expect("a group has a title");
@@ -496,11 +516,11 @@ fn part_of(element: &ElementHandle) -> Option<Part> {
     .map(|(_, part)| part)
 }
 
-/// The section's groups, headings and rows in tree order, which is the order
-/// the panel draws them in.
+/// The section's groups, headings and resettable rows in tree order, which is
+/// the order the panel draws them in.
 fn panel_parts(window: &MainWindow) -> Vec<(Part, ElementHandle)> {
     ElementQuery::from_root(window)
-        .match_predicate(|element| part_of(element).is_some())
+        .match_predicate(|element| part_of(element).is_some() && !is_fixed(element))
         .find_all()
         .into_iter()
         .filter_map(|element| part_of(&element).map(|part| (part, element)))
@@ -683,6 +703,26 @@ fn test_date_time_offers_a_reset_while_overridden() {
     assert_eq!(resets_offered(&window), ["Reset Date / Time"]);
     press(&window, &the_button(&window, "Reset Date / Time"));
     assert!(!window.get_datetime().use_custom, "the time is live again");
+    assert_eq!(resets_offered(&window), Vec::<String>::new());
+}
+
+/// The camera's position offers nothing to reset, neither its rows nor its
+/// group, however far it moves.
+#[test]
+fn test_the_camera_position_offers_no_reset() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    for id in FIXED_ROWS {
+        let rows: Vec<_> = ElementHandle::find_by_element_id(&window, id).collect();
+        assert_eq!(rows.len(), 1, "expected one {id}");
+        assert!(is_fixed(&rows[0]), "{id} is recognized as fixed");
+        move_off_its_value(&slider_of(&rows[0]));
+    }
+
+    assert_ne!(
+        window.get_camera_position(),
+        window.get_defaults().camera_position
+    );
     assert_eq!(resets_offered(&window), Vec::<String>::new());
 }
 

@@ -88,8 +88,8 @@ pub fn write_cube_fixture(dir: &Path) {
     copy_files(&source.join("mask"), &dir.join("mask"));
 }
 
-/// The shipped cube at an eighth of its size: July's day faces, the night and
-/// the water mask, area-averaged to 256 texels, which the texture pipeline's
+/// The shipped cube at an eighth of its size: March's and July's day faces,
+/// the night and the water mask, area-averaged to 256 texels, which the texture pipeline's
 /// `test_earth_fixture.py` keeps equal to the shipped faces. Unlike the
 /// fixture bake it shows the real continents, so a picture of it says which
 /// way round a face is.
@@ -98,12 +98,17 @@ pub fn earth_fixture_dir() -> PathBuf {
 }
 
 /// Lay the Earth fixture out under `dir` as a complete cube texture set, with
-/// July's faces standing in for every month.
+/// March's faces for March and July's standing in for every other month.
 pub fn write_earth_fixture(dir: &Path) {
     let source = earth_fixture_dir();
     for month in 1..=12 {
+        let faces = if month == 3 {
+            "day/200403"
+        } else {
+            "day/200407"
+        };
         copy_files(
-            &source.join("day/200407"),
+            &source.join(faces),
             &dir.join(format!("day/2004{month:02}")),
         );
     }

@@ -1,13 +1,16 @@
-//! Switching the resolution setting, and what the mailbox does about the
-//! overlay decodes it outruns.
+//! Switching the resolution setting, what the mailbox does about the overlay
+//! decodes it outruns, and what the packs of the real faces hold.
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
-use sunlit_core::assets::cube_layout::CubeTextures;
+use sunlit_core::assets::cube_layout::{CubeTextures, FaceSet};
 use sunlit_core::assets::mailbox::DecodedTextureMessage;
 use sunlit_core::assets::mailbox::TextureMailbox;
 use sunlit_core::assets::texture_loader::{Channels, DecodedImage, Pixels};
-use sunlit_core::assets::tiles::{self, PackKind};
+use sunlit_core::assets::tiles::{self, PackKind, TileKey};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::engine::EngineConfig;
 use sunlit_core::params::SceneParams;
@@ -394,6 +397,243 @@ fn real_cube() -> Result<CubeTextures, String> {
     }
 }
 
+/// The repository's cube faces and a cache that outlives the run with every
+/// pack of the year built from them, once for every case that reads it, or
+/// why there are none: a few minutes the first time, and a positional read of
+/// each index after it. A case takes the GPU before it reads this, so the
+/// build, which holds every core for those minutes on a cold cache, is
+/// serialized against the engine cases and their one minute waits like any
+/// other case; taken again inside, the lock would never be had.
+static REAL_PACKS: LazyLock<Result<(CubeTextures, PathBuf), String>> = LazyLock::new(|| {
+    let cube = real_cube()?;
+    let cache = crate::test_support::scratch_root().join("engine_resolution_memory_cache");
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    sunlit_core::assets::texture_loader::register_jxl_hook();
+    for kind in PackKind::all() {
+        tiles::ensure_pack(&cache, kind, &cube, &tiles::GEOMETRY, &cancel)
+            .unwrap_or_else(|e| panic!("build the {kind:?} pack: {e:?}"));
+    }
+    Ok((cube, cache))
+});
+
+/// The fill the cube bake flattens open water to.
+const FILL: [u8; 3] = [10, 30, 60];
+
+/// How far the codec moves the flattened fill: every tile of open water on the
+/// faces decodes within this of it on every channel.
+const FILL_SPREAD: u8 = 5;
+
+/// The luminance, Rec. 709 on the 8-bit values, at and above which the shader
+/// starts taking the glint off a texel over open water: ice, or the part of a
+/// texel ice covers.
+const ICE_FOOT: f64 = 52.0;
+
+/// One face of the real cube, decoded.
+fn decoded_face(path: &Path) -> image::DynamicImage {
+    let mut reader =
+        image::ImageReader::open(path).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    reader.no_limits();
+    reader
+        .decode()
+        .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()))
+}
+
+/// RGBA8 texels of `size` a side, each the rounded mean of the four beneath it.
+fn halved(texels: &[u8], size: usize) -> Vec<u8> {
+    let half = size / 2;
+    let mut out = Vec::with_capacity(half * half * 4);
+    for row in 0..half {
+        for col in 0..half {
+            for channel in 0..4 {
+                let at = |r: usize, c: usize| u32::from(texels[(r * size + c) * 4 + channel]);
+                let sum = at(2 * row, 2 * col)
+                    + at(2 * row, 2 * col + 1)
+                    + at(2 * row + 1, 2 * col)
+                    + at(2 * row + 1, 2 * col + 1);
+                out.push(u8::try_from((sum + 2) / 4).expect("a mean of bytes"));
+            }
+        }
+    }
+    out
+}
+
+/// What the tiles of one day pack hold, against what its index says of them.
+#[derive(Debug, Default)]
+struct DayTiles {
+    /// Tiles with a texel of ice over open water.
+    with_ice: usize,
+    /// Of those, the ones the pack flags constant ocean.
+    ice_flagged: usize,
+    /// Tiles whose window lies inside their face and is open water within
+    /// [`FILL_SPREAD`] of the fill.
+    open_water: usize,
+    /// Of those, the ones the pack stores.
+    open_water_stored: usize,
+    /// Tiles whose window lies inside their face and is open water below the
+    /// ice ramp's foot with a texel farther from the fill: ice too thin to
+    /// reach the foot, at the edge of the pack.
+    faint_ice: usize,
+    /// Of those, the ones the pack stores.
+    faint_ice_stored: usize,
+}
+
+/// Every tile of `pack`, a day pack cut from `faces` with `GEOMETRY`, held to
+/// the texels it was cut from, and `mask`, the six open water faces at the
+/// finest level, `true` for open water.
+fn day_tiles(pack: &tiles::Pack, faces: &FaceSet, mask: &[Vec<bool>]) -> DayTiles {
+    let geometry = tiles::GEOMETRY;
+    let flagged: HashSet<TileKey> = pack
+        .entries()
+        .iter()
+        .filter(|entry| entry.ocean)
+        .map(|entry| entry.key)
+        .collect();
+    let (tile, gutter, layer) = (
+        geometry.tile as usize,
+        geometry.gutter as usize,
+        geometry.layer() as usize,
+    );
+    let mut found = DayTiles::default();
+    for (face, path) in faces.iter().enumerate() {
+        let path = path.as_ref().expect("a complete cube");
+        let mut texels = decoded_face(path).into_rgba8().into_raw();
+        let mut water = mask[face].clone();
+        let mut size = geometry.face as usize;
+        for _ in 0..geometry.levels {
+            let luma = |at: usize| {
+                0.2126 * f64::from(texels[at * 4])
+                    + 0.7152 * f64::from(texels[at * 4 + 1])
+                    + 0.0722 * f64::from(texels[at * 4 + 2])
+            };
+            let bright: Vec<bool> = (0..size * size).map(|at| luma(at) >= ICE_FOOT).collect();
+            for row in 0..size / tile {
+                for col in 0..size / tile {
+                    let key = TileKey {
+                        level: tiles::Geometry::level_of(u32::try_from(size).expect("a face")),
+                        face: u8::try_from(face).expect("a face index"),
+                        row: u16::try_from(row).expect("a tile row"),
+                        col: u16::try_from(col).expect("a tile column"),
+                    };
+                    let texels_of = |top: usize, left: usize, side: usize| {
+                        (top..top + side)
+                            .flat_map(move |r| (left..left + side).map(move |c| r * size + c))
+                    };
+                    if texels_of(row * tile, col * tile, tile).any(|at| water[at] && bright[at]) {
+                        found.with_ice += 1;
+                        found.ice_flagged += usize::from(flagged.contains(&key));
+                    }
+                    let inside = row * tile >= gutter
+                        && col * tile >= gutter
+                        && row * tile - gutter + layer <= size
+                        && col * tile - gutter + layer <= size;
+                    if !inside {
+                        continue;
+                    }
+                    let window = || texels_of(row * tile - gutter, col * tile - gutter, layer);
+                    if !window().all(|at| water[at] && !bright[at]) {
+                        continue;
+                    }
+                    let stored = usize::from(!flagged.contains(&key));
+                    if window().all(|at| {
+                        (0..3).all(|c| texels[at * 4 + c].abs_diff(FILL[c]) <= FILL_SPREAD)
+                    }) {
+                        found.open_water += 1;
+                        found.open_water_stored += stored;
+                    } else {
+                        found.faint_ice += 1;
+                        found.faint_ice_stored += stored;
+                    }
+                }
+            }
+            texels = halved(&texels, size);
+            water = (0..size / 2)
+                .flat_map(|r| (0..size / 2).map(move |c| (r, c)))
+                .map(|(r, c)| {
+                    water[2 * r * size + 2 * c]
+                        && water[2 * r * size + 2 * c + 1]
+                        && water[(2 * r + 1) * size + 2 * c]
+                        && water[(2 * r + 1) * size + 2 * c + 1]
+                })
+                .collect();
+            size /= 2;
+        }
+    }
+    found
+}
+
+/// The day packs of the real faces store every tile with sea ice in it and
+/// flag the tiles of flattened open water constant ocean, and the ocean color
+/// they draw those in stays on the fill, in every month. Ice is what the
+/// shader takes the glint off, a texel over open water at or above the ramp's
+/// foot, and flattened open water is open water within the codec's spread of
+/// the fill. The tiles between the two, open water below the foot with a texel
+/// off the fill, are ice too thin to reach the foot; they are counted and
+/// printed, not held to either. A tile whose window crosses a face edge is left
+/// out of the open water counts, since its gutter is read from the
+/// neighboring face.
+#[test]
+fn the_real_day_packs_store_the_sea_ice_and_flag_the_open_water() {
+    let _gpu = gpu();
+    let (cube, cache) = match &*REAL_PACKS {
+        Ok(found) => found.clone(),
+        Err(why) => {
+            println!("skipped: {why}; `git lfs pull` fetches the assets");
+            return;
+        }
+    };
+    let mask: Vec<Vec<bool>> = cube
+        .mask
+        .iter()
+        .map(|path| {
+            let path = path.as_ref().expect("a complete cube");
+            decoded_face(path)
+                .into_luma8()
+                .into_raw()
+                .into_iter()
+                .map(|m| m == u8::MAX)
+                .collect()
+        })
+        .collect();
+    let months: Vec<(DayTiles, [u8; 4])> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..12)
+            .map(|month| {
+                let (faces, mask, cache) = (&cube.day[month], &mask, &cache);
+                scope.spawn(move || {
+                    let path = tiles::pack_path(cache, PackKind::Day(month));
+                    let pack = tiles::Pack::open(&path).expect("a built pack");
+                    (day_tiles(&pack, faces, mask), pack.ocean())
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("a month's tally"))
+            .collect()
+    });
+    for (month, (found, ocean)) in months.iter().enumerate() {
+        println!("month {}: ocean {ocean:?}, {found:?}", month + 1);
+    }
+    for (month, (found, ocean)) in months.iter().enumerate() {
+        let month = month + 1;
+        assert!(
+            ocean.iter().zip(FILL).all(|(&o, f)| o.abs_diff(f) <= 2),
+            "month {month}'s ocean color {ocean:?} is more than 2 from the fill {FILL:?}"
+        );
+        assert!(
+            found.with_ice > 0 && found.open_water > 0,
+            "month {month} has no tile of ice or none of open water to hold: {found:?}"
+        );
+        assert_eq!(
+            found.ice_flagged, 0,
+            "month {month} flags tiles with sea ice constant ocean: {found:?}"
+        );
+        assert_eq!(
+            found.open_water_stored, 0,
+            "month {month} stores tiles of open water: {found:?}"
+        );
+    }
+}
+
 /// Going down a resolution has to give the memory back, which is the whole
 /// point of the setting: on the real faces, at the widest setting, the tile
 /// array holds the layers a 4K export at the zoom of the CPU adapter's peak
@@ -406,7 +646,7 @@ fn real_cube() -> Result<CubeTextures, String> {
 /// they started (`docs/testing.md`). The figure is printed for the record.
 ///
 /// An engine of its own, over a cache that outlives the run: every pack of the
-/// year is built before the engine starts, which takes about a minute the first
+/// year is built before the engine starts, which takes a few minutes the first
 /// time and a positional read of each index after it, so no build runs in the
 /// background while the engine sits idle between the two reports.
 #[test]
@@ -414,22 +654,14 @@ fn lowering_the_resolution_releases_the_tile_array() {
     const WIDE: u32 = 8192;
     const NARROW: u32 = 2048;
 
-    let cube = match real_cube() {
-        Ok(cube) => cube,
+    let _gpu = gpu();
+    let (cube, cache) = match &*REAL_PACKS {
+        Ok(found) => found.clone(),
         Err(why) => {
             println!("skipped: {why}; `git lfs pull` fetches the assets");
             return;
         }
     };
-
-    let _gpu = gpu();
-    let cache = crate::test_support::scratch_root().join("engine_resolution_memory_cache");
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    sunlit_core::assets::texture_loader::register_jxl_hook();
-    for kind in PackKind::all() {
-        tiles::ensure_pack(&cache, kind, &cube, &tiles::GEOMETRY, &cancel)
-            .unwrap_or_else(|e| panic!("build the {kind:?} pack: {e:?}"));
-    }
 
     let harness = Harness::start(|config| {
         config.cube_textures = cube.clone();

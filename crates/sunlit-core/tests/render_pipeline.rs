@@ -1759,6 +1759,304 @@ fn the_water_effects_are_inert_while_their_gates_are_zero() {
     );
 }
 
+/// The frame a sea ice case draws, looking down at `latitude` with the Sun
+/// behind the camera, so its glint is centered there, without the water
+/// effects and with them.
+fn water_effects_at(latitude: f32, size: u32) -> (Uniforms, Uniforms) {
+    let phi = latitude.to_radians();
+    let axis = glam::Vec3::new(0.0, phi.sin(), phi.cos());
+    let matte = Uniforms {
+        terminator_width: 0.15,
+        flags: 1,
+        sun_dir: axis.into(),
+        ..looking_along(size, axis)
+    };
+    let wet = Uniforms {
+        spec_intensity: 0.5,
+        spec_shininess: 8.0,
+        fresnel_mix: 0.5,
+        fresnel_exp: 1.0,
+        ..matte
+    };
+    (matte, wet)
+}
+
+/// The RGB of the pixels of a square frame drawn with `uniforms` whose surface
+/// lies at a latitude `keep` accepts, in degrees either side of the equator.
+fn pixels_at_latitudes(
+    frame: &[u8],
+    uniforms: &Uniforms,
+    size: u32,
+    keep: impl Fn(f64) -> bool,
+) -> Vec<[u8; 3]> {
+    pixels_where(frame, uniforms, size, |n| keep(latitude_of(n)))
+}
+
+/// The latitude of the surface under the unit normal `n`, in degrees either
+/// side of the equator.
+fn latitude_of(n: glam::DVec3) -> f64 {
+    n.y.clamp(-1.0, 1.0).asin().to_degrees().abs()
+}
+
+/// Poleward of the shader's ice gate by a degree. The shader reads the
+/// latitude off the test sphere's flat triangles, which puts a pixel a fraction
+/// of a degree from where the sphere under it lies, so a cut on the gate's
+/// own edge leaves pixels inside its ramp.
+fn poleward_of_the_gate(latitude: f64) -> bool {
+    latitude >= 36.0
+}
+
+/// Equatorward of the shader's ice gate by a degree, as
+/// [`poleward_of_the_gate`] is poleward of it.
+fn equatorward_of_the_gate(latitude: f64) -> bool {
+    latitude <= 29.0
+}
+
+/// The RGB of the pixels of a square frame drawn with `uniforms` whose surface
+/// normal `keep` accepts.
+fn pixels_where(
+    frame: &[u8],
+    uniforms: &Uniforms,
+    size: u32,
+    keep: impl Fn(glam::DVec3) -> bool,
+) -> Vec<[u8; 3]> {
+    let inverse = glam::Mat4::from_cols_array(&uniforms.mvp)
+        .as_dmat4()
+        .inverse();
+    let mut kept = Vec::new();
+    for y in 0..size {
+        for x in 0..size {
+            let Some(n) = normal_under_pixel(inverse, size, x, y) else {
+                continue;
+            };
+            if keep(n) {
+                let at = ((y * size + x) * 4) as usize;
+                kept.push([frame[at], frame[at + 1], frame[at + 2]]);
+            }
+        }
+    }
+    kept
+}
+
+/// Sea ice the bake composited over open water takes neither the glint nor
+/// the Fresnel shift, from the brightest winter pack down to a texel at the
+/// darkest fully covered ice, while the fill beside it keeps both. Held
+/// poleward of the caps' reach, over a frame centered at 60 degrees.
+#[test]
+fn sea_ice_over_open_water_takes_no_glint_and_no_fresnel_shift() {
+    let ctx = render_ctx();
+    let size = 128;
+    let night = [5, 5, 10, 128];
+    let (matte, wet) = water_effects_at(60.0, size);
+    let poleward = |day: [u8; 4], uniforms: &Uniforms| {
+        let frame = render_frame(&ctx, uniforms, day, night, size, size);
+        pixels_at_latitudes(&frame, uniforms, size, poleward_of_the_gate)
+    };
+    for ice in [[240, 243, 247, 128], [80, 80, 80, 128]] {
+        let seen = poleward(ice, &matte);
+        assert!(seen.len() > 1_000, "{} pixels poleward of 36", seen.len());
+        assert_eq!(
+            seen,
+            poleward(ice, &wet),
+            "ice {ice:?} over open water should draw as if the water effects were off"
+        );
+    }
+    let fill = [10, 30, 60, 128];
+    assert_ne!(
+        poleward(fill, &matte),
+        poleward(fill, &wet),
+        "the open water's fill should keep its glint and its shift"
+    );
+}
+
+/// Equatorward of the caps there is no sea ice, so a bright texel over water
+/// is a coast's land and its share of water keeps the glint and the Fresnel
+/// shift: a light sand half over water, in a frame centered on the equator.
+#[test]
+fn a_bright_coast_texel_equatorward_of_the_caps_keeps_its_glint() {
+    let ctx = render_ctx();
+    let size = 128;
+    let night = [5, 5, 10, 128];
+    let (matte, wet) = water_effects_at(0.0, size);
+    let sand_half_water = [200, 180, 140, 191];
+    let equatorward = |uniforms: &Uniforms| {
+        let frame = render_frame(&ctx, uniforms, sand_half_water, night, size, size);
+        pixels_at_latitudes(&frame, uniforms, size, equatorward_of_the_gate)
+    };
+    let (dry, glinting) = (equatorward(&matte), equatorward(&wet));
+    assert!(dry.len() > 1_000, "{} pixels equatorward of 29", dry.len());
+    let brighter = dry
+        .iter()
+        .zip(&glinting)
+        .filter(|(d, g)| g.iter().zip(d.iter()).all(|(g, d)| g > d))
+        .count();
+    assert!(
+        brighter > dry.len() / 4,
+        "only {brighter} of {} pixels equatorward of 29 degrees glint over a bright \
+         coast texel's water",
+        dry.len()
+    );
+}
+
+/// The night's open water, the flat fill the Black Marble draws every sea in.
+const NIGHT_FILL: [u8; 4] = [5, 5, 15, 255];
+
+/// The frame a night ice case draws: looking down at `latitude` with the Sun
+/// behind the globe, so all but a rim at the limb is night, and the night
+/// pack's ocean color the fill.
+fn night_side_at(latitude: f32, size: u32) -> Uniforms {
+    let phi = latitude.to_radians();
+    let axis = glam::Vec3::new(0.0, phi.sin(), phi.cos());
+    Uniforms {
+        terminator_width: 0.15,
+        flags: 1,
+        sun_dir: (-axis).into(),
+        night_ocean: u32::from_le_bytes(NIGHT_FILL),
+        ..looking_along(size, axis)
+    }
+}
+
+/// The RGB of the pixels of a night ice frame past the terminator's ramp,
+/// where nothing of the day is mixed in, at a latitude `keep` accepts.
+fn night_pixels(
+    frame: &[u8],
+    uniforms: &Uniforms,
+    size: u32,
+    keep: impl Fn(f64) -> bool,
+) -> Vec<[u8; 3]> {
+    let sun = glam::Vec3::from(uniforms.sun_dir).as_dvec3();
+    pixels_where(frame, uniforms, size, |n| {
+        n.dot(sun) < -0.2 && keep(latitude_of(n))
+    })
+}
+
+/// The night side of a frame drawn from `day` and `night` at `latitude`, held
+/// to one color, which the cubes of one color draw everywhere `keep` accepts.
+fn night_color(
+    ctx: &RenderContext,
+    latitude: f32,
+    day: [u8; 4],
+    night: [u8; 4],
+    keep: impl Fn(f64) -> bool,
+) -> [u8; 3] {
+    let size = 128;
+    let uniforms = night_side_at(latitude, size);
+    let frame = render_frame(ctx, &uniforms, day, night, size, size);
+    let seen = night_pixels(&frame, &uniforms, size, keep);
+    assert!(seen.len() > 1_000, "{} night pixels", seen.len());
+    let first = seen[0];
+    assert!(
+        seen.iter().all(|&p| close(p, first, 1)),
+        "the night side of {day:?} over {night:?} at {latitude} degrees is not one color"
+    );
+    first
+}
+
+fn rgb(color: [u8; 4]) -> [u8; 3] {
+    [color[0], color[1], color[2]]
+}
+
+/// Sea ice over open water is drawn on the night side, where the Black
+/// Marble's sea is the fill whether it is frozen or not: the winter pack
+/// brighter and bluer than the fill, and ice of half its luminance by day half
+/// as bright by night. Held poleward of the caps' reach, at 60 degrees.
+#[test]
+fn sea_ice_on_the_night_side_is_drawn_by_its_day_luminance() {
+    let ctx = render_ctx();
+    let poleward = poleward_of_the_gate;
+    let pack = night_color(&ctx, 60.0, [240, 243, 247, 128], NIGHT_FILL, poleward);
+    let fill = rgb(NIGHT_FILL);
+    assert!(
+        pack.iter().zip(fill).all(|(&p, f)| p >= f + 20) && pack[2] > pack[0].max(pack[1]),
+        "the winter pack draws {pack:?} by night over a fill of {fill:?}"
+    );
+    let half = night_color(&ctx, 60.0, [120, 122, 124, 128], NIGHT_FILL, poleward);
+    assert!(
+        half.iter()
+            .zip(pack)
+            .all(|(&h, p)| (f64::from(h) - f64::from(p) / 2.0).abs() <= 1.5),
+        "ice of half the pack's luminance draws {half:?} by night, the pack {pack:?}"
+    );
+}
+
+/// Open water's fill by day keeps the night's fill by night, poleward of the
+/// caps' reach as everywhere else.
+#[test]
+fn open_water_on_the_night_side_keeps_the_night_fill() {
+    let ctx = render_ctx();
+    let drawn = night_color(
+        &ctx,
+        60.0,
+        [10, 30, 60, 128],
+        NIGHT_FILL,
+        poleward_of_the_gate,
+    );
+    assert!(
+        close(drawn, rgb(NIGHT_FILL), 1),
+        "open water draws {drawn:?} by night"
+    );
+}
+
+/// Equatorward of the caps a bright texel over water is a coast's land, so
+/// the night keeps its own texel there: a light sand half over water, in a
+/// frame centered on the equator.
+#[test]
+fn a_bright_coast_texel_equatorward_of_the_caps_keeps_its_night() {
+    let ctx = render_ctx();
+    let drawn = night_color(
+        &ctx,
+        0.0,
+        [200, 180, 140, 191],
+        NIGHT_FILL,
+        equatorward_of_the_gate,
+    );
+    assert!(
+        close(drawn, rgb(NIGHT_FILL), 1),
+        "a bright coast texel equatorward of 29 degrees draws {drawn:?} by night"
+    );
+}
+
+/// A texel half over water takes the ice in its water's share: the winter
+/// pack half over water draws halfway between the night's fill and the pack.
+#[test]
+fn a_half_water_texel_takes_the_night_ice_by_its_share() {
+    let ctx = render_ctx();
+    let poleward = poleward_of_the_gate;
+    let pack = night_color(&ctx, 60.0, [240, 243, 247, 128], NIGHT_FILL, poleward);
+    let coast = night_color(&ctx, 60.0, [240, 243, 247, 191], NIGHT_FILL, poleward);
+    assert!(
+        !close(pack, rgb(NIGHT_FILL), 20),
+        "the winter pack draws {pack:?} by night, as the fill"
+    );
+    assert!(
+        coast
+            .iter()
+            .zip(pack)
+            .zip(rgb(NIGHT_FILL))
+            .all(
+                |((&c, p), f)| (f64::from(c) - f64::midpoint(f64::from(p), f64::from(f))).abs()
+                    <= 1.5
+            ),
+        "the pack half over water draws {coast:?} by night, over full water {pack:?}"
+    );
+}
+
+/// The night's lights keep their color where the ice comes: at a coast half
+/// over water, where they are the land's, and at sea, where the water is not
+/// the fill.
+#[test]
+fn the_nights_lights_keep_their_color_over_sea_ice() {
+    let ctx = render_ctx();
+    let lights = [200, 160, 100, 255];
+    for day in [[240, 243, 247, 191], [240, 243, 247, 128]] {
+        let drawn = night_color(&ctx, 60.0, day, lights, poleward_of_the_gate);
+        assert!(
+            close(drawn, rgb(lights), 1),
+            "lights of {lights:?} over ice {day:?} draw {drawn:?}"
+        );
+    }
+}
+
 #[test]
 fn fresnel_specular_brighter_at_grazing() {
     let ctx = render_ctx();

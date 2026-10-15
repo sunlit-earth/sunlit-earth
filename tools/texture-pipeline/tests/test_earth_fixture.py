@@ -1,10 +1,11 @@
 """Tests for the Rust golden suite's cube of the real Earth.
 
-The fixture is the shipped cube at an eighth of its size: July's day faces,
-the night faces and the water mask faces, each area-averaged from 2048 to 256
-texels, so the orientation golden shows the real continents without needing
-the Git LFS objects. Rerun with ``TEXTURE_PIPELINE_UPDATE_FIXTURES=1`` in a
-checkout that has them to regenerate it after the shipped faces change.
+The fixture is the shipped cube at an eighth of its size: March's and July's
+day faces, the night faces and the water mask faces, each area-averaged from
+2048 to 256 texels, so the goldens show the real continents and the sea ice of
+both seasons without needing the Git LFS objects. Rerun with
+``TEXTURE_PIPELINE_UPDATE_FIXTURES=1`` in a checkout that has them to
+regenerate it after the shipped faces change.
 """
 
 import os
@@ -22,9 +23,9 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 SHIPPED = REPOSITORY / "textures"
 EARTH_FIXTURE = REPOSITORY / "crates" / "sunlit-core" / "tests" / "fixtures" / "earth"
 EARTH_FACE = 256
-EARTH_MONTH = "200407"
+EARTH_MONTHS = ("200403", "200407")
 EARTH_QUALITY = 90
-EARTH_SETS = (f"day/{EARTH_MONTH}", "night", "mask")
+EARTH_SETS = (*(f"day/{month}" for month in EARTH_MONTHS), "night", "mask")
 LFS_POINTER = b"version https://git-lfs"
 
 # What a quality 90 encode moves a face from the texels it was given, with a

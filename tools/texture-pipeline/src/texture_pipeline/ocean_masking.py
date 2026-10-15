@@ -181,6 +181,7 @@ def detect_ice_regions(
     image: Image.Image,
     ocean_mask: np.ndarray,
     latitude_threshold: float = 60.0,
+    south_only: bool = False,
     seed_luminance: int = 200,
     seed_saturation: float = 0.15,
     relax_luminance: int = 120,
@@ -199,6 +200,8 @@ def detect_ice_regions(
     :param image: Source RGB image (equirectangular projection).
     :param ocean_mask: uint8 array (H, W). 0 = land, 255 = ocean.
     :param latitude_threshold: Minimum absolute latitude for polar gate.
+    :param south_only: Search south of ``-latitude_threshold`` alone, where
+        the ocean side of the coastline holds the Antarctic ice shelves.
     :param seed_luminance: Strict seed luminance threshold (0--255).
     :param seed_saturation: Strict seed max saturation (0.0--1.0).
     :param relax_luminance: Relaxed expansion luminance threshold.
@@ -221,7 +224,11 @@ def detect_ice_regions(
 
     # 1. Latitude gate — identify polar row ranges
     row_latitudes = 90.0 - np.arange(h) * 180.0 / h
-    polar_rows = np.abs(row_latitudes) >= latitude_threshold
+    polar_rows = (
+        row_latitudes <= -latitude_threshold
+        if south_only
+        else np.abs(row_latitudes) >= latitude_threshold
+    )
 
     # Find contiguous polar row ranges to avoid processing the full image.
     # In equirectangular, polar rows are at the top (Arctic) and bottom
@@ -332,3 +339,138 @@ def reduce_mask_for_ice(
     return np.clip(
         ocean_mask.astype(np.int16) - ice_mask.astype(np.int16), 0, 255
     ).astype(np.uint8)
+
+
+REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+"""The luminance weights the water test reads the imagery with."""
+
+
+class YearlyWater:
+    """Each source pixel's brightest luminance and least blue over the year.
+
+    A pixel is water in every month exactly when its brightest luminance is
+    below a threshold and its least blue, blue less red, above one, so these
+    two arrays decide the test for any thresholds.
+    """
+
+    def __init__(self, max_luma: np.ndarray, min_blue: np.ndarray) -> None:
+        """Hold the two arrays.
+
+        :param max_luma: uint8 array ``(H, W)``, the brightest Rec. 709
+            luminance over the months added, rounded.
+        :param min_blue: int16 array ``(H, W)``, the least blue less red.
+        """
+        self.max_luma = max_luma
+        self.min_blue = min_blue
+
+    @classmethod
+    def empty(cls, height: int, width: int) -> YearlyWater:
+        """Return the statistics of no month at all."""
+        return cls(
+            np.zeros((height, width), dtype=np.uint8),
+            np.full((height, width), 255, dtype=np.int16),
+        )
+
+    def add(self, rgb: np.ndarray, band_rows: int = 540) -> None:
+        """Take one month into the statistics.
+
+        :param rgb: uint8 array ``(H, W, 3)``.
+        :param band_rows: Rows worked at once, which bounds the float
+            intermediates.
+        """
+        for start in range(0, rgb.shape[0], band_rows):
+            band = rgb[start : start + band_rows]
+            luma = np.rint(band.astype(np.float32) @ REC709).astype(np.uint8)
+            np.maximum(self.max_luma[start : start + band_rows], luma, out=luma)
+            self.max_luma[start : start + band_rows] = luma
+            blue = band[..., 2].astype(np.int16) - band[..., 0].astype(np.int16)
+            np.minimum(self.min_blue[start : start + band_rows], blue, out=blue)
+            self.min_blue[start : start + band_rows] = blue
+
+
+def latitude_rows(height: int, min_latitude: float) -> tuple[int, int]:
+    """Return the rows that bound the band within ``min_latitude`` of the equator.
+
+    :param height: Rows of an equirectangular source.
+    :param min_latitude: The latitude in degrees.
+    :returns: The first row whose center is equatorward of ``min_latitude``
+        north, and the first row whose center is at or poleward of it south.
+    """
+    centers = 90.0 - (np.arange(height) + 0.5) * 180.0 / height
+    north = int(np.count_nonzero(centers >= min_latitude))
+    south = height - int(np.count_nonzero(centers <= -min_latitude))
+    return north, south
+
+
+def water_from_imagery(
+    mask: np.ndarray,
+    water: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    """Turn the imagery's water that is connected to the ocean into ocean.
+
+    A pixel short of open ocean in the mask whose imagery is water joins the
+    ocean when it is connected to the mask's open ocean through such pixels,
+    four-connected, so that a lake stays land.
+
+    :param mask: uint8 array ``(H, W)``, 255 for open ocean. Changed in place.
+    :param water: bool array ``(H, W)``, where the imagery is water.
+    :returns: The mask, and how many pixels became ocean.
+    """
+    from scipy.ndimage import binary_dilation, label
+
+    ocean = mask == 255
+    candidate = water & ~ocean
+    labels, count = label(candidate)
+    if count == 0:
+        return mask, 0
+    touching = binary_dilation(ocean) & candidate
+    keep = np.zeros(count + 1, dtype=bool)
+    keep[np.unique(labels[touching])] = True
+    keep[0] = False
+    joined = keep[labels]
+    mask[joined] = 255
+    return mask, int(np.count_nonzero(joined))
+
+
+IMAGERY_WATER_LATITUDE = 50.0
+"""The imagery's water joins the ocean poleward of this latitude."""
+
+IMAGERY_WATER = (14, 7)
+"""The brightest Rec. 709 luminance over the year, at most, and the least
+blue above red in every month, at least, of a pixel the imagery draws as
+water: the 99th and the 1st percentile of the Blue Marble of 2004 over the
+open ocean poleward of 50 degrees, at least 10 pixels from anything else and
+where OSI-450-a1's concentration stays below 15% all year."""
+
+
+def join_imagery_water(
+    mask: np.ndarray,
+    stats: YearlyWater,
+    min_latitude: float = IMAGERY_WATER_LATITUDE,
+    thresholds: tuple[int, int] = IMAGERY_WATER,
+) -> dict[str, int]:
+    """Join the imagery's water to the ocean poleward of a latitude, in place.
+
+    A pixel is the imagery's water in every month when its brightest
+    luminance is at most the first threshold and its least blue above red at
+    least the second. In the north's band and in the south's, such water
+    joins the ocean where :func:`water_from_imagery` connects it, so a lake
+    stays land.
+
+    :param mask: uint8 array ``(H, W)``, 255 for open ocean, equirectangular.
+        Changed in place.
+    :param stats: The imagery's statistics over the year.
+    :param min_latitude: The bands' equatorward edge, in degrees.
+    :param thresholds: The luminance and the blue above red.
+    :returns: The pixels joined in the ``north`` and in the ``south``.
+    """
+    height = mask.shape[0]
+    north, south = latitude_rows(height, min_latitude)
+    max_luma, min_blue = thresholds
+    joined = {}
+    for name, start, stop in (("north", 0, north), ("south", south, height)):
+        water = (stats.max_luma[start:stop] <= max_luma) & (
+            stats.min_blue[start:stop] >= min_blue
+        )
+        _, joined[name] = water_from_imagery(mask[start:stop], water)
+    return joined

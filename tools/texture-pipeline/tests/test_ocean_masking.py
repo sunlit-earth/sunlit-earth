@@ -345,6 +345,21 @@ class TestDetectIceRespectsLatitudeGate:
         assert np.all(result[40:60, 80:120] == 0)
 
 
+class TestDetectIceSouthOnly:
+    def test_the_arctic_is_left_alone_and_the_antarctic_searched(
+        self,
+        polar_ice_image_200x100: Image.Image,
+        polar_ice_ocean_mask_200x100: np.ndarray,
+    ) -> None:
+        arr = np.array(polar_ice_image_200x100)
+        arr[86:96, 10:30] = [240, 240, 240]
+        result = detect_ice_regions(
+            Image.fromarray(arr), polar_ice_ocean_mask_200x100, south_only=True
+        )
+        assert np.all(result[:17] == 0)
+        assert np.any(result[87:95, 12:28] > 0)
+
+
 class TestDetectIceRespectsOceanMask:
     def test_bright_on_land_ignored(
         self,

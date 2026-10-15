@@ -616,8 +616,8 @@ mod tests {
         assert_eq!(LICENSE, on_disk);
     }
 
-    /// The only content assertion left on this document, because it is the
-    /// only one where the wording is not ours: EUMETSAT's data licensing
+    /// One of the two content assertions left on this document, because they
+    /// are the two where the wording is not ours: EUMETSAT's data licensing
     /// requires this sentence and does not leave the phrasing to us, so
     /// asserting it pins a requirement rather than a way of writing. Every
     /// other credit was pinned by phrase and rewriting the document broke
@@ -628,6 +628,17 @@ mod tests {
         assert!(
             ATTRIBUTION.contains("Contains modified EUMETSAT data"),
             "the mandatory EUMETSAT notice is missing"
+        );
+    }
+
+    /// The other: the OSI SAF product user manual gives the credit for a
+    /// modification of its sea ice record the form "Contains modified
+    /// EUMETSAT OSI SAF", and the day faces carry the ice.
+    #[test]
+    fn the_sea_ice_credit_carries_the_osi_saf_notice_verbatim() {
+        assert!(
+            ATTRIBUTION.contains("Contains modified EUMETSAT OSI SAF"),
+            "the mandatory OSI SAF notice is missing"
         );
     }
 

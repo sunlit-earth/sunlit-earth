@@ -18,6 +18,7 @@ from rich.progress import (
     TextColumn,
 )
 
+from texture_pipeline import parallel, sea_ice, sea_ice_look
 from texture_pipeline.cube import FACES, area_average, reproject_face, working_size
 from texture_pipeline.discovery import (
     compute_output_path,
@@ -386,6 +387,14 @@ def earth(
     )
 
 
+POLAR_FACES = ("py", "ny")
+"""The faces the coast's land is blended toward the ice on: they hold every
+coast poleward of 45 degrees."""
+
+RESAMPLE_WORKERS = min(4, os.cpu_count() or 1)
+"""The threads that resample a face when the bake is given no worker count."""
+
+
 def _open_rgb(path: Path) -> Image.Image:
     image = Image.open(path)
     return image if image.mode == "RGB" else image.convert("RGB")
@@ -411,6 +420,77 @@ def _write_face(pixels: np.ndarray, path: Path, quality: int, effort: int) -> in
     return path.stat().st_size
 
 
+def _read_sea_ice(
+    directory: Path | None, fetch: bool
+) -> dict[str, sea_ice.Hemisphere] | None:
+    if directory is None:
+        return None
+    if fetch:
+        downloaded = sea_ice.fetch(
+            directory, report=lambda name: typer.echo(f"Fetching {name}")
+        )
+        typer.echo(f"Fetched: {downloaded} files, manifest {sea_ice.MANIFEST}")
+    missing = sea_ice.missing_files(directory)
+    if missing:
+        typer.echo(
+            f"Error: {len(missing)} monthly sea ice files are missing from "
+            f"{directory}, the first {missing[0]}; pass --fetch to download them",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return {h: sea_ice.read_hemisphere(directory, h) for h in sea_ice.HEMISPHERES}
+
+
+def _sea_ice_fields(
+    hemispheres: dict[str, sea_ice.Hemisphere] | None,
+    cap_size: int,
+    water: dict[str, np.ndarray],
+) -> dict[str, sea_ice_look.Fields] | None:
+    if hemispheres is None:
+        return None
+    fields = {}
+    for name, hemisphere in hemispheres.items():
+        stage = time.monotonic()
+        land = sea_ice_look.cap_land(water, name, cap_size)
+        banded = sea_ice_look.fast_ice(hemisphere)
+        fields[name] = sea_ice_look.prepare(
+            sea_ice.cap_concentration(banded), name, cap_size, land=land
+        )
+        typer.echo(
+            f"Ice:     {name} fields at {cap_size}, {time.monotonic() - stage:.1f}s"
+        )
+    return fields
+
+
+def _month_ice(
+    fields: dict[str, sea_ice_look.Fields] | None, month: int
+) -> sea_ice_look.MonthIce | None:
+    if fields is None:
+        return None
+    return sea_ice_look.MonthIce(
+        {name: sea_ice_look.month_cap(f, month) for name, f in fields.items()}
+    )
+
+
+def _report_ice_area(
+    hemispheres: dict[str, sea_ice.Hemisphere] | None,
+    month: int,
+    area: dict[str, float],
+) -> None:
+    if hemispheres is None:
+        return
+    for name, hemisphere in hemispheres.items():
+        source = float(sea_ice.source_area_km2(hemisphere)[month - 1])
+        toned = float(sea_ice_look.toned_area_km2(hemisphere)[month - 1])
+        ratio = area[name] / source if source else float(area[name] == 0)
+        against = area[name] / toned if toned else float(area[name] == 0)
+        typer.echo(
+            f"Ice:     {name} {area[name] / 1e6:.2f} million km2 over water, "
+            f"source {source / 1e6:.2f}, {(ratio - 1) * 100:+.1f}%, toned "
+            f"{toned / 1e6:.2f}, {(against - 1) * 100:+.1f}%"
+        )
+
+
 def run_cube(
     *,
     input_dir: Path,
@@ -426,17 +506,29 @@ def run_cube(
     ocean_preserve_ice: bool,
     ocean_ice_luminance: int,
     ocean_ice_latitude: float,
-    workers: int,
+    workers: int | None = None,
+    ocean_ice_south_only: bool = True,
+    sea_ice_dir: Path | None = None,
+    sea_ice_fetch: bool = False,
+    sea_ice_cap_size: int = sea_ice.CAP_SIZE,
+    imagery_water: bool = True,
 ) -> None:
     """Bake the monthly day cubes, the night cube and the water mask cube.
 
     One water mask serves every month. It is rasterized once from the
-    shapefile at the day maps' size, less the ice the detector finds in any
-    month, and resampled once to the working size. Each month is resampled at
-    that size, flattened through the mask with the fill color, and
-    area-averaged down to the face size; the mask faces are the same average
-    of the same mask. The night is resampled and averaged the same way from its
-    own source, without flattening.
+    shapefile at the day maps' size, joined by the imagery's own water
+    poleward of 50 degrees, less the ice the detector finds in any month, and
+    resampled once to the working size. Each month is resampled at that size,
+    flattened through the mask with the fill color, and area-averaged down to
+    the face size; the mask faces are the same average of the same mask. The
+    night is resampled and averaged the same way from its own source, without
+    flattening.
+
+    With ``sea_ice_dir`` each month's sea ice is generated from its OSI-450-a1
+    mean on the polar caps, with the fast ice band and the land on the caps
+    from the mask, and composited into the water share of the flattened faces
+    before the average; on the polar faces the coast's flat snowy land is
+    blended toward the ice first.
 
     :param input_dir: Directory of monthly day maps carrying ``.YYYYMM.`` stamps.
     :param night_path: The equirectangular night map.
@@ -451,15 +543,29 @@ def run_cube(
     :param ocean_preserve_ice: Whether to keep detected polar ice as land.
     :param ocean_ice_luminance: Seed luminance threshold for ice detection.
     :param ocean_ice_latitude: Minimum absolute latitude for polar gate.
-    :param workers: Threads that resample the bands of a face.
+    :param workers: Threads for every parallel step, the resampling and the
+        sea ice alike; ``1`` runs them in turn, while the JPEG XL encoder
+        keeps threads of its own. When ``None`` the
+        resampling takes :data:`RESAMPLE_WORKERS` and the sea ice the
+        process's setting, :func:`parallel.workers`.
+    :param ocean_ice_south_only: Look for ice south of the gate alone.
+    :param sea_ice_dir: Directory of the OSI-450-a1 monthly files of 2004.
+    :param sea_ice_fetch: Download the files missing from ``sea_ice_dir``.
+    :param sea_ice_cap_size: Texels along each side of a cap the ice is
+        generated on.
+    :param imagery_water: Join the imagery's water connected to the ocean
+        poleward of 50 degrees to the mask.
     :raises typer.BadParameter: If the sources are missing, not 2:1, of
         different sizes, or too small for the face size.
+    :raises typer.Exit: If monthly sea ice files are missing.
     """
     from texture_pipeline.ocean_masking import (
+        YearlyWater,
         apply_ocean_mask,
         clear_mask_cache,
         detect_ice_regions,
         get_or_create_mask,
+        join_imagery_water,
         reduce_mask_for_ice,
     )
 
@@ -477,6 +583,7 @@ def run_cube(
         raise typer.BadParameter(msg)
     ((width, height),) = sizes
     night_width, _ = _cube_source_size(night_path, face_size)
+    hemispheres = _read_sea_ice(sea_ice_dir, sea_ice_fetch)
     work = working_size(width, face_size)
     written = {"day": 0, "night": 0, "mask": 0}
     typer.echo(
@@ -484,7 +591,10 @@ def run_cube(
         f"and averaged to {face_size}"
     )
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with (
+        parallel.configured(workers),
+        ThreadPoolExecutor(max_workers=workers or RESAMPLE_WORKERS) as pool,
+    ):
         stage = time.monotonic()
         mask = get_or_create_mask(
             ocean_shapefile,
@@ -496,6 +606,18 @@ def run_cube(
         clear_mask_cache()
         typer.echo(f"Ocean:   rasterized in {time.monotonic() - stage:.1f}s")
 
+        if imagery_water:
+            stage = time.monotonic()
+            stats = YearlyWater.empty(height, width)
+            for path in months.values():
+                stats.add(np.asarray(_open_rgb(path)))
+            joined = join_imagery_water(mask, stats)
+            del stats
+            typer.echo(
+                f"Water:   {joined['north']:,} source pixels joined in the north, "
+                f"{joined['south']:,} in the south, {time.monotonic() - stage:.1f}s"
+            )
+
         if ocean_preserve_ice:
             stage = time.monotonic()
             ice = np.zeros_like(mask)
@@ -504,6 +626,7 @@ def run_cube(
                     _open_rgb(path),
                     mask,
                     latitude_threshold=ocean_ice_latitude,
+                    south_only=ocean_ice_south_only,
                     seed_luminance=ocean_ice_luminance,
                 )
                 np.maximum(ice, found, out=ice)
@@ -530,18 +653,40 @@ def run_cube(
             f"Mask:    {written['mask']:,} bytes, {time.monotonic() - stage:.1f}s"
         )
 
+        fields = _sea_ice_fields(hemispheres, sea_ice_cap_size, water)
+
         for stamp, path in months.items():
             stage = time.monotonic()
             source = np.asarray(_open_rgb(path))
+            ice = _month_ice(fields, int(stamp[4:]))
+            area = dict.fromkeys(sea_ice.HEMISPHERES, 0.0)
             month_bytes = 0
             for face in FACES:
-                flat = apply_ocean_mask(
-                    Image.fromarray(reproject_face(source, face, work, pool)),
-                    water[face],
-                    color=ocean_color,
+                resampled = reproject_face(source, face, work, pool)
+                flat = np.array(
+                    apply_ocean_mask(
+                        Image.fromarray(resampled), water[face], color=ocean_color
+                    )
                 )
+                if ice is not None and face in POLAR_FACES:
+                    sea_ice_look.blend_coast(
+                        flat,
+                        resampled,
+                        water[face],
+                        face,
+                        ice,
+                        pool=pool,
+                        fill=ocean_color,
+                    )
+                del resampled
+                if ice is not None:
+                    found = sea_ice_look.composite_face(
+                        flat, water[face], face, ice, ocean_color, pool
+                    )
+                    for hemisphere, km2 in found.items():
+                        area[hemisphere] += km2
                 month_bytes += _write_face(
-                    area_average(np.asarray(flat), face_size),
+                    area_average(flat, face_size),
                     output_dir / "day" / stamp / f"{face}.jxl",
                     quality=quality,
                     effort=effort,
@@ -552,6 +697,9 @@ def run_cube(
                 f"Day:     {stamp} {month_bytes:,} bytes, "
                 f"{time.monotonic() - stage:.1f}s"
             )
+            if ice is not None:
+                _report_ice_area(hemispheres, int(stamp[4:]), area)
+            del ice
 
         stage = time.monotonic()
         source = np.asarray(_open_rgb(night_path))
@@ -579,15 +727,22 @@ def _validate_face_size(value: int) -> int:
     return value
 
 
-def _validate_workers(value: int) -> int:
-    if value < 1:
-        raise typer.BadParameter("Workers must be at least 1.")
+def _validate_workers(value: int | None) -> int | None:
+    if value is not None and value < 1:
+        raise typer.BadParameter("A worker count is at least 1.")
     return value
 
 
 def _parse_ocean_color(value: str) -> tuple[int, int, int]:
     red, green, blue = (int(part) for part in value.split(","))
     return red, green, blue
+
+
+def _validate_cap_size(value: int) -> int:
+    if value < 8 or value % 2:
+        msg = f"Cap size must be even and at least 8, got {value}."
+        raise typer.BadParameter(msg)
+    return value
 
 
 @app.command("cube")
@@ -707,19 +862,68 @@ def cube(
         ),
     ] = 60.0,
     workers: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--workers",
-            help="Threads that resample a face.",
+            help=(
+                "Threads for each parallel step. 1 runs them in turn; the "
+                "JPEG XL encoder keeps threads of its own. "
+                "Default: the cores up to 4 resample a face, and the sea ice "
+                "takes the TEXTURE_PIPELINE_WORKERS environment variable, else "
+                "the cores up to 16."
+            ),
             callback=_validate_workers,
         ),
-    ] = min(4, os.cpu_count() or 1),
+    ] = None,
+    ocean_ice_south_only: Annotated[
+        bool,
+        typer.Option(
+            "--ocean-ice-south-only/--ocean-ice-both-poles",
+            help="Look for ice to keep as land south of the gate alone.",
+        ),
+    ] = True,
+    sea_ice_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--sea-ice",
+            help="Directory of the OSI-450-a1 monthly files of 2004.",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None,
+    fetch: Annotated[
+        bool,
+        typer.Option(
+            "--fetch",
+            help="Download the missing sea ice files over HTTPS, one at a time.",
+        ),
+    ] = False,
+    sea_ice_cap_size: Annotated[
+        int,
+        typer.Option(
+            "--sea-ice-cap-size",
+            help="Edge length of the polar caps the sea ice is generated on.",
+            callback=_validate_cap_size,
+        ),
+    ] = sea_ice.CAP_SIZE,
+    imagery_water: Annotated[
+        bool,
+        typer.Option(
+            "--imagery-water/--no-imagery-water",
+            help=(
+                "Join the day maps' own water connected to the ocean poleward "
+                "of 50 degrees to the mask."
+            ),
+        ),
+    ] = True,
 ) -> None:
     """Bake equi-angular cube faces of the Earth's surface as JPEG XL.
 
     Writes day/YYYYMM/<face>.jxl for every monthly map, night/<face>.jxl and a
     lossless single-channel mask/<face>.jxl, with faces px, nx, py, ny, pz, nz.
     A mask texel is the water fraction: 255 is open water, 0 is land or ice.
+    With --sea-ice, every month's sea ice is composited into its open water.
     """
     run_cube(
         input_dir=input_dir,
@@ -736,6 +940,11 @@ def cube(
         ocean_ice_luminance=ocean_ice_luminance,
         ocean_ice_latitude=ocean_ice_latitude,
         workers=workers,
+        ocean_ice_south_only=ocean_ice_south_only,
+        sea_ice_dir=sea_ice_dir,
+        sea_ice_fetch=fetch,
+        sea_ice_cap_size=sea_ice_cap_size,
+        imagery_water=imagery_water,
     )
 
 
@@ -928,3 +1137,254 @@ def milky_way(
             seed=seed,
         ),
     )
+
+
+preview_app = typer.Typer(
+    help="Preview the sea ice's look: bake, render and measure variants.",
+    no_args_is_help=True,
+)
+app.add_typer(preview_app, name="preview")
+
+_PREVIEW_ROOT = Path("../../tmp/sea-ice-look")
+
+
+def _validate_variant(value: str) -> str:
+    from texture_pipeline.sea_ice_preview import VARIANTS
+
+    if value not in VARIANTS:
+        msg = f"Unknown variant {value!r}; one of {', '.join(VARIANTS)}."
+        raise typer.BadParameter(msg)
+    return value
+
+
+def _validate_month(value: int) -> int:
+    if not 1 <= value <= 12:
+        raise typer.BadParameter("A month is 1 to 12.")
+    return value
+
+
+_WORKERS_HELP = (
+    "Threads for each parallel step, and the most views, renders and "
+    "measurements at once. 1 runs them in turn; the JPEG XL encoder keeps "
+    "threads of its own. Default: the "
+    "TEXTURE_PIPELINE_WORKERS environment variable, else the cores up to 16."
+)
+
+
+@preview_app.command("run")
+def preview_run(
+    variant: Annotated[
+        str,
+        typer.Argument(help="The variant to run.", callback=_validate_variant),
+    ],
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            help="The harness's directory, holding sources.toml.",
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = _PREVIEW_ROOT,
+    north_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's winter view.", callback=_validate_month
+        ),
+    ] = 3,
+    north_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's summer view.", callback=_validate_month
+        ),
+    ] = 8,
+    south_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's winter view.", callback=_validate_month
+        ),
+    ] = 9,
+    south_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's summer view.", callback=_validate_month
+        ),
+    ] = 2,
+    workers: Annotated[
+        int | None,
+        typer.Option(help=_WORKERS_HELP, callback=_validate_workers),
+    ] = None,
+    warm_check: Annotated[
+        bool,
+        typer.Option(
+            "--warm-check",
+            help=(
+                "Render the views in turn on one tile cache and once more warm, "
+                "to measure what the tile packs cost, instead of at once."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Bake, assemble, render and measure one variant of the sea ice's look.
+
+    Writes <root>/<variant>/ and rebuilds <root>/index.html.
+    """
+    from texture_pipeline import sea_ice_preview, sea_ice_preview_page
+
+    views = sea_ice_preview.default_views(
+        north_winter, north_summer, south_winter, south_summer
+    )
+    metrics = sea_ice_preview.run_variant(
+        root,
+        variant,
+        views,
+        report=typer.echo,
+        workers=workers,
+        warm_check=warm_check,
+    )
+    typer.echo(f"Elapsed: {metrics['time_s']['total']}s")
+    page = sea_ice_preview_page.build(root)
+    typer.echo(f"Page:    {page}")
+
+
+@preview_app.command("draft")
+def preview_draft(
+    variant: Annotated[
+        str,
+        typer.Argument(help="The variant to draw.", callback=_validate_variant),
+    ],
+    place: Annotated[
+        str,
+        typer.Option(
+            "--place",
+            help="The place to draw around; see the list in `preview draft --help`.",
+        ),
+    ],
+    view: Annotated[
+        str | None,
+        typer.Option(
+            help=(
+                "north-winter, north-summer, south-winter or south-summer: the "
+                "face and the month to draw. Default: the winter view of the "
+                "place's hemisphere."
+            )
+        ),
+    ] = None,
+    half: Annotated[
+        int,
+        typer.Option(
+            min=16,
+            help="Half the region's side, in texels of the 5400 texel working size.",
+        ),
+    ] = 512,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            help=(
+                "Where to write the PNG. Default: "
+                "<root>/<variant>/draft-<view>-<place>.png."
+            ),
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None,
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            help="The harness's directory, holding sources.toml.",
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = _PREVIEW_ROOT,
+    north_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's winter view.", callback=_validate_month
+        ),
+    ] = 3,
+    north_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the north's summer view.", callback=_validate_month
+        ),
+    ] = 8,
+    south_winter: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's winter view.", callback=_validate_month
+        ),
+    ] = 9,
+    south_summer: Annotated[
+        int,
+        typer.Option(
+            help="Month of the south's summer view.", callback=_validate_month
+        ),
+    ] = 2,
+    workers: Annotated[
+        int | None,
+        typer.Option(help=_WORKERS_HELP, callback=_validate_workers),
+    ] = None,
+) -> None:
+    """Draw a region of a variant around a place in seconds.
+
+    The variant's noise fields come from the cache (made once if missing) and
+    the region is blended and composited as the full bake does it, texel for
+    texel. No app render, no metrics, no encode, no page. Run `preview run`
+    for those.
+
+    Places: north-greenland, ellesmere-north, svalbard, franz-josef-land,
+    canadian-arctic-west, east-greenland, beaufort-sea, antarctic-peninsula,
+    ross-sea-coast, east-antarctica, ronne-ice-shelf-front,
+    ross-ice-shelf-front, amery-ice-shelf, victoria-land, weddell-sea.
+    """
+    from texture_pipeline import sea_ice_preview
+
+    try:
+        found = sea_ice_preview.find_place(place)
+        views = {
+            v.key: v
+            for v in sea_ice_preview.default_views(
+                north_winter, north_summer, south_winter, south_summer
+            )
+        }
+        key = view or ("north-winter" if found[1] > 0 else "south-winter")
+        if key not in views:
+            msg = f"No view {key!r}; one of {', '.join(views)}."
+            raise ValueError(msg)
+        harness = sea_ice_preview.Harness(
+            root,
+            sea_ice_preview.VARIANTS[variant],
+            tuple(views.values()),
+            report=typer.echo,
+            workers=workers,
+        )
+        drawn = harness.draft(views[key], found, half, out)
+    except ValueError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    stages = ", ".join(f"{k} {v} s" for k, v in drawn["seconds"].items())
+    typer.echo(
+        f"Region:  rows {drawn['window'].rows}, columns {drawn['window'].columns}"
+    )
+    typer.echo(f"Seconds: {sum(drawn['seconds'].values()):.1f} ({stages})")
+    typer.echo(f"Draft:   {drawn['path']}")
+
+
+@preview_app.command("page")
+def preview_page(
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            help="The harness's directory.",
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = _PREVIEW_ROOT,
+) -> None:
+    """Rebuild <root>/index.html from the variants there."""
+    from texture_pipeline import sea_ice_preview_page
+
+    typer.echo(f"Page:    {sea_ice_preview_page.build(root)}")

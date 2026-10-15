@@ -4,12 +4,15 @@ from io import BytesIO
 from pathlib import Path
 
 import geopandas as gpd
+import netCDF4
 import numpy as np
 import OpenEXR
 import pytest
 import typer.rich_utils
 from PIL import Image
 from shapely.geometry import box
+
+from texture_pipeline.sea_ice import HEMISPHERES, MONTHS, file_name
 
 
 @pytest.fixture(autouse=True)
@@ -261,3 +264,67 @@ def square_exr_64x64(tmp_path: Path) -> Path:
         tmp_path / "square_64x64.exr",
         {"R": plane, "G": plane, "B": plane},
     )
+
+
+def synthetic_concentration(hemisphere: str, month: int) -> np.ndarray:
+    """Return a synthetic monthly concentration field in percent, NaN on land.
+
+    The ice is a disk around the pole whose radius follows the month, ramping
+    from full to none over 500 km. The land is a block on the north grid and
+    a disk around the south pole, the same in every month.
+
+    :param hemisphere: ``nh`` or ``sh``.
+    :param month: The month, 1 to 12.
+    :returns: float64 array of shape ``(432, 432)``, row 0 at the grid's top.
+    """
+    centers = (np.arange(432) + 0.5) * 25.0 - 5400.0
+    x = centers[None, :]
+    y = centers[::-1, None]
+    rho = np.hypot(x, y)
+    season = np.cos((month - (3 if hemisphere == "nh" else 9)) / 12 * 2 * np.pi)
+    radius = 2500.0 + 900.0 * season
+    conc = np.clip((radius - rho) / 500.0, 0.0, 1.0) * 100.0
+    if hemisphere == "nh":
+        land = (x >= 1000) & (x <= 2000) & (y >= -500) & (y <= 500)
+    else:
+        land = rho <= 1500
+    land = np.broadcast_to(land, conc.shape)
+    return np.where(land, np.nan, conc)
+
+
+def write_osi_monthly(path: Path, conc: np.ndarray) -> None:
+    """Write a field as an OSI-450-a1 monthly file of the 25 km EASE2 grid.
+
+    :param path: Where the file is written.
+    :param conc: float array of shape ``(432, 432)`` in percent, NaN on land.
+    """
+    centers = (np.arange(432) + 0.5) * 25.0 - 5400.0
+    with netCDF4.Dataset(path, "w", format="NETCDF4_CLASSIC") as dataset:
+        dataset.createDimension("time", 1)
+        dataset.createDimension("yc", 432)
+        dataset.createDimension("xc", 432)
+        xc = dataset.createVariable("xc", "f8", ("xc",))
+        yc = dataset.createVariable("yc", "f8", ("yc",))
+        xc[:] = centers
+        yc[:] = centers[::-1]
+        ice = dataset.createVariable(
+            "ice_conc", "i4", ("time", "yc", "xc"), fill_value=-32767, zlib=True
+        )
+        ice.scale_factor = 0.01
+        ice[0] = np.ma.array(np.nan_to_num(conc), mask=np.isnan(conc))
+
+
+@pytest.fixture(scope="session")
+def osi_monthly_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Write a synthetic year of OSI-450-a1 monthly files.
+
+    :returns: The directory holding them.
+    """
+    directory = tmp_path_factory.mktemp("osi450a1")
+    for hemisphere in HEMISPHERES:
+        for month in MONTHS:
+            write_osi_monthly(
+                directory / file_name(hemisphere, month),
+                synthetic_concentration(hemisphere, month),
+            )
+    return directory

@@ -52,7 +52,13 @@ def working_size(source_width: int, face_size: int) -> int:
     return max(source_width // 4, face_size)
 
 
-def face_directions(face: str, size: int, start: int, stop: int) -> Directions:
+def face_directions(
+    face: str,
+    size: int,
+    start: int,
+    stop: int,
+    columns: tuple[int, int] | None = None,
+) -> Directions:
     """Return the directions through the centers of a band of face texels.
 
     The directions are not normalized; only their angles matter.
@@ -61,12 +67,16 @@ def face_directions(face: str, size: int, start: int, stop: int) -> Directions:
     :param size: Edge length of the face in texels.
     :param start: First row of the band.
     :param stop: Row after the last row of the band.
-    :returns: ``x``, ``y`` and ``z`` arrays of shape ``(stop - start, size)``.
+    :param columns: The first column and the one after the last, for a
+        rectangle of the face instead of whole rows.
+    :returns: ``x``, ``y`` and ``z`` arrays of shape ``(stop - start, size)``,
+        or ``(stop - start, last - first)`` with ``columns``.
     :raises KeyError: If ``face`` is not a face name.
     """
     warped = np.tan(((np.arange(size) + 0.5) / size * 2 - 1) * (np.pi / 4))
-    shape = (stop - start, size)
-    s = np.broadcast_to(warped[None, :], shape)
+    first, last = (0, size) if columns is None else columns
+    shape = (stop - start, last - first)
+    s = np.broadcast_to(warped[None, first:last], shape)
     t = np.broadcast_to(warped[start:stop, None], shape)
     return _DIRECTIONS[face](s, t, np.ones(shape))
 

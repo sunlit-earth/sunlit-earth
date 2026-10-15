@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import typing
 from concurrent.futures import ThreadPoolExecutor
 from math import atan, pi
 from pathlib import Path
@@ -10,11 +11,14 @@ import geopandas as gpd
 import numpy as np
 import pillow_jxl  # noqa: F401 - registers the JPEG XL plugin with Pillow
 import pytest
+from conftest import synthetic_concentration, write_osi_monthly
 from PIL import Image
+from scipy.ndimage import binary_dilation
 from shapely.geometry import box
 from shapely.ops import unary_union
 from typer.testing import CliRunner
 
+from texture_pipeline import parallel, sea_ice_look
 from texture_pipeline.cube import (
     BAND_ROWS,
     FACES,
@@ -26,6 +30,7 @@ from texture_pipeline.cube import (
     working_size,
 )
 from texture_pipeline.main import app
+from texture_pipeline.sea_ice import HEMISPHERES, MONTHS, file_name
 
 runner = CliRunner()
 
@@ -77,7 +82,8 @@ def write_fixture_sources(root: Path) -> tuple[Path, Path, Path]:
 
     The land is one box on each face around the equator, one in the north and
     a cap south of 70 S, so a face swapped or turned changes the bake. January
-    carries a bright block in the Arctic ocean for the ice detector to find.
+    carries a bright block in the Southern Ocean for the ice detector to find,
+    and one in the Arctic Ocean that the detector's southern gate leaves alone.
 
     :param root: Directory to write into.
     :returns: The day directory, the night map and the shapefile.
@@ -90,6 +96,7 @@ def write_fixture_sources(root: Path) -> tuple[Path, Path, Path]:
         rgb = np.stack([cols * 2, rows * 4, blue], axis=-1).astype(np.uint8)
         if month == 1:
             rgb[1:9, 20:36] = 240
+            rgb[54:57, 16:40] = 240
         Image.fromarray(rgb).save(days / f"world.topo.2004{month:02d}.png")
 
     night_rows, night_cols = np.mgrid[0:32, 0:64]
@@ -140,13 +147,27 @@ def decode(path: Path) -> np.ndarray:
         return np.asarray(image)
 
 
+FIXTURE_CAP = 256
+"""Texels along each side of the fixture bake's sea ice caps."""
+
+
 @pytest.fixture(scope="module")
-def fixture_bake(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Bake the fixture sources once and return the output directory."""
+def fixture_bake(
+    tmp_path_factory: pytest.TempPathFactory, osi_monthly_dir: Path
+) -> Path:
+    """Bake the fixture sources with the synthetic sea ice once and return the
+    output directory."""
     root = tmp_path_factory.mktemp("cube")
     days, night, shapefile = write_fixture_sources(root / "src")
     out = root / "out"
-    result = runner.invoke(app, bake_arguments(days, night, shapefile, out))
+    arguments = [
+        *bake_arguments(days, night, shapefile, out),
+        "--sea-ice",
+        str(osi_monthly_dir),
+        "--sea-ice-cap-size",
+        str(FIXTURE_CAP),
+    ]
+    result = runner.invoke(app, arguments)
     assert result.exit_code == 0, f"CLI failed: {result.output}"
     return out
 
@@ -296,6 +317,197 @@ class TestCubeCommand:
         assert "at least 256 wide" in result.output
 
 
+@pytest.fixture(scope="module")
+def plain_bake(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Bake the fixture sources without the sea ice, as the rollback does
+    with the default ice pass, and return the output directory."""
+    root = tmp_path_factory.mktemp("cube_plain")
+    days, night, shapefile = write_fixture_sources(root / "src")
+    out = root / "out"
+    result = runner.invoke(app, bake_arguments(days, night, shapefile, out))
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    return out
+
+
+def write_open_coast_record(directory: Path) -> Path:
+    """Write the synthetic year with the ocean cells beside the north's land
+    at 30% of their concentration, as the record's cells that mix land and
+    sea read. In January that land lies in closed ice.
+
+    :param directory: Where the files are written.
+    :returns: ``directory``.
+    """
+    directory.mkdir(parents=True)
+    for hemisphere in HEMISPHERES:
+        for month in MONTHS:
+            conc = synthetic_concentration(hemisphere, month)
+            if hemisphere == "nh":
+                land = np.isnan(conc)
+                conc[binary_dilation(land) & ~land] *= 0.3
+            write_osi_monthly(directory / file_name(hemisphere, month), conc)
+    return directory
+
+
+def texel_at(bake: Path, part: str, lon: float, lat: float) -> np.ndarray:
+    """Return the texel of ``part`` of a bake, ``mask`` or a day set's
+    directory relative to the bake, at a longitude and latitude."""
+    face, row, col = texel_of(direction_at(lon, lat), FIXTURE_FACE)
+    return decode(bake / part / f"{face}.jxl")[row, col]
+
+
+class TestBakeOptions:
+    def test_a_bake_without_sea_ice_leaves_open_water_the_fill(
+        self, plain_bake: Path, fixture_bake: Path
+    ) -> None:
+        for month in FIXTURE_MONTHS:
+            stamp = f"day/2004{month:02d}"
+            assert tuple(texel_at(plain_bake, stamp, -150, 80)) == OCEAN_FILL
+            assert min(texel_at(fixture_bake, stamp, -150, 80)) > 150
+
+    def test_the_sea_ice_leaves_the_mask_and_the_night_as_they_are(
+        self, plain_bake: Path, fixture_bake: Path
+    ) -> None:
+        for part in ("mask", "night"):
+            for face in FACES:
+                np.testing.assert_array_equal(
+                    decode(plain_bake / part / f"{face}.jxl"),
+                    decode(fixture_bake / part / f"{face}.jxl"),
+                    err_msg=f"{part}/{face}",
+                )
+
+    def test_a_coast_the_record_reads_open_in_closed_ice_bakes_closed(
+        self, fixture_bake: Path, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        out = tmp_path / "out"
+        arguments = [
+            *bake_arguments(days, night, shapefile, out),
+            "--sea-ice",
+            str(write_open_coast_record(tmp_path / "osi")),
+            "--sea-ice-cap-size",
+            str(FIXTURE_CAP),
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        for face in FACES:
+            opened = decode(out / "day" / "200401" / f"{face}.jxl")
+            closed = decode(fixture_bake / "day" / "200401" / f"{face}.jxl")
+            difference = np.abs(opened.astype(np.int16) - closed).max()
+            assert difference <= 2, (face, difference)
+
+    def test_the_worker_count_reaches_the_sea_ice(
+        self,
+        tmp_path: Path,
+        osi_monthly_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        steps = ("prepare", "month_cap", "blend_coast", "composite_face")
+        seen: dict[str, set[int]] = {name: set() for name in steps}
+
+        def record(name: str) -> None:
+            step = getattr(sea_ice_look, name)
+
+            def recorded(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+                seen[name].add(parallel.workers())
+                return step(*args, **kwargs)
+
+            monkeypatch.setattr(sea_ice_look, name, recorded)
+
+        for name in steps:
+            record(name)
+        monkeypatch.setenv(parallel.ENV, "5")
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        arguments = [
+            *bake_arguments(days, night, shapefile, tmp_path / "out"),
+            "--sea-ice",
+            str(osi_monthly_dir),
+            "--sea-ice-cap-size",
+            "64",
+            "--workers",
+            "1",
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert seen == {name: {1} for name in steps}
+        assert parallel.workers() == 5
+
+    def test_both_poles_keeps_the_arctic_ice_the_detector_finds_as_land(
+        self, plain_bake: Path, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        out = tmp_path / "out"
+        arguments = [
+            *bake_arguments(days, night, shapefile, out),
+            "--ocean-ice-both-poles",
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert int(texel_at(plain_bake, "mask", -100, 76)) == 255
+        assert int(texel_at(out, "mask", -100, 76)) < 255
+        assert tuple(texel_at(out, "day/200401", -100, 76)) != OCEAN_FILL
+        assert int(texel_at(out, "mask", -100, -66)) == int(
+            texel_at(plain_bake, "mask", -100, -66)
+        )
+
+    def test_the_imagery_water_joins_the_mask_poleward_of_50(
+        self, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        for path in days.iterdir():
+            rgb = np.array(Image.open(path))
+            rgb[4:7, 45:49] = (5, 10, 30)
+            Image.fromarray(rgb).save(path)
+        joined, kept = tmp_path / "joined", tmp_path / "kept"
+        for out, extra in ((joined, []), (kept, ["--no-imagery-water"])):
+            arguments = [*bake_arguments(days, night, shapefile, out), *extra]
+            result = runner.invoke(app, arguments)
+            assert result.exit_code == 0, f"CLI failed: {result.output}"
+        north = [
+            decode(out / "mask" / "py.jxl").astype(np.int64) for out in (joined, kept)
+        ]
+        assert north[0].sum() > north[1].sum()
+        assert (north[0] >= north[1]).all()
+        for face in FACES:
+            if face != "py":
+                np.testing.assert_array_equal(
+                    decode(joined / "mask" / f"{face}.jxl"),
+                    decode(kept / "mask" / f"{face}.jxl"),
+                    err_msg=face,
+                )
+
+    def test_missing_sea_ice_files_are_refused_before_anything_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        empty = tmp_path / "osi"
+        empty.mkdir()
+        out = tmp_path / "out"
+        arguments = [
+            *bake_arguments(days, night, shapefile, out),
+            "--sea-ice",
+            str(empty),
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 1
+        assert "monthly sea ice files are missing" in result.output
+        assert "--fetch" in result.output
+        assert not list(out.rglob("*.jxl"))
+
+    @pytest.mark.parametrize("size", ["0", "6", "9", "257"])
+    def test_a_cap_size_that_is_odd_or_below_8_is_refused(
+        self, tmp_path: Path, size: str
+    ) -> None:
+        days, night, shapefile = write_fixture_sources(tmp_path / "src")
+        arguments = [
+            *bake_arguments(days, night, shapefile, tmp_path / "out"),
+            "--sea-ice-cap-size",
+            size,
+        ]
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 2
+        assert "Cap size must be even and at least 8" in result.output
+
+
 class TestFixtureBake:
     def test_the_committed_fixture_matches_a_fresh_bake(
         self, fixture_bake: Path
@@ -344,7 +556,8 @@ class TestFixtureBake:
         assert mask_at(-150, 0) == 255
         assert mask_at(15, 0) == 0
         assert mask_at(0, -85) == 0
-        assert mask_at(-100, 76) == 0
+        assert mask_at(-100, -66) < 255
+        assert mask_at(-100, 76) == 255
 
     def test_open_water_is_the_fill_in_every_month(self, fixture_bake: Path) -> None:
         face, row, col = texel_of(direction_at(-150, 0), FIXTURE_FACE)
@@ -355,10 +568,18 @@ class TestFixtureBake:
     def test_ice_found_in_one_month_stays_unflattened_in_every_month(
         self, fixture_bake: Path
     ) -> None:
-        face, row, col = texel_of(direction_at(-100, 76), FIXTURE_FACE)
+        face, row, col = texel_of(direction_at(-100, -66), FIXTURE_FACE)
         for month in FIXTURE_MONTHS:
             day = decode(fixture_bake / "day" / f"2004{month:02d}" / f"{face}.jxl")
             assert tuple(day[row, col]) != OCEAN_FILL
+
+    def test_the_sea_ice_is_composited_over_open_water(
+        self, fixture_bake: Path
+    ) -> None:
+        face, row, col = texel_of(direction_at(-150, 80), FIXTURE_FACE)
+        for month in FIXTURE_MONTHS:
+            day = decode(fixture_bake / "day" / f"2004{month:02d}" / f"{face}.jxl")
+            assert min(day[row, col]) > 150, (month, tuple(day[row, col]))
 
 
 def direction_at(lon: float, lat: float) -> tuple[float, float, float]:

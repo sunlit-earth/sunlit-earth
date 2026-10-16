@@ -47,7 +47,13 @@ Planned features:
 
 > ⚠️ Sunlit Earth is in public beta. You might experience bugs or other things that don't work as they're supposed to. I've been dogfooding Sunlit Earth for months now and I'm confident it won't do something bad on your system, but you never know. If that's not your cup of tea, please hang on until there is a stable release.
 
-You can install and update Sunlit Earth with one of these package managers:
+Download the [latest release](https://github.com/sunlit-earth/sunlit-earth/releases/latest) directly (portable binaries only; there is no installer yet):
+
+- **Windows**: [sunlit-earth-0.4.0-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-windows-x86_64.zip)
+- **macOS**: [sunlit-earth-0.4.0-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.4.0-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-x86_64-app.zip) (Intel)
+- **Linux**: [sunlit-earth-0.4.0-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.4.0-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-aarch64.tar.gz) (ARM64)
+
+You can also install and update Sunlit Earth with one of these package managers:
 
 - **Windows** ([Scoop](https://scoop.sh)):
   ```
@@ -63,15 +69,9 @@ You can install and update Sunlit Earth with one of these package managers:
   brew install sunlit-earth/tap/sunlit-earth
   ```
 
-Or you can download the [latest release](https://github.com/sunlit-earth/sunlit-earth/releases/latest) directly (portable binaries only; there is no installer yet):
-
-- **Windows**: [sunlit-earth-0.4.0-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-windows-x86_64.zip)
-- **macOS**: [sunlit-earth-0.4.0-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.4.0-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-x86_64-app.zip) (Intel)
-- **Linux**: [sunlit-earth-0.4.0-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.4.0-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-aarch64.tar.gz) (ARM64)
-
 What you should know about each platform:
 
-On **Windows**, unpack the zip file and launch `sunlit-earth.exe`. On the first start, Windows will probably show a blue "Windows protected your PC" dialog with only a "Don't run" button. Click "More info", and a "Run anyway" button appears.
+On **Windows**, unpack the zip file and launch `sunlit-earth.exe`. On the first start, Windows might show a blue "Windows protected your PC" dialog with only a "Don't run" button. Click "More info", and a "Run anyway" button appears.
 
 On **macOS**, unzip the download and move `Sunlit Earth.app` to Applications. When you launch it, macOS says it could not verify that the app is free of malware, because the app is not notarized by Apple. To allow it, open System Settings, go to Privacy & Security, scroll down, click "Open Anyway" next to Sunlit Earth, and confirm with your password if asked. If you want to avoid all this hassle, install with Homebrew instead.
 

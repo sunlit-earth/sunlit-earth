@@ -31,7 +31,7 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 - 📸 Custom camera controls and presets let you choose your view of Earth.
 - 🌍 Sunlight and city lights reflect the current date and time, with automatic wallpaper updates throughout the day.
-- ❄️ Detailed surface textures based on NASA imagery that change with the seasons.
+- ❄️ Detailed surface textures based on NASA imagery that change with the seasons, including sea ice.
 - ⛅️ Recent satellite cloud imagery shows changing weather patterns.
 - 🌌 The Sun, Moon, planets, visible stars, and Milky Way are rendered at their astronomically correct positions.
 - 🖥 Wallpapers fit your monitor layout, with support for mirrored views or continuous panoramas.
@@ -65,9 +65,9 @@ You can install and update Sunlit Earth with one of these package managers:
 
 Or you can download the [latest release](https://github.com/sunlit-earth/sunlit-earth/releases/latest) directly (portable binaries only; there is no installer yet):
 
-- **Windows**: [sunlit-earth-0.3.0-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.3.0/sunlit-earth-0.3.0-windows-x86_64.zip)
-- **macOS**: [sunlit-earth-0.3.0-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.3.0/sunlit-earth-0.3.0-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.3.0-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.3.0/sunlit-earth-0.3.0-macos-x86_64-app.zip) (Intel)
-- **Linux**: [sunlit-earth-0.3.0-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.3.0/sunlit-earth-0.3.0-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.3.0-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.3.0/sunlit-earth-0.3.0-linux-aarch64.tar.gz) (ARM64)
+- **Windows**: [sunlit-earth-0.4.0-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-windows-x86_64.zip)
+- **macOS**: [sunlit-earth-0.4.0-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.4.0-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-x86_64-app.zip) (Intel)
+- **Linux**: [sunlit-earth-0.4.0-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.4.0-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-aarch64.tar.gz) (ARM64)
 
 What you should know about each platform:
 
@@ -109,7 +109,7 @@ Presets provide starting views. Open **Advanced** for precise camera and framing
 
 ### Save or restore settings
 
-**Set as Wallpaper** saves the current settings. Changes to automatic refresh and the display plan also save settings. Reset reloads the last saved configuration; Load Defaults restores the app's default values in the window. Click Set as Wallpaper to save and apply the restored view.
+**Set as Wallpaper** saves the current settings. Changes to automatic refresh and the display plan also save settings. Reset reloads the last saved configuration; Load Defaults restores the app's default values in the window. Under Advanced, a ↺ button next to a slider or group restores just its defaults. Click Set as Wallpaper to save and apply the restored view.
 
 Configuration, caches, and generated wallpapers live under these directories:
 
@@ -134,7 +134,7 @@ This uses your saved configuration. On Windows, use `sunlit-earth.exe`; on Linux
 - The globe is a grid instead of an Earth image: Check that the complete archive was extracted and the `textures/` folder is next to the sunlit-earth binary.
 - Rendering is slow or memory use is high: Lower texture resolution under Advanced → Rendering. If you have a GPU, make sure your graphics driver is up to date.
 - Rendering fails on the GPU: Try launching with `--software-rendering`.
-- Clouds are missing or outdated: Check connectivity. Existing cached imagery may remain visible until a fresh download succeeds.
+- Clouds are missing or outdated: Check that Show clouds is on under Advanced → Clouds, and check connectivity. Existing cached imagery may remain visible until a fresh download succeeds.
 - The wallpaper does not update automatically: Enable Auto-refresh wallpaper and keep the app running. Check the status line for errors or unsupported desktop features.
 - There is no tray icon: Tray support depends on the desktop session. Launch with `--mode window` to use the app without a tray.
 - The wrong screen or layout is used: Check the Displays mode and anchor. Run `sunlit-earth displays` to inspect the detected layout without changing the wallpaper.

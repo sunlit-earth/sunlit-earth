@@ -2,6 +2,13 @@
 
 Notable changes to Sunlit Earth, for people who use it. The GitHub release pages list every merged pull request.
 
+## [0.4.0] - 2026-10-16
+
+- Sea ice in the Arctic and Antarctic, changing with the month, based on satellite data from EUMETSAT. ([#76](https://github.com/sunlit-earth/sunlit-earth/pull/76), [#78](https://github.com/sunlit-earth/sunlit-earth/pull/78))
+- Less grey haze in the clouds over cold regions, and an option to turn the clouds off. ([#74](https://github.com/sunlit-earth/sunlit-earth/pull/74))
+- Settings under Advanced can be reset to their defaults one by one or by group. ([#77](https://github.com/sunlit-earth/sunlit-earth/pull/77))
+- Bugfix for lighting in the Day and Night only modes. ([#72](https://github.com/sunlit-earth/sunlit-earth/pull/72))
+
 ## [0.3.0] - 2026-10-10
 
 - Seasonal textures: the Earth's surface changes each month, from NASA's Blue Marble Next Generation, with sharper detail and no distortion at the poles. ([#69](https://github.com/sunlit-earth/sunlit-earth/pull/69))
@@ -28,6 +35,7 @@ Notable changes to Sunlit Earth, for people who use it. The GitHub release pages
 
 - First public release, for Windows and Linux.
 
+[0.4.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.4.0
 [0.3.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.3.0
 [0.2.2]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.2
 [0.2.1]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.1

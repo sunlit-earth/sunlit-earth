@@ -15,8 +15,9 @@ use crate::{
 use sunlit_core::config::{self, AppConfig};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
-use sunlit_core::scene::camera::{CameraParams, PRESETS};
+use sunlit_core::scene::camera::{self, CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
+use sunlit_core::scene::sky::{self, SkyState};
 use sunlit_core::scene::sun::DateTimeInput;
 
 /// A Slint index as a position in the list it selects from.
@@ -91,16 +92,86 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
             mouse_math::coarse_drag_gain(position.zoom),
             mouse_math::fine_drag_gain(win.get_celestial().sky.fov, win.get_viewport_width()),
         );
-        (position.longitude, position.latitude) = mouse_math::apply_globe_drag_at(
-            position.longitude,
+        // The Sun-fixed mode turns the globe through the longitude its time of
+        // day stands for, so the drag keeps its gain, its tilt correction and
+        // its wrap, and a later time is a drag to the east.
+        let held = if position.sun_fixed {
+            camera::held_longitude(position.solar_time)
+        } else {
+            position.longitude
+        };
+        let (longitude, latitude) = mouse_math::apply_globe_drag_at(
+            held,
             position.latitude,
             win.get_camera_orientation().tilt,
             dx,
             dy,
             gain,
         );
+        if position.sun_fixed {
+            position.solar_time = camera::solar_time_of_held(longitude);
+        } else {
+            position.longitude = longitude;
+        }
+        position.latitude = latitude;
         win.set_camera_position(position);
         engine.push_params(&win);
+    });
+}
+
+/// The sky at the instant the window's scene is drawn at: the override's when
+/// it is on, the system clock's otherwise. The engine draws within a tick of
+/// this, which is a fifth of a thousandth of a degree of the Earth's turn.
+fn sky_now(window: &MainWindow) -> SkyState {
+    sky::compute_sky_state(&datetime_input(&window.get_datetime()))
+}
+
+/// Carry the view across a switch of the camera mode: the value the mode now
+/// reads is converted from the one it read before, at the instant the window
+/// draws, so the frame before and after the switch is the same.
+pub fn convert_camera_frame(window: &MainWindow) {
+    let sun = sky_now(window).sun_direction;
+    let mut position = window.get_camera_position();
+    if position.sun_fixed {
+        position.solar_time = camera::solar_time_of(position.longitude, sun);
+    } else {
+        position.longitude = camera::longitude_of(position.solar_time, sun);
+    }
+    window.set_camera_position(position);
+}
+
+/// Put a preset's position, orientation and framing into the window.
+///
+/// In the Sun-fixed mode the mode stays on and the preset's place is put
+/// beneath the camera as of now, through the time of day; the longitude is the
+/// other mode's and keeps what it held.
+pub fn apply_preset(window: &MainWindow, preset: &CameraParams) {
+    let current = window.get_camera_position();
+    let (longitude, solar_time) = if current.sun_fixed {
+        let sun = sky_now(window).sun_direction;
+        (
+            current.longitude,
+            camera::solar_time_of(preset.longitude, sun),
+        )
+    } else {
+        (preset.longitude, current.solar_time)
+    };
+    window.set_camera_position(CameraPositionSettings {
+        longitude,
+        latitude: preset.latitude,
+        zoom: preset.zoom,
+        sun_fixed: current.sun_fixed,
+        solar_time,
+    });
+    window.set_camera_orientation(CameraOrientationSettings {
+        tilt: preset.tilt_deg,
+        yaw: preset.yaw_deg,
+        pitch: preset.pitch_deg,
+    });
+    window.set_framing(FramingSettings {
+        fov: preset.fov_deg,
+        offset_x: preset.offset_x,
+        offset_y: preset.offset_y,
     });
 }
 
@@ -174,22 +245,7 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(preset) = PRESETS.get(slider_index(index)) else {
             return;
         };
-        win.set_camera_position(CameraPositionSettings {
-            longitude: preset.longitude,
-            latitude: preset.latitude,
-            zoom: preset.zoom,
-            ..win.get_camera_position()
-        });
-        win.set_camera_orientation(CameraOrientationSettings {
-            tilt: preset.tilt_deg,
-            yaw: preset.yaw_deg,
-            pitch: preset.pitch_deg,
-        });
-        win.set_framing(FramingSettings {
-            fov: preset.fov_deg,
-            offset_x: preset.offset_x,
-            offset_y: preset.offset_y,
-        });
+        apply_preset(&win, preset);
         engine.push_params(&win);
     });
 }
@@ -223,6 +279,15 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
                 });
             }
             update_datetime_labels(&win, base_year);
+            engine.push_params(&win);
+        }
+    });
+
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    window.on_camera_frame_toggled(move || {
+        if let Some(win) = window_weak.upgrade() {
+            convert_camera_frame(&win);
             engine.push_params(&win);
         }
     });
@@ -465,6 +530,7 @@ pub fn set_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: Comb
 pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_defaults(scene_settings(&SceneParams::default()));
     apply_params_to_window(window, &SceneParams::from_config(config));
+    update_solar_time_label(window);
 
     window.set_auto_refresh_enabled(config.auto_refresh_enabled);
     #[expect(
@@ -810,6 +876,13 @@ pub fn read_config_from_window_onto(
     };
     read_params_from_window(window, aa_counts).write_to_config(&mut config);
     config
+}
+
+/// Update the Time of day row's reading from the time it holds. The row's
+/// right end is midnight again, and reads as it.
+pub(crate) fn update_solar_time_label(window: &MainWindow) {
+    let solar_time = window.get_camera_position().solar_time.rem_euclid(24.0);
+    window.set_solar_time_label(datetime::hour_label(solar_time).into());
 }
 
 /// Update the hour label, day label, and max-day-of-year on the window

@@ -141,6 +141,7 @@ impl EngineLink {
         ));
         window.set_day_gamma_value(params.day_gamma);
         window.set_night_gamma_value(params.night_gamma);
+        crate::ui_callbacks::update_solar_time_label(window);
         self.send(EngineCommand::UpdateParams(Box::new(params)));
     }
 }

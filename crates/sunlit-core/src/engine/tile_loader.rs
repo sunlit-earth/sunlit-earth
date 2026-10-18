@@ -1829,6 +1829,33 @@ mod tests {
         approx::assert_relative_eq!(drag.longitude_rate, 100.0, max_relative = 1e-4);
     }
 
+    /// In the Sun-fixed mode the watch sees the camera as the settings hold
+    /// it: a later time of day is a move east at 15 degrees an hour, in the
+    /// sign and the unit the read-ahead adds to a longitude, and across
+    /// midnight it turns the short way.
+    #[test]
+    fn a_later_time_of_day_is_a_drag_to_the_east() {
+        let held = |solar_time: f32| {
+            crate::params::SceneParams {
+                sun_fixed: true,
+                solar_time,
+                ..crate::params::SceneParams::default()
+            }
+            .held_camera()
+        };
+        let mut watch = DragWatch::default();
+        draw(&mut watch, &held(11.0), Duration::ZERO);
+        draw(&mut watch, &held(11.5), DRAG_PAUSE * 10);
+        let drag = draw(&mut watch, &held(12.0), DRAG_PAUSE * 10 + 50 * MS)
+            .expect("a second move within the pause");
+        approx::assert_relative_eq!(drag.longitude_rate, 7.5 / 0.05, max_relative = 1e-4);
+
+        let mut watch = DragWatch::default();
+        draw(&mut watch, &held(23.9), Duration::ZERO);
+        let drag = draw(&mut watch, &held(0.1), 40 * MS).expect("a move within the pause");
+        approx::assert_relative_eq!(drag.longitude_rate, 3.0 / 0.04, max_relative = 1e-3);
+    }
+
     #[test]
     fn a_drag_ends_when_the_camera_has_rested_the_pause() {
         let mut watch = DragWatch::default();

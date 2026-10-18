@@ -1537,6 +1537,218 @@ fn test_about_is_reachable_without_opening_advanced() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The Sun-fixed camera
+// ---------------------------------------------------------------------------
+
+const LONGITUDE_ROW: &str = "MainWindow::longitude-slider";
+const SOLAR_TIME_ROW: &str = "MainWindow::solar-time-slider";
+
+/// A window with the app's own callbacks behind it and the override on at a
+/// pinned instant, so that every conversion "now" makes is the same one the
+/// test makes. The receiver holds what the window pushed to the engine.
+fn wired_window() -> (
+    MainWindow,
+    crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+) {
+    let window = create_window();
+    window.set_advanced_open(true);
+    window.set_datetime(DateTimeSettings {
+        use_custom: true,
+        hour: 9.25,
+        day_of_year: 120.0,
+        year_index: 1,
+    });
+    let (sender, sent) = crossbeam_channel::unbounded();
+    let link =
+        sunlit_earth::engine_client::EngineLink::new(sender, vec!["None".to_owned()], vec![1]);
+    let screens = sunlit_earth::displays::shared_monitors();
+    ui_callbacks::register_mouse_callbacks(&window, &link);
+    ui_callbacks::register_change_callbacks(
+        &window,
+        sunlit_core::scene::datetime::base_year(),
+        &link,
+    );
+    ui_callbacks::register_action_callbacks(&window, &link, &screens);
+    (window, sent)
+}
+
+/// The camera the window's scene is drawn with at the instant it names.
+fn resolved(window: &MainWindow) -> sunlit_core::scene::camera::CameraParams {
+    let params = ui_callbacks::read_params_from_window(window, &AA_COUNTS);
+    params.camera_at(&sunlit_core::scene::sky::compute_sky_state(
+        &params.datetime,
+    ))
+}
+
+/// `a` minus `b` in degrees of longitude, the short way round.
+fn east_of(a: f32, b: f32) -> f32 {
+    (a - b + 180.0).rem_euclid(360.0) - 180.0
+}
+
+fn rows_shown(window: &MainWindow) -> (usize, usize) {
+    (
+        ElementHandle::find_by_element_id(window, LONGITUDE_ROW).count(),
+        ElementHandle::find_by_element_id(window, SOLAR_TIME_ROW).count(),
+    )
+}
+
+/// The last scene the window pushed.
+fn last_pushed(
+    sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+) -> SceneParams {
+    sent.try_iter()
+        .filter_map(|command| match command {
+            sunlit_core::engine::EngineCommand::UpdateParams(params) => Some(*params),
+            _ => None,
+        })
+        .last()
+        .expect("the window pushed its scene")
+}
+
+/// The check swaps the Longitude row for the Time of day row and back, and
+/// the camera drawn before and after each switch is the same one.
+#[test]
+fn test_the_sun_fixed_check_swaps_the_rows_and_keeps_the_view() {
+    let (window, sent) = wired_window();
+    set_longitude(&window, 140.0);
+    assert_eq!(rows_shown(&window), (1, 0));
+    let check = the_button(&window, "Fixed toward the Sun");
+
+    for sun_fixed in [true, false] {
+        let before = resolved(&window);
+        check.invoke_accessible_default_action();
+        assert_eq!(window.get_camera_position().sun_fixed, sun_fixed);
+        let expected_rows = if sun_fixed { (0, 1) } else { (1, 0) };
+        assert_eq!(rows_shown(&window), expected_rows);
+        let after = resolved(&window);
+        assert!(
+            east_of(after.longitude, before.longitude).abs() < 0.01,
+            "switching to sun_fixed = {sun_fixed} moved the camera from {} to {}",
+            before.longitude,
+            after.longitude
+        );
+        approx::assert_relative_eq!(after.latitude, before.latitude);
+        approx::assert_relative_eq!(after.zoom, before.zoom);
+        assert_eq!(last_pushed(&sent).sun_fixed, sun_fixed);
+    }
+    approx::assert_relative_eq!(
+        window.get_camera_position().longitude,
+        140.0,
+        epsilon = 0.01
+    );
+}
+
+/// A preset clicked in the Sun-fixed mode keeps the mode and puts its place
+/// beneath the camera at the instant it was clicked.
+#[test]
+fn test_a_preset_in_the_sun_fixed_mode_puts_its_place_beneath_the_camera_now() {
+    use sunlit_core::scene::camera::PRESETS;
+
+    let (window, sent) = wired_window();
+    window.set_camera_position(CameraPositionSettings {
+        longitude: 77.0,
+        sun_fixed: true,
+        solar_time: 3.0,
+        ..window.get_camera_position()
+    });
+    let europe = PRESETS[0];
+    window.invoke_apply_preset(0);
+
+    let position = window.get_camera_position();
+    assert!(position.sun_fixed, "the preset left the Sun-fixed mode");
+    approx::assert_relative_eq!(position.longitude, 77.0);
+    let camera = resolved(&window);
+    assert!(
+        east_of(camera.longitude, europe.longitude).abs() < 0.01,
+        "the camera hangs over {} rather than the preset's {}",
+        camera.longitude,
+        europe.longitude
+    );
+    approx::assert_relative_eq!(camera.latitude, europe.latitude);
+    approx::assert_relative_eq!(camera.zoom, europe.zoom);
+    approx::assert_relative_eq!(camera.pitch_deg, europe.pitch_deg);
+    let pushed = last_pushed(&sent);
+    assert!(pushed.sun_fixed);
+    approx::assert_relative_eq!(pushed.solar_time, position.solar_time);
+}
+
+/// The horizontal part of a globe drag moves the time of day by the longitude
+/// the same drag moves an Earth-fixed camera by, over 15 degrees an hour,
+/// leaves the longitude alone, and wraps across midnight.
+#[test]
+fn test_a_globe_drag_in_the_sun_fixed_mode_moves_the_time_of_day() {
+    use sunlit_core::scene::camera::{held_longitude, solar_time_of_held};
+
+    let start = 23.8;
+    let (window, _sent) = wired_window();
+    set_longitude(&window, held_longitude(start));
+    window.invoke_mouse_drag_globe_begin();
+    window.invoke_mouse_drag_globe(-120.0, 0.0);
+    let turned = window.get_camera_position().longitude;
+    assert!(
+        east_of(turned, held_longitude(start)) > 3.0,
+        "the premise: the drag turns the globe east past midnight's meridian, to {turned}"
+    );
+
+    let (window, _sent) = wired_window();
+    window.set_camera_position(CameraPositionSettings {
+        longitude: -33.0,
+        sun_fixed: true,
+        solar_time: start,
+        ..window.get_camera_position()
+    });
+    window.invoke_mouse_drag_globe_begin();
+    window.invoke_mouse_drag_globe(-120.0, 0.0);
+    let position = window.get_camera_position();
+    approx::assert_relative_eq!(position.longitude, -33.0);
+    assert!(
+        position.solar_time < start - 12.0,
+        "the time of day did not wrap across midnight: {}",
+        position.solar_time
+    );
+    approx::assert_relative_eq!(
+        position.solar_time,
+        solar_time_of_held(turned),
+        epsilon = 1e-3
+    );
+}
+
+/// Load Defaults puts the camera's mode and its time of day back with the
+/// rest of Camera Position, and the Longitude row with them.
+#[test]
+fn test_load_defaults_leaves_the_sun_fixed_mode() {
+    let (window, _sent) = wired_window();
+    window.set_camera_position(CameraPositionSettings {
+        sun_fixed: true,
+        solar_time: 19.0,
+        ..window.get_camera_position()
+    });
+    let defaults = ui_callbacks::scene_settings(&SceneParams::default()).camera_position;
+    assert_ne!(window.get_camera_position(), defaults);
+
+    window.invoke_load_defaults();
+
+    assert_eq!(window.get_camera_position(), defaults);
+    let expected_rows = if defaults.sun_fixed { (0, 1) } else { (1, 0) };
+    assert_eq!(rows_shown(&window), expected_rows);
+}
+
+/// The Time of day row offers no reset, like the rest of Camera Position.
+#[test]
+fn test_the_time_of_day_offers_no_reset() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    window.set_camera_position(CameraPositionSettings {
+        sun_fixed: true,
+        ..window.get_camera_position()
+    });
+    let rows: Vec<_> = ElementHandle::find_by_element_id(&window, SOLAR_TIME_ROW).collect();
+    assert_eq!(rows.len(), 1, "expected one {SOLAR_TIME_ROW}");
+    move_off_its_value(&slider_of(&rows[0]));
+    assert_eq!(resets_offered(&window), Vec::<String>::new());
+}
+
 /// The grid's order and `PRESETS`' order are deliberately different, so every
 /// cell's index is checked by hand.
 #[test]

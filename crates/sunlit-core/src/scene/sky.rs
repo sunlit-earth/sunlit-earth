@@ -61,7 +61,7 @@ const PLANETS: [(PlanetKind, astro_body_t); 5] = [
 ];
 
 /// Compute all astronomy inputs for a scene at an injected UTC time.
-pub(crate) fn compute_sky_state_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> SkyState {
+pub fn compute_sky_state_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> SkyState {
     compute_sky_state_from_time(time_for_input(dt, now_utc))
 }
 

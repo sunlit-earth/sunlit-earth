@@ -7,11 +7,12 @@ use crate::engine_client::EngineLink;
 use crate::mouse_math;
 use crate::{
     AtmosphereSettings, CameraOrientationSettings, CameraPositionSettings, CelestialSettings,
-    CloudCoverSettings, CloudSettings, ColorCorrectionSettings, DateTimeSettings, FramingSettings,
-    HazeSettings, LightingSettings, MainWindow, MoonSettings, NightglowSettings, RayleighSettings,
-    SceneSettings, SkySettings, StarSettings, SunSettings, SunriseBandSettings,
-    TextureColorSettings,
+    CloudCoverSettings, CloudSettings, ColorCorrectionSettings, ColorText, DateTimeSettings,
+    FramingSettings, HazeSettings, LightingSettings, MainWindow, MoonSettings, NightglowSettings,
+    ParsedColor, RayleighSettings, SceneSettings, SkySettings, StarSettings, SunSettings,
+    SunriseBandSettings, TextureColorSettings,
 };
+use sunlit_core::color::Rgb8;
 use sunlit_core::config::{self, AppConfig};
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
@@ -516,6 +517,30 @@ pub fn set_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: Comb
     .ok();
 }
 
+/// A color as the window holds it.
+pub fn slint_color(color: Rgb8) -> slint::Color {
+    slint::Color::from_rgb_u8(color.r, color.g, color.b)
+}
+
+/// A color the window holds, without its alpha, which no color row sets.
+pub fn rgb8(color: slint::Color) -> Rgb8 {
+    Rgb8::new(color.red(), color.green(), color.blue())
+}
+
+/// Give the window's `ColorText` its two functions, `Rgb8`'s own, so the
+/// panel writes and reads a color's hex text as the config file does. Until
+/// this runs, a color row shows no text and accepts none.
+pub fn register_color_text(window: &MainWindow) {
+    let text = window.global::<ColorText>();
+    text.on_format(|color| rgb8(color).to_hex().into());
+    text.on_parse(|text| {
+        Rgb8::parse_hex(&text).map_or_else(ParsedColor::default, |color| ParsedColor {
+            valid: true,
+            color: slint_color(color),
+        })
+    });
+}
+
 /// Apply a loaded config to all window properties except window geometry.
 ///
 /// Called at startup, on reset, and on load-defaults. Window geometry is
@@ -657,10 +682,12 @@ pub fn scene_settings(params: &SceneParams) -> SceneSettings {
         },
         color_correction: ColorCorrectionSettings {
             day: TextureColorSettings {
+                ocean: slint_color(params.day_ocean_color),
                 gamma: gamma_value_to_slider(params.day_gamma),
                 saturation: params.day_saturation,
             },
             night: TextureColorSettings {
+                ocean: slint_color(params.night_ocean_color),
                 gamma: gamma_value_to_slider(params.night_gamma),
                 saturation: params.night_saturation,
             },
@@ -797,6 +824,8 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         moon_size: celestial.moon.size,
         moon_earthshine: celestial.moon.earthshine,
         milky_way_intensity: celestial.sky.milky_way,
+        day_ocean_color: rgb8(color.day.ocean),
+        night_ocean_color: rgb8(color.night.ocean),
         day_gamma: gamma_slider_to_value(color.day.gamma),
         day_saturation: color.day.saturation,
         night_gamma: gamma_slider_to_value(color.night.gamma),

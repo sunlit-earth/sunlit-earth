@@ -170,6 +170,7 @@ fn init_ui(
     displays::apply_models_to_window(window, &monitors);
     displays::apply_diagram_to_window(window, &monitors, config.anchor().as_deref());
 
+    ui_callbacks::register_color_text(window);
     ui_callbacks::apply_config_to_window(window, config);
     ui_callbacks::set_combobox_indices(
         &window.as_weak(),

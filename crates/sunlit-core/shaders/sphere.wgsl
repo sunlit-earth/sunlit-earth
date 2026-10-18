@@ -76,6 +76,10 @@ struct Uniforms {
     cloud_haze_latitude: f32,         // 4 bytes, offset 564
     cloud_haze_band: f32,             // 4 bytes, offset 568
     _pad11: f32,                      // 4 bytes, offset 572
+    day_ocean_shift: vec3<f32>,       // 12 bytes, offset 576
+    _pad12: f32,                      // 4 bytes, offset 588
+    night_ocean_shift: vec3<f32>,     // 12 bytes, offset 592
+    _pad13: f32,                      // 4 bytes, offset 604
 };
 
 @group(0) @binding(0)
@@ -415,8 +419,8 @@ fn night_with_ice(night: vec3<f32>, ice: vec3<f32>, weight: f32) -> vec3<f32> {
     return clamp(night + weight * (ice - fill), min(night, ice), max(night, ice));
 }
 
-/// What the globe's surface holds at a fragment: the day color, and in blend
-/// mode the night color and how much of it is open water, 0 to 1.
+/// What the globe's surface holds at a fragment: the day color, the night
+/// color in blend mode, and how much of it is open water, 0 to 1, by the mask.
 struct Surface {
     day: vec3<f32>,
     night: vec3<f32>,
@@ -516,11 +520,10 @@ fn globe_surface(in: VertexOutput) -> Surface {
     let w_dx = dpdx(w);
     let w_dy = dpdy(w);
     let day_floor = textureSample(day_cube, sphere_sampler, w).rgb;
+    let water = textureSample(water_cube, sphere_sampler, w).r;
     var night_floor = vec3<f32>(0.0);
-    var water = 0.0;
     if !single {
         night_floor = textureSample(night_cube, sphere_sampler, w).rgb;
-        water = textureSample(water_cube, sphere_sampler, w).r;
     }
 
     let at = face_point(w, w_dx, w_dy);
@@ -531,7 +534,7 @@ fn globe_surface(in: VertexOutput) -> Surface {
         let night_alone = (uniforms.flags & FLAG_NIGHT_ALONE) != 0u;
         let half = select(entry & 0xFFFFu, entry >> 16u, night_alone);
         let ocean = select(uniforms.day_ocean, uniforms.night_ocean, night_alone);
-        return Surface(refined(half, day_floor, ocean, at), vec3<f32>(0.0), 0.0);
+        return Surface(refined(half, day_floor, ocean, at), vec3<f32>(0.0), water);
     }
     return Surface(
         refined(entry & 0xFFFFu, day_floor, uniforms.day_ocean, at),
@@ -540,27 +543,51 @@ fn globe_surface(in: VertexOutput) -> Surface {
     );
 }
 
+/// `texel` with the open water's share of its pack's fill moved by `shift`,
+/// the chosen color less the fill, clamped for `apply_gamma`.
+fn recolor_ocean(texel: vec3<f32>, open_water: f32, shift: vec3<f32>) -> vec3<f32> {
+    return clamp(texel + open_water * shift, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let surface = globe_surface(in);
-
-    var day_rgb = apply_gamma(surface.day, uniforms.day_gamma);
-    day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
-
-    // If terminator_width is negative, we're in single-texture mode
-    // (the night texture binding is a dummy placeholder)
-    if uniforms.terminator_width < 0.0 {
-        return vec4<f32>(day_rgb, 1.0);
-    }
 
     let n = normalize(in.world_normal);
     let latitude = degrees(asin(clamp(n.y, -1.0, 1.0)));
     let day_luma = dot(surface.day, LUMA);
     let ice = smoothstep(ICE_LATITUDE_FOOT, ICE_LATITUDE_TOP, abs(latitude))
         * smoothstep(ICE_LUMA_FOOT, ICE_LUMA_TOP, day_luma);
+    let water = surface.water * (1.0 - ice);
+
+    // The night drawn alone has no day texel and so no ice: its frozen seas
+    // are the fill, and its whole share of water takes the night's color.
+    let night_alone = (uniforms.flags & FLAG_NIGHT_ALONE) != 0u;
+    var surface_texel = surface.day;
+    if night_alone {
+        if any(uniforms.night_ocean_shift != vec3<f32>(0.0)) {
+            surface_texel = recolor_ocean(surface_texel, surface.water, uniforms.night_ocean_shift);
+        }
+    } else if any(uniforms.day_ocean_shift != vec3<f32>(0.0)) {
+        surface_texel = recolor_ocean(surface_texel, water, uniforms.day_ocean_shift);
+    }
+
+    // If terminator_width is negative, we're in single-texture mode
+    // (the night texture binding is a dummy placeholder)
+    if uniforms.terminator_width < 0.0 {
+        let gamma = select(uniforms.day_gamma, uniforms.night_gamma, night_alone);
+        let saturation = select(uniforms.day_saturation, uniforms.night_saturation, night_alone);
+        return vec4<f32>(adjust_saturation(apply_gamma(surface_texel, gamma), saturation), 1.0);
+    }
+
+    var day_rgb = apply_gamma(surface_texel, uniforms.day_gamma);
+    day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
 
     let night_ice = NIGHT_ICE * min(day_luma / NIGHT_ICE_DAY_LUMA, 1.0);
-    let night_texel = night_with_ice(surface.night, night_ice, ice * surface.water);
+    var night_texel = night_with_ice(surface.night, night_ice, ice * surface.water);
+    if any(uniforms.night_ocean_shift != vec3<f32>(0.0)) {
+        night_texel = recolor_ocean(night_texel, water, uniforms.night_ocean_shift);
+    }
     var night_rgb = apply_gamma(night_texel, uniforms.night_gamma);
     night_rgb = adjust_saturation(night_rgb, uniforms.night_saturation);
 
@@ -576,7 +603,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var color = result.color;
 
-    let water = surface.water * (1.0 - ice);
     if water > 0.0 {
         let v = normalize(uniforms.eye_pos - in.world_normal);
         let n_dot_v = max(dot(n, v), 0.0);

@@ -365,25 +365,20 @@ impl Renderer {
     /// Whether a cube the current mode needs is on its way, the day side's and
     /// the night side's.
     pub(crate) fn cubes_waiting(&self, params: &SceneParams) -> (bool, bool) {
-        texture_routing::cubes_waiting(
-            self,
-            TextureMode::from_index(params.texture_index),
-            params.draws_clouds(),
-        )
+        texture_routing::cubes_waiting(self, TextureMode::from_index(params.texture_index))
     }
 
     /// Whether every texture the current mode needs is resident or has failed
     /// for good: its cubes, the floor of the month in force, the night floor,
-    /// the mask, which the cloud layer reads in every surface mode while it is
-    /// drawn. The clouds, the Moon and the Milky Way are excluded: they are
-    /// overlays, not requirements. Without the cube surface only the grid is
-    /// ever ready.
+    /// and the mask, which every cube mode reads. The clouds, the Moon and the
+    /// Milky Way are excluded: they are overlays, not requirements. Without the
+    /// cube surface only the grid is ever ready.
     pub(crate) fn textures_ready(&self, params: &SceneParams) -> bool {
         let mode = TextureMode::from_index(params.texture_index);
         self.surface
             .as_ref()
             .map_or(mode == TextureMode::Grid, |surface| {
-                surface.readiness(mode, params.draws_clouds()).0
+                surface.readiness(mode).0
             })
     }
 
@@ -395,7 +390,7 @@ impl Renderer {
         let mode = TextureMode::from_index(params.texture_index);
         self.surface
             .as_ref()
-            .is_some_and(|surface| surface.readiness(mode, params.draws_clouds()).1)
+            .is_some_and(|surface| surface.readiness(mode).1)
     }
 
     /// Make `month`, January 0, the month in force: its floor is what
@@ -441,7 +436,7 @@ impl Renderer {
         }
         let texture =
             surface::cube_from_pack(&self.device, &self.queue, layer, pack, surface.formats)?;
-        let floor = surface.hold(layer, ResidentCube::new(texture));
+        let floor = surface.hold(layer, ResidentCube::new(texture, pack.ocean()));
         let table = match &mut surface.tiles {
             Some(tiles) if has_tiles => tiles.add_pack(&self.queue, pack)?,
             _ => false,
@@ -584,10 +579,20 @@ impl Renderer {
             })
     }
 
+    /// The ocean colors of the packs the floors drawn with `resolved` came
+    /// from, the day's and the night's, `None` for a floor it does not draw.
+    fn fills(&self, resolved: &ResolvedTexture) -> [Option<[u8; 4]>; 2] {
+        match (resolved, &self.surface) {
+            (ResolvedTexture::Surface(group), Some(surface)) => surface.fills(*group),
+            _ => surface::drawn_fills(None, None, None),
+        }
+    }
+
     /// Build the surface's bind groups from what is resident: the day floor and
-    /// the night floor each alone, and the two with the mask for blend mode,
-    /// with the dummy cube for a mask that is not there, each with the page
-    /// table and the tile array, or the array's dummy until the first tile.
+    /// the night floor each alone, and the two together for blend mode, each
+    /// with the mask, or the dummy cube for a mask that is not there, and with
+    /// the page table and the tile array, or the array's dummy until the first
+    /// tile.
     fn rebuild_surface_groups(&mut self) {
         let Some(surface) = &self.surface else {
             return;
@@ -606,8 +611,8 @@ impl Renderer {
         let night = surface.night.as_ref().map(|cube| &cube.view);
         let mask = surface.mask.as_ref().map_or(dummy, |cube| &cube.view);
         let group = |cubes, label| self.cube_bind_group(cubes, tiles, label);
-        let day_group = day.map(|day| group([day, dummy, dummy], "surface_day"));
-        let night_group = night.map(|night| group([night, dummy, dummy], "surface_night"));
+        let day_group = day.map(|day| group([day, dummy, mask], "surface_day"));
+        let night_group = night.map(|night| group([night, dummy, mask], "surface_night"));
         let blend_group = day
             .zip(night)
             .map(|(day, night)| group([day, night, mask], "surface_blend"));
@@ -761,6 +766,7 @@ impl Renderer {
             use_blend,
             night_alone: resolved.draws_the_night_alone(),
             tiles: self.tile_uniforms(),
+            fills: self.fills(&resolved),
         });
         self.last_resolved = Some(resolved);
         self.update_planets(sky);

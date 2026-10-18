@@ -97,6 +97,12 @@ pub fn earth_fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/earth")
 }
 
+/// The ocean colors the Earth fixture's packs carry, the day's in every month
+/// and the night's. The day's is a level redder than the shipped packs' (10,
+/// 30, 60), so a test that draws the fixture with the default ocean colors
+/// sees its water move by that level; one that has to see none sets these.
+pub const EARTH_FIXTURE_OCEAN: [[u8; 3]; 2] = [[11, 30, 60], [5, 5, 15]];
+
 /// Lay the Earth fixture out under `dir` as a complete cube texture set, with
 /// March's faces for March and July's standing in for every other month.
 pub fn write_earth_fixture(dir: &Path) {

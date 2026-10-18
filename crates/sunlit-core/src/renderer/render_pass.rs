@@ -1,5 +1,6 @@
 use std::sync::mpsc;
 
+use crate::color::Rgb8;
 use crate::params::{
     CLOUD_SPHERE_RADIUS, CLOUD_TERMINATOR_WIDTH, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS,
     RAYLEIGH_RADIUS, SceneParams,
@@ -24,6 +25,9 @@ pub(super) struct FrameInputs {
     /// table refines it.
     pub night_alone: bool,
     pub tiles: TileUniforms,
+    /// The ocean colors of the packs the floors drawn came from, RGBA8, the
+    /// day's and the night's, `None` for a floor the frame does not draw.
+    pub fills: [Option<[u8; 4]>; 2],
 }
 
 /// The constant ocean colors of the day and the night, RGBA8, and a tile's
@@ -33,6 +37,25 @@ pub(super) struct TileUniforms {
     pub ocean: [[u8; 4]; 2],
     pub tile: u32,
     pub gutter: u32,
+}
+
+/// What the open water's share of a texel moves by for `chosen` to replace
+/// `fill`, the ocean color of the pack its floor came from: the difference per
+/// channel over 255.
+///
+/// Exactly zero when there is no floor, when the fill's alpha says its pack
+/// has none, and when the chosen color is the fill, which is what the shader
+/// takes as the branch that leaves the texel as it is.
+pub(super) fn ocean_shift(chosen: Rgb8, fill: Option<[u8; 4]>) -> [f32; 3] {
+    match fill {
+        Some([r, g, b, alpha]) if alpha != 0 && chosen != Rgb8::new(r, g, b) => {
+            let fill = [r, g, b];
+            std::array::from_fn(|channel| {
+                (f32::from(chosen.channels()[channel]) - f32::from(fill[channel])) / 255.0
+            })
+        }
+        _ => [0.0; 3],
+    }
 }
 
 /// Bit 0 of `Uniforms::flags`: diffuse shading.
@@ -262,6 +285,10 @@ pub(super) fn write_uniforms<'a>(
         tile_texels: inputs.tiles.tile as f32,
         tile_gutter: inputs.tiles.gutter as f32,
         _pad11: 0.0,
+        day_ocean_shift: ocean_shift(params.day_ocean_color, inputs.fills[0]),
+        _pad12: 0.0,
+        night_ocean_shift: ocean_shift(params.night_ocean_color, inputs.fills[1]),
+        _pad13: 0.0,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn
@@ -748,6 +775,44 @@ pub(super) fn read_texture_rgba8_into(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shift is zero, bit for bit, wherever nothing is to move.
+    #[test]
+    fn the_ocean_shift_is_exactly_zero_where_nothing_moves() {
+        let fill = [10, 30, 60, 255];
+        let zero = |shift: [f32; 3]| shift.iter().all(|&c| c.to_bits() == 0);
+        assert!(zero(ocean_shift(Rgb8::new(10, 30, 60), Some(fill))));
+        assert!(zero(ocean_shift(Rgb8::new(200, 0, 255), None)), "no floor");
+        assert!(
+            zero(ocean_shift(Rgb8::new(200, 0, 255), Some([10, 30, 60, 0]))),
+            "a pack without an ocean color"
+        );
+    }
+
+    #[test]
+    fn the_ocean_shift_is_the_signed_difference_over_255() {
+        let shift = ocean_shift(Rgb8::new(255, 30, 0), Some([10, 30, 60, 255]));
+        approx::assert_relative_eq!(shift[0], 245.0 / 255.0);
+        assert_eq!(shift[1].to_bits(), 0, "an equal channel is exactly zero");
+        approx::assert_relative_eq!(shift[2], -60.0 / 255.0);
+    }
+
+    /// Added to the fill's own value as the sampler returns it, the shift lands
+    /// within half a level of the chosen color for every channel value, so an
+    /// open water texel of the fill is stored as the chosen color.
+    #[test]
+    fn the_fill_plus_its_shift_rounds_to_the_chosen_color() {
+        for chosen in 0..=u8::MAX {
+            for fill in [0_u8, 5, 10, 30, 60, 128, 255] {
+                let shift = ocean_shift(Rgb8::new(chosen, 0, 0), Some([fill, 0, 0, 255]))[0];
+                let drawn = (f32::from(fill) / 255.0 + shift).clamp(0.0, 1.0) * 255.0;
+                assert!(
+                    (drawn - f32::from(chosen)).abs() < 0.01,
+                    "fill {fill}, chosen {chosen}, drawn {drawn}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn only_day_and_night_take_the_shells_off_the_sun() {

@@ -563,12 +563,11 @@ fn a_cloud_layer_with_nothing_to_show_says_so_before_the_first_retry() {
 /// What the worker waits before its first retry, from `cloud_fetcher`.
 const FIRST_RETRY: Duration = Duration::from_secs(15);
 
-/// Day mode reads no mask of its own, but the cloud layer over it does: with
-/// the layer drawn a publish waits for the mask, and with it switched off it
-/// goes out without. Every pack but the mask's is built beforehand, and the
-/// mask's build is held at the gate.
+/// Day mode reads the mask itself, for the ocean color, so a publish waits for
+/// it whether the cloud layer is drawn or not. Every pack but the mask's is
+/// built beforehand, and the mask's build is held at the gate.
 #[test]
-fn a_drawn_cloud_layer_holds_a_day_publish_for_the_mask() {
+fn a_day_publish_waits_for_the_mask_whatever_the_clouds() {
     let _gpu = gpu();
     for clouds in [false, true] {
         let fixture = CubeFixture::new(&format!("engine_clouds_mask_{clouds}"));
@@ -593,8 +592,7 @@ fn a_drawn_cloud_layer_holds_a_day_publish_for_the_mask() {
         });
 
         harness.engine.send(EngineCommand::RenderWallpaperNow);
-        let within = if clouds { HELD } else { TIMEOUT };
-        let deadline = std::time::Instant::now() + within;
+        let deadline = std::time::Instant::now() + HELD;
         let mut published = None;
         while let Ok(event) = harness.events.recv_deadline(deadline) {
             if let EngineEvent::WallpaperSet(result) = event {
@@ -602,20 +600,12 @@ fn a_drawn_cloud_layer_holds_a_day_publish_for_the_mask() {
                 break;
             }
         }
-        if clouds {
-            assert!(
-                published.is_none(),
-                "a publish under a drawn cloud layer went out without the mask"
-            );
-            gate.open();
-            assert!(harness.wait_for_publish().is_ok());
-        } else {
-            assert!(
-                published.is_some_and(|result| result.is_ok()),
-                "a publish with the cloud layer off waited for the mask"
-            );
-            gate.open();
-        }
+        assert!(
+            published.is_none(),
+            "a Day publish went out without the mask, clouds {clouds}"
+        );
+        gate.open();
+        assert!(harness.wait_for_publish().is_ok());
         assert_eq!(sink.publications().len(), 1, "clouds {clouds}");
     }
 }

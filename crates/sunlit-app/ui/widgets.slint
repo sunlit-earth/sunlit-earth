@@ -1,4 +1,4 @@
-import { Slider, ComboBox, CheckBox, Palette } from "std-widgets.slint";
+import { Slider, ComboBox, CheckBox, LineEdit, Palette } from "std-widgets.slint";
 
 // One monitor's place in the layout diagram.
 //
@@ -199,6 +199,316 @@ export component SettingRow inherits Rectangle {
             hint: "Reset to default";
             reset => {
                 root.value = root.default-value;
+                root.changed();
+            }
+        }
+    }
+}
+
+// A color's `#rrggbb` text, both ways. The app implements the two with
+// `Rgb8`'s own functions, so the config file and the panel read one spelling.
+export struct ParsedColor {
+    valid: bool,
+    color: color,
+}
+
+export global ColorText {
+    pure callback format(color) -> string;
+    pure callback parse(string) -> ParsedColor;
+}
+
+// What a color row's popup holds: a saturation and value square over the hue,
+// a hue strip, and a hex field.
+//
+// The color is the only state that persists. The picker takes its hue,
+// saturation and value from `value` when it is created, which is each time
+// the popup opens, keeps its own hue while saturation or value is zero so a
+// gray does not lose it, and writes `value` from its pointer and edit
+// handlers alone. A color nobody touches never passes through a float round
+// trip.
+//
+// The square's vertical axis is the square root of value: both ocean
+// defaults are dark, at a value of 0.24 by day and 0.06 by night, which a
+// linear axis puts in the square's bottom quarter and bottom sixteenth. The
+// black layer's stops are 1 - (1 - y)^2 at every eighth of the height, close
+// enough to the curve that a pick and the color drawn under it agree within a
+// level.
+export component ColorPicker inherits Rectangle {
+    in-out property <color> value;
+    callback changed();
+
+    property <float> hue;
+    property <float> saturation;
+    property <float> brightness;
+
+    width: 180px;
+    height: layout.preferred-height;
+    background: Palette.background;
+    border-width: 1px;
+    border-color: Palette.border;
+    border-radius: 4px;
+
+    init => {
+        root.take(root.value);
+        hex.text = ColorText.format(root.value);
+    }
+
+    function take(color: color) {
+        let hsv = color.to-hsv();
+        if hsv.saturation > 0 && hsv.value > 0 {
+            root.hue = hsv.hue;
+        }
+        root.saturation = hsv.saturation;
+        root.brightness = hsv.value;
+    }
+
+    function pick() {
+        root.value = hsv(root.hue, root.saturation, root.brightness);
+        hex.text = ColorText.format(root.value);
+        root.changed();
+    }
+
+    function pick-square(x: length, y: length) {
+        let up = 1 - clamp(y / square.height, 0, 1);
+        root.saturation = clamp(x / square.width, 0, 1);
+        root.brightness = up * up;
+        root.pick();
+    }
+
+    function pick-hue(hue: float) {
+        root.hue = clamp(hue, 0, 360);
+        root.pick();
+    }
+
+    function enter(text: string) {
+        let parsed = ColorText.parse(text);
+        if parsed.valid {
+            root.value = parsed.color;
+            root.take(parsed.color);
+            hex.text = ColorText.format(root.value);
+            root.changed();
+        }
+    }
+
+    layout := VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        square := Rectangle {
+            height: 120px;
+            clip: true;
+
+            Rectangle {
+                background: hsv(root.hue, 1, 1);
+            }
+            Rectangle {
+                background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%);
+            }
+            Rectangle {
+                background: @linear-gradient(180deg,
+                    #00000000 0%,
+                    #0000003c 12.5%,
+                    #00000070 25%,
+                    #0000009b 37.5%,
+                    #000000bf 50%,
+                    #000000db 62.5%,
+                    #000000ef 75%,
+                    #000000fb 87.5%,
+                    #000000ff 100%);
+            }
+            Rectangle {
+                x: root.saturation * parent.width - self.width / 2;
+                y: (1 - sqrt(root.brightness)) * parent.height - self.height / 2;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                border-width: 2px;
+                border-color: root.brightness > 0.3 && root.saturation < 0.5 ? #000000 : #ffffff;
+            }
+            TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.pick-square(self.mouse-x, self.mouse-y);
+                    }
+                }
+                moved => {
+                    root.pick-square(self.mouse-x, self.mouse-y);
+                }
+            }
+        }
+
+        strip := Rectangle {
+            height: 14px;
+            border-radius: 2px;
+            background: @linear-gradient(90deg,
+                #ff0000 0%,
+                #ffff00 16.667%,
+                #00ff00 33.333%,
+                #00ffff 50%,
+                #0000ff 66.667%,
+                #ff00ff 83.333%,
+                #ff0000 100%);
+
+            Rectangle {
+                x: root.hue / 360 * parent.width - self.width / 2;
+                y: -2px;
+                width: 4px;
+                height: parent.height + 4px;
+                border-width: 1px;
+                border-color: #ffffff;
+                background: #00000060;
+            }
+            TouchArea {
+                accessible-role: slider;
+                accessible-label: "Hue";
+                accessible-value: round(root.hue);
+                accessible-value-minimum: 0;
+                accessible-value-maximum: 360;
+                accessible-value-step: 1;
+                accessible-action-set-value(text) => {
+                    root.pick-hue(text.to-float());
+                }
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.pick-hue(self.mouse-x / self.width * 360);
+                    }
+                }
+                moved => {
+                    root.pick-hue(self.mouse-x / self.width * 360);
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+
+            Text {
+                text: "Hex";
+                vertical-alignment: center;
+            }
+            hex := LineEdit {
+                min-width: 0;
+                accessible-label: "Hex";
+                accepted(text) => {
+                    root.enter(text);
+                }
+                changed has-focus => {
+                    if !self.has-focus {
+                        self.text = ColorText.format(root.value);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A color row, on the same label column as SettingRow: the label, a swatch
+// that opens the picker, the color's hex text, and the reset. Its contract is
+// SettingRow's: `value`, `default-value`, `modified` and `changed`.
+//
+// The swatch's accessible value is the hex text, and setting it reads one, so
+// a screen reader, and a test, can set the color without the popup.
+export component SettingColor inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <length> indent: 0px;
+    in property <length> label-width: 88px;
+    in-out property <color> value;
+    // What the row's reset puts back.
+    in property <color> default-value;
+    out property <bool> modified: root.value != root.default-value;
+    callback changed();
+
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+
+    row := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        spacing: 2px;
+
+        Rectangle {
+            min-width: setting.min-width;
+            preferred-width: setting.preferred-width;
+            min-height: setting.min-height;
+            preferred-height: setting.preferred-height;
+
+            setting := HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                spacing: 4px;
+                padding-left: root.indent;
+                alignment: start;
+
+                Text {
+                    text: root.label;
+                    vertical-alignment: center;
+                    min-width: root.label-width - root.indent;
+                }
+                VerticalLayout {
+                    alignment: center;
+
+                    swatch := Rectangle {
+                        width: 36px;
+                        height: 18px;
+                        border-radius: 3px;
+                        border-width: 1px;
+                        border-color: swatch-touch.has-hover ? Palette.foreground : Palette.border;
+                        background: root.value;
+
+                        swatch-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            accessible-role: button;
+                            accessible-label: root.label;
+                            accessible-description: "Pick a color";
+                            accessible-value: ColorText.format(root.value);
+                            accessible-action-default => {
+                                popup.show();
+                            }
+                            accessible-action-set-value(text) => {
+                                let parsed = ColorText.parse(text);
+                                if parsed.valid {
+                                    root.value = parsed.color;
+                                    root.changed();
+                                }
+                            }
+                            clicked => {
+                                popup.show();
+                            }
+                        }
+                    }
+                }
+                Text {
+                    text: ColorText.format(root.value);
+                    vertical-alignment: center;
+                }
+            }
+
+            Tooltip {
+                Hint { text: root.hint; }
+            }
+        }
+        ResetSlot {
+            shown: root.modified;
+            target: root.label;
+            hint: "Reset to default";
+            reset => {
+                root.value = root.default-value;
+                root.changed();
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: swatch.absolute-position.x - root.absolute-position.x;
+        y: swatch.absolute-position.y - root.absolute-position.y + swatch.height + 2px;
+        width: picker.width;
+        height: picker.height;
+        close-policy: PopupClosePolicy.close-on-click-outside;
+
+        picker := ColorPicker {
+            value <=> root.value;
+            changed => {
                 root.changed();
             }
         }

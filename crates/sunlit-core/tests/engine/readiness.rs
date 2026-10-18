@@ -542,7 +542,11 @@ fn the_tile_wait_starts_over_when_the_resolution_changes() {
     assert!(rig.sink.publications().is_empty());
 
     rig.harness.set_texture_resolution(4096);
-    rig.harness.settle();
+    // The set is asked for again only in a tick, after the purge and before
+    // that tick's publish check, so the wait restarts before the clock moves.
+    report_when(&rig.harness, "the set after the purge", |r| {
+        r.epoch > before.epoch && !r.wanted.is_empty()
+    });
     rig.harness.advance(
         &rig.clock,
         TILE_WAIT.saturating_sub(Duration::from_millis(1)),

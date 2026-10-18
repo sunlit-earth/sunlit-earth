@@ -90,6 +90,10 @@ fn a_shown_sun_fixed_preview_is_redrawn_once_a_pixel_of_the_turn() {
     );
     group.advance(&group.clock, Duration::from_secs(25));
     group.next_frame();
+
+    // The group's own scene back, at its pinned instant, so the cases that
+    // move its clock after this one move no sky of this one's.
+    group.settle_at(&test_params());
 }
 
 #[test]

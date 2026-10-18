@@ -301,6 +301,7 @@ impl ServedCloud {
 /// that needs the other one swaps it and waits for the size to follow.
 pub struct FixtureClouds {
     served: std::sync::Mutex<ServedCloud>,
+    polls: std::sync::atomic::AtomicU64,
 }
 
 impl FixtureClouds {
@@ -311,7 +312,13 @@ impl FixtureClouds {
                 cloud_bands_image(),
                 "cloud-bands-fixture",
             )),
+            polls: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// How many polls have reached the source, counted as each one begins.
+    pub fn polls(&self) -> u64 {
+        self.polls.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Serve the banded map from the next poll on.
@@ -340,6 +347,7 @@ impl sunlit_core::assets::cloud_source::CloudSource for FixtureClouds {
         &self,
         known_etag: Option<&str>,
     ) -> Result<Option<sunlit_core::assets::cloud_source::CloudImage>, String> {
+        self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let served = self.served.lock().expect("the cloud fixture is poisoned");
         if known_etag == Some(served.etag.as_str()) {
             return Ok(None);

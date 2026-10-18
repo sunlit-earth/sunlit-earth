@@ -57,6 +57,14 @@ pub(crate) fn start(
     })
 }
 
+/// Give `config` a clock that stands still, so a camera move is a jump and
+/// never a drag however soon after the first frame it comes.
+fn stand_still(config: &mut sunlit_core::engine::EngineConfig) {
+    config.clock = std::sync::Arc::new(sunlit_core::engine::clock::MockClock::new(
+        time::OffsetDateTime::UNIX_EPOCH,
+    ));
+}
+
 pub(crate) fn tile_report(harness: &Harness) -> TileReport {
     *harness
         .engine
@@ -159,6 +167,7 @@ fn tiles_that_land_are_drawn_into_the_next_preview_frame() {
     let harness = start(&dir, |config| {
         config.params = day_over(25.0, 0.0, 0.1);
         config.texture_resolution = 2048;
+        stand_still(config);
     });
     let floor = floor_frame(&harness, &view);
 
@@ -196,11 +205,7 @@ fn a_camera_move_brings_its_tiles_in_and_evicts_what_it_needs_room_for() {
     let harness = start(&dir, |config| {
         config.params = africa;
         config.tile_layers = Some(LAYERS);
-        // A clock that stands still, so the move is a jump and never a drag
-        // however soon after the first frame it comes.
-        config.clock = std::sync::Arc::new(sunlit_core::engine::clock::MockClock::new(
-            time::OffsetDateTime::UNIX_EPOCH,
-        ));
+        stand_still(config);
     });
     harness.wait_for_textures("the floors");
     let before = settled(&harness, "the tiles over Africa", |r| !r.wanted.is_empty());
@@ -256,6 +261,7 @@ fn tiles_that_cannot_be_read_are_drawn_from_the_floor() {
     let harness = start(&dir, |config| {
         config.params = day_over(25.0, 0.0, 0.1);
         config.texture_resolution = 2048;
+        stand_still(config);
     });
     let floor = floor_frame(&harness, &view);
 

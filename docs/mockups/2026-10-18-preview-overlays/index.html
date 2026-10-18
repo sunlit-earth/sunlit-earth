@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preview overlay mockups</title>
+<style>
+:root {
+  --page-bg: #1b1d21;
+  --page-fg: #e6e8eb;
+  --page-dim: #9aa0a8;
+  --ov-bg: rgba(16, 18, 22, 0.68);
+  --ov-bg-solid: #16181d;
+  --ov-border: rgba(255, 255, 255, 0.11);
+  --ov-fg: #eceef1;
+  --ov-dim: #9ba1a9;
+  --ov-faint: rgba(255, 255, 255, 0.16);
+  --accent: #4cc2ff;
+  --accent-soft: rgba(76, 194, 255, 0.22);
+  --sun: #ffc44d;
+  --live: #ff5a5a;
+  --sidebar-bg: #d6d6d6;
+  --btn-bg: #fbfbfb;
+  --btn-border: #d0d0d0;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Noto Sans", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--page-bg); color: var(--page-fg); font: 14px/1.45 var(--font); }
+body { padding: 20px 24px 40px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+.lede { color: var(--page-dim); margin: 0 0 14px; max-width: 1180px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; margin-bottom: 14px; }
+.toolbar .group { display: flex; align-items: center; gap: 8px; }
+.toolbar .label { color: var(--page-dim); font-size: 13px; }
+.seg { display: inline-flex; border: 1px solid #3a3e45; border-radius: 6px; overflow: hidden; }
+.seg button { background: #24272c; color: var(--page-fg); border: 0; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.seg button + button { border-left: 1px solid #3a3e45; }
+.seg button.on { background: #0f6cbd; color: white; }
+
+/* the fake app window */
+.app { width: 1200px; height: 720px; border-radius: 8px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.55); border: 1px solid #444; display: flex; flex-direction: column; user-select: none; }
+.titlebar { height: 32px; background: #f3f3f3; color: #1a1a1a; display: flex; align-items: center; padding: 0 10px; font-size: 12px; gap: 8px; }
+.titlebar .dot { width: 16px; height: 16px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #ffd27a 0 18%, #20304f 40%, #0b1022 70%); }
+.titlebar .grow { flex: 1; }
+.titlebar .wc { width: 46px; text-align: center; color: #333; }
+.body { flex: 1; display: flex; min-height: 0; }
+
+.sidebar { width: 330px; background: var(--sidebar-bg); color: #1b1b1b; padding: 8px; overflow-y: auto; font-size: 13px; }
+.sidebar .btn { display: block; width: 100%; background: var(--btn-bg); border: 1px solid var(--btn-border); border-radius: 4px; padding: 5px 8px; text-align: center; font: inherit; color: inherit; cursor: pointer; }
+.sidebar .btn:hover { background: #f5f5f5; }
+.sidebar .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 4px; }
+.sidebar .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.sidebar h3 { text-align: center; font-size: 13px; margin: 10px 0 6px; }
+.sidebar .group { margin: 10px 0 0; }
+.sidebar .group > .title { font-weight: 600; margin: 0 0 4px; }
+.sidebar .srow { display: grid; grid-template-columns: 78px 1fr 46px; align-items: center; gap: 6px; height: 24px; }
+.sidebar .srow input[type=range] { width: 100%; accent-color: #0f6cbd; }
+.sidebar .srow .v { text-align: right; font-variant-numeric: tabular-nums; color: #333; }
+.sidebar .note { color: #555; font-size: 12px; margin: 4px 0 0; }
+.sidebar .hl { outline: 2px solid #0f6cbd; outline-offset: 1px; border-radius: 3px; }
+
+.splitter { width: 4px; background: #e9e9e9; }
+.preview { position: relative; flex: 1; background: black; overflow: hidden; }
+#globe { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+#globe.dragging { cursor: grabbing; }
+
+/* overlay layer */
+.overlays { position: absolute; inset: 0; pointer-events: none; font-family: var(--font); color: var(--ov-fg); font-size: 12px; }
+.overlays > * { pointer-events: auto; }
+.fade { transition: opacity .25s ease; }
+.preview:not(.pointer-in) .fade { opacity: .42; }
+.overlays.hidden .fade, .overlays.hidden .cam { opacity: 0 !important; pointer-events: none; }
+.panel { background: var(--ov-bg); border: 1px solid var(--ov-border); border-radius: 14px; box-shadow: 0 6px 22px rgba(0,0,0,.45); }
+.ovbtn { width: 24px; height: 24px; border-radius: 7px; border: 0; background: transparent; color: var(--ov-dim); display: inline-grid; place-items: center; cursor: pointer; padding: 0; font: inherit; }
+.ovbtn:hover { background: var(--ov-faint); color: var(--ov-fg); }
+.ovbtn.on { color: var(--accent); }
+.ovbtn svg { display: block; }
+.cap { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ov-dim); text-align: center; margin: 8px 0 4px; }
+
+/* shared pad / joystick */
+.pad { position: relative; width: 46px; height: 46px; border-radius: 50%; background: radial-gradient(circle at 50% 40%, rgba(255,255,255,.10), rgba(255,255,255,.03) 70%); border: 1px solid var(--ov-border); margin: 0 auto; touch-action: none; }
+.pad.square { border-radius: 10px; }
+.pad .knob { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: #dfe3e8; box-shadow: 0 1px 4px rgba(0,0,0,.6); cursor: grab; transition: transform .18s cubic-bezier(.3,1.6,.5,1); }
+.pad.held .knob { transition: none; background: white; cursor: grabbing; }
+.pad .chev { position: absolute; width: 14px; height: 14px; display: grid; place-items: center; color: var(--ov-dim); cursor: pointer; border-radius: 4px; }
+.pad .chev:hover { color: var(--ov-fg); background: var(--ov-faint); }
+.pad .chev.n { left: 16px; top: 1px; } .pad .chev.s { left: 16px; bottom: 1px; }
+.pad .chev.w { left: 1px; top: 16px; } .pad .chev.e { right: 1px; top: 16px; }
+.reset { position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--ov-bg-solid); border: 1px solid var(--ov-border); color: var(--accent); display: none; place-items: center; cursor: pointer; font-size: 11px; line-height: 1; z-index: 2; }
+.reset.show { display: grid; }
+.reset:hover { background: #24303a; }
+
+/* gesture mirroring */
+.mirror-on { box-shadow: 0 0 0 2px var(--accent), 0 0 14px 2px rgba(76,194,255,.55) !important; }
+
+/* camera panel: always expanded, fades when idle */
+.cam { position: absolute; top: 12px; right: 12px; }
+.camA { width: 92px; padding: 8px 6px 4px; transition: background-color .4s, border-color .4s, box-shadow .4s; }
+.camA .dim { transition: opacity .4s, filter .4s; }
+.camA.idle { background-color: transparent; box-shadow: none; border-color: rgba(255,255,255,.18); }
+.camA.idle.nobg { border-color: transparent; }
+.camA.idle .dim { opacity: .3; filter: drop-shadow(0 0 1.5px rgba(0,0,0,.95)); }
+.camA.idle .dim.mirror-on { opacity: 1; }
+.camA.idle .camfoot { border-top-color: transparent; }
+.ring { position: relative; width: 78px; height: 78px; margin: 0 auto; border-radius: 50%; touch-action: none; }
+.ring svg.ticks { position: absolute; inset: 0; }
+.ring .track { position: absolute; inset: 0; border-radius: 50%; border: 9px solid rgba(255,255,255,.07); cursor: ew-resize; }
+.ring .track:hover { border-color: rgba(255,255,255,.12); }
+.ring .pad { position: absolute; left: 16px; top: 16px; margin: 0; }
+.north { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; display: grid; place-items: center; font-weight: 700; font-size: 10px; color: #ff6b5e; cursor: pointer; border-radius: 50%; background: var(--ov-bg-solid); border: 1px solid rgba(255,107,94,.55); z-index: 1; }
+.north:hover { background: #3a2220; }
+.zoom { display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 8px auto 2px; width: 40px; border-radius: 8px; }
+.hb { width: 26px; height: 24px; border-radius: 7px; border: 1px solid var(--ov-border); background: rgba(255,255,255,.05); color: var(--ov-fg); font: 16px/1 var(--font); cursor: pointer; display: grid; place-items: center; padding: 0; }
+.hb:hover { background: var(--ov-faint); }
+.hb:active { background: var(--accent-soft); }
+.vslider { position: relative; width: 26px; height: 74px; touch-action: none; cursor: ns-resize; }
+.vslider::before { content: ""; position: absolute; left: 12px; top: 4px; bottom: 4px; width: 2px; border-radius: 1px; background: rgba(255,255,255,.18); }
+.vslider .mark { position: absolute; left: 5px; width: 16px; height: 2px; margin-top: -1px; border-radius: 1px; background: rgba(255,255,255,.6); }
+.vslider .thumb { position: absolute; left: 6px; width: 14px; height: 14px; margin-top: -7px; border-radius: 50%; background: #dfe3e8; box-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.camfoot { display: flex; justify-content: center; gap: 6px; margin-top: 8px; border-top: 1px solid var(--ov-border); padding-top: 3px; transition: border-color .4s; }
+.padwrap { position: relative; width: 46px; margin: 0 auto; }
+.padwrap .reset { right: -16px; top: -4px; }
+
+/* tooltip */
+#tip { position: absolute; z-index: 30; max-width: 260px; padding: 8px 10px; background: #0d0f12; border: 1px solid #3b4048; border-radius: 8px; color: var(--ov-fg); font-size: 12px; pointer-events: none; opacity: 0; transform: translateY(2px); transition: opacity .12s, transform .12s; box-shadow: 0 6px 18px rgba(0,0,0,.5); }
+#tip.show { opacity: 1; transform: none; }
+#tip .t { font-weight: 600; margin-bottom: 2px; }
+#tip .d { color: #c3c8cf; }
+#tip .how { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid #2a2e35; color: #dfe3e8; }
+kbd { display: inline-block; min-width: 18px; padding: 0 5px; height: 18px; line-height: 17px; text-align: center; border-radius: 4px; border: 1px solid #4a5059; border-bottom-width: 2px; background: #1d2026; color: #e7eaee; font: 11px/17px var(--font); }
+
+/* time bar */
+.timeA { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); }
+.pill { display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 10px; border-radius: 999px; white-space: nowrap; cursor: pointer; font-variant-numeric: tabular-nums; }
+.pill .state { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; font-size: 11px; letter-spacing: .04em; }
+.pill .state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); box-shadow: 0 0 8px var(--live); animation: pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity: .45; } }
+.pill .zone { color: var(--ov-dim); }
+.barA { position: relative; width: 800px; padding: 8px 12px 10px; display: none; }
+.timeA.pinned { opacity: 1 !important; }
+#pinBtn { position: absolute; top: 5px; right: 5px; }
+.bgrid { display: grid; grid-template-columns: 48px 1fr 142px; grid-template-rows: 44px 24px 24px; column-gap: 10px; row-gap: 7px; align-items: center; margin-right: 26px; }
+.g-l1 { grid-area: 1 / 1; } .g-t { grid-area: 1 / 2; }
+.g-l2 { grid-area: 2 / 1; } .g-d { grid-area: 2 / 2; }
+.g-l3 { grid-area: 3 / 1; } .g-y { grid-area: 3 / 2; }
+.g-r { grid-area: 1 / 3 / 4 / 4; }
+.tarea { position: relative; height: 44px; }
+
+/* the clock block beside the three rows */
+.rblock { display: flex; flex-direction: column; justify-content: center; gap: 7px; height: 100%; padding-left: 12px; border-left: 1px solid var(--ov-border); }
+.cdate { align-self: flex-start; border: 0; background: transparent; color: var(--ov-dim); font: inherit; font-size: 12px; padding: 0; cursor: pointer; display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ctime { display: flex; align-items: center; gap: 8px; }
+.cbig { border: 0; background: transparent; color: var(--ov-fg); font: inherit; font-size: 26px; font-weight: 600; line-height: 1; padding: 0; cursor: pointer; font-variant-numeric: tabular-nums; display: flex; align-items: baseline; }
+.cbig small { font-size: 12px; font-weight: 400; color: var(--ov-dim); margin-left: 1px; }
+.cdate:hover, .cbig:hover { color: var(--accent); }
+.zchip { height: 20px; border: 1px solid var(--ov-border); border-radius: 10px; background: transparent; color: var(--ov-dim); font: inherit; font-size: 11px; padding: 0 7px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.zchip:hover { background: var(--ov-faint); color: var(--ov-fg); }
+.cnow { display: flex; align-items: center; gap: 8px; }
+.cnow .nowbtn { height: 24px; }
+.cnow .offset { font-size: 11px; }
+.tracklabel.drive { width: 48px; height: 22px; display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--ov-dim); font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; cursor: pointer; padding: 0 0 0 2px; border-radius: 6px; }
+.tracklabel.drive:hover { color: var(--ov-fg); background: var(--ov-faint); }
+.drive .ind { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; display: grid; place-items: center; flex: none; }
+.drive.on { color: var(--accent); }
+.drive.on .ind { background: var(--accent); border-color: var(--accent); }
+.drive.on.running .ind { border-radius: 0; border: 0; background: transparent; width: 0; height: 0; border-left: 8px solid var(--accent); border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+.speedside { position: absolute; left: 0; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; line-height: 1.15; padding: 4px 8px; border-radius: 8px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.speedside:hover { background: var(--ov-faint); }
+.speedside .v { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 4px; }
+.speedside .n { font-size: 11px; color: var(--ov-dim); }
+.speedside.paused .v { color: var(--ov-dim); }
+.tcenter { position: absolute; left: 50%; top: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.tbtns { display: flex; align-items: center; gap: 6px; }
+.tbtn.big { width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,.14); padding: 0; }
+.tbtn.big:hover { background: rgba(255,255,255,.22); }
+.tbtn.big.on { background: var(--accent); color: #04121b; }
+.tbtn.round { width: 30px; height: 30px; min-width: 30px; border-radius: 50%; padding: 0; border: 1px solid var(--ov-border); }
+.tbtn.round.lit { border-color: var(--accent); color: var(--accent); }
+.speedcap { display: inline-flex; align-items: center; height: 18px; border-radius: 9px; border: 1px solid var(--ov-border); overflow: hidden; font-size: 11px; font-variant-numeric: tabular-nums; }
+.speedcap button { height: 18px; border: 0; background: transparent; color: var(--ov-dim); font: inherit; font-size: 11px; cursor: pointer; padding: 0 6px; display: grid; place-items: center; white-space: nowrap; }
+.speedcap button:hover { color: var(--ov-fg); background: var(--ov-faint); }
+.speedcap button.on { color: var(--accent); background: rgba(76,194,255,.16); }
+.speedcap .lbl { color: var(--ov-fg); min-width: 110px; display: inline-flex; align-items: baseline; justify-content: center; gap: 5px; }
+.speedcap .lbl small { color: var(--ov-dim); font-size: 10px; }
+.speedcap.paused .lbl { color: var(--ov-dim); }
+.ruler { display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 4px; border-radius: 15px; background: rgba(255,255,255,.05); touch-action: none; cursor: pointer; }
+.ruler .rdot { width: 9px; height: 30px; display: grid; place-items: center; border: 0; background: transparent; padding: 0; cursor: pointer; }
+.ruler .rdot i { display: block; border-radius: 50%; background: rgba(255,255,255,.35); }
+.ruler .rdot:hover i { background: rgba(255,255,255,.75); }
+.ruler .rdot.on i { background: var(--accent); box-shadow: 0 0 8px rgba(76,194,255,.8); }
+.ruler .rdot.lit i { background: rgba(76,194,255,.45); }
+.pchip { height: 26px; padding: 0 8px; border-radius: 13px; border: 1px solid var(--ov-border); background: rgba(255,255,255,.05); color: var(--ov-fg); font: inherit; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pchip:hover { background: var(--ov-faint); }
+.pchip.on { background: var(--accent); color: #04121b; border-color: var(--accent); }
+.pchip svg { opacity: .8; }
+.timeA.open .barA { display: block; }
+.timeA.open .pill { display: none; }
+.trow { display: flex; align-items: center; gap: 6px; }
+.trow .sep { width: 1px; height: 20px; background: var(--ov-border); margin: 0 2px; }
+.tbtn { height: 28px; min-width: 28px; border-radius: 8px; border: 0; background: transparent; color: var(--ov-fg); cursor: pointer; display: inline-grid; place-items: center; padding: 0 6px; font: inherit; }
+.tbtn:hover { background: var(--ov-faint); }
+.tbtn.sm { height: 24px; min-width: 24px; padding: 0; font-size: 16px; line-height: 1; border: 1px solid var(--ov-border); border-radius: 12px; }
+.tbtn:disabled { opacity: .35; cursor: default; background: transparent; }
+.tbtn.play { width: 34px; height: 34px; border-radius: 50%; background: rgba(255,255,255,.12); }
+.tbtn.play:hover { background: rgba(255,255,255,.2); }
+.tbtn.play.on { background: var(--accent); color: #04121b; }
+.chip { height: 24px; padding: 0 8px; border-radius: 12px; border: 1px solid var(--ov-border); background: rgba(255,255,255,.05); color: var(--ov-fg); font: inherit; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; min-width: 104px; justify-content: center; }
+.chip:hover { background: var(--ov-faint); }
+.chip small { color: var(--ov-dim); font-size: 10px; }
+.chip.dimmed { color: var(--ov-dim); }
+.speed { display: inline-flex; align-items: center; gap: 3px; }
+.kindseg, .dirseg { display: inline-flex; border-radius: 12px; border: 1px solid var(--ov-border); overflow: hidden; }
+.kindseg button { height: 22px; border: 0; background: transparent; color: var(--ov-dim); font: inherit; font-size: 11px; padding: 0 8px; cursor: pointer; }
+.kindseg button.on { background: rgba(255,255,255,.14); color: var(--ov-fg); }
+.dirseg button { height: 24px; width: 28px; border: 0; background: transparent; color: var(--ov-dim); cursor: pointer; display: grid; place-items: center; padding: 0; }
+.dirseg button:hover { color: var(--ov-fg); background: var(--ov-faint); }
+.dirseg button.on { background: rgba(76,194,255,.22); color: var(--accent); }
+.grow { flex: 1; }
+.offset { font-size: 11px; color: var(--sun); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nowbtn { height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--ov-border); background: rgba(255,255,255,.06); color: var(--ov-fg); font: inherit; font-weight: 600; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.nowbtn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+.nowbtn.islive { color: var(--ov-dim); cursor: default; }
+.nowbtn.islive .dot { box-shadow: 0 0 8px var(--live); animation: pulse 1.6s infinite; }
+.nowbtn:not(.islive) { border-color: rgba(76,194,255,.45); }
+.nowbtn:not(.islive) .dot { background: var(--accent); }
+.nowbtn:not(.islive):hover { background: var(--accent); color: #04121b; }
+.tracklabel { width: 48px; flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--ov-dim); }
+.daytrack, .yeartrack { position: relative; flex: 1; height: 22px; border-radius: 6px; cursor: pointer; touch-action: none; }
+.daytrack { background: #123; }
+.yeartrack { background: linear-gradient(90deg, rgba(120,170,255,.16), rgba(140,220,140,.16) 30%, rgba(255,210,120,.18) 55%, rgba(255,160,90,.16) 75%, rgba(120,170,255,.16)); }
+.ticks { position: absolute; inset: 0; pointer-events: none; }
+.ticks span { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.18); }
+.ticks b { position: absolute; top: 3px; font-size: 10px; font-weight: 400; color: rgba(255,255,255,.75); transform: translateX(3px); text-shadow: 0 1px 2px rgba(0,0,0,.8); }
+.handle { position: absolute; top: -3px; width: 16px; height: 28px; margin-left: -8px; border-radius: 6px; background: #f1f3f5; box-shadow: 0 1px 5px rgba(0,0,0,.6); pointer-events: none; display: grid; place-items: center; }
+.handle.sun { background: var(--sun); }
+.handle.sun::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #fff6d8; }
+.handle.earth { background: #7cc4ff; }
+.handle.earth::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #1e4a7a; }
+.season { position: absolute; top: 50%; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; transform: rotate(45deg); background: rgba(255,255,255,.85); border: 1px solid rgba(0,0,0,.4); pointer-events: auto; cursor: pointer; }
+.season:hover { background: var(--sun); }
+.rcol { width: 132px; display: flex; align-items: center; justify-content: flex-end; gap: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rcol .big { font-size: 16px; font-weight: 600; cursor: pointer; }
+.rcol .big small { font-size: 11px; font-weight: 400; color: var(--ov-dim); margin-left: 3px; }
+.rcol .big:hover, .rcol .datetext:hover { color: var(--accent); }
+.rcol .datetext { cursor: pointer; margin-right: 2px; }
+.rcol .tbtn { height: 22px; min-width: 18px; padding: 0 3px; color: var(--ov-dim); }
+.hovertime { position: absolute; bottom: 26px; padding: 2px 6px; border-radius: 5px; background: #0d0f12; border: 1px solid #3b4048; font-size: 11px; white-space: nowrap; transform: translateX(-50%); pointer-events: none; display: none; }
+
+/* popovers */
+.pop { position: absolute; z-index: 25; padding: 6px; display: none; }
+.pop.show { display: block; }
+.pop .ladder { display: grid; grid-template-columns: repeat(2, auto); gap: 2px 8px; }
+.pop .ladder button { border: 0; background: transparent; color: var(--ov-fg); text-align: left; font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pop .ladder button:hover { background: var(--ov-faint); }
+.pop .ladder button.on { background: var(--accent); color: #04121b; }
+.pop .ladder .h { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--ov-dim); padding: 2px 8px; }
+.pop .ladder small { color: var(--ov-dim); margin-left: 6px; }
+.pop .ladder button.on small { color: #04121b; }
+.pickpop { padding: 10px 12px; }
+.pickpop .t { font-size: 11px; color: var(--ov-dim); margin-bottom: 6px; max-width: 230px; }
+.pickpop input { background: #0d0f12; color: var(--ov-fg); border: 1px solid #3b4048; border-radius: 6px; padding: 4px 6px; font: inherit; color-scheme: dark; }
+.pickpop .r { display: flex; gap: 6px; align-items: center; }
+
+/* cheat sheet */
+.sheet { position: absolute; inset: 0; z-index: 40; background: rgba(0,0,0,.55); display: none; place-items: center; }
+.sheet.show { display: grid; }
+.sheet .card { width: 660px; padding: 18px 22px; }
+.sheet h2 { font-size: 15px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+.sheet h2 .sub { font-size: 12px; font-weight: 400; color: var(--ov-dim); margin-left: 10px; }
+.sheet .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 26px; }
+.sheet .cols h4 { margin: 6px 0 2px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--ov-dim); font-weight: 600; }
+.sheet .item { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.sheet .item .k { min-width: 96px; display: flex; gap: 3px; align-items: center; }
+.sheet .new { font-size: 9px; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 3px; margin-left: 4px; }
+.sheet .foot { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ov-border); color: var(--ov-dim); font-size: 11px; }
+.sheet .foot:empty { display: none; }
+
+.showctl { position: absolute; top: 12px; right: 12px; display: none; }
+.overlays.hidden .showctl { display: grid; }
+.hint-toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); padding: 6px 12px; border-radius: 999px; opacity: 0; transition: opacity .3s; pointer-events: none; display: flex; gap: 6px; align-items: center; }
+.hint-toast.show { opacity: 1; }
+
+/* notes below */
+.notes { width: 1200px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px 28px; margin-top: 18px; color: #c9cdd3; }
+.notes h2 { font-size: 15px; margin: 0 0 4px; color: var(--page-fg); }
+.notes ul { margin: 4px 0 0; padding-left: 18px; }
+.notes li { margin: 2px 0; }
+.notes ol { margin: 2px 0; padding-left: 20px; }
+.notes .caveat { grid-column: span 2; color: var(--page-dim); font-size: 13px; border-top: 1px solid #333; padding-top: 10px; }
+</style>
+</head>
+<body>
+<h1>Preview overlays: camera control and time control</h1>
+<p class="lede">An interactive mockup inside a stand-in for the app window. The globe is a quick WebGL approximation that follows the app's camera model and puts the terminator where the Sun really is. Every overlay control works, the mouse gestures on the globe work as in the app, and the sidebar sliders stay in sync. Press <kbd>F1</kbd> for the shortcut sheet (<kbd>&#8984;</kbd><kbd>?</kbd> in macOS mode).</p>
+<div class="toolbar">
+  <div class="group"><span class="label">Keyboard</span><div class="seg" id="segOs"><button data-v="pc" class="on">Windows / Linux</button><button data-v="mac">macOS</button></div></div>
+</div>
+
+<div class="app">
+  <div class="titlebar"><span class="dot"></span><span>Sunlit Earth 0.4.0</span><span class="grow"></span><span class="wc">&#8212;</span><span class="wc">&#9744;</span><span class="wc">&#10005;</span></div>
+  <div class="body">
+    <aside class="sidebar">
+      <button class="btn">Set as Wallpaper</button>
+      <div class="row2"><button class="btn">Load Defaults</button><button class="btn">Reset</button></div>
+      <h3>Presets</h3>
+      <div class="grid3" id="presets"></div>
+      <h3>Advanced</h3>
+      <div class="group" id="sg-pos"><div class="title">Camera Position</div></div>
+      <div class="group" id="sg-ori"><div class="title">Camera Orientation</div></div>
+      <div class="group" id="sg-frame"><div class="title">Framing</div></div>
+      <div class="group" id="sg-time"><div class="title">Date / Time</div>
+        <div class="srow"><span>Mode</span><span id="sbMode">Live</span><span></span></div>
+        <div class="srow"><span>UTC</span><span id="sbUtc"></span><span></span></div>
+        <p class="note">The sidebar keeps its sliders. The overlays write the same values, as the highlight on the matching row shows while you use one.</p>
+      </div>
+    </aside>
+    <div class="splitter"></div>
+    <div class="preview" id="preview">
+      <canvas id="globe"></canvas>
+      <div class="overlays" id="overlays">
+
+        <div class="cam camA panel idle nobg" id="camA">
+          <div class="ring" id="aRing">
+            <svg class="ticks dim" viewBox="0 0 78 78" id="aTicks"></svg>
+            <div class="track dim" data-tip="roll" data-mirror="roll"></div>
+            <div class="north dim" id="aNorth" data-tip="north">N</div>
+            <div class="pad dim" id="aOrbit" data-tip="orbit" data-mirror="orbit">
+              <div class="chev n" data-step="0,1"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 5.5 4 2.5 7 5.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></div>
+              <div class="chev s" data-step="0,-1"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1 2.5 4 5.5 7 2.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></div>
+              <div class="chev w" data-step="-1,0"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M5.5 1 2.5 4 5.5 7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></div>
+              <div class="chev e" data-step="1,0"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M2.5 1 5.5 4 2.5 7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></div>
+              <div class="knob"></div>
+            </div>
+          </div>
+          <div class="zoom dim" data-mirror="zoom">
+            <button class="hb" id="aZoomIn" data-tip="zoomin">+</button>
+            <div class="vslider" id="aZoom" data-tip="zoom"><div class="mark"></div><div class="thumb"></div></div>
+            <button class="hb" id="aZoomOut" data-tip="zoomout">&minus;</button>
+          </div>
+          <div class="cap dim">Look</div>
+          <div class="padwrap"><div class="pad dim" id="aLook" data-tip="look" data-mirror="look"><div class="knob"></div></div><div class="reset dim" id="aLookReset" data-tip="lookreset">&#8634;</div></div>
+          <div class="cap dim">Frame</div>
+          <div class="padwrap"><div class="pad square dim" id="aPan" data-tip="pan" data-mirror="pan"><div class="knob"></div></div><div class="reset dim" id="aPanReset" data-tip="panreset">&#8634;</div></div>
+          <div class="camfoot dim">
+            <button class="ovbtn" data-act="help" data-tip="help"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 5.3a1.9 1.9 0 1 1 2.6 1.8c-.6.3-.8.6-.8 1.3" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="10.4" r=".8" fill="currentColor"/></svg></button>
+            <button class="ovbtn" data-act="hide" data-tip="hide"><svg width="16" height="12" viewBox="0 0 16 12"><path d="M1 6c2-3.5 4.5-5 7-5s5 1.5 7 5c-2 3.5-4.5 5-7 5S3 9.5 1 6z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="6" r="2" fill="currentColor"/></svg></button>
+          </div>
+        </div>
+
+        <button class="ovbtn panel showctl" data-act="hide" data-tip="show" style="width:32px;height:32px;border-radius:10px"><svg width="16" height="12" viewBox="0 0 16 12"><path d="M1 6c2-3.5 4.5-5 7-5s5 1.5 7 5c-2 3.5-4.5 5-7 5S3 9.5 1 6z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 11 14 1" stroke="currentColor" stroke-width="1.3"/></svg></button>
+
+        <div class="timeA fade" id="timeA">
+          <div class="pill panel" id="aPill"></div>
+          <div class="barA panel" id="aBar">
+            <button class="ovbtn" id="pinBtn" data-act="pin" data-tip="pin"></button>
+            <div class="bgrid">
+              <span class="tracklabel g-l1"></span>
+              <div class="tarea g-t">
+                <div class="speedside" id="speedSide" data-act="rate" data-tip="rate"></div>
+                <div class="tcenter" id="tCenter"></div>
+              </div>
+              <button class="tracklabel drive g-l2" data-kind="clock" data-tip="drivetime"><span class="ind"></span>Time</button>
+              <div class="daytrack g-d" id="aDay" data-tip="daytrack"><div class="ticks" id="aDayTicks"></div><div class="handle sun"></div><div class="hovertime"></div></div>
+              <button class="tracklabel drive g-l3" data-kind="daily" data-tip="drivedate"><span class="ind"></span>Date</button>
+              <div class="yeartrack g-y" id="aYear" data-tip="yeartrack"><div class="ticks" id="aYearTicks"></div><div id="aSeasons"></div><div class="handle earth"></div><div class="hovertime"></div></div>
+              <div class="rblock g-r" id="rBlock"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pop panel" id="ratePop"><div class="ladder" id="ladder"></div></div>
+        <div class="pop panel pickpop" id="pickPop">
+          <div class="t">Exact entry. In the app this would be Slint's DatePickerPopup and TimePickerPopup.</div>
+          <div class="r"><input type="date" id="pickDate"><input type="time" id="pickTime" step="60"></div>
+        </div>
+        <div class="hint-toast panel" id="toast"></div>
+
+        <div class="sheet" id="sheet">
+          <div class="card panel">
+            <h2><span>Mouse and keyboard<span class="sub" id="sheetSub"></span></span><button class="ovbtn" data-act="help">&#10005;</button></h2>
+            <div class="cols" id="sheetCols"></div>
+          </div>
+        </div>
+        <div id="tip"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <div>
+    <h2>Camera panel</h2>
+    <ul>
+      <li>Always expanded. While the pointer is elsewhere the background disappears and the controls drop to about a third.</li>
+      <li>Hovering or using the panel brings it back. A gesture on the globe lights up only the matching control, at full strength, even while the panel is faded.</li>
+      <li>Orbit and Frame are joysticks that move the camera the way you push, so the globe slides the other way. The orbit arrows step 10°.</li>
+      <li>Zoom carries a mark at its default and snaps to it when the thumb comes close.</li>
+      <li>Drag the ring to roll, click N for north up. &#8634; appears only when a value differs from its default.</li>
+      <li>No lens control: the field of view stays in the sidebar's Framing group.</li>
+    </ul>
+  </div>
+  <div>
+    <h2>Time bar</h2>
+    <ul>
+      <li>The pill opens into the bar on hover. The pin in the corner keeps the bar open and at full strength wherever the pointer goes.</li>
+      <li>Play/pause sits centered over the tracks, with a speed ruler on each side: backward on the left, forward on the right, the slowest speed next to the button. Click a dot or drag along a ruler to run at that speed. <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> walk along the rulers, <kbd>R</kbd> jumps to the same speed on the other side.</li>
+      <li>Play runs one of the two tracks, chosen with the button in front of its label. <b>Time</b>: the clock runs, 1&times; to 6 h/s, and the date follows. <b>Date</b>: the date runs and the time of day stays, 1 day/s to 3 months/s, so the terminator swings through the seasons. The rulers show the speeds of the track in use.</li>
+      <li>The speed readout sits left of the controls; click it for every speed in both directions.</li>
+      <li>The clock block sits beside the three rows: Live / Now with the offset, the time with its zone right after it, and the date.</li>
+      <li>Times are local by default; the zone chip switches to UTC and back, and the time track follows.</li>
+      <li>The time track is shaded with day, twilight and night under the camera. Diamonds on the date track are the equinoxes and solstices; the handle snaps to them.</li>
+      <li>Click the time or the date for exact entry, the zone to switch between UTC and local time.</li>
+    </ul>
+  </div>
+  <p class="caveat">Not the real renderer: no sky lens, no Moon, no seasonal textures, and a static cloud map. In macOS mode the page accepts Ctrl as well as &#8984;, because Windows and Linux desktops keep the &#8984; (Windows) key for themselves. The Sun position is a low precision almanac formula, good to a fraction of a degree.</p>
+</div>
+
+<script src="textures.js"></script>
+<script src="mockup.js"></script>
+</body>
+</html>

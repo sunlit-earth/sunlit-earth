@@ -236,17 +236,33 @@ Revert the branch's commits. A config written by the new build keeps working in 
 
 ## Open items
 
-These are the user's to settle; the plan follows the recommendation unless told otherwise.
+Settled with the user on 2026-10-18, each with the recommended answer.
 
-1. The rows' place: first under Color Correction's Day Texture and Night Texture headings (recommended), or a group of their own.
-2. The mask resident in Day and Night mode at all times (recommended), or only while a color differs from its fill.
-3. Grid mode left alone (recommended).
-4. The picker's controls: square, hue strip and hex field (recommended), or red, green and blue fields as well.
+1. The rows' place: first under Color Correction's Day Texture and Night Texture headings.
+2. The mask resident in Day and Night mode at all times.
+3. Grid mode left alone.
+4. The picker's controls: the square, the hue strip and the hex field, with no red, green and blue fields.
 
 ## Departures
 
-None yet.
+1. Step 0.1's baselines were generated in the branch's own worktree before any code changed, rather than in a worktree at `main`'s commit. The branch's HEAD was `main` (bfce47a) plus the plan document, so the code was `main`'s, and a second worktree and its build would have produced the same files. Both baselines were regenerated a second time from the same code and came out byte for byte the same, so WARP and lavapipe are deterministic run to run here, which is what makes a byte comparison with the branch meaningful.
+
+2. Step 0.2's configs switch the Moon and the Milky Way off. Of two renders of the Night mode's Arctic view from the same binary, one had the Milky Way and the other did not, 901704 pixels apart by up to 51 levels: the panorama is an overlay that no export waits for, so whether it is in a render is a race, not a property of the GPU. With both overlays off, three renders of each of the nine scenes from `main`'s binary were byte for byte the same, so this machine's GPU is deterministic for these renders and success criterion 2 is held on it rather than falling back to the software adapters.
+
+3. Step 0.3's spike was rendered offscreen only, through Slint's software renderer with dispatched pointer events, and not on the desktop or in the guests: this run was not to launch the GUI on the desktop, and a guest's desktop needs eyes. Slint 1.18's winit backend does not open a popup as a window of its own ("We don't render popups as separate windows yet", `winitwindowadapter.rs`); it places a `PopupWindow` inside the main window through the core's `place_popup`, the same code the software window goes through, so placement and clipping do not depend on the backend. What does is how each renderer draws the gradients, which step 8's look covers.
+
+4. Night mode's recolor uses the mask's whole share of water rather than an `ice` set to zero in Night mode. `fs_main` computes `ice` with the expression it had, branches on `FLAG_NIGHT_ALONE`, and passes `surface.water` to `recolor_ocean` there and `surface.water * (1 - ice)` otherwise. A `select` on `ice` would have sat between the ice expression and every use of it in blend mode, where a compiler may contract `1 - s1 * s2` into a fused multiply and add; the branch leaves blend mode's code as it was. The result is the same as an `ice` of zero.
+
+5. `Grid mode draws the same pixels with any chosen colors` is an engine test, `ocean::the_grid_draws_the_same_pixels_with_any_ocean_colors`, rather than a case in `tests/render_pipeline.rs`. The shader has no notion of the grid: the shift is zero there because `Renderer::fills` gives no fill for the grid's group, which only a test through the engine reaches.
+
+6. A color parameter's path through the files is documented in `docs/rendering.md`, beside the table of a float parameter's fourteen edits, which is where that table lives, and `docs/architecture.md` points to it from the paragraph on `ParamsDigest` and its groups, which it gains.
 
 ## Validation Record
 
-Not started.
+Step 4, the identity check, on 2026-10-18. Every golden reference regenerated on the branch with `base_params` at the Earth fixture's fills, which the golden engine asserts of every pack, was compared with `cmp` against the set regenerated from `main`'s code: WARP 22 of 22 files the same byte for byte, and lavapipe (llvmpipe, LLVM 15.0.7, in WSL) 22 of 22. Each adapter gave the same bytes from the same code in two runs. Nine renders of the shipped cube at 1920 by 1080 (Blend, Day and Night mode, each over the default view at 17:00 UTC on 21 June, over the Arctic from 80 N on 20 March, and over the Persian Gulf at the closest zoom at night) from release builds of `main` and of the branch, the default config with clouds, the Moon and the Milky Way off, were the same byte for byte on this machine's GPU, which gave the same bytes in three renders of each from `main`'s build (departure 2). No build of a shader without the recolor was needed, since nothing differed.
+
+Step 0.3, the picker spike, offscreen through Slint's software renderer (departure 3): a popup opened from a row inside a sidebar `ScrollView` and placed across the sidebar's edge was drawn whole, closed on a click outside, and a press at the square's middle set (32, 46, 64) where the square draws (31, 45, 64); four more places agreed within two levels. The look on the Windows desktop, in the Windows guest under `winit-software` and in the Linux guest under X11 and Wayland is left for step 8.
+
+Steps 5 to 7, the gates, on the branch at 14df9bd: `cargo fmt --check` clean; `cargo clippy --all-targets` with no warnings; `cargo test` with `SUNLIT_EARTH_CLOUD_URL` unset passed every target, 649 core unit tests, 126 engine, 24 golden, 49 render pipeline, 7 shading, 4 bc7, 1 soak, 87 and 693 in the app and the xtask, 55 Slint UI, and the 18 e2e cases ignored as they are outside a desktop. `textures::the_real_packs_carry_the_default_ocean_colors` ran against the real packs rather than skipping.
+
+Step 8: the e2e runs in the guests are recorded below as they finish. The user's look in the app, and `golden.yml` on Metal and CI's lavapipe after a push, are for after this run.

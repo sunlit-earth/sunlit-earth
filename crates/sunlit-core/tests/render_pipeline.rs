@@ -2273,6 +2273,48 @@ fn open_water_takes_the_chosen_color_in_day_and_night_mode() {
     }
 }
 
+/// Each single surface mode draws its map with its own texture's corrections:
+/// Day mode with the day's gamma and saturation, Night mode with the night's.
+/// The mode's own pair is a gamma of 2 and a saturation of 0, the other's
+/// leaves the texel as it is, so the frame is the gray of the texel's
+/// corrected luminance only where the mode reads its own pair.
+#[test]
+fn each_single_surface_mode_takes_its_own_color_correction() {
+    let ctx = render_ctx();
+    let size = 96;
+    let texel = [200_u8, 40, 120];
+    let corrected = texel.map(|c| (f32::from(c) / 255.0).sqrt());
+    let luminance = 0.2126 * corrected[0] + 0.7152 * corrected[1] + 0.0722 * corrected[2];
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a luminance between 0 and 1, scaled to a byte"
+    )]
+    let gray = (luminance * 255.0).round() as u8;
+    for (flags, mode) in [(0, "Day"), (FLAG_NIGHT_ALONE, "Night")] {
+        let (own, other) = ((2.0, 0.0), (1.0, 1.0));
+        let ((day_gamma, day_saturation), (night_gamma, night_saturation)) = if flags == 0 {
+            (own, other)
+        } else {
+            (other, own)
+        };
+        let uniforms = Uniforms {
+            flags,
+            day_gamma,
+            day_saturation,
+            night_gamma,
+            night_saturation,
+            ..looking_along(size, glam::Vec3::Z)
+        };
+        let frame = surface_frame(&ctx, &uniforms, texel, texel, None, size);
+        assert_all_close(
+            &facing_pixels(&frame, &uniforms, size),
+            [gray; 3],
+            &format!("{mode} mode"),
+        );
+    }
+}
+
 /// In blend mode, the default, open water takes the chosen day color on the
 /// lit side and the chosen night color on the night side, within a level,
 /// with diffuse shading off so the lit side is the day texel as it is.

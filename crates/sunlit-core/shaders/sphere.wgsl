@@ -562,8 +562,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // The night drawn alone has no day texel and so no ice: its frozen seas
     // are the fill, and its whole share of water takes the night's color.
+    let night_alone = (uniforms.flags & FLAG_NIGHT_ALONE) != 0u;
     var surface_texel = surface.day;
-    if (uniforms.flags & FLAG_NIGHT_ALONE) != 0u {
+    if night_alone {
         if any(uniforms.night_ocean_shift != vec3<f32>(0.0)) {
             surface_texel = recolor_ocean(surface_texel, surface.water, uniforms.night_ocean_shift);
         }
@@ -571,14 +572,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         surface_texel = recolor_ocean(surface_texel, water, uniforms.day_ocean_shift);
     }
 
-    var day_rgb = apply_gamma(surface_texel, uniforms.day_gamma);
-    day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
-
     // If terminator_width is negative, we're in single-texture mode
     // (the night texture binding is a dummy placeholder)
     if uniforms.terminator_width < 0.0 {
-        return vec4<f32>(day_rgb, 1.0);
+        let gamma = select(uniforms.day_gamma, uniforms.night_gamma, night_alone);
+        let saturation = select(uniforms.day_saturation, uniforms.night_saturation, night_alone);
+        return vec4<f32>(adjust_saturation(apply_gamma(surface_texel, gamma), saturation), 1.0);
     }
+
+    var day_rgb = apply_gamma(surface_texel, uniforms.day_gamma);
+    day_rgb = adjust_saturation(day_rgb, uniforms.day_saturation);
 
     let night_ice = NIGHT_ICE * min(day_luma / NIGHT_ICE_DAY_LUMA, 1.0);
     var night_texel = night_with_ice(surface.night, night_ice, ice * surface.water);

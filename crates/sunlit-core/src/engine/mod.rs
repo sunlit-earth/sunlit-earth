@@ -57,8 +57,19 @@ const TICK: Duration = Duration::from_millis(50);
 const DRAIN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How often the sky state (the sun, the sky rotation, the planets) is
-/// recomputed when rendering live time.
+/// recomputed when rendering live time, unless [`sky_interval`] says the
+/// preview needs it sooner.
 const SKY_INTERVAL: Duration = Duration::from_mins(2);
+
+/// The shortest interval [`sky_interval`] gives the sky schedule: the floor
+/// under how often a shown preview of a Sun-fixed camera is redrawn to keep up
+/// with the Earth's turn, which at the closest zoom moves a pixel every two
+/// seconds. `docs/rendering.md` has the measurement behind it.
+const SKY_FLOOR: Duration = Duration::from_secs(5);
+
+/// The Earth's turn against the Sun, in radians a second: one turn a solar
+/// day.
+const EARTH_TURN: f32 = std::f32::consts::TAU / 86_400.0;
 
 /// How often a memory sample is appended to the metrics CSV.
 const METRICS_INTERVAL: Duration = Duration::from_mins(10);
@@ -348,7 +359,7 @@ impl Engine {
             memory_dumped: false,
             last_status: String::new(),
             drain: Schedule::new(DRAIN_INTERVAL, now),
-            sky: Schedule::new(SKY_INTERVAL, now),
+            sky: Schedule::new(sky_interval(&params, height, preview_enabled), now),
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
@@ -407,6 +418,7 @@ impl Engine {
                 self.params = *params;
                 self.resolve_requested_sample_count();
                 self.dirty = true;
+                self.retime_sky();
             }
             EngineCommand::SetPreviewSize(w, h) => {
                 let (qw, qh) = preview_target_size((w, h), self.quality);
@@ -414,6 +426,7 @@ impl Engine {
                     self.renderer.resize(qw, qh);
                     self.dirty = true;
                 }
+                self.retime_sky();
             }
             EngineCommand::SetPreviewEnabled(enabled) => {
                 if enabled && !self.preview.enabled {
@@ -423,6 +436,7 @@ impl Engine {
                     self.renderer.release_preview_readback();
                 }
                 self.preview.enabled = enabled;
+                self.retime_sky();
             }
             EngineCommand::RenderWallpaperNow => self.publish_asked = true,
             EngineCommand::SetDisplayPlan { mode, anchor } => {
@@ -521,6 +535,19 @@ impl Engine {
             {
                 cloud.owed = true;
             }
+        }
+    }
+
+    /// Give the sky schedule the interval the scene and the preview now call
+    /// for, counting it from now when that is a change.
+    fn retime_sky(&mut self) {
+        let interval = sky_interval(&self.params, self.renderer.size().1, self.preview.enabled);
+        if interval != self.sky.interval {
+            debug!(
+                interval_secs = interval.as_secs_f32(),
+                "the sky schedule's interval changed"
+            );
+            self.sky.set_interval(interval, self.clock.elapsed());
         }
     }
 
@@ -1085,6 +1112,31 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
     quantize_to_granularity(w, h)
 }
 
+/// How often the sky schedule redraws a scene drawn at live time, for a
+/// preview `preview_height` pixels tall that is shown or not.
+///
+/// [`SKY_INTERVAL`], except for a Sun-fixed camera under live time with the
+/// preview shown: the surface beneath that camera crosses the frame at about
+/// `focal * EARTH_TURN / (distance - 1)` pixels a second, so the interval is
+/// the time it takes to move one pixel, clamped between [`SKY_FLOOR`] and
+/// [`SKY_INTERVAL`]. A hidden preview has nobody to show a frame to, and an
+/// Earth-fixed camera or an overridden instant does not move with the turn.
+fn sky_interval(params: &SceneParams, preview_height: u32, shown: bool) -> Duration {
+    if !shown || !params.sun_fixed || params.datetime.use_custom {
+        return SKY_INTERVAL;
+    }
+    let camera = &params.camera;
+    let distance = crate::scene::camera::zoom_to_distance(camera.zoom);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a preview's height is far inside the f32 mantissa"
+    )]
+    let focal = preview_height as f32 / (2.0 * (camera.fov_deg.to_radians() / 2.0).tan());
+    let pixels_a_second = focal * EARTH_TURN / (distance - 1.0);
+    Duration::try_from_secs_f32(pixels_a_second.recip())
+        .map_or(SKY_INTERVAL, |pixel| pixel.clamp(SKY_FLOOR, SKY_INTERVAL))
+}
+
 /// Encode RGBA8 pixels as PNG and write them to `path`.
 ///
 /// `Fast` and `Adaptive` are what `image`'s own extension-driven save used
@@ -1151,6 +1203,61 @@ mod tests {
         let (w, h) = preview_target_size((2560, 1440), QualityTier::Low);
         let ratio = f64::from(w) / f64::from(h);
         assert!((ratio - 16.0 / 9.0).abs() < 0.05, "got {w}x{h}");
+    }
+
+    fn sun_fixed_live(zoom: f32) -> SceneParams {
+        let mut params = SceneParams {
+            sun_fixed: true,
+            ..SceneParams::default()
+        };
+        params.camera.zoom = zoom;
+        params.datetime.use_custom = false;
+        params
+    }
+
+    /// One pixel of the turn at the camera's own lens and distance, by the
+    /// geometry: the point beneath the camera moves `EARTH_TURN` radii a
+    /// second at `distance - 1` from the eye.
+    #[test]
+    fn a_shown_sun_fixed_preview_redraws_once_a_pixel_of_the_turn() {
+        let params = sun_fixed_live(crate::scene::camera::distance_to_zoom(8.0));
+        let height = 1080;
+        let focal = 1080.0 / (2.0 * (params.camera.fov_deg.to_radians() / 2.0).tan());
+        let expected = 7.0 / (focal * EARTH_TURN);
+        let interval = sky_interval(&params, height, true);
+        approx::assert_relative_eq!(interval.as_secs_f32(), expected, max_relative = 1e-3);
+        assert!(SKY_FLOOR < interval && interval < SKY_INTERVAL);
+    }
+
+    /// A closer camera and a taller preview both move the surface faster
+    /// across the frame, down to the floor and never below it.
+    #[test]
+    fn the_interval_shortens_with_the_zoom_and_the_preview_down_to_the_floor() {
+        let far = sky_interval(&sun_fixed_live(0.5), 720, true);
+        let near = sky_interval(&sun_fixed_live(0.3), 720, true);
+        let taller = sky_interval(&sun_fixed_live(0.5), 1440, true);
+        assert!(near < far, "{near:?} against {far:?}");
+        assert!(taller < far, "{taller:?} against {far:?}");
+        assert_eq!(sky_interval(&sun_fixed_live(0.0), 2160, true), SKY_FLOOR);
+        assert_eq!(sky_interval(&sun_fixed_live(1.0), 64, true), SKY_INTERVAL);
+    }
+
+    /// Hidden, Earth-fixed, or at an overridden instant, the picture has no
+    /// reason to be redrawn more often than the Sun and the stars need.
+    #[test]
+    fn only_a_shown_sun_fixed_camera_at_live_time_shortens_the_interval() {
+        let live = sun_fixed_live(0.0);
+        assert!(sky_interval(&live, 1080, true) < SKY_INTERVAL);
+        assert_eq!(sky_interval(&live, 1080, false), SKY_INTERVAL);
+        let earth = SceneParams {
+            sun_fixed: false,
+            ..live
+        };
+        assert_eq!(sky_interval(&earth, 1080, true), SKY_INTERVAL);
+        let mut overridden = live;
+        overridden.datetime.use_custom = true;
+        assert_eq!(sky_interval(&overridden, 1080, true), SKY_INTERVAL);
+        assert_eq!(sky_interval(&live, 0, true), SKY_INTERVAL);
     }
 
     /// The length check comes before the filesystem does, so this needs no

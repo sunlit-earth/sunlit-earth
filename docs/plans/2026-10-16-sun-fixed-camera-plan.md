@@ -109,6 +109,16 @@ So in the Sun-fixed mode with live time and the preview shown, the sky schedule'
 
 The floor is a proposal of 5 seconds. Step 3 measures a preview draw on the software adapter and on the desktop's GPU before it is fixed.
 
+Step 3 measured it on 2026-10-18 on the development desktop (Ryzen 7 5800X, Radeon RX 6800 XT), with the engine built at `opt-level = 2`: the time from an `UpdateParams` that moves the time of day to the `PreviewFrame` it produces, so the sky state, the wanted set, the draw and the readback, in blend mode with the Earth fixture's cube and its tiles, the cloud fixture, the real Moon and Milky Way, MSAA as the High tier allows, at the Europe preset, median of 25 frames after 5 to warm up. The Slint side's own upload and paint of the frame is not in it.
+
+| Preview | WARP | Radeon RX 6800 XT (Vulkan) |
+|---|---|---|
+| 704 by 576, about the default window at 100% scaling | 79 ms | 1.3 ms |
+| 1088 by 896 | 172 ms | 2.2 ms |
+| 1920 by 1088 | 324 ms | 3.9 ms |
+
+The floor stays at 5 seconds. It only binds at the closest zooms, below about 2.1 radii on a 1080 pixel tall preview and below about 1.6 on the default one, and there it costs WARP between 1.6% of the time at the default preview and 6.5% at a 1080 pixel one. The GPU could take a floor of a second for a fraction of a percent, but at 5 seconds the steps are still at most about 2 pixels at the closest zoom on a preview up to 1080 pixels tall, so one floor for every adapter is kept rather than a second constant.
+
 The wallpaper keeps its own auto-refresh interval: the steps in the last column are what a user of this mode will see on the desktop, and a shorter interval is theirs to choose.
 
 ### 12. The override decides the Earth's turn
@@ -225,4 +235,4 @@ Window, `tests/slint_ui.rs`, with the override on at a pinned instant so that th
 ## Open items
 
 - The check box's text.
-- The schedule's floor, after step 3's measurement.
+- The schedule's floor, after step 3's measurement. Measured and kept at 5 seconds (decision 11); a lower floor on a GPU is the user's call in step 7.

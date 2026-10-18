@@ -1482,6 +1482,25 @@ fn test_nothing_in_the_panel_asks_for_more_than_the_sidebar_floor() {
     );
 }
 
+/// The Sun-fixed check and the Time of day row it brings in ask for no more
+/// than the floor either.
+#[test]
+fn test_the_sun_fixed_rows_ask_for_no_more_than_the_sidebar_floor() {
+    let window = create_window();
+    widest_panel_state(&window);
+    window.set_camera_position(CameraPositionSettings {
+        sun_fixed: true,
+        ..window.get_camera_position()
+    });
+    assert_eq!(rows_shown(&window), (0, 1));
+
+    assert!(
+        window.get_panel_min_width() <= PANEL_FLOOR,
+        "the panel asks for {}px, past the {PANEL_FLOOR}px floor the sidebar is built on",
+        window.get_panel_min_width()
+    );
+}
+
 /// The panel is laid out at the left edge of its scroll area, not centred in a
 /// viewport that grew past it. A derived floor keeps this true on its own, so
 /// what this catches is a hardcoded sidebar width coming back.

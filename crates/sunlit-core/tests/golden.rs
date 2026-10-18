@@ -290,6 +290,32 @@ fn wait_for_texture(engine: &EngineHandle, label: &str) {
     panic!("the {label} fixture did not reach the GPU within a minute");
 }
 
+/// Render `params` at the full frame once every texture it draws from is
+/// resident.
+fn render(engine: &EngineHandle, params: &SceneParams) -> Vec<u8> {
+    engine.send(EngineCommand::UpdateParams(Box::new(*params)));
+    if params.moon_brightness > 0.0 {
+        wait_for_texture(engine, "moon_texture");
+    }
+    if params.milky_way_intensity > 0.0 {
+        wait_for_texture(engine, "milky_way_texture");
+    }
+    if params.draws_clouds() {
+        wait_for_texture(engine, "cloud_texture");
+    }
+    let surface: &[&str] = match params.texture_index {
+        DAY_MODE => &["day_floor"],
+        BLEND_MODE => &["day_floor", "night_floor", "water_mask"],
+        _ => &[],
+    };
+    for label in surface {
+        wait_for_texture(engine, label);
+    }
+    engine
+        .export_pixels(WIDTH, HEIGHT)
+        .expect("the engine should be able to export")
+}
+
 /// Render `params` and compare against `tests/golden/<adapter>/<name>.png`.
 fn check_golden(name: &str, params: &SceneParams) {
     check_golden_in(name, params, FULL_FRAME);
@@ -299,30 +325,7 @@ fn check_golden(name: &str, params: &SceneParams) {
 fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
     let engine = engine();
     let adapter_key = engine.adapter_key().to_owned();
-    engine.send(EngineCommand::UpdateParams(Box::new(*params)));
-    if params.moon_brightness > 0.0 {
-        wait_for_texture(&engine, "moon_texture");
-    }
-    if params.milky_way_intensity > 0.0 {
-        wait_for_texture(&engine, "milky_way_texture");
-    }
-    if params.draws_clouds() {
-        wait_for_texture(&engine, "cloud_texture");
-    }
-    let surface: &[&str] = match params.texture_index {
-        DAY_MODE => &["day_floor"],
-        BLEND_MODE => &["day_floor", "night_floor", "water_mask"],
-        _ => &[],
-    };
-    for label in surface {
-        wait_for_texture(&engine, label);
-    }
-    let pixels = crop(
-        &engine
-            .export_pixels(WIDTH, HEIGHT)
-            .expect("the engine should be able to export"),
-        window,
-    );
+    let pixels = crop(&render(&engine, params), window);
     drop(engine);
 
     announce_adapter(&adapter_key);
@@ -957,6 +960,61 @@ fn golden_cloud_terminator_close_up() {
         ..base
     };
     check_golden("cloud_terminator_close_up", &params);
+}
+
+/// A Sun-fixed camera draws what an Earth-fixed one draws at the longitude
+/// its time of day puts beneath it at the pinned instant, within the golden
+/// tolerance: the comparison of two renders rather than a reference of its
+/// own. The longitude the Sun-fixed mode does not read is left far from that
+/// one, and drawn Earth-fixed it is a different picture, which is what shows
+/// the comparison can fail.
+#[test]
+fn a_sun_fixed_render_matches_the_earth_fixed_render_beneath_it() {
+    let sun_fixed = SceneParams {
+        texture_index: BLEND_MODE,
+        sun_fixed: true,
+        solar_time: 16.5,
+        ..base_params()
+    };
+    let sun = sunlit_core::scene::sky::compute_sky_state(&sun_fixed.datetime).sun_direction;
+    let longitude = sunlit_core::scene::camera::longitude_of(sun_fixed.solar_time, sun);
+    let beneath = SceneParams {
+        sun_fixed: false,
+        camera: CameraParams {
+            longitude,
+            ..sun_fixed.camera
+        },
+        ..sun_fixed
+    };
+    let unread = SceneParams {
+        sun_fixed: false,
+        ..sun_fixed
+    };
+    assert!(
+        (unread.camera.longitude - longitude).abs() > 30.0,
+        "the premise: the longitude the mode does not read is far from {longitude}"
+    );
+
+    let engine = engine();
+    let drawn = render(&engine, &sun_fixed);
+    let expected = render(&engine, &beneath);
+    let elsewhere = render(&engine, &unread);
+    drop(engine);
+
+    let (mean, outliers) = compare(&expected, &drawn);
+    assert!(
+        mean <= MEAN_TOLERANCE && outliers <= OUTLIER_FRACTION,
+        "the Sun-fixed render differs from the Earth-fixed one at {longitude}: mean {mean:.2}, \
+         outliers {:.2}%",
+        outliers * 100.0
+    );
+    let (mean, outliers) = compare(&elsewhere, &drawn);
+    assert!(
+        mean > MEAN_TOLERANCE || outliers > OUTLIER_FRACTION,
+        "the Sun-fixed render matches the camera at the longitude it does not read: mean \
+         {mean:.2}, outliers {:.2}%",
+        outliers * 100.0
+    );
 }
 
 /// Render every camera preset into one image for human review.

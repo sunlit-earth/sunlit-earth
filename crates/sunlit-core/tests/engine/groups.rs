@@ -179,6 +179,29 @@ impl std::ops::Deref for Surface {
     }
 }
 
+impl Surface {
+    /// Block until the cloud variant a switch of the setting that has been
+    /// taken asks for is posted to the slot, rather than on its way.
+    ///
+    /// The fixture serves one map at every variant, so the size cannot show
+    /// the swap. A poll is made a request at a time: the first to begin after
+    /// the switch may belong to a request made before it, the second is the
+    /// one that loads the new variant, and a third begins only once that one
+    /// has posted what it loaded. The next settle uploads it.
+    fn wait_for_the_cloud_variant(&self, what: &str) {
+        let taken = self.clouds.polls();
+        let deadline = std::time::Instant::now() + crate::harness::TIMEOUT;
+        while self.clouds.polls() < taken + 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: the cloud worker made no third poll within {:?}",
+                crate::harness::TIMEOUT
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 /// The resolution setting the surface group runs at when no case has asked
 /// for another: the widest, which allows both tile levels.
 pub(crate) const SURFACE_RESOLUTION: u32 = 8192;
@@ -219,6 +242,7 @@ pub(crate) fn surface(_gpu: &Gpu) -> &'static Surface {
     group.harness.settle_at(&blend_params());
     if group.harness.restore_resolution() {
         group.harness.wait_for_textures("putting the setting back");
+        group.wait_for_the_cloud_variant("putting the setting back");
     }
     let bands = group.clouds.serve_bands();
     wait_for_cloud_size(&group.harness, bands, "putting the cloud map back");

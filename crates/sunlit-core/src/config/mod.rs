@@ -202,6 +202,14 @@ pub struct AppConfig {
     pub longitude: f32,
     pub latitude: f32,
     pub zoom: f32,
+    /// Whether the camera keeps its place relative to the Sun, so the Earth
+    /// turns beneath it. Then `solar_time` places it and `longitude` keeps the
+    /// value it had when the mode was last switched on.
+    pub sun_fixed: bool,
+    /// The local apparent solar time beneath the camera in the Sun-fixed mode,
+    /// in hours from 0 to 24. Kept apart from `custom_hour`, the override's
+    /// instant, and read only while `sun_fixed` is on.
+    pub solar_time: f32,
 
     // Camera orientation
     pub tilt: f32,
@@ -409,6 +417,8 @@ impl Default for AppConfig {
             longitude: cam.longitude,
             latitude: cam.latitude,
             zoom: cam.zoom,
+            sun_fixed: false,
+            solar_time: 12.0,
             tilt: cam.tilt_deg,
             yaw: cam.yaw_deg,
             pitch: cam.pitch_deg,
@@ -803,6 +813,8 @@ mod tests {
             longitude: 42.5,
             latitude: -15.0,
             zoom: 0.8,
+            sun_fixed: true,
+            solar_time: 18.25,
             tilt: 30.0,
             yaw: -10.0,
             pitch: 5.0,
@@ -964,6 +976,8 @@ sky_fov = 111.0
             longitude: 99.0,
             latitude: -45.0,
             zoom: 0.6,
+            sun_fixed: true,
+            solar_time: 3.5,
             tilt: 15.0,
             yaw: 20.0,
             pitch: -5.0,

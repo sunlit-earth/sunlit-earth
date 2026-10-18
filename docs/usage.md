@@ -1,6 +1,6 @@
 # Command line and display reference
 
-The [README](../README.md#using-the-app) covers everyday use. This reference contains additional launch options, display diagnostics, and file locations.
+The [README](../README.md#using-the-app) covers everyday use. This reference contains additional launch options, display diagnostics, the camera fixed toward the Sun, and file locations.
 
 ## Installing with a package manager
 
@@ -92,6 +92,23 @@ The Displays group appears when the session has more than one monitor. Its modes
 The anchor is the monitor that receives the wallpaper in One screen mode and the monitor on which the view is centered in the other modes. Primary (automatic) follows the system's primary monitor. The layout diagram highlights the anchor. The configuration stores these choices as `display_mode` and `anchor_monitor`.
 
 Windows, XFCE, and KDE Plasma support applying images to individual monitors. GNOME, Cinnamon, MATE, and Budgie use one wallpaper image and support spanning. LXQt uses one image for all monitors. When a desktop cannot implement the selected mode, the status line explains the fallback. See [platforms.md](platforms.md) for exact capabilities and verification status, including Wayland and mixed display scaling limitations.
+
+## A camera fixed toward the Sun
+
+By default the camera hangs over one place on the Earth and turns with it, so the lighting moves across the view over the day. "Fixed toward the Sun", the check at the top of Camera Position, keeps the camera where it is relative to the Sun instead: the Earth turns beneath it once a day, west to east, and a view of the day side stays a view of the day side, a sunrise at the limb stays a sunrise. Over the year the terminator still slides north and south with the seasons, at most about 0.4 degrees a day.
+
+With the check on, the Longitude row is replaced by a Time of day row, the local solar time beneath the camera: 12:00 looks down on the noon side, 18:00 on the evening terminator, 00:00 on the middle of the night. Latitude, zoom, orientation and framing keep their meaning. Switching the check either way keeps the view where it is. A preset keeps the mode, centers its place as of the moment it is clicked, and lets it turn away from there. A left drag across the globe moves the time of day instead of the longitude. With Override date/time on, the Hour slider turns the globe under a Sun that stays put, the Day slider moves the terminator north and south, and the Earth stops turning; turning the override off turns the globe to the present.
+
+The preview is redrawn about once a pixel of the turn while it is shown, at most every 5 seconds. The wallpaper follows the auto-refresh interval, and between two refreshes the surface moves by about this many pixels on a screen 1080 pixels tall at the default 20 degree Earth field of view, twice that on a 2160 pixel one:
+
+| Auto-refresh | Default zoom (8 radii) | Europe preset (3.2 radii) | Closest zoom (1.5 radii) |
+|---|---|---|---|
+| 1 minute | 2 px | 6 px | 27 px |
+| 5 minutes (the default) | 10 px | 30 px | 134 px |
+| 15 minutes | 29 px | 91 px | 401 px |
+| 30 minutes | 57 px | 182 px | 802 px |
+
+The configuration stores the mode as `sun_fixed` and the time of day as `solar_time`, in hours. While the mode is on, `longitude` keeps the value it had when the mode was last switched on, which is also what an older build that does not know the mode shows.
 
 ## App data and environment overrides
 

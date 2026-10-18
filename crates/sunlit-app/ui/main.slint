@@ -14,6 +14,8 @@ export struct CameraPositionSettings {
     longitude: float,
     latitude: float,
     zoom: float,
+    sun-fixed: bool,
+    solar-time: float,
 }
 
 export struct CameraOrientationSettings {
@@ -223,6 +225,8 @@ export component MainWindow inherits Window {
     in property <[string]> year-options;
     in property <string> hour-label;
     in property <string> day-label;
+    // The Time of day row's reading, formatted in Rust as the hour label is.
+    in property <string> solar-time-label;
     in property <int> max-day-of-year;
 
     callback mouse-drag-globe(float, float);
@@ -235,6 +239,9 @@ export component MainWindow inherits Window {
     callback load-defaults();
     callback reset();
     callback datetime-override-toggled();
+    // The Sun-fixed check, after it changed: the value the other mode reads is
+    // converted at the current instant, so the view does not jump.
+    callback camera-frame-toggled();
     callback show-about();
 
     in-out property <bool> auto-refresh-enabled;
@@ -592,7 +599,14 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 spacing: 4px;
 
-                                longitude-slider := SettingRow {
+                                SettingCheck {
+                                    text: "Fixed toward the Sun";
+                                    hint: "Keeps the camera where it is relative to the Sun, so the Earth turns beneath it once a day and the lighting it shows stays the same.";
+                                    checked <=> root.camera-position.sun-fixed;
+                                    toggled => { root.camera-frame-toggled(); }
+                                }
+
+                                if !root.camera-position.sun-fixed : longitude-slider := SettingRow {
                                     label: "Longitude";
                                     hint: "The meridian the camera hangs above, which is what turns the globe left and right.";
                                     minimum: -180;
@@ -600,6 +614,18 @@ export component MainWindow inherits Window {
                                     value <=> root.camera-position.longitude;
                                     resettable: false;
                                     value-text: round(root.camera-position.longitude) + "°";
+                                    value-width: 35px;
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                if root.camera-position.sun-fixed : solar-time-slider := SettingRow {
+                                    label: "Time of day";
+                                    hint: "The local solar time beneath the camera, which decides the side of the Earth it faces: 12:00 looks at noon, 00:00 at midnight. The Earth turns beneath it while the time stays.";
+                                    minimum: 0;
+                                    maximum: 24;
+                                    value <=> root.camera-position.solar-time;
+                                    resettable: false;
+                                    value-text: root.solar-time-label;
                                     value-width: 35px;
                                     changed => { root.sliders-changed(); }
                                 }
@@ -762,7 +788,7 @@ export component MainWindow inherits Window {
 
                                 SettingCheck {
                                     text: "Override date/time";
-                                    hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were.";
+                                    hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were, and stops the Earth turning under a camera fixed toward the Sun.";
                                     checked <=> root.datetime.use-custom;
                                     toggled => { root.datetime-override-toggled(); }
                                 }
@@ -773,7 +799,7 @@ export component MainWindow inherits Window {
 
                                     custom-hour-slider := SettingRow {
                                         label: "Hour";
-                                        hint: "Time of day in UTC, which is what decides the longitude the Sun stands over.";
+                                        hint: "Time of day in UTC, which is what decides the longitude the Sun stands over, and so the side of the Earth a camera fixed toward the Sun looks at.";
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 23.99;

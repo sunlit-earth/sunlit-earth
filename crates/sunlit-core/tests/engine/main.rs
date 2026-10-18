@@ -41,5 +41,6 @@ mod readiness;
 mod sinks;
 mod stars;
 mod sun;
+mod sun_fixed;
 mod textures;
 mod tiles;

@@ -1,14 +1,21 @@
 use crate::params::{ParamsDigest, SceneParams, quantize_direction};
+use crate::scene::camera::CameraParams;
 use crate::scene::sky::SkyState;
 
 /// Snapshot of everything that affects the rendered image.
 ///
 /// The scene parameters contribute their quantized digest; the render target
 /// size and the sun direction are derived per frame and therefore live here
-/// rather than in `SceneParams`.
+/// rather than in `SceneParams`. So does the camera the frame is drawn with,
+/// which the Sun-fixed mode resolves from the sky: the sun direction is
+/// compared to a milliradian, and the Earth takes 14 seconds to turn that far,
+/// which at the closest zoom is several pixels of the frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FrameState {
     pub params: ParamsDigest,
+    /// The camera resolved under the frame's sky, compared exactly like the
+    /// digest's.
+    pub camera: CameraParams,
     pub width: u32,
     pub height: u32,
     /// Sun direction quantized to integer milliradians for stable comparison.
@@ -28,6 +35,7 @@ pub(crate) fn build_frame_state(
 ) -> FrameState {
     FrameState {
         params: params.digest(),
+        camera: params.camera_at(sky),
         width: render_width,
         height: render_height,
         sun_direction: quantize_direction(sky.sun_direction),
@@ -109,6 +117,55 @@ mod tests {
         assert_ne!(
             state(1920, 1080, SUN),
             build_frame_state(&SceneParams::default(), 1920, 1080, &moved)
+        );
+    }
+
+    fn key(params: &SceneParams, sun: glam::Vec3) -> FrameState {
+        build_frame_state(params, 1920, 1080, &sky(sun))
+    }
+
+    /// Each mode reads one of the two keys, and the frame changes with that
+    /// one alone.
+    #[test]
+    fn the_frame_key_follows_the_key_the_camera_mode_reads() {
+        let earth = SceneParams::default();
+        let sun_fixed = SceneParams {
+            sun_fixed: true,
+            ..earth
+        };
+        let later = |p: SceneParams| SceneParams {
+            solar_time: p.solar_time + 0.25,
+            ..p
+        };
+        let east = |p: SceneParams| SceneParams {
+            camera: CameraParams {
+                longitude: p.camera.longitude + 3.0,
+                ..p.camera
+            },
+            ..p
+        };
+        assert_ne!(key(&sun_fixed, SUN), key(&later(sun_fixed), SUN));
+        assert_eq!(key(&sun_fixed, SUN), key(&east(sun_fixed), SUN));
+        assert_eq!(key(&earth, SUN), key(&later(earth), SUN));
+        assert_ne!(key(&earth, SUN), key(&east(earth), SUN));
+    }
+
+    /// The Earth's turn moves a Sun-fixed camera, and a turn well short of the
+    /// milliradian the sun direction is compared to is still a new frame. An
+    /// Earth-fixed camera does not move with it, so the same turn draws
+    /// nothing there.
+    #[test]
+    fn a_turn_under_a_milliradian_redraws_only_the_sun_fixed_camera() {
+        let turned = glam::Mat3::from_rotation_y(-0.000_2) * SUN;
+        assert_eq!(quantize_direction(turned), quantize_direction(SUN));
+        let sun_fixed = SceneParams {
+            sun_fixed: true,
+            ..SceneParams::default()
+        };
+        assert_ne!(key(&sun_fixed, SUN), key(&sun_fixed, turned));
+        assert_eq!(
+            key(&SceneParams::default(), SUN),
+            key(&SceneParams::default(), turned)
         );
     }
 }

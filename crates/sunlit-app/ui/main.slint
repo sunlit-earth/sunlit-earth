@@ -1,7 +1,7 @@
 import { Slider, Button, Palette, ScrollView } from "std-widgets.slint";
-import { MonitorTile, Splitter, Hint, SettingRow, SettingCheck, SettingCombo, SettingHeading, SettingGroup } from "widgets.slint";
+import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, SettingCombo, SettingHeading, SettingGroup } from "widgets.slint";
 
-export { MonitorTile, AboutBlock } from "widgets.slint";
+export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
 export { TrayIcon } from "tray.slint";
 
@@ -135,8 +135,10 @@ export struct LightingSettings {
 }
 
 // `gamma` is the slider's position on the curve rather than the gamma itself,
-// which `day-gamma-value` and `night-gamma-value` carry.
+// which `day-gamma-value` and `night-gamma-value` carry. `ocean` is the color
+// open water takes before the gamma and the saturation act on it.
 export struct TextureColorSettings {
+    ocean: color,
     gamma: float,
     saturation: float,
 }
@@ -1608,6 +1610,15 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
+                                day-ocean-color := SettingColor {
+                                    label: "Ocean";
+                                    hint: "Base color of open water on the day map, before gamma, saturation and lighting. Sea ice keeps its own color.";
+                                    indent: 8px;
+                                    value <=> root.color-correction.day.ocean;
+                                    default-value: root.defaults.color-correction.day.ocean;
+                                    changed => { root.sliders-changed(); }
+                                }
+
                                 day-gamma-slider := SettingRow {
                                     label: "Gamma";
                                     hint: "Brightness curve of the daylit surface map; below one lifts the shadows, above one deepens them.";
@@ -1641,6 +1652,15 @@ export component MainWindow inherits Window {
                                         root.color-correction.night = root.defaults.color-correction.night;
                                         root.sliders-changed();
                                     }
+                                }
+
+                                night-ocean-color := SettingColor {
+                                    label: "Ocean";
+                                    hint: "Base color of open water on the night map, before gamma and saturation. Lights at sea and sea ice keep their own colors.";
+                                    indent: 8px;
+                                    value <=> root.color-correction.night.ocean;
+                                    default-value: root.defaults.color-correction.night.ocean;
+                                    changed => { root.sliders-changed(); }
                                 }
 
                                 night-gamma-slider := SettingRow {

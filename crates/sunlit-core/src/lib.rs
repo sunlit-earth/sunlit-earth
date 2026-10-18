@@ -5,6 +5,7 @@
 //! owns them. The Slint shell in `sunlit-app` is one client of this crate.
 
 pub mod assets;
+pub mod color;
 pub mod config;
 pub mod desktop;
 pub mod display;

@@ -7,6 +7,7 @@
 //!
 //! `docs/rendering.md` lists every file a new parameter touches.
 
+use crate::color::Rgb8;
 use crate::config::AppConfig;
 use crate::scene::camera::{CameraParams, held_longitude, longitude_of};
 use crate::scene::sky::SkyState;
@@ -141,6 +142,11 @@ pub struct SceneParams {
     pub milky_way_intensity: f32,
 
     // Color correction (gamma values, not slider positions)
+    /// The color open water takes on the day map and on the night map, before
+    /// gamma and saturation. The renderer moves the water's share of each
+    /// texel from the color its pack carries to this one, by the water mask.
+    pub day_ocean_color: Rgb8,
+    pub night_ocean_color: Rgb8,
     pub day_gamma: f32,
     pub day_saturation: f32,
     pub night_gamma: f32,
@@ -225,6 +231,8 @@ impl SceneParams {
             moon_size: config.moon_size,
             moon_earthshine: config.moon_earthshine,
             milky_way_intensity: config.milky_way_intensity,
+            day_ocean_color: config.day_ocean_color,
+            night_ocean_color: config.night_ocean_color,
             day_gamma: config.day_gamma,
             day_saturation: config.day_saturation,
             night_gamma: config.night_gamma,
@@ -309,6 +317,8 @@ impl SceneParams {
         config.moon_size = self.moon_size;
         config.moon_earthshine = self.moon_earthshine;
         config.milky_way_intensity = self.milky_way_intensity;
+        config.day_ocean_color = self.day_ocean_color;
+        config.night_ocean_color = self.night_ocean_color;
         config.day_gamma = self.day_gamma;
         config.day_saturation = self.day_saturation;
         config.night_gamma = self.night_gamma;
@@ -407,6 +417,7 @@ pub(crate) fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
 ///   as `held_camera` holds them, and compares exactly.
 /// - `counted`, `switched`: integers and switches, compared exactly.
 /// - `quantized`: floats rounded to integer thousandths.
+/// - `colored`: colors of 8 bit channels, compared exactly.
 /// - `gated`: floats the digest reads through an accessor rather than from the
 ///   field, because another parameter can zero them.
 /// - `indirect`: not a digest field, but a change to it moves one, so it still
@@ -418,6 +429,7 @@ macro_rules! scene_digest {
         counted { $($cnt:ident: $cnt_ty:ty),* $(,)? }
         switched { $($sw:ident),* $(,)? }
         quantized { $($qn:ident),* $(,)? }
+        colored { $($col:ident),* $(,)? }
         gated { $($gt:ident from $src:ident),* $(,)? }
         indirect { $($ind:ident),* $(,)? }
         absent { $($abs:ident),* $(,)? }
@@ -432,6 +444,7 @@ macro_rules! scene_digest {
             $(pub $cnt: $cnt_ty,)*
             $(pub $sw: bool,)*
             $(pub $qn: i32,)*
+            $(pub $col: Rgb8,)*
             $(pub $gt: i32,)*
         }
 
@@ -448,6 +461,7 @@ macro_rules! scene_digest {
                     $($cnt: self.$cnt,)*
                     $($sw: self.$sw,)*
                     $($qn: q(self.$qn),)*
+                    $($col: self.$col,)*
                     $($gt: q(self.$src()),)*
                 }
             }
@@ -462,6 +476,7 @@ macro_rules! scene_digest {
             $($cnt: p.$cnt,)*
             $($sw: p.$sw,)*
             $($qn: p.$qn,)*
+            $($col: p.$col,)*
             $($gt: p.$gt,)*
             $($ind: p.$ind,)*
             $($abs: p.$abs,)*
@@ -500,6 +515,16 @@ macro_rules! scene_digest {
                     stringify!($qn),
                     SceneParams {
                         $qn: base.$qn + 1.0,
+                        ..base
+                    },
+                ),)*
+                $((
+                    stringify!($col),
+                    SceneParams {
+                        $col: Rgb8 {
+                            r: base.$col.r.wrapping_add(1),
+                            ..base.$col
+                        },
                         ..base
                     },
                 ),)*
@@ -593,6 +618,10 @@ scene_digest! {
         day_saturation,
         night_gamma,
         night_saturation,
+    }
+    colored {
+        day_ocean_color,
+        night_ocean_color,
     }
     gated {
         rayleigh_intensity from effective_rayleigh_intensity,

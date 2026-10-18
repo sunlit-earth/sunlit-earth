@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::color::Rgb8;
 use crate::display::layout::DisplayMode;
 use tracing::warn;
 
@@ -344,6 +345,12 @@ pub struct AppConfig {
     pub milky_way_intensity: f32,
 
     // Color correction
+    /// The color open water takes on the day map and on the night map, before
+    /// gamma and saturation. The defaults are the colors the shipped packs
+    /// carry, at which the surface draws as the textures have it;
+    /// `the_real_packs_carry_the_default_ocean_colors` holds the two together.
+    pub day_ocean_color: Rgb8,
+    pub night_ocean_color: Rgb8,
     pub day_gamma: f32,
     pub day_saturation: f32,
     pub night_gamma: f32,
@@ -479,6 +486,8 @@ impl Default for AppConfig {
             moon_size: 2.5,
             moon_earthshine: 0.15,
             milky_way_intensity: 0.2,
+            day_ocean_color: Rgb8::new(10, 30, 60),
+            night_ocean_color: Rgb8::new(5, 5, 15),
             day_gamma: 1.0,
             day_saturation: 1.0,
             night_gamma: 1.0,
@@ -875,6 +884,8 @@ mod tests {
             moon_size: 2.5,
             moon_earthshine: 0.12,
             milky_way_intensity: 0.8,
+            day_ocean_color: Rgb8::new(0, 64, 255),
+            night_ocean_color: Rgb8::new(255, 128, 1),
             day_gamma: 1.5,
             day_saturation: 0.8,
             night_gamma: 2.0,
@@ -895,6 +906,72 @@ mod tests {
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(config, parsed);
+    }
+
+    /// The two ocean colors are stored as their hex text and read back
+    /// exactly, and a file without them takes the defaults.
+    #[test]
+    fn the_ocean_colors_are_stored_as_hex() {
+        let scratch = ScratchDir::new("config_ocean_colors");
+        let path = scratch.join("config.toml");
+        let config = AppConfig {
+            day_ocean_color: Rgb8::new(0x12, 0xab, 0xff),
+            night_ocean_color: Rgb8::new(0, 0, 1),
+            ..AppConfig::default()
+        };
+        save_config_to(&config, &path);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("day_ocean_color = \"#12abff\""), "{text}");
+        assert!(text.contains("night_ocean_color = \"#000001\""), "{text}");
+        assert_eq!(load_config_from(&path), config);
+
+        fs::write(&path, "[sunlit.earth]
+longitude = 12.0
+").unwrap();
+        let without = load_config_from(&path);
+        assert_eq!(without.day_ocean_color, AppConfig::default().day_ocean_color);
+        assert_eq!(without.night_ocean_color, AppConfig::default().night_ocean_color);
+    }
+
+    /// A color that is not `#rrggbb` fails the file as a value of the wrong
+    /// type does: the whole file loads as the defaults.
+    #[test]
+    fn a_malformed_ocean_color_fails_the_file_like_a_malformed_float() {
+        let scratch = ScratchDir::new("config_bad_ocean_color");
+        let path = scratch.join("config.toml");
+        for bad in ["\"#0a1e3\"", "\"blue\"", "12", "\"#0a1e3cff\""] {
+            fs::write(
+                &path,
+                format!("[sunlit.earth]
+longitude = 12.0
+day_ocean_color = {bad}
+"),
+            )
+            .unwrap();
+            assert_eq!(load_config_from(&path), AppConfig::default(), "{bad}");
+        }
+        fs::write(&path, "[sunlit.earth]
+longitude = 12.0
+day_gamma = \"x\"
+").unwrap();
+        assert_eq!(load_config_from(&path), AppConfig::default());
+        fs::write(
+            &path,
+            "[sunlit.earth]
+longitude = 12.0
+day_ocean_color = \"0A1E3D\"
+",
+        )
+        .unwrap();
+        assert_eq!(
+            load_config_from(&path),
+            AppConfig {
+                longitude: 12.0,
+                day_ocean_color: Rgb8::new(10, 30, 61),
+                ..AppConfig::default()
+            },
+            "without the hash and in upper case"
+        );
     }
 
     #[test]
@@ -1038,6 +1115,8 @@ sky_fov = 111.0
             moon_size: 6.0,
             moon_earthshine: 0.3,
             milky_way_intensity: 1.6,
+            day_ocean_color: Rgb8::new(200, 120, 7),
+            night_ocean_color: Rgb8::new(1, 2, 3),
             day_gamma: 1.8,
             day_saturation: 0.6,
             night_gamma: 2.2,

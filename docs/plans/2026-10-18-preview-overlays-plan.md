@@ -18,14 +18,15 @@ High. The new time setting changes a persisted setting's shape, so it takes a co
 
 ## What the window and the engine do today
 
-Checked against `main` at bfce47a:
+Checked against `main` at 2724285, after the Sun-fixed camera (#80) and the ocean colors (#81):
 
 - The preview is an `Image` inside `image-container` in `main.slint`, under one `TouchArea` (`viewport-touch`) that tracks `left-held`, `right-held` and `middle-held` and calls `mouse-drag-globe`, `mouse-drag-frame`, `mouse-drag-orient`, `mouse-drag-tilt` and `mouse-scroll`. `ui_callbacks::register_mouse_callbacks` applies them through `mouse_math.rs` and ends each in `engine.push_params`. The loading pill is the only other element over the image. There are no keyboard shortcuts anywhere in the window, and the field of view has no gesture.
 - The date and time setting is `DateTimeSettings { use-custom, hour, day-of-year, year-index }` in the window and `DateTimeInput { use_custom, custom_hour, custom_day_of_year, custom_year }` in `SceneParams`, with the hour in UTC and the year within ten of the current one. The sidebar's Date / Time group shows it as an "Override date/time" switch, Hour and Day sliders and a Year combo box, with a ↺ while the override is on. `CivilTime::of` (`scene/month.rs`) turns it into a civil time, `time_for_input` (`scene/sky.rs`) into an Astronomy Engine time, and live time drops the sub-second part. The config keys are `use_custom_datetime`, `custom_hour`, `custom_day_of_year` and `custom_year`, and the schema is at version 2 (`config/migrate.rs`).
-- `datetime` is not in `ParamsDigest`; the engine compares the derived sky state instead. Live time re-renders on `SKY_INTERVAL`, two minutes, and the loop waits on its channel for at most `TICK`, 50 ms (`engine/mod.rs`).
-- `sync_month` derives the month in force, and on a CPU adapter the month ahead, from the date before every draw. In Blend mode the tiles a frame wants depend on the Sun's direction (`residency::surfaces_for`), and the drag observer that coarsens the wanted set while the camera moves watches the camera alone (`surface.drag(&self.params.camera, ...)`).
+- `datetime` is not in `ParamsDigest`; the engine compares the derived sky state instead. Live time re-renders on `sky_interval` (`engine/mod.rs`): `SKY_INTERVAL`, two minutes, except for a shown Sun-fixed preview at live time, where it is the time the preview takes to move one pixel, at least `SKY_FLOOR`, 5 s. The loop waits on its channel for at most `TICK`, 50 ms.
+- The camera has two modes since [2026-10-16-sun-fixed-camera-plan.md](2026-10-16-sun-fixed-camera-plan.md). `SceneParams::sun_fixed` and `solar_time` sit beside `camera`; in the Sun-fixed mode the Longitude row is a Time of day row and the longitude drawn is `camera_at(sky)`, resolved under the sky of each draw, so the instant decides which side of the Earth faces the camera. The globe drag moves the time of day through `camera::held_longitude` and `solar_time_of_held`. Switching the mode and applying a preset convert at `sky_now`, the override's instant or the system clock's (`ui_callbacks.rs`).
+- `sync_month` derives the month in force, and on a CPU adapter the month ahead, from the date before every draw. In Blend mode the tiles a frame wants depend on the Sun's direction (`residency::surfaces_for`), and the drag observer (`DragWatch` in `engine/tile_loader.rs`, called through `surface.drag`) coarsens the wanted set while the camera moves. It watches `held_camera()`, so in the Sun-fixed mode the Earth's turn is never a drag.
 - `EngineEvent::PreviewFrame` carries the pixels and the size, not the time the frame shows. Hiding the window sends `SetPreviewEnabled(false)`.
-- About 80 places in `sunlit-core`'s sources and tests name `DateTimeInput` or its fields: `month.rs`, `sky.rs`, `params.rs`, `config/mod.rs`, the golden, render pipeline and soak targets, and the engine tests' harness, moon, months, panorama, clouds, readiness and cube cases. `ui_callbacks.rs` and `slint_ui.rs` name the window side, and `crates/sunlit-app/tests/fixtures/e2e_config.toml` holds the four keys.
+- About 150 lines in `sunlit-core`'s sources and tests name `DateTimeInput` or its fields: `month.rs`, `sky.rs`, `sun.rs`, `params.rs`, `config/mod.rs`, `engine/mod.rs` (`sky_interval` among them), the golden, render pipeline and soak targets, and the engine tests' harness, moon, months, panorama, clouds, readiness, cube, sun, sun_fixed, loading and tiles cases. `ui_callbacks.rs` (`sky_now` among them) and `slint_ui.rs` name the window side, and `crates/sunlit-app/tests/fixtures/e2e_config.toml` holds the four keys.
 - A config file written by a newer build loads best effort: `migrate.rs` leaves it alone and serde fills what it does not know.
 - README's usage section lists the five mouse gestures and mentions "a date and time override" under Advanced.
 
@@ -60,6 +61,7 @@ Layout and behavior are the mockup's, top right, 12 px from the edges, 92 px wid
 | Footer | Shortcut sheet, hide overlays, centered | | F1 (⌘? on macOS), H |
 
 - The joysticks are rate controls: the knob's deflection, squared, sets a speed, and the knob springs back on release. All three move the camera the way they are pushed, so the picture slides the other way. The drags on the globe stay as they are: the left and the right drag both grab the picture, which follows the hand.
+- In the Sun-fixed mode the orbit joystick, its arrows and the arrow keys move the time of day instead of the longitude, through `held_longitude` and `solar_time_of_held` as the globe drag does, so they keep their speed, their tilt correction and their wrap, and a 10° step is 40 minutes.
 - The N, the ticks and the ring turn with the tilt by computed positions (`x: c + r * sin(a)`), never by `transform-rotation` (Slint findings above).
 - No lens control. The field of view looks like zoom on the globe and goes wrong in ways zoom does not; it stays in the sidebar's Framing group, and there is no Ctrl + wheel gesture for it.
 - The ↺ badges reuse `ui/icons/reset.svg` and compare against `root.defaults`, as the sidebar's do since [2026-10-14-setting-resets-plan.md](2026-10-14-setting-resets-plan.md). N, the ↺ badges and the orbit arrows ease to their target over 300 ms rather than jumping, so the globe visibly turns back.
@@ -110,7 +112,9 @@ The preview can leave the time setting for a while and come back: an excursion, 
 - Closing the window pauses a running excursion: `SetPreviewEnabled(false)` pauses it in the engine, and reopening shows it paused where it was. The excursion is not saved; a restart starts from the time setting.
 - While an excursion runs and the preview is enabled, every tick is dirty and the loop waits at most 33 ms instead of `TICK`, about 30 frames a second where the adapter keeps up; the time comes from the clock, so a slow adapter drops frames and keeps the speed. The latest-value preview mailbox already prevents a backlog.
 - Rates are the mockup's: Clock 1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200 and 21600 times real time (real time to 6 h/s); Date 1, 2, 7, 14, 30, 60 and 90 days a second (up to 3 months/s). They live in `sunlit-core` beside the excursion math, which the window reads for its rulers. The rate and the kind start at 60× and 1 week/s each session and are not saved. Playback is not a setting: the sidebar carries no playback control, and a wallpaper never runs at a warped time.
-- The drag observer becomes a motion observer: the Sun's direction moving counts like the camera moving, so Blend mode wants the coarse set while an excursion runs and the full set once it stops.
+- The drag observer becomes a motion observer: the Sun's direction moving counts like the camera moving, so Blend mode wants the coarse set while an excursion runs and the full set once it stops. While an excursion runs it watches the camera resolved under the excursion's sky, so in the Sun-fixed mode the read-ahead follows the turn; otherwise it watches `held_camera()` as today.
+- In the Sun-fixed mode the preview's camera is resolved under the excursion's sky like everything else drawn at its instant: a Clock run turns the globe once per apparent solar day of the run (at 6 h/s a turn every 4 s), and a Date run keeps the side in view while the terminator slides north and south with the seasons. `sky_interval` treats an excursion like a fixed time: while one runs the 33 ms cadence applies, while one is paused the preview does not move.
+- Switching the camera mode and applying a preset keep converting at the time setting's instant (`sky_now` on `SceneParams::time`), since the result is saved and drawn on the wallpaper. During an excursion the preview can therefore show the converted place away from the center until the excursion ends.
 
 ### 7. The time bar
 
@@ -119,12 +123,12 @@ Layout and behavior are the mockup's, bottom center, 14 px from the edge, 800 px
 - Folded: a pill with the state, the date and time on screen, and the zone. The state is ● LIVE, the offset from now for a fixed time, ▶ or ◀ with the speed for a running excursion, or Preview for a paused one. Hover opens the bar, leaving folds it after 0.7 s unless pinned, a popup is open or a track is held; while the pointer is outside the preview it fades to 42%, unless pinned.
 - First row: the speed on the left (the rate and what it means, "300× · 5 min/s" or "1 week/s · same time each day"; a click opens every speed in both directions), then skip back, the backward ruler, a 44 px play/pause, the forward ruler and skip forward, centered over the tracks. A ruler has one dot per rate, growing with the rate, the slowest next to play; a click or a drag along it runs at that rate.
 - The clock block right of the three rows, behind a divider, 142 px, Live on top: a state pill with the offset from now beside it, the time on screen in large type with seconds while live and the zone chip right after it (a click switches UTC and local), and the date with a calendar icon. The state pill reads "● Live" for live time, "Now" for a fixed time (a click goes live), and "Preview" during an excursion, whose hover text names the time the wallpaper keeps and whose click ends the excursion. A click on the time or the date opens `DatePickerPopup` and `TimePickerPopup` for exact entry, which sets the time setting. The year changes through exact entry, the sidebar and Date playback; there is no stepper in the bar.
-- Second and third rows: Time and Date tracks behind radio labels choosing what play runs, the active one in the accent color and its dot a ▶ while running. The time track spans the displayed zone's day and is shaded from the Sun's altitude at the point under the camera, sampled every 30 minutes into a 48 × 1 image the window stretches; the date track spans the displayed year with month ticks and the four season instants from `Astronomy_Seasons`, and the handle snaps to a season's day within three days. A drag on either sets the time setting (decision 6).
+- Second and third rows: Time and Date tracks behind radio labels choosing what play runs, the active one in the accent color and its dot a ▶ while running. The time track spans the displayed zone's day and is shaded from the Sun's altitude at the point under the camera, sampled every 30 minutes into a 48 × 1 image the window stretches; the date track spans the displayed year with month ticks and the four season instants from `Astronomy_Seasons`, and the handle snaps to a season's day within three days. A drag on either sets the time setting (decision 6). In the Sun-fixed mode the light under the camera does not change with the hour, so the time track is drawn plain, and its hover text says that the hour turns the Earth beneath the camera.
 - Pin in the top right corner: keeps the bar open and at 100% wherever the pointer is.
 
 ### 8. The sidebar's Date / Time group stays
 
-Everything that changes the wallpaper stays configurable in the sidebar, so the group stays and moves to the new setting: "Override date/time" switches between `Live` and `Fixed`, turning it on fixes the current instant as today, and below it Time and Day sliders and a Year `SpinBox` from 1900 to 2100 edit the instant. The sliders read in the displayed zone and their labels name it ("16:23 UTC+2", "Sun 18 Oct"). The group's ↺ turns the override off as today, and Time and Day keep `resettable: false`. It shows the time setting, not the preview: during an excursion it keeps showing the time the wallpaper uses. An edit here ends an excursion like any change of the setting.
+Everything that changes the wallpaper stays configurable in the sidebar, so the group stays and moves to the new setting: "Override date/time" switches between `Live` and `Fixed`, turning it on fixes the current instant as today, and below it Time and Day sliders and a Year `SpinBox` from 1900 to 2100 edit the instant. The sliders read in the displayed zone and their labels name it ("16:23 UTC+2", "Sun 18 Oct"). The group's ↺ turns the override off as today, and Time and Day keep `resettable: false`. The override's and the Time row's hints keep what the Sun-fixed camera added to them: with the override on, the time decides which side of the Earth a camera fixed toward the Sun looks at. It shows the time setting, not the preview: during an excursion it keeps showing the time the wallpaper uses. An edit here ends an excursion like any change of the setting.
 
 ### 9. Not chosen
 
@@ -146,10 +150,11 @@ Everything that changes the wallpaper stays configurable in the sidebar, so the 
 5. The time bar folds, opens and pins as decision 7 says; play, the rulers, skip, J K L R, the radio labels, the tracks, the zone chip, exact entry, Now and the Preview pill all do what they say.
 6. During an excursion the preview moves at the chosen speed measured against the wall clock, the clock block shows the frame's time and Preview, and the sidebar, an unattended refresh and Set as Wallpaper all keep the time setting.
 7. Closing the window during an excursion pauses it, reopening shows it paused, and the time setting is unchanged.
-8. The sidebar's Date / Time group and the time bar's tracks show and edit the same time setting, in the displayed zone.
-9. A config written by 0.4.0 with an override loads to the same instant, and one without loads to live time.
-10. Nothing of either control appears in an export, a wallpaper or a golden image.
-11. `cargo test`, `cargo clippy --all-targets` and `cargo fmt --check` pass.
+8. In the Sun-fixed mode the orbit controls move the time of day and leave the longitude alone, and a Clock excursion turns the globe at the chosen speed with the tiles following.
+9. The sidebar's Date / Time group and the time bar's tracks show and edit the same time setting, in the displayed zone.
+10. A config written by 0.4.0 with an override loads to the same instant, and one without loads to live time.
+11. Nothing of either control appears in an export, a wallpaper or a golden image.
+12. `cargo test`, `cargo clippy --all-targets` and `cargo fmt --check` pass.
 
 ## Implementation Steps
 
@@ -159,7 +164,7 @@ Three changes: A, the camera panel, depends on nothing else here; B, the time se
 
 #### Step A1: Camera actions in Rust
 
-A pure `camera_controls.rs` beside `mouse_math.rs`: the joystick rates (orbit 70°/s at distance 8, scaled by distance and capped at 120°/s, tilt corrected the way `apply_globe_drag_at` is; look 45°/s; frame 1.4/s), the orbit step, zoom steps and rates (0.05 a click, 0.3/s held), roll by angle, the 300 ms ease, and the clamps and wraps the sliders use. Elapsed time between joystick ticks is measured with `Instant` in Rust per stick, so a late Slint timer does not slow the camera.
+A pure `camera_controls.rs` beside `mouse_math.rs`: the joystick rates (orbit 70°/s at distance 8, scaled by distance and capped at 120°/s, tilt corrected the way `apply_globe_drag_at` is; look 45°/s; frame 1.4/s), the orbit step, zoom steps and rates (0.05 a click, 0.3/s held), roll by angle, the 300 ms ease, and the clamps and wraps the sliders use. The orbit takes the held longitude in and gives it back, so the Sun-fixed mode goes through `held_longitude` and `solar_time_of_held` at the one call site, as the globe drag does. Elapsed time between joystick ticks is measured with `Instant` in Rust per stick, so a late Slint timer does not slow the camera.
 
 #### Step A2: Overlay widgets
 
@@ -177,7 +182,7 @@ The `FocusScope` and its bindings of decision 4 (the time keys arrive with Part 
 
 #### Step B1: `SceneTime`
 
-`SceneTime` in `scene/` replacing `DateTimeInput`, `SceneParams::time`, `CivilTime::of` and `time_for_input` on the instant, `month_in_force` and `month_ahead` likewise. The `v2_to_v3` migration with its log entries, and `AppConfig`'s `scene_time` with serde as the string forms of decision 5, `time_zone`, `time_bar_pinned` and `overlays_hidden`. The tests that pin a date change mechanically to `SceneTime::Fixed(datetime!(...))`, and `e2e_config.toml` to `scene_time`. The `local-offset` feature on `time`.
+`SceneTime` in `scene/` replacing `DateTimeInput`, `SceneParams::time`, `CivilTime::of` and `time_for_input` on the instant, `month_in_force` and `month_ahead` likewise; `sky_interval` and the window's `sky_now` read `SceneTime`. The `v2_to_v3` migration with its log entries, and `AppConfig`'s `scene_time` with serde as the string forms of decision 5, `time_zone`, `time_bar_pinned` and `overlays_hidden`. The tests that pin a date change mechanically to `SceneTime::Fixed(datetime!(...))`, and `e2e_config.toml` to `scene_time`. The `local-offset` feature on `time`.
 
 #### Step B2: The sidebar group on the new setting
 
@@ -185,7 +190,7 @@ Decision 8: `DateTimeSettings` becomes the switch and the instant in the display
 
 #### Step B3: The excursion in the engine
 
-A pure `engine/excursion.rs`: the commands' state machine, the rate ladders, the instant at an elapsed time for both kinds, clamped to 1900 to 2100 with a running excursion pausing at the edge. The engine handles `EngineCommand::Excursion`, ends the excursion on a changed `SceneParams::time`, draws the preview at the excursion's instant and exports at `SceneParams::time`, pauses on `SetPreviewEnabled(false)`, shortens the wait to 33 ms while running, emits `EngineEvent::Excursion`, and puts `instant` into `PreviewFrame`. `sync_month` and `want_tiles` take the instant being drawn, and the drag observer of `engine/surface.rs` watches the Sun's direction as well as the camera.
+A pure `engine/excursion.rs`: the commands' state machine, the rate ladders, the instant at an elapsed time for both kinds, clamped to 1900 to 2100 with a running excursion pausing at the edge. The engine handles `EngineCommand::Excursion`, ends the excursion on a changed `SceneParams::time`, draws the preview at the excursion's instant and exports at `SceneParams::time`, pauses on `SetPreviewEnabled(false)`, shortens the wait to 33 ms while running, emits `EngineEvent::Excursion`, and puts `instant` into `PreviewFrame`. `sync_month` and `want_tiles` take the instant being drawn, `tile_output` resolves the camera under the excursion's sky for the preview, `sky_interval` counts an excursion as a fixed time, and `DragWatch` watches the Sun's direction as well as the camera, the resolved camera while an excursion runs (decision 6).
 
 #### Step B4: Astronomy helpers
 
@@ -195,7 +200,7 @@ A pure `engine/excursion.rs`: the commands' state machine, the rate ladders, the
 
 #### Step C1: The bridge
 
-A `time_bar.rs` in `sunlit-app` that mirrors the excursion from `EngineEvent::Excursion` and the last frame's `instant`, turns the transport's callbacks into `EngineCommand::Excursion` and the tracks', exact entry's and Now's into `SceneParams` pushes as decision 6 says, formats the texts (time, seconds, zone, date, offset, state, speed and its meaning) as pure functions, computes the shading image when the displayed day or the point under the camera moves by a degree, and runs the one second label timer while live with no excursion. `engine_client.rs` hands each frame's `instant` and each excursion event to it.
+A `time_bar.rs` in `sunlit-app` that mirrors the excursion from `EngineEvent::Excursion` and the last frame's `instant`, turns the transport's callbacks into `EngineCommand::Excursion` and the tracks', exact entry's and Now's into `SceneParams` pushes as decision 6 says, formats the texts (time, seconds, zone, date, offset, state, speed and its meaning) as pure functions, computes the shading image when the displayed day or the point under the camera moves by a degree, and a plain one in the Sun-fixed mode, and runs the one second label timer while live with no excursion. `engine_client.rs` hands each frame's `instant` and each excursion event to it.
 
 #### Step C2: The bar
 
@@ -212,17 +217,17 @@ A `time_bar.rs` in `sunlit-app` that mirrors the excursion from `EngineEvent::Ex
 
 ### Step E: Validation with the user
 
-The user tries each part in the app. Part A also in the Windows guest (`cargo xtask vm up windows`, software renderer) for criterion 3 and in the Linux guest under KDE and GNOME on Wayland for the keyboard focus. Part C with excursions at 3600× and at 3 months/s, timed against a wall clock, on this machine's GPU and with `--software-rendering`, and with the tile report (`ReportTiles`) taken before, during and after a run in Blend mode. macOS is exercised only on CI's runners; the ⌘ bindings rest on Slint's documented mapping.
+The user tries each part in the app. Part A also in the Windows guest (`cargo xtask vm up windows`, software renderer) for criterion 3 and in the Linux guest under KDE and GNOME on Wayland for the keyboard focus. Part C with excursions at 3600× and at 3 months/s in both camera modes, timed against a wall clock, on this machine's GPU and with `--software-rendering`, and with the tile report (`ReportTiles`) taken before, during and after a run in Blend mode. macOS is exercised only on CI's runners; the ⌘ bindings rest on Slint's documented mapping.
 
 ## Tests
 
-- `camera_controls.rs` unit tests: a full deflection for one second turns the globe by the stated rate at distance 8; the tilt correction makes "up" screen up at any roll; clamps and wraps; the ease reaches its target exactly; the zoom snap.
+- `camera_controls.rs` unit tests: a full deflection for one second turns the globe by the stated rate at distance 8; the tilt correction makes "up" screen up at any roll; clamps and wraps; the ease reaches its target exactly; the zoom snap; in the Sun-fixed mode an orbit step east is a later time of day and wraps across midnight.
 - `excursion.rs` unit tests: Clock and Date instants for positive and negative rates, Date keeping the UTC time of day, a retune keeping the instant continuous, Pause freezing it, Skip with and without an excursion, the 1900 and 2100 edges, every ladder rate distinct and sorted.
 - Config migration tests: an override becomes the exact instant of its year, day and hour; no override becomes `"live"`; the four keys are gone and logged; `v0.2.2.toml` still loads.
-- Engine tests on `MockClock`, a new `tests/engine/excursion.rs`: a run at 3600× for one mock second moves the Sun 15° in the preview frames and `PreviewFrame::instant` matches; a wallpaper published during the run is drawn at `SceneParams::time`; a changed `SceneParams::time` ends the excursion and an unchanged one, as every camera drag sends, does not; `SetPreviewEnabled(false)` pauses it and re-enabling shows the paused instant; a Date run across the middle of a month changes the month in force; the motion observer reports motion while the Sun moves and settles after it stops.
+- Engine tests on `MockClock`, a new `tests/engine/excursion.rs`: a run at 3600× for one mock second moves the Sun 15° in the preview frames and `PreviewFrame::instant` matches; a wallpaper published during the run is drawn at `SceneParams::time`; a changed `SceneParams::time` ends the excursion and an unchanged one, as every camera drag sends, does not; `SetPreviewEnabled(false)` pauses it and re-enabling shows the paused instant; a Date run across the middle of a month changes the month in force; the motion observer reports motion while the Sun moves and settles after it stops; a Sun-fixed Clock run turns the resolved camera at the run's rate, the wanted tiles follow it and the drag's rate points the way the camera moves; `sky_interval` gives `SKY_INTERVAL` for a fixed time and during an excursion.
 - Sidebar conversion tests: slider values to the instant and back in local time and UTC, across a leap day and both summer time changes.
 - Formatting tests in `time_bar.rs`: offsets ("now", "+5 min", "−2 d 3 h", years), zone labels for whole and half hour offsets, speed texts for every rate, the three state texts.
-- `slint_ui.rs`: N after a tilt brings it back to 0 once `mock_elapsed_time` has passed the ease; a held orbit joystick moves the longitude monotonically; the look and frame ↺ appear exactly while their values differ from `defaults` and clear them; the zoom slider snaps to the mark; F1 opens the sheet and Esc closes it; H hides and shows the overlays; a click on a forward ruler dot sends that rate and leaves the time setting alone; the radio labels switch the rulers' ladder; a track drag sets the time setting; Now sends `Live` and `End`; the Preview pill ends the excursion; the pin keeps the bar open with the pointer outside; the sidebar group and the bar show the same instant. Dispatched pointer and key events, as the existing cases do.
+- `slint_ui.rs`: N after a tilt brings it back to 0 once `mock_elapsed_time` has passed the ease; a held orbit joystick moves the longitude monotonically, and in the Sun-fixed mode the time of day with the longitude untouched; the look and frame ↺ appear exactly while their values differ from `defaults` and clear them; the zoom slider snaps to the mark; F1 opens the sheet and Esc closes it; H hides and shows the overlays; a click on a forward ruler dot sends that rate and leaves the time setting alone; the radio labels switch the rulers' ladder; a track drag sets the time setting; Now sends `Live` and `End`; the Preview pill ends the excursion; the pin keeps the bar open with the pointer outside; the sidebar group and the bar show the same instant. Dispatched pointer and key events, as the existing cases do.
 - The golden and render tests change only in how they pin their date, and their references stay as they are; a changed reference is a defect in Step B1.
 
 ## Out of Scope
@@ -241,6 +246,7 @@ The user tries each part in the app. Part A also in the Windows guest (`cargo xt
 |---|---|
 | Thirty preview readbacks a second are heavy on a big preview: 8 MB a frame at the Medium tier's 1920 px, copied into a Slint image. | The 33 ms wait is a ceiling, not a promise; the mailbox drops what the UI has not taken, and the speed comes from the clock. Step E measures it; if needed the cadence drops to 20 frames a second while running. |
 | Blend mode keeps asking for tiles along the moving terminator. | The motion observer of Step B3, and the tile report in Step E. |
+| A fast Clock run in the Sun-fixed mode turns the globe up to 90° a second, and the tiles never catch up. | The motion observer watches the resolved camera during a run, so the coarse set is wanted with read-ahead along the turn; the floor is drawn where tiles are missing, and Step E watches the tile report at 6 h/s. |
 | A Date run on a CPU adapter outruns the month packs, which load the month in force and the month ahead only. | The floor already in use is drawn until the next lands, which is a visible step at mid month and no stall; Step E watches it. If it stalls, Date playback on a CPU adapter caps at 1 month/s. |
 | The preview shows an excursion and someone takes it for the wallpaper's time. | The Preview state in the pill and the clock block, its hover text naming the time the wallpaper keeps, and the sidebar group showing the setting. |
 | Something drawn with `transform-rotation` slips in and does not turn on the software renderer. | Decision 2 forbids it, and Step E checks in the Windows guest. |
@@ -260,7 +266,12 @@ None yet.
 
 ## Open items
 
-None. The user settled the questions of the first draft on 2026-10-18: the drags on the globe stay as they are, the bar has no year stepper, the sidebar keeps its Date / Time group (decision 8), playback never reaches the wallpaper and pauses when the window closes (decision 6), and the bar's edits are the time setting (decisions 5 and 7).
+The user settled the questions of the first draft on 2026-10-18: the drags on the globe stay as they are, the bar has no year stepper, the sidebar keeps its Date / Time group (decision 8), playback never reaches the wallpaper and pauses when the window closes (decision 6), and the bar's edits are the time setting (decisions 5 and 7).
+
+Two proposals from the rebase onto the Sun-fixed camera, to confirm:
+
+1. The time track is drawn plain in the Sun-fixed mode (decision 7), since its shading would be one color all day.
+2. A mode switch or a preset during an excursion converts at the time setting's instant, not at the instant the preview shows (decision 6), so the wallpaper gets the view the click asked for and the preview may not.
 
 ## Validation Record
 

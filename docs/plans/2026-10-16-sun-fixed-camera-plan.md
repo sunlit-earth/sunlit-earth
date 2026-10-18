@@ -265,3 +265,7 @@ Validator round 1 on e1fe60c..27631bb found one major and two minors.
 - Minor: `sun_fixed.rs` left the shared plain engine at live time and zoom 0. Fixed in bb47824: the case puts `test_params()` back before it ends.
 - Minor: `docs/architecture.md` said `sun_fixed` and `solar_time` are not shader parameters, which reads as an exception to the rule that keeps such settings out of `SceneParams`. Reworded in 83c50c7 to say they change the uniforms through the camera they decide.
 - Open: `Harness::settle` itself still cannot promise a tick between its two replies under heavy load, and every mock-clock case that settles and then moves the clock has the exposure d63252c closed for one case. A fix that holds everywhere needs a command the engine answers at the end of a tick rather than in its drain, a change to the engine's protocol that this round did not make.
+
+### Round 2
+
+Validator round 2 on 27631bb..99107d2 verified the three fixes and found nothing new: no majors, no minors. It found production code unchanged in the round, traced each race fix to its cause in the engine, and reproduced the order-dependent pair `memory::a_switch_down_leaves_no_tile_array_behind` then `textures::a_switch_to_the_current_resolution_does_nothing`: 3 failures in 3 at 27631bb, 4 passes in 4 at 99107d2. The full `cargo test` gate passed and two more engine runs passed 125 of 125, at 210.3 and 207.8 s. The load-dependent race in the tile wait case was not reproduced, since no artificial load was allowed this round, and the open item above stands.

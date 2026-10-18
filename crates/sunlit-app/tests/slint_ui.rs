@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use slint::ComponentHandle;
+use sunlit_core::color::Rgb8;
 use sunlit_core::config::AppConfig;
 use sunlit_core::params::SceneParams;
 use sunlit_earth::ui_callbacks;
@@ -60,6 +61,7 @@ fn create_window() -> MainWindow {
     window
         .window()
         .set_size(slint::PhysicalSize::new(1200, 5000));
+    ui_callbacks::register_color_text(&window);
     let config = AppConfig::default();
     ui_callbacks::apply_config_to_window(&window, &config);
     ui_callbacks::set_combobox_indices(
@@ -287,12 +289,68 @@ fn is_fixed(row: &ElementHandle) -> bool {
     row.id().is_some_and(|id| FIXED_ROWS.contains(&id.as_str()))
 }
 
+/// Every row of the Advanced section, the sliders' and the colors', in tree
+/// order.
+fn all_rows(window: &MainWindow) -> Vec<ElementHandle> {
+    ElementQuery::from_root(window)
+        .match_predicate(|element| part_of(element) == Some(Part::Row))
+        .find_all()
+}
+
 /// Every row of the Advanced section that offers a reset once it moves.
 fn resettable_rows(window: &MainWindow) -> Vec<ElementHandle> {
-    all_of(window, "SettingRow")
+    all_rows(window)
         .into_iter()
         .filter(|row| !is_fixed(row))
         .collect()
+}
+
+/// Whether a row is a color's rather than a slider's.
+fn is_color_row(row: &ElementHandle) -> bool {
+    row.type_name()
+        .into_iter()
+        .chain(row.bases().into_iter().flatten())
+        .any(|name| name == "SettingColor")
+}
+
+/// The swatch inside one `SettingColor`, which opens its picker and carries
+/// its color as its accessible value.
+fn swatch_of(row: &ElementHandle) -> ElementHandle {
+    row.query_descendants()
+        .match_accessible_role(AccessibleRole::Button)
+        .match_predicate(|element| !is_reset_button(element))
+        .find_first()
+        .expect("a SettingColor holds a swatch")
+}
+
+/// The color a swatch reports.
+fn swatch_color(swatch: &ElementHandle) -> Rgb8 {
+    swatch
+        .accessible_value()
+        .and_then(|value| Rgb8::parse_hex(&value))
+        .expect("a swatch reports its color as hex")
+}
+
+/// Move a color row the way a screen reader does, through the swatch's
+/// accessible value, to a color far from the one it holds.
+fn move_color_off_its_value(swatch: &ElementHandle) {
+    let before = swatch_color(swatch);
+    let target = Rgb8::new(255 - before.r, 255 - before.g, before.b.wrapping_add(128));
+    swatch.set_accessible_value(target.to_hex());
+    assert_eq!(
+        swatch_color(swatch),
+        target,
+        "the swatch did not take {target}"
+    );
+}
+
+/// Move one row of either kind off its value.
+fn move_row_off_its_value(row: &ElementHandle) {
+    if is_color_row(row) {
+        move_color_off_its_value(&swatch_of(row));
+    } else {
+        move_off_its_value(&slider_of(row));
+    }
 }
 
 /// The slider inside one `SettingRow`.
@@ -336,12 +394,12 @@ fn move_off_its_value(slider: &ElementHandle) {
     );
 }
 
-/// Every slider of the Advanced section that offers a reset moved off its
-/// default.
-fn move_every_slider(window: &MainWindow) -> usize {
+/// Every row of the Advanced section that offers a reset moved off its
+/// default, a slider's or a color's.
+fn move_every_row(window: &MainWindow) -> usize {
     let rows = resettable_rows(window);
     for row in &rows {
-        move_off_its_value(&slider_of(row));
+        move_row_off_its_value(row);
     }
     rows.len()
 }
@@ -370,7 +428,7 @@ fn test_the_defaults_offer_no_reset() {
     window.set_advanced_open(true);
     materialize(&window);
     assert!(
-        !all_of(&window, "SettingRow").is_empty(),
+        !all_rows(&window).is_empty(),
         "the Advanced section is open"
     );
     assert_eq!(resets_offered(&window), Vec::<String>::new());
@@ -413,7 +471,7 @@ fn test_moving_one_slider_offers_three_resets() {
 fn test_every_row_reset_returns_its_default() {
     let window = create_window();
     window.set_advanced_open(true);
-    let moved = move_every_slider(&window);
+    let moved = move_every_row(&window);
     assert!(moved > 0, "the Advanced section has sliders");
     assert_ne!(
         ui_callbacks::read_params_from_window(&window, &AA_COUNTS),
@@ -447,7 +505,7 @@ fn test_every_row_reset_returns_its_default() {
 fn test_every_heading_and_group_reset_clears_what_it_covers() {
     let window = create_window();
     window.set_advanced_open(true);
-    move_every_slider(&window);
+    move_every_row(&window);
 
     for heading in all_of(&window, "SettingHeading") {
         let reset = heading
@@ -458,7 +516,7 @@ fn test_every_heading_and_group_reset_clears_what_it_covers() {
         press(&window, &reset);
     }
 
-    move_every_slider(&window);
+    move_every_row(&window);
     for group in all_of(&window, "SettingGroup") {
         let has_sliders = group
             .query_descendants()
@@ -510,6 +568,7 @@ fn part_of(element: &ElementHandle) -> Option<Part> {
         ("SettingGroup", Part::Group),
         ("SettingHeading", Part::Heading),
         ("SettingRow", Part::Row),
+        ("SettingColor", Part::Row),
     ]
     .into_iter()
     .find(|(name, _)| names.iter().any(|candidate| candidate == name))
@@ -592,7 +651,7 @@ fn test_each_heading_and_group_reset_changes_exactly_what_it_covers() {
     for nth in 0..targets {
         let window = create_window();
         window.set_advanced_open(true);
-        move_every_slider(&window);
+        move_every_row(&window);
         let parts = panel_parts(&window);
         let (target, (kind, element)) = parts
             .iter()
@@ -712,13 +771,13 @@ fn test_date_time_offers_a_reset_while_overridden() {
 fn test_every_reset_says_what_it_does() {
     let window = create_window();
     window.set_advanced_open(true);
-    move_every_slider(&window);
+    move_every_row(&window);
     let resets = ElementQuery::from_root(&window)
         .match_predicate(is_reset_button)
         .find_all();
     assert!(!resets.is_empty(), "the moved sliders offer resets");
 
-    let rows: Vec<String> = all_of(&window, "SettingRow")
+    let rows: Vec<String> = all_rows(&window)
         .iter()
         .filter_map(|row| {
             row.query_descendants()
@@ -781,6 +840,254 @@ fn test_a_reset_pushes_the_scene() {
         let before = pushes.get();
         press(&window, &the_button(&window, label));
         assert_eq!(pushes.get() - before, 1, "'{label}' pushed the scene once");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The ocean colors
+// ---------------------------------------------------------------------------
+
+/// The two color rows, the day's and the night's.
+fn ocean_rows(window: &MainWindow) -> [ElementHandle; 2] {
+    [
+        "MainWindow::day-ocean-color",
+        "MainWindow::night-ocean-color",
+    ]
+    .map(|id| {
+        let found: Vec<_> = ElementHandle::find_by_element_id(window, id).collect();
+        assert_eq!(found.len(), 1, "expected one {id}");
+        found.into_iter().next().expect("one row")
+    })
+}
+
+/// The window's two ocean colors, as the scene reads them.
+fn ocean_colors(window: &MainWindow) -> [Rgb8; 2] {
+    let params = ui_callbacks::read_params_from_window(window, &AA_COUNTS);
+    [params.day_ocean_color, params.night_ocean_color]
+}
+
+/// The one element of an open picker that carries this accessible label.
+fn in_the_picker(window: &MainWindow, label: &'static str) -> Option<ElementHandle> {
+    ElementQuery::from_root(window)
+        .match_predicate(move |element| {
+            element
+                .accessible_label()
+                .is_some_and(|found| found == label)
+        })
+        .find_first()
+}
+
+/// Where a point of an open picker is in the window, from where the testing
+/// backend places it: inside a popup it reports a position from the popup's
+/// own origin, which `SettingColor` puts 2 px under the swatch of `row`.
+fn picker_in_window(row: &ElementHandle, inside: slint::LogicalPosition) -> slint::LogicalPosition {
+    let swatch = swatch_of(row);
+    let at = swatch.absolute_position();
+    slint::LogicalPosition::new(
+        at.x + inside.x,
+        at.y + swatch.size().height + 2.0 + inside.y,
+    )
+}
+
+/// The middle of an element of the picker `row` opened, in the window.
+fn middle_of(row: &ElementHandle, element: &ElementHandle) -> slint::LogicalPosition {
+    let at = element.absolute_position();
+    let size = element.size();
+    picker_in_window(
+        row,
+        slint::LogicalPosition::new(at.x + size.width / 2.0, at.y + size.height / 2.0),
+    )
+}
+
+/// Press and release the left button at `position`.
+fn press_at(window: &MainWindow, position: slint::LogicalPosition) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let window = window.window();
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: PointerEventButton::Left,
+    });
+}
+
+/// Open a color row's picker the way a click on its swatch does.
+fn open_picker(window: &MainWindow, row: &ElementHandle) {
+    swatch_of(row).invoke_accessible_default_action();
+    assert!(
+        in_the_picker(window, "Hue").is_some(),
+        "the picker did not open"
+    );
+}
+
+/// A click well away from the panel, where no picker reaches.
+fn click_outside(window: &MainWindow) {
+    press_at(window, slint::LogicalPosition::new(1100.0, 4800.0));
+    assert!(
+        in_the_picker(window, "Hue").is_none(),
+        "a click outside the picker left it open"
+    );
+}
+
+/// The colors reach the window from `SceneParams` and come back exactly,
+/// every channel of each.
+#[test]
+fn test_the_ocean_colors_round_trip_through_scene_params() {
+    let window = create_window();
+    let params = SceneParams {
+        day_ocean_color: Rgb8::new(1, 254, 128),
+        night_ocean_color: Rgb8::new(255, 0, 7),
+        ..SceneParams::default()
+    };
+    ui_callbacks::apply_params_to_window(&window, &params);
+    assert_eq!(
+        ocean_colors(&window),
+        [params.day_ocean_color, params.night_ocean_color]
+    );
+    assert_eq!(
+        ui_callbacks::read_params_from_window(&window, &AA_COUNTS),
+        params
+    );
+}
+
+/// Each color row stands first under its heading in Color Correction.
+#[test]
+fn test_the_ocean_rows_lead_the_day_and_night_texture_headings() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    let parts = panel_parts(&window);
+    for (heading, row) in ["Day Texture", "Night Texture"]
+        .into_iter()
+        .zip(ocean_rows(&window))
+    {
+        let at = parts
+            .iter()
+            .position(|(part, element)| {
+                *part == Part::Heading
+                    && element
+                        .query_descendants()
+                        .match_type_name("Text")
+                        .find_first()
+                        .and_then(|text| text.accessible_label())
+                        .is_some_and(|label| label == heading)
+            })
+            .unwrap_or_else(|| panic!("no '{heading}' heading"));
+        let next = &parts[at + 1].1;
+        assert_eq!(next.id(), row.id(), "the row after '{heading}'");
+    }
+}
+
+/// Opening a picker and closing it with a click outside changes neither
+/// color and pushes nothing to the engine: the picker writes the color from
+/// its handlers alone.
+#[test]
+fn test_opening_and_closing_the_picker_changes_no_color() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    let pushes = Rc::new(std::cell::Cell::new(0));
+    let counter = Rc::clone(&pushes);
+    window.on_sliders_changed(move || counter.set(counter.get() + 1));
+    let before = ocean_colors(&window);
+    for row in ocean_rows(&window) {
+        open_picker(&window, &row);
+        click_outside(&window);
+    }
+    assert_eq!(ocean_colors(&window), before);
+    assert_eq!(pushes.get(), 0, "an untouched picker pushed the scene");
+}
+
+/// The picker's hex field sets the color on Enter, with or without the hash,
+/// and leaves it where the text is not a color.
+#[test]
+fn test_a_hex_entered_in_the_picker_sets_the_color() {
+    use slint::platform::{Key, WindowEvent};
+    let window = create_window();
+    window.set_advanced_open(true);
+    let [day, _] = ocean_rows(&window);
+    open_picker(&window, &day);
+    let field = ElementQuery::from_root(&window)
+        .match_accessible_role(AccessibleRole::TextInput)
+        .match_predicate(|element| {
+            element
+                .accessible_label()
+                .is_some_and(|label| label == "Hex")
+        })
+        .find_first()
+        .expect("the picker has a hex field");
+    press_at(&window, middle_of(&day, &field));
+    let enter = |text: &str| {
+        field.set_accessible_value(text);
+        window.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Return.into(),
+        });
+        window.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Return.into(),
+        });
+    };
+
+    enter("#123456");
+    assert_eq!(ocean_colors(&window)[0], Rgb8::new(0x12, 0x34, 0x56));
+    enter("A0B0C0");
+    assert_eq!(ocean_colors(&window)[0], Rgb8::new(0xa0, 0xb0, 0xc0));
+    for invalid in ["#12345g", "#1234", "blue", ""] {
+        enter(invalid);
+        assert_eq!(
+            ocean_colors(&window)[0],
+            Rgb8::new(0xa0, 0xb0, 0xc0),
+            "'{invalid}' moved the color"
+        );
+    }
+    assert_eq!(
+        ocean_colors(&window)[1],
+        window_defaults_night(&window),
+        "the night's color moved with the day's"
+    );
+}
+
+/// The night's default as the window's resets hold it.
+fn window_defaults_night(window: &MainWindow) -> Rgb8 {
+    ui_callbacks::rgb8(window.get_defaults().color_correction.night.ocean)
+}
+
+/// The hue strip sets the hue through its accessible value, and a press in
+/// the square sets the color of that place: saturation across, and value
+/// down the square root axis.
+#[test]
+fn test_the_hue_strip_and_a_press_in_the_square_set_that_color() {
+    let window = create_window();
+    window.set_advanced_open(true);
+    let [_, night] = ocean_rows(&window);
+    open_picker(&window, &night);
+    let hue = in_the_picker(&window, "Hue").expect("the picker has a hue strip");
+    hue.set_accessible_value("120");
+    approx::assert_relative_eq!(accessible_number(&hue), 120.0);
+
+    let squares: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "ColorPicker::square").collect();
+    assert_eq!(squares.len(), 1, "one open picker, one square");
+    let at = squares[0].absolute_position();
+    let size = squares[0].size();
+    for (across, down) in [(0.25_f32, 0.25_f32), (0.75, 0.5), (0.5, 0.875)] {
+        let position = picker_in_window(
+            &night,
+            slint::LogicalPosition::new(at.x + size.width * across, at.y + size.height * down),
+        );
+        press_at(&window, position);
+        let saturation = across;
+        let up = 1.0 - down;
+        let expected = ui_callbacks::rgb8(slint::Color::from_hsva(120.0, saturation, up * up, 1.0));
+        let drawn = ocean_colors(&window)[1];
+        assert!(
+            drawn
+                .channels()
+                .iter()
+                .zip(expected.channels())
+                .all(|(&d, e)| d.abs_diff(e) <= 1),
+            "a press at ({across}, {down}) set {drawn}, the square's color there is {expected}"
+        );
     }
 }
 

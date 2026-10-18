@@ -2110,11 +2110,11 @@ fn ocean_shift(chosen: [u8; 3], fill: [u8; 3]) -> [f32; 3] {
 }
 
 /// `uniforms` with both ocean colors moved to the chosen ones.
-fn recolored(uniforms: Uniforms) -> Uniforms {
+fn recolored(uniforms: &Uniforms) -> Uniforms {
     Uniforms {
         day_ocean_shift: ocean_shift(CHOSEN_DAY, DAY_FILL),
         night_ocean_shift: ocean_shift(CHOSEN_NIGHT, rgb(NIGHT_FILL)),
-        ..uniforms
+        ..*uniforms
     }
 }
 
@@ -2220,7 +2220,7 @@ fn a_zero_shift_draws_the_same_pixels_over_any_mask() {
                 "flags {flags}, texel {texel:?}"
             );
         }
-        let moved = recolored(still);
+        let moved = recolored(&still);
         assert_ne!(
             surface_frame(&ctx, &moved, DAY_FILL, DAY_FILL, Some(255), size),
             surface_frame(&ctx, &moved, DAY_FILL, DAY_FILL, None, size),
@@ -2249,7 +2249,7 @@ fn open_water_takes_the_chosen_color_in_day_and_night_mode() {
             flags,
             day_ocean: u32::from_le_bytes([DAY_FILL[0], DAY_FILL[1], DAY_FILL[2], 255]),
             night_ocean: u32::from_le_bytes(NIGHT_FILL),
-            ..recolored(looking_along(size, glam::Vec3::Z))
+            ..recolored(&looking_along(size, glam::Vec3::Z))
         };
         let floor = surface_frame(&ctx, &uniforms, fill, fill, Some(255), size);
         assert_all_close(
@@ -2282,13 +2282,22 @@ fn a_coast_texel_moves_by_its_share_of_water() {
     let ctx = render_ctx();
     let size = 96;
     let land = [180_u8, 140, 90];
-    let half = |a: [u8; 3], b: [u8; 3]| -> [u8; 3] {
-        std::array::from_fn(|c| u8::try_from((u16::from(a[c]) + u16::from(b[c])) / 2).expect("a mean"))
-    };
-    let uniforms = recolored(looking_along(size, glam::Vec3::Z));
-    let frame = surface_frame(&ctx, &uniforms, half(land, DAY_FILL), DAY_FILL, Some(128), size);
+    let half = |a: [u8; 3], b: [u8; 3]| -> [u8; 3] { std::array::from_fn(|c| a[c].midpoint(b[c])) };
+    let uniforms = recolored(&looking_along(size, glam::Vec3::Z));
+    let frame = surface_frame(
+        &ctx,
+        &uniforms,
+        half(land, DAY_FILL),
+        DAY_FILL,
+        Some(128),
+        size,
+    );
     let seen = pixels_at_latitudes(&frame, &uniforms, size, equatorward_of_the_gate);
-    assert_all_close(&seen, half(land, CHOSEN_DAY), "a coast texel half over water");
+    assert_all_close(
+        &seen,
+        half(land, CHOSEN_DAY),
+        "a coast texel half over water",
+    );
 }
 
 /// Sea ice composited over open water keeps its color at a chosen color far
@@ -2310,15 +2319,18 @@ fn sea_ice_keeps_its_color_at_any_ocean_color() {
     for ice in [[240, 243, 247], [80, 80, 80]] {
         for (mode, still) in [("day", day_mode), ("blend lit", lit), ("blend night", dark)] {
             let poleward = |uniforms: &Uniforms| {
-                let frame =
-                    surface_frame(&ctx, uniforms, ice, rgb(NIGHT_FILL), Some(255), size);
+                let frame = surface_frame(&ctx, uniforms, ice, rgb(NIGHT_FILL), Some(255), size);
                 pixels_at_latitudes(&frame, uniforms, size, poleward_of_the_gate)
             };
             let before = poleward(&still);
-            assert!(before.len() > 1_000, "{} pixels poleward of 36", before.len());
+            assert!(
+                before.len() > 1_000,
+                "{} pixels poleward of 36",
+                before.len()
+            );
             assert_eq!(
                 before,
-                poleward(&recolored(still)),
+                poleward(&recolored(&still)),
                 "ice {ice:?} in {mode} moved with the ocean colors"
             );
         }
@@ -2330,7 +2342,7 @@ fn sea_ice_keeps_its_color_at_any_ocean_color() {
         let frame = surface_frame(&ctx, uniforms, coast, rgb(NIGHT_FILL), Some(128), size);
         pixels_at_latitudes(&frame, uniforms, size, equatorward_of_the_gate)
     };
-    let (before, after) = (equatorward(&equator), equatorward(&recolored(equator)));
+    let (before, after) = (equatorward(&equator), equatorward(&recolored(&equator)));
     let moved = before
         .iter()
         .zip(&after)
@@ -2411,7 +2423,12 @@ fn the_glint_and_the_fresnel_shift_act_on_recolored_water_as_on_the_fill() {
     let (fill_matte, fill_glint) = (lit(&matte), lit(&glint));
     let (moved_matte, moved_glint) = (lit(&toward(matte)), lit(&toward(glint)));
     let mut glinting = 0;
-    for (((fm, fg), mm), mg) in fill_matte.iter().zip(&fill_glint).zip(&moved_matte).zip(&moved_glint) {
+    for (((fm, fg), mm), mg) in fill_matte
+        .iter()
+        .zip(&fill_glint)
+        .zip(&moved_matte)
+        .zip(&moved_glint)
+    {
         if fg.iter().chain(mg).any(|&c| c == u8::MAX) {
             continue;
         }
@@ -2433,9 +2450,15 @@ fn the_glint_and_the_fresnel_shift_act_on_recolored_water_as_on_the_fill() {
         (f64::from(shifted[c]) - f64::from(base[c])) / (sky[c] - f64::from(base[c]))
     };
     let mut mixed = 0;
-    for (((fm, fs), mm), ms) in fill_matte.iter().zip(&fill_shifted).zip(&moved_matte).zip(&moved_shifted) {
+    for (((fm, fs), mm), ms) in fill_matte
+        .iter()
+        .zip(&fill_shifted)
+        .zip(&moved_matte)
+        .zip(&moved_shifted)
+    {
         for c in 0..3 {
-            if (sky[c] - f64::from(fm[c])).abs() < 60.0 || (sky[c] - f64::from(mm[c])).abs() < 60.0 {
+            if (sky[c] - f64::from(fm[c])).abs() < 60.0 || (sky[c] - f64::from(mm[c])).abs() < 60.0
+            {
                 continue;
             }
             let (w_fill, w_moved) = (weight(*fm, *fs, c), weight(*mm, *ms, c));
@@ -2446,7 +2469,10 @@ fn the_glint_and_the_fresnel_shift_act_on_recolored_water_as_on_the_fill() {
             mixed += usize::from(w_fill > 0.1);
         }
     }
-    assert!(mixed > 100, "only {mixed} channels are mixed toward the sky");
+    assert!(
+        mixed > 100,
+        "only {mixed} channels are mixed toward the sky"
+    );
 }
 
 #[test]

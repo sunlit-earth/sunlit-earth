@@ -634,6 +634,43 @@ fn the_real_day_packs_store_the_sea_ice_and_flag_the_open_water() {
     }
 }
 
+/// Every shipped day pack's ocean color is the day's default ocean color and
+/// the night pack's the night's, which is what draws the shipped surface as
+/// the textures have it at the defaults. A rebake that moves a fill fails
+/// here, and the step that follows it is `change_default` in
+/// `config/migrate.rs` for the users who kept the old default.
+#[test]
+fn the_real_packs_carry_the_default_ocean_colors() {
+    let _gpu = gpu();
+    let (_, cache) = match &*REAL_PACKS {
+        Ok(found) => found.clone(),
+        Err(why) => {
+            println!("skipped: {why}; `git lfs pull` fetches the assets");
+            return;
+        }
+    };
+    let defaults = sunlit_core::config::AppConfig::default();
+    let ocean = |kind: PackKind| {
+        let pack = tiles::Pack::open(&tiles::pack_path(&cache, kind)).expect("a built pack");
+        pack.ocean()
+    };
+    for month in 0..12 {
+        let [r, g, b, alpha] = ocean(PackKind::Day(month));
+        assert_eq!(
+            (sunlit_core::color::Rgb8::new(r, g, b), alpha),
+            (defaults.day_ocean_color, u8::MAX),
+            "month {}'s day pack",
+            month + 1
+        );
+    }
+    let [r, g, b, alpha] = ocean(PackKind::Night);
+    assert_eq!(
+        (sunlit_core::color::Rgb8::new(r, g, b), alpha),
+        (defaults.night_ocean_color, u8::MAX),
+        "the night pack"
+    );
+}
+
 /// Going down a resolution has to give the memory back, which is the whole
 /// point of the setting: on the real faces, at the widest setting, the tile
 /// array holds the layers a 4K export at the zoom of the CPU adapter's peak

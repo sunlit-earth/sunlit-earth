@@ -676,7 +676,10 @@ mod tests {
     fn a_frame_measures_its_ocean_colors_from_the_floors_it_draws() {
         let (day, night) = (Some([10, 30, 60, 255]), Some([5, 5, 15, 255]));
         assert_eq!(drawn_fills(None, day, night), [None, None]);
-        assert_eq!(drawn_fills(Some(SurfaceGroup::Day), day, night), [day, None]);
+        assert_eq!(
+            drawn_fills(Some(SurfaceGroup::Day), day, night),
+            [day, None]
+        );
         assert_eq!(
             drawn_fills(Some(SurfaceGroup::Night), day, night),
             [None, night]

@@ -105,7 +105,14 @@ mod tests {
     #[test]
     fn hex_reads_with_or_without_the_hash_in_either_case() {
         let expected = Some(Rgb8::new(0xab, 0xcd, 0xef));
-        for text in ["#abcdef", "abcdef", "#ABCDEF", "ABCDEF", "#AbCdEf", "  #abcdef\n"] {
+        for text in [
+            "#abcdef",
+            "abcdef",
+            "#ABCDEF",
+            "ABCDEF",
+            "#AbCdEf",
+            "  #abcdef\n",
+        ] {
             assert_eq!(Rgb8::parse_hex(text), expected, "{text:?}");
         }
     }
@@ -131,7 +138,10 @@ mod tests {
         };
         let text = toml::to_string(&holder).expect("serialize");
         assert_eq!(text.trim(), "color = \"#05050f\"");
-        assert_eq!(toml::from_str::<Holder>(&text).expect("deserialize"), holder);
+        assert_eq!(
+            toml::from_str::<Holder>(&text).expect("deserialize"),
+            holder
+        );
         assert!(toml::from_str::<Holder>("color = \"#05050\"").is_err());
         assert!(toml::from_str::<Holder>("color = 5").is_err());
     }

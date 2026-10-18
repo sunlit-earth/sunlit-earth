@@ -925,12 +925,22 @@ mod tests {
         assert!(text.contains("night_ocean_color = \"#000001\""), "{text}");
         assert_eq!(load_config_from(&path), config);
 
-        fs::write(&path, "[sunlit.earth]
+        fs::write(
+            &path,
+            "[sunlit.earth]
 longitude = 12.0
-").unwrap();
+",
+        )
+        .unwrap();
         let without = load_config_from(&path);
-        assert_eq!(without.day_ocean_color, AppConfig::default().day_ocean_color);
-        assert_eq!(without.night_ocean_color, AppConfig::default().night_ocean_color);
+        assert_eq!(
+            without.day_ocean_color,
+            AppConfig::default().day_ocean_color
+        );
+        assert_eq!(
+            without.night_ocean_color,
+            AppConfig::default().night_ocean_color
+        );
     }
 
     /// A color that is not `#rrggbb` fails the file as a value of the wrong
@@ -942,18 +952,24 @@ longitude = 12.0
         for bad in ["\"#0a1e3\"", "\"blue\"", "12", "\"#0a1e3cff\""] {
             fs::write(
                 &path,
-                format!("[sunlit.earth]
+                format!(
+                    "[sunlit.earth]
 longitude = 12.0
 day_ocean_color = {bad}
-"),
+"
+                ),
             )
             .unwrap();
             assert_eq!(load_config_from(&path), AppConfig::default(), "{bad}");
         }
-        fs::write(&path, "[sunlit.earth]
+        fs::write(
+            &path,
+            "[sunlit.earth]
 longitude = 12.0
 day_gamma = \"x\"
-").unwrap();
+",
+        )
+        .unwrap();
         assert_eq!(load_config_from(&path), AppConfig::default());
         fs::write(
             &path,

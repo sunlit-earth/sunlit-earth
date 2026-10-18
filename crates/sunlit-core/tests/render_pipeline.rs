@@ -788,6 +788,10 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         cloud_haze_latitude: 60.0,
         cloud_haze_band: 20.0,
         _pad11: 0.0,
+        day_ocean_shift: [0.0; 3],
+        _pad12: 0.0,
+        night_ocean_shift: [0.0; 3],
+        _pad13: 0.0,
     }
 }
 
@@ -998,6 +1002,13 @@ fn uniform_readback() {
     output[82] = uniforms.cloud_haze_pole;
     output[83] = uniforms.cloud_haze_latitude;
     output[84] = uniforms.cloud_haze_band;
+    // the ocean colors
+    output[85] = uniforms.day_ocean_shift.r;
+    output[86] = uniforms.day_ocean_shift.g;
+    output[87] = uniforms.day_ocean_shift.b;
+    output[88] = uniforms.night_ocean_shift.r;
+    output[89] = uniforms.night_ocean_shift.g;
+    output[90] = uniforms.night_ocean_shift.b;
 }
 ";
 
@@ -1006,7 +1017,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 85] = [
+const PROBED_FIELDS: [(f32, &str); 91] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -1092,6 +1103,12 @@ const PROBED_FIELDS: [(f32, &str); 85] = [
     (0.2, "cloud_haze_pole"),
     (47.0, "cloud_haze_latitude"),
     (33.0, "cloud_haze_band"),
+    (0.25, "day_ocean_shift.r"),
+    (-0.5, "day_ocean_shift.g"),
+    (0.125, "day_ocean_shift.b"),
+    (-0.75, "night_ocean_shift.r"),
+    (0.375, "night_ocean_shift.g"),
+    (1.0, "night_ocean_shift.b"),
 ];
 
 #[allow(clippy::too_many_lines)]
@@ -1209,6 +1226,10 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         cloud_haze_latitude: 47.0,
         cloud_haze_band: 33.0,
         _pad11: 0.0,
+        day_ocean_shift: [0.25, -0.5, 0.125],
+        _pad12: 0.0,
+        night_ocean_shift: [-0.75, 0.375, 1.0],
+        _pad13: 0.0,
     };
 
     let uniform_buf = ctx
@@ -1939,8 +1960,23 @@ fn night_color(
     night: [u8; 4],
     keep: impl Fn(f64) -> bool,
 ) -> [u8; 3] {
+    night_color_shifted(ctx, latitude, day, night, keep, [0.0; 3])
+}
+
+/// [`night_color`] with the night's ocean color moved by `shift`.
+fn night_color_shifted(
+    ctx: &RenderContext,
+    latitude: f32,
+    day: [u8; 4],
+    night: [u8; 4],
+    keep: impl Fn(f64) -> bool,
+    shift: [f32; 3],
+) -> [u8; 3] {
     let size = 128;
-    let uniforms = night_side_at(latitude, size);
+    let uniforms = Uniforms {
+        night_ocean_shift: shift,
+        ..night_side_at(latitude, size)
+    };
     let frame = render_frame(ctx, &uniforms, day, night, size, size);
     let seen = night_pixels(&frame, &uniforms, size, keep);
     assert!(seen.len() > 1_000, "{} night pixels", seen.len());
@@ -2055,6 +2091,362 @@ fn the_nights_lights_keep_their_color_over_sea_ice() {
             "lights of {lights:?} over ice {day:?} draw {drawn:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The ocean colors
+// ---------------------------------------------------------------------------
+
+/// The day's open water, the fill the shipped packs flatten it to.
+const DAY_FILL: [u8; 3] = [10, 30, 60];
+
+/// A day color and a night color far from both fills.
+const CHOSEN_DAY: [u8; 3] = [200, 40, 120];
+const CHOSEN_NIGHT: [u8; 3] = [40, 90, 30];
+
+/// What `write_uniforms` hands the shader to move `fill` to `chosen`.
+fn ocean_shift(chosen: [u8; 3], fill: [u8; 3]) -> [f32; 3] {
+    std::array::from_fn(|c| (f32::from(chosen[c]) - f32::from(fill[c])) / 255.0)
+}
+
+/// `uniforms` with both ocean colors moved to the chosen ones.
+fn recolored(uniforms: Uniforms) -> Uniforms {
+    Uniforms {
+        day_ocean_shift: ocean_shift(CHOSEN_DAY, DAY_FILL),
+        night_ocean_shift: ocean_shift(CHOSEN_NIGHT, rgb(NIGHT_FILL)),
+        ..uniforms
+    }
+}
+
+/// A frame of the globe drawn from cubes of one color each, `surface` at
+/// binding 4 and `night` at 5, over a mask that reads `water` of 255
+/// everywhere, or over the dummy where `water` is `None`.
+fn surface_frame(
+    ctx: &RenderContext,
+    uniforms: &Uniforms,
+    surface: [u8; 3],
+    night: [u8; 3],
+    water: Option<u8>,
+    size: u32,
+) -> Vec<u8> {
+    let solid = |color: [u8; 3]| {
+        create_solid_cube(
+            &ctx.device,
+            &ctx.queue,
+            [[color[0], color[1], color[2], 255]; 6],
+        )
+    };
+    let (surface, night) = (solid(surface), solid(night));
+    let mask = water.map(|water| solid([water, 0, 0]));
+    render_cube_frame(
+        ctx,
+        uniforms,
+        [&surface, &night, mask.as_ref().unwrap_or(&ctx.dummy_cube)],
+        size,
+        size,
+    )
+}
+
+/// The RGB of the pixels of a square frame drawn with `uniforms` whose surface
+/// faces the camera, away from the limb's partly covered pixels.
+fn facing_pixels(frame: &[u8], uniforms: &Uniforms, size: u32) -> Vec<[u8; 3]> {
+    let eye = glam::Vec3::from(uniforms.eye_pos).as_dvec3().normalize();
+    pixels_where(frame, uniforms, size, |n| n.dot(eye) > 0.5)
+}
+
+/// Hold every pixel to `expected` within a level, over enough of them.
+fn assert_all_close(seen: &[[u8; 3]], expected: [u8; 3], what: &str) {
+    assert!(seen.len() > 500, "{what}: {} pixels", seen.len());
+    let off = seen.iter().filter(|&&p| !close(p, expected, 1)).count();
+    assert_eq!(
+        off,
+        0,
+        "{what}: {off} of {} pixels are off {expected:?}, such as {:?}",
+        seen.len(),
+        seen.iter().find(|&&p| !close(p, expected, 1))
+    );
+}
+
+/// A page table of one cell a face, every cell constant ocean in both halves.
+fn ocean_page_table(ctx: &RenderContext) -> wgpu::TextureView {
+    const OCEAN: u32 = 1 << 14;
+    let entry = OCEAN | (OCEAN << 16);
+    let data: Vec<u8> = std::iter::repeat_n(entry.to_le_bytes(), 6)
+        .flatten()
+        .collect();
+    ctx.device
+        .create_texture_with_data(
+            &ctx.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("ocean_page_table"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 6,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &data,
+        )
+        .create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        })
+}
+
+/// At a zero shift the mask reaches no pixel: Day and Night mode draw over a
+/// mask of all water exactly what they draw over the dummy, which is what lets
+/// a default render be byte for byte the one before the mask was bound. With
+/// a shift the mask does reach the frame, so the equality is the shift's.
+#[test]
+fn a_zero_shift_draws_the_same_pixels_over_any_mask() {
+    let ctx = render_ctx();
+    let size = 96;
+    for flags in [0, FLAG_NIGHT_ALONE] {
+        let still = Uniforms {
+            flags,
+            ..looking_along(size, glam::Vec3::Z)
+        };
+        for texel in [DAY_FILL, rgb(NIGHT_FILL), [120, 90, 40]] {
+            assert_eq!(
+                surface_frame(&ctx, &still, texel, texel, Some(255), size),
+                surface_frame(&ctx, &still, texel, texel, None, size),
+                "flags {flags}, texel {texel:?}"
+            );
+        }
+        let moved = recolored(still);
+        assert_ne!(
+            surface_frame(&ctx, &moved, DAY_FILL, DAY_FILL, Some(255), size),
+            surface_frame(&ctx, &moved, DAY_FILL, DAY_FILL, None, size),
+            "flags {flags}: a shift over water moves nothing"
+        );
+    }
+}
+
+/// Open water takes the chosen color within a level at gamma 1 and
+/// saturation 1, in Day mode by the day's shift and in Night mode by the
+/// night's: a floor texel of the fill, and a cell of constant ocean, which
+/// draws the pack's color whatever the floor holds.
+#[test]
+fn open_water_takes_the_chosen_color_in_day_and_night_mode() {
+    let ctx = render_ctx();
+    let size = 96;
+    let ocean_pages = ocean_page_table(&ctx);
+    let flat = create_solid_texture(&ctx.device, &ctx.queue, [0, 0, 0, 255]);
+    let water = create_solid_cube(&ctx.device, &ctx.queue, [[255, 0, 0, 255]; 6]);
+    let elsewhere = create_solid_cube(&ctx.device, &ctx.queue, [[128, 128, 128, 255]; 6]);
+    for (flags, fill, chosen) in [
+        (0, DAY_FILL, CHOSEN_DAY),
+        (FLAG_NIGHT_ALONE, rgb(NIGHT_FILL), CHOSEN_NIGHT),
+    ] {
+        let uniforms = Uniforms {
+            flags,
+            day_ocean: u32::from_le_bytes([DAY_FILL[0], DAY_FILL[1], DAY_FILL[2], 255]),
+            night_ocean: u32::from_le_bytes(NIGHT_FILL),
+            ..recolored(looking_along(size, glam::Vec3::Z))
+        };
+        let floor = surface_frame(&ctx, &uniforms, fill, fill, Some(255), size);
+        assert_all_close(
+            &facing_pixels(&floor, &uniforms, size),
+            chosen,
+            &format!("a floor of the fill, flags {flags}"),
+        );
+
+        let group = bind_group_with(
+            &ctx,
+            &flat,
+            &ctx.surface_sampler,
+            [&elsewhere, &elsewhere, &water],
+            [&ctx.dummy_tiles[0], &ocean_pages],
+        );
+        let cells = render_with(&ctx, &uniforms, &group, size, size);
+        assert_all_close(
+            &facing_pixels(&cells, &uniforms, size),
+            chosen,
+            &format!("cells of constant ocean, flags {flags}"),
+        );
+    }
+}
+
+/// A coast texel half over water, half land and half the fill, ends at half
+/// land and half the chosen color: its land keeps its color, and only the
+/// water's share moves. Equatorward of the caps, where no bright texel is ice.
+#[test]
+fn a_coast_texel_moves_by_its_share_of_water() {
+    let ctx = render_ctx();
+    let size = 96;
+    let land = [180_u8, 140, 90];
+    let half = |a: [u8; 3], b: [u8; 3]| -> [u8; 3] {
+        std::array::from_fn(|c| u8::try_from((u16::from(a[c]) + u16::from(b[c])) / 2).expect("a mean"))
+    };
+    let uniforms = recolored(looking_along(size, glam::Vec3::Z));
+    let frame = surface_frame(&ctx, &uniforms, half(land, DAY_FILL), DAY_FILL, Some(128), size);
+    let seen = pixels_at_latitudes(&frame, &uniforms, size, equatorward_of_the_gate);
+    assert_all_close(&seen, half(land, CHOSEN_DAY), "a coast texel half over water");
+}
+
+/// Sea ice composited over open water keeps its color at a chosen color far
+/// from the fill, from the winter pack down to the darkest full ice, in Day
+/// mode and on both sides of blend mode, poleward of the caps' reach; a
+/// bright coast texel equatorward of them is a coast's land, and its water's
+/// share is moved.
+#[test]
+fn sea_ice_keeps_its_color_at_any_ocean_color() {
+    let ctx = render_ctx();
+    let size = 128;
+    let axis = {
+        let phi = 60.0_f32.to_radians();
+        glam::Vec3::new(0.0, phi.sin(), phi.cos())
+    };
+    let day_mode = looking_along(size, axis);
+    let (lit, _) = water_effects_at(60.0, size);
+    let dark = night_side_at(60.0, size);
+    for ice in [[240, 243, 247], [80, 80, 80]] {
+        for (mode, still) in [("day", day_mode), ("blend lit", lit), ("blend night", dark)] {
+            let poleward = |uniforms: &Uniforms| {
+                let frame =
+                    surface_frame(&ctx, uniforms, ice, rgb(NIGHT_FILL), Some(255), size);
+                pixels_at_latitudes(&frame, uniforms, size, poleward_of_the_gate)
+            };
+            let before = poleward(&still);
+            assert!(before.len() > 1_000, "{} pixels poleward of 36", before.len());
+            assert_eq!(
+                before,
+                poleward(&recolored(still)),
+                "ice {ice:?} in {mode} moved with the ocean colors"
+            );
+        }
+    }
+
+    let coast = [120, 140, 100];
+    let equator = looking_along(size, glam::Vec3::Z);
+    let equatorward = |uniforms: &Uniforms| {
+        let frame = surface_frame(&ctx, uniforms, coast, rgb(NIGHT_FILL), Some(128), size);
+        pixels_at_latitudes(&frame, uniforms, size, equatorward_of_the_gate)
+    };
+    let (before, after) = (equatorward(&equator), equatorward(&recolored(equator)));
+    let moved = before
+        .iter()
+        .zip(&after)
+        .filter(|(b, a)| a[0] >= b[0] + 90)
+        .count();
+    assert!(
+        moved == before.len() && !before.is_empty(),
+        "only {moved} of {} bright coast texels equatorward of 29 degrees took their \
+         water's share of the day's color",
+        before.len()
+    );
+}
+
+/// The night's sea ice keeps the color its day luminance gives it at a night
+/// color far from the fill, and lights at sea keep their excess over the
+/// fill: they are the chosen color plus what they had above the fill.
+#[test]
+fn the_nights_ice_and_lights_at_sea_keep_their_own_colors() {
+    let ctx = render_ctx();
+    let shift = ocean_shift(CHOSEN_NIGHT, rgb(NIGHT_FILL));
+    let poleward = poleward_of_the_gate;
+    let pack = [240, 243, 247, 128];
+    let still = night_color(&ctx, 60.0, pack, NIGHT_FILL, poleward);
+    let moved = night_color_shifted(&ctx, 60.0, pack, NIGHT_FILL, poleward, shift);
+    assert!(
+        close(moved, still, 1),
+        "the night's ice draws {moved:?} at a chosen night color, {still:?} at the fill"
+    );
+
+    let lights = [200_u8, 160, 100];
+    let drawn = night_color_shifted(
+        &ctx,
+        0.0,
+        [DAY_FILL[0], DAY_FILL[1], DAY_FILL[2], 128],
+        [lights[0], lights[1], lights[2], 255],
+        equatorward_of_the_gate,
+        shift,
+    );
+    let expected: [u8; 3] = std::array::from_fn(|c| lights[c] - NIGHT_FILL[c] + CHOSEN_NIGHT[c]);
+    assert!(
+        close(drawn, expected, 1),
+        "lights of {lights:?} at sea draw {drawn:?}, not their excess over the fill on \
+         the chosen color, {expected:?}"
+    );
+}
+
+/// The glint adds to recolored water what it adds to the fill, and the
+/// Fresnel shift mixes recolored water toward the sky by the weight it mixes
+/// the fill: the water term both read is the mask's and the day texel's, which
+/// the recolor does not touch. Held on the lit side of blend mode at the
+/// equator, with the Sun behind the camera.
+#[test]
+fn the_glint_and_the_fresnel_shift_act_on_recolored_water_as_on_the_fill() {
+    let ctx = render_ctx();
+    let size = 128;
+    let (matte, _) = water_effects_at(0.0, size);
+    let glint = Uniforms {
+        spec_intensity: 0.5,
+        spec_shininess: 8.0,
+        ..matte
+    };
+    let fresnel = Uniforms {
+        fresnel_mix: 0.5,
+        fresnel_exp: 1.0,
+        ..matte
+    };
+    let lit = |uniforms: &Uniforms| {
+        let frame = surface_frame(&ctx, uniforms, DAY_FILL, rgb(NIGHT_FILL), Some(255), size);
+        let sun = glam::Vec3::from(uniforms.sun_dir).as_dvec3();
+        pixels_where(&frame, uniforms, size, |n| n.dot(sun) > 0.5)
+    };
+    let dark_chosen = [40, 10, 90];
+    let toward = |uniforms: Uniforms| Uniforms {
+        day_ocean_shift: ocean_shift(dark_chosen, DAY_FILL),
+        ..uniforms
+    };
+
+    let (fill_matte, fill_glint) = (lit(&matte), lit(&glint));
+    let (moved_matte, moved_glint) = (lit(&toward(matte)), lit(&toward(glint)));
+    let mut glinting = 0;
+    for (((fm, fg), mm), mg) in fill_matte.iter().zip(&fill_glint).zip(&moved_matte).zip(&moved_glint) {
+        if fg.iter().chain(mg).any(|&c| c == u8::MAX) {
+            continue;
+        }
+        for c in 0..3 {
+            let added_fill = i16::from(fg[c]) - i16::from(fm[c]);
+            let added_moved = i16::from(mg[c]) - i16::from(mm[c]);
+            assert!(
+                (added_fill - added_moved).abs() <= 1,
+                "the glint adds {added_moved} to recolored water and {added_fill} to the fill"
+            );
+            glinting += usize::from(added_fill > 4);
+        }
+    }
+    assert!(glinting > 100, "only {glinting} channels glint");
+
+    let (fill_shifted, moved_shifted) = (lit(&fresnel), lit(&toward(fresnel)));
+    let sky = [0.5_f64 * 255.0, 0.7 * 255.0, 0.9 * 255.0];
+    let weight = |base: [u8; 3], shifted: [u8; 3], c: usize| {
+        (f64::from(shifted[c]) - f64::from(base[c])) / (sky[c] - f64::from(base[c]))
+    };
+    let mut mixed = 0;
+    for (((fm, fs), mm), ms) in fill_matte.iter().zip(&fill_shifted).zip(&moved_matte).zip(&moved_shifted) {
+        for c in 0..3 {
+            if (sky[c] - f64::from(fm[c])).abs() < 60.0 || (sky[c] - f64::from(mm[c])).abs() < 60.0 {
+                continue;
+            }
+            let (w_fill, w_moved) = (weight(*fm, *fs, c), weight(*mm, *ms, c));
+            assert!(
+                (w_fill - w_moved).abs() < 0.04,
+                "the Fresnel shift mixes recolored water by {w_moved:.3} and the fill by {w_fill:.3}"
+            );
+            mixed += usize::from(w_fill > 0.1);
+        }
+    }
+    assert!(mixed > 100, "only {mixed} channels are mixed toward the sky");
 }
 
 #[test]

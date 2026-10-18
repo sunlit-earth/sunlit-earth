@@ -41,6 +41,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::tiles::{self, Geometry, PackKind};
+use sunlit_core::color::Rgb8;
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineHandle};
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::camera::{CameraParams, PRESETS};
@@ -152,6 +153,20 @@ static ENGINE: LazyLock<Mutex<EngineHandle>> = LazyLock::new(|| {
             &cancel,
         )
         .expect("build the Earth fixture's pack");
+        let pack = tiles::Pack::open(&tiles::pack_path(&tmp.join("golden-cache"), kind))
+            .expect("open the Earth fixture's pack");
+        let expected = match kind {
+            PackKind::Day(_) => Some(test_support::EARTH_FIXTURE_OCEAN[0]),
+            PackKind::Night => Some(test_support::EARTH_FIXTURE_OCEAN[1]),
+            PackKind::Mask => None,
+        };
+        if let Some([r, g, b]) = expected {
+            assert_eq!(
+                pack.ocean(),
+                [r, g, b, 255],
+                "the {kind:?} pack's ocean color is not the one `base_params` draws it at"
+            );
+        }
     }
     assert!(
         config.takes_cube(),
@@ -208,6 +223,10 @@ fn base_params() -> SceneParams {
         // glare's cone and would put streaks and blobs in every reference with
         // a Sun anywhere near the frame.
         sun_flare: 0.0,
+        // The Earth fixture's own fills, at which the ocean colors move
+        // nothing, so every case draws the surface as the textures have it.
+        day_ocean_color: Rgb8::from(test_support::EARTH_FIXTURE_OCEAN[0]),
+        night_ocean_color: Rgb8::from(test_support::EARTH_FIXTURE_OCEAN[1]),
         ..SceneParams::default()
     };
     params.datetime.use_custom = true;
@@ -304,7 +323,7 @@ fn render(engine: &EngineHandle, params: &SceneParams) -> Vec<u8> {
         wait_for_texture(engine, "cloud_texture");
     }
     let surface: &[&str] = match params.texture_index {
-        DAY_MODE => &["day_floor"],
+        DAY_MODE => &["day_floor", "water_mask"],
         BLEND_MODE => &["day_floor", "night_floor", "water_mask"],
         _ => &[],
     };

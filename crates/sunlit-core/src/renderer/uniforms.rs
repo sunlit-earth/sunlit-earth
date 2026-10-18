@@ -20,7 +20,7 @@ macro_rules! uniform_block {
     ) => {
         /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
         ///
-        /// Total: 576 bytes (must be a multiple of 16 for uniform alignment).
+        /// Total: 608 bytes (must be a multiple of 16 for uniform alignment).
         #[repr(C)]
         #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
         #[expect(
@@ -171,9 +171,17 @@ uniform_block! {
     cloud_haze_latitude: f32 as f32,
     cloud_haze_band: f32 as f32,
     _pad11: f32 as f32,
+    /// The chosen ocean color less the ocean color of the pack the floor drawn
+    /// came from, per channel over 255, by day and by night: what the open
+    /// water's share of a texel moves by. Zero where nothing moves, which the
+    /// shader takes as the branch that leaves the texel alone.
+    day_ocean_shift: [f32; 3] as vec3,
+    _pad12: f32 as f32,
+    night_ocean_shift: [f32; 3] as vec3,
+    _pad13: f32 as f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 576);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 608);
 
 #[cfg(test)]
 mod tests {

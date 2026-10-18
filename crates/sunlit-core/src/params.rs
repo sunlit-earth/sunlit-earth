@@ -8,7 +8,8 @@
 //! `docs/rendering.md` lists every file a new parameter touches.
 
 use crate::config::AppConfig;
-use crate::scene::camera::CameraParams;
+use crate::scene::camera::{CameraParams, held_longitude, longitude_of};
+use crate::scene::sky::SkyState;
 use crate::scene::sun::DateTimeInput;
 
 /// Radius of the cloud shell, just above the surface.
@@ -34,8 +35,20 @@ const GAMMA_MAX: f32 = 3.0;
 /// resolution and sky state (both derived: resolution from the target, sky
 /// state from the clock plus `datetime`).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the switches of the settings window, not a parameter list"
+)]
 pub struct SceneParams {
+    /// The camera as the settings hold it. In the Sun-fixed mode its longitude
+    /// is not read; [`Self::camera_at`] is the camera a frame is drawn with.
     pub camera: CameraParams,
+    /// Whether the camera keeps its place relative to the Sun rather than over
+    /// one place on the Earth, so the globe turns beneath it once a day.
+    pub sun_fixed: bool,
+    /// The local apparent solar time beneath the camera in the Sun-fixed mode,
+    /// in hours from 0 to 24, which stands in for the longitude there.
+    pub solar_time: f32,
 
     /// Index of the selected texture mode (0 grid, 1 day, 2 night, 3 blend).
     pub texture_index: i32,
@@ -158,6 +171,8 @@ impl SceneParams {
                 pitch_deg: config.pitch,
                 fov_deg: config.camera_fov,
             },
+            sun_fixed: config.sun_fixed,
+            solar_time: config.solar_time,
             texture_index: config.texture_index,
             sample_count: config.sample_count,
             terminator_width: config.terminator_width,
@@ -240,6 +255,8 @@ impl SceneParams {
         config.yaw = self.camera.yaw_deg;
         config.pitch = self.camera.pitch_deg;
         config.camera_fov = self.camera.fov_deg;
+        config.sun_fixed = self.sun_fixed;
+        config.solar_time = self.solar_time;
         config.texture_index = self.texture_index;
         config.sample_count = self.sample_count;
         config.terminator_width = self.terminator_width;
@@ -302,6 +319,37 @@ impl SceneParams {
         config.custom_year = self.datetime.custom_year;
     }
 
+    /// The camera in the Earth-fixed world frame, at the instant of `sky`.
+    ///
+    /// The settings' camera itself in the Earth-fixed mode. In the Sun-fixed
+    /// mode the longitude is the one the time of day puts beneath the camera
+    /// with the Sun where `sky` has it, so every path that draws or measures a
+    /// frame resolves its camera here, under the sky that frame is drawn with.
+    pub fn camera_at(&self, sky: &SkyState) -> CameraParams {
+        if self.sun_fixed {
+            CameraParams {
+                longitude: longitude_of(self.solar_time, sky.sun_direction),
+                ..self.camera
+            }
+        } else {
+            self.camera
+        }
+    }
+
+    /// The camera as the settings hold it: in the Sun-fixed mode, with the
+    /// held longitude the time of day stands for, so that what moves it is a
+    /// hand on the settings and never the Earth's turn.
+    pub(crate) fn held_camera(&self) -> CameraParams {
+        if self.sun_fixed {
+            CameraParams {
+                longitude: held_longitude(self.solar_time),
+                ..self.camera
+            }
+        } else {
+            self.camera
+        }
+    }
+
     /// Whether the cloud layer draws at all: switched on, with either
     /// hemisphere's opacity up. Each hemisphere has its own opacity, so one of
     /// them at zero is not the layer switched off.
@@ -355,8 +403,8 @@ pub(crate) fn quantize_direction(dir: glam::Vec3) -> [i32; 3] {
 /// The groups say how a parameter is compared, which is the only thing the
 /// digest needs to know about it:
 ///
-/// - `camera`: the sub-fields of `CameraParams`, which the digest copies whole
-///   and compares exactly.
+/// - `camera`: the sub-fields of `CameraParams`, which the digest copies whole,
+///   as `held_camera` holds them, and compares exactly.
 /// - `counted`, `switched`: integers and switches, compared exactly.
 /// - `quantized`: floats rounded to integer thousandths.
 /// - `gated`: floats the digest reads through an accessor rather than from the
@@ -392,10 +440,11 @@ macro_rules! scene_digest {
             ///
             /// Camera values compare exactly; every other float is rounded to
             /// integer thousandths so that sub-visible slider jitter does not
-            /// force a redraw.
+            /// force a redraw. The camera is the held one, so the longitude
+            /// the Sun-fixed mode does not read cannot move the digest.
             pub(crate) fn digest(&self) -> ParamsDigest {
                 ParamsDigest {
-                    camera: self.camera,
+                    camera: self.held_camera(),
                     $($cnt: self.$cnt,)*
                     $($sw: self.$sw,)*
                     $($qn: q(self.$qn),)*
@@ -490,6 +539,7 @@ scene_digest! {
         sample_count: u32,
     }
     switched {
+        sun_fixed,
         diffuse_shading,
         clouds_enabled,
     }
@@ -558,6 +608,12 @@ scene_digest! {
         // derives instead, so a live UTC render changes while `datetime` does
         // not.
         datetime,
+        // The time of day, which places the camera only together with the
+        // instant, so the frame key compares the camera it resolves for the
+        // reason `datetime` is absent. In the Sun-fixed mode it also reaches
+        // the held camera the digest copies; the Earth-fixed mode does not read
+        // it at all, which is why the table cannot have a row for it.
+        solar_time,
     }
 }
 
@@ -795,6 +851,142 @@ mod tests {
             b.digest(),
             "the digest tracks the derived sun direction instead"
         );
+    }
+
+    // --- the Sun-fixed camera ---
+
+    fn sky_at(hour: i32, minute: i32) -> SkyState {
+        crate::scene::sky::compute_sky_state_from_time(crate::scene::sun::make_time(
+            2026, 10, 16, hour, minute, 0.0,
+        ))
+    }
+
+    fn sun_fixed_at(solar_time: f32) -> SceneParams {
+        SceneParams {
+            sun_fixed: true,
+            solar_time,
+            ..params()
+        }
+    }
+
+    /// The signed hour angle of the Sun seen from the camera's meridian, in
+    /// degrees: how far east of the eye the Sun stands about the pole.
+    fn sun_east_of_the_eye(camera: &CameraParams, sky: &SkyState) -> f32 {
+        let eye = crate::scene::camera::OrbitalCamera::from_params(camera).eye_position();
+        let sun = sky.sun_direction;
+        let turned = (sun.x.atan2(sun.z) - eye.x.atan2(eye.z)).to_degrees();
+        (turned + 180.0).rem_euclid(360.0) - 180.0
+    }
+
+    /// Hours apart on one day, the Sun stands at one hour angle from the eye:
+    /// the camera kept its place against the Sun while the Earth turned.
+    #[test]
+    fn the_sun_keeps_its_hour_angle_from_the_eye_through_a_day() {
+        let params = sun_fixed_at(15.0);
+        let angles: Vec<f32> = [(4, 0), (10, 0), (16, 0)]
+            .into_iter()
+            .map(|(hour, minute)| {
+                let sky = sky_at(hour, minute);
+                sun_east_of_the_eye(&params.camera_at(&sky), &sky)
+            })
+            .collect();
+        for angle in &angles {
+            assert_relative_eq!(*angle, angles[0], epsilon = 0.01);
+        }
+        // Three in the afternoon puts the Sun three hours west of the eye.
+        assert_relative_eq!(angles[0], -45.0, epsilon = 0.01);
+    }
+
+    /// The Sun crosses the sky westward at 15 degrees an hour, and the camera
+    /// follows it.
+    #[test]
+    fn an_hour_later_the_camera_hangs_fifteen_degrees_further_west() {
+        let params = sun_fixed_at(9.5);
+        let before = params.camera_at(&sky_at(7, 20)).longitude;
+        let after = params.camera_at(&sky_at(8, 20)).longitude;
+        let moved = (after - before + 180.0).rem_euclid(360.0) - 180.0;
+        assert_relative_eq!(moved, -15.0, epsilon = 0.05);
+    }
+
+    /// The Earth-fixed mode draws exactly the camera the settings hold, under
+    /// any sky, which is what keeps every existing frame bit for bit.
+    #[test]
+    fn the_earth_fixed_mode_resolves_to_the_camera_itself() {
+        let params = SceneParams {
+            sun_fixed: false,
+            solar_time: 3.0,
+            ..params()
+        };
+        for (hour, minute) in [(0, 0), (6, 45), (13, 10), (23, 59)] {
+            assert_eq!(params.camera_at(&sky_at(hour, minute)), params.camera);
+        }
+        assert_eq!(params.held_camera(), params.camera);
+    }
+
+    /// The mode only ever reads one of the two keys, so the other one cannot
+    /// move the digest.
+    #[test]
+    fn the_digest_follows_the_key_the_mode_reads() {
+        let earth = params();
+        let moved_longitude = |p: SceneParams| SceneParams {
+            camera: CameraParams {
+                longitude: p.camera.longitude + 20.0,
+                ..p.camera
+            },
+            ..p
+        };
+        let moved_time = |p: SceneParams| SceneParams {
+            solar_time: p.solar_time + 1.5,
+            ..p
+        };
+        assert_ne!(earth.digest(), moved_longitude(earth).digest());
+        assert_eq!(earth.digest(), moved_time(earth).digest());
+
+        let sun = sun_fixed_at(10.0);
+        assert_eq!(sun.digest(), moved_longitude(sun).digest());
+        assert_ne!(sun.digest(), moved_time(sun).digest());
+    }
+
+    /// Both keys travel through a config and back.
+    #[test]
+    fn the_camera_mode_and_its_time_of_day_round_trip_through_a_config() {
+        let mut config = AppConfig::default();
+        let original = sun_fixed_at(20.75);
+        original.write_to_config(&mut config);
+        assert!(config.sun_fixed);
+        assert_relative_eq!(config.solar_time, 20.75);
+        assert_eq!(SceneParams::from_config(&config), original);
+    }
+
+    /// A config written before the mode existed draws what it always drew.
+    #[test]
+    fn a_config_without_the_new_keys_draws_the_earth_fixed_camera() {
+        let config: AppConfig = toml::from_str("longitude = 42.0\nlatitude = -7.0").unwrap();
+        let params = SceneParams::from_config(&config);
+        for (hour, minute) in [(2, 0), (14, 30)] {
+            let camera = params.camera_at(&sky_at(hour, minute));
+            assert_relative_eq!(camera.longitude, 42.0);
+            assert_relative_eq!(camera.latitude, -7.0);
+        }
+    }
+
+    /// Switched on with the time of day a fresh config holds, the camera looks
+    /// at the sunlit side.
+    #[test]
+    fn the_default_time_of_day_looks_at_the_day_side() {
+        let params = SceneParams {
+            sun_fixed: true,
+            ..SceneParams::default()
+        };
+        for (hour, minute) in [(1, 0), (9, 0), (17, 0)] {
+            let sky = sky_at(hour, minute);
+            let eye = crate::scene::camera::OrbitalCamera::from_params(&params.camera_at(&sky))
+                .eye_position();
+            assert!(
+                eye.normalize().dot(sky.sun_direction) > 0.5,
+                "{hour}:{minute:02}"
+            );
+        }
     }
 
     // --- gamma slider mapping ---

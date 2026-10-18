@@ -1562,6 +1562,7 @@ fn test_every_preset_button_fires_the_index_it_is_named_for() {
             longitude: preset.longitude,
             latitude: preset.latitude,
             zoom: preset.zoom,
+            ..win.get_camera_position()
         });
         let mut orientation = win.get_camera_orientation();
         orientation.pitch = preset.pitch_deg;

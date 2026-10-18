@@ -178,6 +178,7 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
             longitude: preset.longitude,
             latitude: preset.latitude,
             zoom: preset.zoom,
+            ..win.get_camera_position()
         });
         win.set_camera_orientation(CameraOrientationSettings {
             tilt: preset.tilt_deg,
@@ -491,6 +492,8 @@ pub fn scene_settings(params: &SceneParams) -> SceneSettings {
             longitude: cam.longitude,
             latitude: cam.latitude,
             zoom: cam.zoom,
+            sun_fixed: params.sun_fixed,
+            solar_time: params.solar_time,
         },
         camera_orientation: CameraOrientationSettings {
             tilt: cam.tilt_deg,
@@ -674,6 +677,8 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
             pitch_deg: orientation.pitch,
             fov_deg: framing.fov,
         },
+        sun_fixed: position.sun_fixed,
+        solar_time: position.solar_time,
         texture_index: window.get_texture_index(),
         sample_count: aa_counts.get(aa_index).copied().unwrap_or(1),
         terminator_width: lighting.terminator_width,

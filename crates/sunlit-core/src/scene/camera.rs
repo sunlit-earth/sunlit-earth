@@ -179,6 +179,53 @@ pub(crate) fn distance_to_zoom(distance: f32) -> f32 {
     (distance / ZOOM_DISTANCE_MIN).ln() / (ZOOM_DISTANCE_MAX / ZOOM_DISTANCE_MIN).ln()
 }
 
+/// The Sun's apparent motion over the ground, in degrees of longitude an hour.
+const DEGREES_PER_HOUR: f32 = 15.0;
+
+/// A longitude in degrees, wrapped into `[-180, 180)`.
+fn wrap180(degrees: f32) -> f32 {
+    let wrapped = (degrees + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped >= 180.0 { -180.0 } else { wrapped }
+}
+
+/// A time of day in hours, wrapped into `[0, 24)`.
+fn wrap24(hours: f32) -> f32 {
+    let wrapped = hours.rem_euclid(24.0);
+    if wrapped >= 24.0 { 0.0 } else { wrapped }
+}
+
+/// The longitude the Sun stands over, in degrees east, from its direction in
+/// the Earth-fixed world frame.
+pub fn subsolar_longitude(sun: glam::Vec3) -> f32 {
+    sun.x.atan2(sun.z).to_degrees()
+}
+
+/// The longitude beneath a camera at `solar_time`, the local apparent solar
+/// time in hours, with the Sun in direction `sun`: 12:00 is the meridian the
+/// Sun stands over and 18:00 the evening terminator, a quarter turn east.
+pub fn longitude_of(solar_time: f32, sun: glam::Vec3) -> f32 {
+    wrap180(subsolar_longitude(sun) + (solar_time - 12.0) * DEGREES_PER_HOUR)
+}
+
+/// The local apparent solar time at `longitude` with the Sun in direction
+/// `sun`, in hours from 0 to 24. The inverse of [`longitude_of`].
+pub fn solar_time_of(longitude: f32, sun: glam::Vec3) -> f32 {
+    wrap24(12.0 + (longitude - subsolar_longitude(sun)) / DEGREES_PER_HOUR)
+}
+
+/// The longitude the Sun-fixed mode holds a time of day at: where the camera
+/// would be with the Sun over the prime meridian. A drag measures its rate in
+/// it, and the globe drag moves the time of day through it.
+pub fn held_longitude(solar_time: f32) -> f32 {
+    longitude_of(solar_time, glam::Vec3::Z)
+}
+
+/// The time of day a held longitude stands for. The inverse of
+/// [`held_longitude`].
+pub fn solar_time_of_held(longitude: f32) -> f32 {
+    solar_time_of(longitude, glam::Vec3::Z)
+}
+
 /// Orbital camera that orbits around the origin.
 pub struct OrbitalCamera {
     /// Camera longitude in degrees (-180 to 180)
@@ -511,6 +558,74 @@ mod tests {
             {
                 assert_relative_eq!(actual, expected, epsilon = tolerance[component]);
             }
+        }
+    }
+
+    /// A Sun on the equator at `longitude` degrees east, tipped to
+    /// `declination` degrees north.
+    fn sun_at(longitude: f32, declination: f32) -> glam::Vec3 {
+        let (lon, dec) = (longitude.to_radians(), declination.to_radians());
+        glam::Vec3::new(dec.cos() * lon.sin(), dec.sin(), dec.cos() * lon.cos())
+    }
+
+    /// The signed angle from `from` to `to` about the north pole, in degrees,
+    /// positive to the east.
+    fn east_of(from: glam::Vec3, to: glam::Vec3) -> f32 {
+        let turned = to.x.atan2(to.z) - from.x.atan2(from.z);
+        wrap180(turned.to_degrees())
+    }
+
+    /// Both conversions undo each other wherever the Sun stands, across the
+    /// date line and across midnight, which are the two wraps.
+    #[test]
+    fn longitude_and_solar_time_round_trip_across_both_wraps() {
+        for sun_longitude in [-179.5, -120.0, -0.25, 0.0, 33.0, 179.5] {
+            let sun = sun_at(sun_longitude, 17.0);
+            for hours in [0.0, 0.01, 5.5, 11.99, 12.0, 18.0, 23.75, 23.99] {
+                let longitude = longitude_of(hours, sun);
+                assert!(
+                    (-180.0..180.0).contains(&longitude),
+                    "{hours} h with the Sun at {sun_longitude} gave {longitude}"
+                );
+                let back = solar_time_of(longitude, sun);
+                let error = (back - hours + 12.0).rem_euclid(24.0) - 12.0;
+                assert!(
+                    error.abs() < 1e-3,
+                    "{hours} h with the Sun at {sun_longitude} came back as {back}"
+                );
+            }
+            for longitude in [-180.0, -179.9, -45.0, 0.0, 90.0, 179.9] {
+                let hours = solar_time_of(longitude, sun);
+                assert!(
+                    (0.0..24.0).contains(&hours),
+                    "{longitude} with the Sun at {sun_longitude} gave {hours} h"
+                );
+                let back = longitude_of(hours, sun);
+                assert!(
+                    wrap180(back - longitude).abs() < 1e-2,
+                    "{longitude} with the Sun at {sun_longitude} came back as {back}"
+                );
+            }
+        }
+    }
+
+    /// Noon looks down the Sun's own direction, midnight from the far side of
+    /// the axis, and six in the evening from a quarter turn east, which is
+    /// where the evening terminator is.
+    #[test]
+    fn the_time_of_day_places_the_eye_against_the_sun() {
+        for (sun_longitude, declination) in [(0.0, 0.0), (-75.0, 23.0), (140.0, -21.0)] {
+            let sun = sun_at(sun_longitude, declination);
+            let eye = |hours: f32| {
+                OrbitalCamera::new(longitude_of(hours, sun), declination, 5.0)
+                    .eye_position()
+                    .normalize()
+            };
+            let noon = eye(12.0).angle_between(sun).to_degrees();
+            assert!(noon < 0.01, "noon is {noon} degrees off the Sun");
+            assert_relative_eq!(east_of(sun, eye(18.0)), 90.0, epsilon = 0.01);
+            assert_relative_eq!(east_of(sun, eye(6.0)), -90.0, epsilon = 0.01);
+            assert_relative_eq!(east_of(sun, eye(0.0)).abs(), 180.0, epsilon = 0.01);
         }
     }
 

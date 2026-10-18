@@ -128,6 +128,11 @@ struct Engine {
     reexport: bool,
     /// `RenderToFile` and `ExportPixels` requests waiting for their tiles.
     exports: Vec<publish::WaitingExport>,
+    /// The sky the wanted set in force was computed under. The outputs an
+    /// export waits on are resolved under it too: the set answers for the
+    /// cameras it was computed for, and a Sun-fixed camera resolved at another
+    /// instant is not one of them.
+    wanted_sky: Option<SkyState>,
     /// A client asked for a wallpaper update. The publish happens in `tick`, so
     /// several requests drained together cost one native-resolution render
     /// rather than one each.
@@ -330,6 +335,7 @@ impl Engine {
             tiles_awaited_since: None,
             reexport: false,
             exports: Vec::new(),
+            wanted_sky: None,
             publish_asked: false,
             display_mode,
             anchor_monitor,
@@ -599,7 +605,7 @@ impl Engine {
         }
 
         if let Some(surface) = &mut self.surface
-            && surface.settle_drag(&self.params.camera, now)
+            && surface.settle_drag(&self.params.held_camera(), now)
         {
             self.dirty = true;
         }
@@ -791,10 +797,11 @@ impl Engine {
             return;
         };
         let (width, height) = self.renderer.size();
-        let mut outputs = vec![tile_output(&self.params, width, height, false)];
+        let mut outputs = vec![tile_output(&self.params, sky, width, height, false)];
         outputs.extend(self.wallpaper_shots.iter().map(|shot| {
             tile_output(
                 &shot.framing.applied_to(&self.params),
+                sky,
                 shot.width,
                 shot.height,
                 true,
@@ -803,7 +810,7 @@ impl Engine {
         outputs.extend(
             self.exports
                 .iter()
-                .map(|export| tile_output(&self.params, export.width, export.height, true)),
+                .map(|export| tile_output(&self.params, sky, export.width, export.height, true)),
         );
         let view = View {
             outputs: &outputs,
@@ -811,9 +818,10 @@ impl Engine {
             ahead: surface.ahead(),
             surfaces: surfaces_for(&self.params, sky.sun_direction),
             texture_resolution: self.renderer.texture_resolution(),
-            drag: surface.drag(&self.params.camera, self.clock.elapsed()),
+            drag: surface.drag(&self.params.held_camera(), self.clock.elapsed()),
         };
         surface.want_tiles(&view, &mut self.renderer);
+        self.wanted_sky = Some(sky.clone());
     }
 
     /// Bring the wanted set up to date with the outputs as they stand,
@@ -965,11 +973,18 @@ fn checked_mailbox(
 }
 
 /// One output of the wanted set: `framed` is the scene with the output's
-/// framing applied, as the render takes it (`Framing::applied_to`), so the
+/// framing applied, as the render takes it (`Framing::applied_to`), and its
+/// camera is resolved under `sky`, the sky the output is drawn under, so the
 /// tiles and the picture cannot disagree on what is in the frame.
-fn tile_output(framed: &SceneParams, width: u32, height: u32, export: bool) -> Output {
+fn tile_output(
+    framed: &SceneParams,
+    sky: &SkyState,
+    width: u32,
+    height: u32,
+    export: bool,
+) -> Output {
     Output {
-        camera: framed.camera,
+        camera: framed.camera_at(sky),
         width,
         height,
         export,

@@ -121,8 +121,8 @@ pub(super) fn write_uniforms<'a>(
     moon_selected: Option<Moon<'a>>,
 ) -> Option<Moon<'a>> {
     let aspect = viewport_width as f32 / viewport_height as f32;
-    let cam = &params.camera;
-    let camera = OrbitalCamera::from_params(cam);
+    let cam = params.camera_at(&inputs.sky);
+    let camera = OrbitalCamera::from_params(&cam);
     let mvp = camera.mvp_matrix(aspect);
     let sky_view = camera.view_matrix();
     let eye_pos = camera.eye_position();

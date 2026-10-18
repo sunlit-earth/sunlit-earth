@@ -200,28 +200,32 @@ impl Engine {
     /// Whether a tile one of the wallpaper's renders wants in view is on its
     /// way, or the wanted set in force was computed without them.
     pub(super) fn shots_pending(&self) -> bool {
-        let Some(surface) = &self.surface else {
-            return false;
-        };
         self.wallpaper_shots.iter().any(|shot| {
             let framed = shot.framing.applied_to(&self.params);
-            let output = tile_output(&framed, shot.width, shot.height, true);
-            surface
-                .missing_for(&output, &self.renderer)
-                .is_none_or(|missing| missing > 0)
+            self.output_pending(&framed, shot.width, shot.height)
         })
     }
 
     /// Whether a tile `export`'s render wants in view is on its way, or the
     /// wanted set in force was computed without it.
     fn export_pending(&self, export: &WaitingExport) -> bool {
+        self.output_pending(&self.params, export.width, export.height)
+    }
+
+    /// Whether a tile an export of `framed` at `width` by `height` wants in
+    /// view is on its way, or the wanted set in force was computed without
+    /// it. The output is resolved under the sky that set was computed under,
+    /// which is the one it was computed for.
+    fn output_pending(&self, framed: &SceneParams, width: u32, height: u32) -> bool {
         let Some(surface) = &self.surface else {
             return false;
         };
-        let output = tile_output(&self.params, export.width, export.height, true);
-        surface
-            .missing_for(&output, &self.renderer)
-            .is_none_or(|missing| missing > 0)
+        self.wanted_sky.as_ref().is_none_or(|sky| {
+            let output = tile_output(framed, sky, width, height, true);
+            surface
+                .missing_for(&output, &self.renderer)
+                .is_none_or(|missing| missing > 0)
+        })
     }
 
     /// Report a finished publish attempt and settle the debt for it, and for
@@ -430,7 +434,8 @@ impl Engine {
     /// Replay `params` at `width` by `height`, the page table held for this
     /// render alone to the cap of that output (plan departure 23): a render
     /// smaller than another the set was computed for would otherwise read
-    /// that one's tiles past their coarser level.
+    /// that one's tiles past their coarser level. The output is resolved under
+    /// the sky the renderer holds, which is the one the replay draws under.
     fn export_capped(
         &mut self,
         params: &SceneParams,
@@ -440,7 +445,8 @@ impl Engine {
         let cap = self
             .surface
             .as_ref()
-            .map(|surface| surface.cap_for(&tile_output(params, width, height, true)));
+            .zip(self.renderer.sky_state())
+            .map(|(surface, sky)| surface.cap_for(&tile_output(params, sky, width, height, true)));
         self.renderer
             .export_image_capped(params, width, height, cap)
     }

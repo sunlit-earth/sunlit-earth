@@ -704,6 +704,11 @@ impl Renderer {
         }
     }
 
+    /// The astronomy state the export path replays, once a frame was drawn.
+    pub(crate) fn sky_state(&self) -> Option<&SkyState> {
+        self.last_inputs.as_ref().map(|inputs| &inputs.sky)
+    }
+
     /// Overwrite the astronomy state the export path will use.
     ///
     /// The scheduler calls this before an unattended wallpaper export so the

@@ -267,7 +267,9 @@ impl OrbitalCamera {
 
     /// The camera a frame is drawn with. `write_uniforms` builds the frame's
     /// view and projection from it, and the residency measures tiles with the
-    /// same one, so the two cannot disagree about what the frame shows.
+    /// same one, so the two cannot disagree about what the frame shows. Both
+    /// are given the camera `SceneParams::camera_at` resolves, never the
+    /// settings' own.
     pub fn from_params(params: &CameraParams) -> Self {
         let mut camera = Self::new(
             params.longitude,

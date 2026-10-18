@@ -135,7 +135,7 @@ The two macro lists are what make the rest safe. `scene_digest!` generates `Para
 
 A setting that is not a shader parameter takes a different route, and `texture_resolution` is the example: it is an `AppConfig` field with a widget, but it stays out of `SceneParams` and the digest because it does not describe what to draw, and acting on it means re-reading files and swapping GPU textures, which `push_params` cannot express. Such a setting gets its own `EngineCommand` and its own callback, and is read back in `read_config_from_window_onto` rather than in `write_to_config`.
 
-`ParamsDigest` is the quantized snapshot used for dirty checking: camera floats compare exactly, everything else is rounded to integer thousandths. `datetime` is deliberately not in the digest; what the shader consumes is the sun direction derived from it, and `FrameState` compares that separately along with the render size.
+`ParamsDigest` is the quantized snapshot used for dirty checking: camera floats compare exactly, everything else is rounded to integer thousandths. `datetime` is deliberately not in the digest; what the shader consumes is the sun direction derived from it, and `FrameState` compares that separately along with the render size and the camera resolved under the frame's sky (The Sun-fixed camera, below). The digest's camera is the one the settings hold, `SceneParams::held_camera`, so the longitude a Sun-fixed camera does not read moves nothing.
 
 ## The Milky Way
 
@@ -228,6 +228,43 @@ The cloud map is mostly an infrared temperature map, so cold clear ground reads 
 **What is left to judge.** A deck crossing a coast, which changes how its floor and gamma are drawn over about 80 km, for which the mask level is the knob.
 
 **The goldens.** `clouds_across_the_terminator` and `cloud_terminator_close_up` draw the banded fixture, 255 or 0, over the Earth fixture's mask. Inside a band the background is 255, of which at most about 0.89 comes off at the defaults, which leaves 255 at full density, so the bands themselves stay and what moved is small; testing.md has the figures.
+
+## The Sun-fixed camera
+
+The world frame is Earth-fixed: +Y is the north pole, +Z is 0N 0E and +X is 0N 90E, and `OrbitalCamera` hangs the eye at a longitude, a latitude and a distance with world +Y as up. The sky turns through that frame, the stars once a sidereal day and the Sun once a solar day. The Sun-fixed mode (`SceneParams::sun_fixed`, "Fixed toward the Sun" in Camera Position) keeps the camera's place against the Sun instead, so the Earth turns beneath it once a solar day and the phase it shows stays the same. The frame it holds is the Earth-fixed one turned about +Y by the Sun's longitude and about nothing else: latitude stays a latitude on the Earth, up stays north, and tilt, yaw and pitch mean what they mean in the Earth-fixed mode. What still moves is the Sun's declination, 23.44 degrees either side of the equator over the year and at most about 0.4 degrees a day, so the terminator slides north and south with the seasons. An ecliptic frame would hold the Sun exactly still, at the cost of the Earth's axis nodding 23.4 degrees toward and away from the camera over the year with every orientation setting changing its meaning; the plan has the argument (`plans/2026-10-16-sun-fixed-camera-plan.md`, decisions 1 and 2).
+
+The camera's place is a time of day, `solar_time`, the local apparent solar time beneath it in hours: 12:00 hangs it over the meridian the Sun stands over, 18:00 over the evening terminator, 00:00 over the middle of the night. With `λs` the Sun's longitude, `atan2(sun.x, sun.z)` in the world frame (`scene::camera::subsolar_longitude`), `longitude_of` and `solar_time_of` convert between the two:
+
+```
+longitude  = wrap180(λs + (solar_time - 12) * 15)
+solar_time = wrap24(12 + (longitude - λs) / 15)
+```
+
+The Sun's actual longitude is used, not a mean one, so the Sun stands at the same hour angle all year; mean solar time would let the lighting wander by up to 16 minutes, about 4 degrees, with the equation of time. A turn of the globe is one apparent solar day, which differs from 24 hours by at most about half a minute.
+
+Nothing in the shader changes. `SceneParams::camera_at(sky)` is the one place the camera is resolved: the settings' camera in the Earth-fixed mode, and that camera with the longitude above in the Sun-fixed mode. `write_uniforms` draws with it under the sky it is handed, the engine's `tile_output` builds every output of the wanted set from it under the sky that output is drawn under, and `FrameState` compares it exactly, so the picture, the tiles and the dirty check agree on which side of the Earth is in view and the residency and `OrbitalCamera::from_params` see Earth-fixed cameras only. A publish draws once and replays the sky the renderer then holds for every shot, so the screens of one publish resolve at one instant and a spanned picture still meets at the seams. The sky state is computed to the whole second, so the resolved camera moves in steps of a 240th of a degree, under half a pixel at the closest zoom on a 1080 pixel tall preview.
+
+**Keeping the preview up with the turn.** The surface beneath the camera crosses the frame at about `focal * ω / (d - 1)` pixels a second, with `focal = height / (2 * tan(camera_fov / 2))`, ω the Earth's turn against the Sun and d the camera's distance in Earth radii. At the default 20 degree lens on a 1080 pixel tall frame:
+
+| Distance | Pixels per second | One pixel every | Step at 2 min | Step at a 5 min refresh |
+|---|---|---|---|---|
+| 8 (default) | 0.032 | 31 s | 4 px | 10 px |
+| 3.2 (Europe) | 0.10 | 10 s | 12 px | 31 px |
+| 1.5 (closest) | 0.45 | 2.2 s | 53 px | 134 px |
+
+So with a Sun-fixed camera at live time and the preview shown, the sky schedule's interval is the time the preview target takes to move one pixel, by that formula with the target's own height and the camera's own lens and distance, clamped between `SKY_FLOOR`, 5 seconds, and `SKY_INTERVAL`, two minutes (`engine::sky_interval`). It is worked out again on `UpdateParams`, `SetPreviewSize` and `SetPreviewEnabled`, and a change restarts the countdown from then. Hidden, in the Earth-fixed mode, or with the date and time overridden, it stays at two minutes, because a hidden window still draws on that schedule and has nobody to show the frame to.
+
+The floor was measured on 2026-10-18 on the development desktop, a Ryzen 7 5800X with a Radeon RX 6800 XT, with the engine at `opt-level = 2`: the time from an `UpdateParams` that moves the time of day to the `PreviewFrame` it produces, so the sky state, the wanted set, the draw and the readback, in blend mode over the Earth fixture's cube and its tiles with the cloud fixture, the real Moon and Milky Way, the High tier's MSAA and the Europe preset, the median of 25 frames after 5 to warm up. The Slint side's upload and paint of the frame is not in it.
+
+| Preview | WARP | Radeon RX 6800 XT (Vulkan) |
+|---|---|---|
+| 704 by 576, about the default window at 100% scaling | 79 ms | 1.3 ms |
+| 1088 by 896 | 172 ms | 2.2 ms |
+| 1920 by 1088 | 324 ms | 3.9 ms |
+
+The floor binds only at the closest zooms, below about 2.1 radii on a 1080 pixel tall preview and about 1.6 on the default one, and there it costs WARP 1.6% of the time at the default preview and 6.5% at a 1080 pixel one. A GPU could take a floor of a second for a fraction of a percent, but 5 seconds still keeps the steps to about 2 pixels at the closest zoom on a preview up to 1080 pixels tall, so one floor serves every adapter.
+
+The wallpaper keeps its own auto-refresh interval: the last column of the first table is what this mode shows on the desktop at the five minute default, and a shorter interval is the user's to choose ([usage.md](usage.md)).
 
 ## One view across several screens
 

@@ -2201,9 +2201,8 @@ fn ocean_page_table(ctx: &RenderContext) -> wgpu::TextureView {
 }
 
 /// At a zero shift the mask reaches no pixel: Day and Night mode draw over a
-/// mask of all water exactly what they draw over the dummy, which is what lets
-/// a default render be byte for byte the one before the mask was bound. With
-/// a shift the mask does reach the frame, so the equality is the shift's.
+/// mask of all water exactly what they draw over the dummy. With a shift the
+/// mask does reach the frame, so the equality is the shift's.
 #[test]
 fn a_zero_shift_draws_the_same_pixels_over_any_mask() {
     let ctx = render_ctx();
@@ -2271,6 +2270,27 @@ fn open_water_takes_the_chosen_color_in_day_and_night_mode() {
             chosen,
             &format!("cells of constant ocean, flags {flags}"),
         );
+    }
+}
+
+/// In blend mode, the default, open water takes the chosen day color on the
+/// lit side and the chosen night color on the night side, within a level,
+/// with diffuse shading off so the lit side is the day texel as it is.
+#[test]
+fn open_water_takes_the_chosen_colors_in_blend_mode() {
+    let ctx = render_ctx();
+    let size = 96;
+    for (sun, side, chosen) in [(1.0_f32, "lit", CHOSEN_DAY), (-1.0, "night", CHOSEN_NIGHT)] {
+        let uniforms = recolored(&Uniforms {
+            terminator_width: 0.15,
+            flags: 0,
+            sun_dir: [0.0, 0.0, sun],
+            ..looking_along(size, glam::Vec3::Z)
+        });
+        let frame = surface_frame(&ctx, &uniforms, DAY_FILL, rgb(NIGHT_FILL), Some(255), size);
+        // Facing the camera, which faces the Sun or looks away from it.
+        let seen = pixels_where(&frame, &uniforms, size, |n| n.z > 0.5);
+        assert_all_close(&seen, chosen, &format!("open water on the {side} side"));
     }
 }
 
@@ -2422,6 +2442,14 @@ fn the_glint_and_the_fresnel_shift_act_on_recolored_water_as_on_the_fill() {
 
     let (fill_matte, fill_glint) = (lit(&matte), lit(&glint));
     let (moved_matte, moved_glint) = (lit(&toward(matte)), lit(&toward(glint)));
+    assert!(
+        fill_matte.len() > 500
+            && fill_matte
+                .iter()
+                .zip(&moved_matte)
+                .all(|(&fill, &moved)| !close(fill, moved, 10)),
+        "the lit water of blend mode was not recolored"
+    );
     let mut glinting = 0;
     for (((fm, fg), mm), mg) in fill_matte
         .iter()

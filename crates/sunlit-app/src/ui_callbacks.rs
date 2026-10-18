@@ -517,13 +517,6 @@ pub fn set_combobox_indices(window_weak: &slint::Weak<MainWindow>, indices: Comb
     .ok();
 }
 
-/// Apply a loaded config to all window properties except window geometry.
-///
-/// Called at startup, on reset, and on load-defaults. Window geometry is
-/// applied only at startup so that reset/load-defaults don't move or resize
-/// the window. The `texture_index` and `aa_index` are set through
-/// `set_combobox_indices` instead, so they are not set here.
-///
 /// A color as the window holds it.
 pub fn slint_color(color: Rgb8) -> slint::Color {
     slint::Color::from_rgb_u8(color.r, color.g, color.b)
@@ -548,6 +541,13 @@ pub fn register_color_text(window: &MainWindow) {
     });
 }
 
+/// Apply a loaded config to all window properties except window geometry.
+///
+/// Called at startup, on reset, and on load-defaults. Window geometry is
+/// applied only at startup so that reset/load-defaults don't move or resize
+/// the window. The `texture_index` and `aa_index` are set through
+/// `set_combobox_indices` instead, so they are not set here.
+///
 /// Every path that fills the window comes through here, so this is also where
 /// the window learns what its resets go back to: `defaults` is written from
 /// `AppConfig::default()`, whichever config the values come from, and no other

@@ -173,8 +173,10 @@ fn a_day_color_moves_the_water_and_leaves_the_land() {
     );
 }
 
-/// The grid draws its own colors, so it is the same picture whatever the two
-/// ocean colors are.
+/// The grid's pixels do not depend on the two ocean colors: the grid's group
+/// binds the dummy mask, which reads no water, so nothing is moved whatever
+/// shift reaches the shader. That the shift is zero on the grid in the first
+/// place is `surface::tests::a_frame_measures_its_ocean_colors_from_the_floors_it_draws`.
 #[test]
 fn the_grid_draws_the_same_pixels_with_any_ocean_colors() {
     let _gpu = gpu();

@@ -3694,6 +3694,84 @@ fn test_the_time_keys_drive_the_transport() {
     );
 }
 
+/// The rates of the commands to play, in the order they were sent.
+fn rates_played(
+    sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+) -> Vec<i32> {
+    excursion_commands(sent)
+        .0
+        .into_iter()
+        .filter_map(|command| match command {
+            ExcursionCommand::Play { rate, .. } => Some(rate),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A held L steps once at once, then again after a pause and at a steady
+/// pace after that, as further presses would, and stops when let go; held
+/// on, it stops by itself at the fastest speed, and when the window loses
+/// the keyboard.
+#[test]
+fn test_holding_l_keeps_shuttling_until_let_go_or_the_fastest() {
+    let running_at = |window: &MainWindow, rate| {
+        sunlit_earth::time_bar::excursion_changed(
+            window,
+            Some(ExcursionState {
+                running: true,
+                rate,
+                kind: ExcursionKind::Clock,
+            }),
+        );
+    };
+    let ladder: Vec<i32> = ExcursionKind::Clock
+        .ladder()
+        .iter()
+        .map(|&rate| i32::try_from(rate).expect("a rate"))
+        .collect();
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    running_at(&window, ladder[1]);
+    let _ = excursion_commands(&sent);
+
+    key_down(&window, "l");
+    assert_eq!(rates_played(&sent), [ladder[2]], "the press steps at once");
+    let_pass(300);
+    assert_eq!(rates_played(&sent), [], "and waits before it repeats");
+    let_pass(200);
+    assert_eq!(rates_played(&sent), [ladder[3]], "then steps again");
+    let_pass(200);
+    assert_eq!(rates_played(&sent), [ladder[4]], "and again");
+    key_up(&window, "l");
+    let_pass(1000);
+    assert_eq!(rates_played(&sent), [], "until it is let go");
+
+    running_at(&window, ladder[1]);
+    key_down(&window, "l");
+    let_pass(400 + 200 * 20);
+    let mut expected = ladder[2..].to_vec();
+    expected.push(ladder[ladder.len() - 1]);
+    assert_eq!(
+        rates_played(&sent),
+        expected,
+        "held on, it stops once a step changes nothing"
+    );
+    key_up(&window, "l");
+
+    running_at(&window, ladder[1]);
+    key_down(&window, "l");
+    let_pass(300);
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    let_pass(1000);
+    assert_eq!(
+        rates_played(&sent),
+        [ladder[2]],
+        "and it stops when the window loses the keyboard"
+    );
+}
+
 /// The left, top, right and bottom edges of an element in the window.
 fn edges(element: &ElementHandle) -> [f32; 4] {
     let at = element.absolute_position();

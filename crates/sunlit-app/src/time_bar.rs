@@ -171,6 +171,19 @@ impl Transport {
             }
         }
     }
+
+    /// Whether `action` changes what play runs, its speed, or whether it
+    /// runs.
+    #[must_use]
+    pub fn changes(self, action: Action) -> bool {
+        let (next, command) = self.act(action);
+        next != self
+            || match command {
+                Some(ExcursionCommand::Pause) => self.running,
+                Some(ExcursionCommand::Play { .. }) => !self.running,
+                _ => false,
+            }
+    }
 }
 
 /// `count` of `unit` a second, the unit in the plural from two: "1 week/s".
@@ -695,9 +708,13 @@ fn register_transport(window: &MainWindow, link: &EngineLink) {
     let weak = window.as_weak();
     let engine = link.clone();
     window.on_time_shuttle(move |direction| {
-        if let Some(win) = weak.upgrade() {
-            act(&win, &engine, Action::Shuttle(direction));
-        }
+        let Some(win) = weak.upgrade() else {
+            return false;
+        };
+        let action = Action::Shuttle(direction);
+        let changes = transport(&win).changes(action);
+        act(&win, &engine, action);
+        changes
     });
 
     let weak = window.as_weak();
@@ -893,6 +910,23 @@ mod tests {
             (next.rate, command),
             (slowest, Some(ExcursionCommand::Pause))
         );
+    }
+
+    /// A shuttle step changes something everywhere but at the end of the
+    /// ladder it goes along: starting, a faster or slower speed, and the
+    /// stop below the slowest all count.
+    #[test]
+    fn only_the_shuttle_at_the_ladders_end_changes_nothing() {
+        let ladder = ExcursionKind::Clock.ladder();
+        let fastest = i32::try_from(ladder[ladder.len() - 1]).expect("a rate");
+        let slowest = i32::try_from(ladder[0]).expect("a rate");
+        assert!(clock(60, false).changes(Action::Shuttle(1)));
+        assert!(clock(fastest, false).changes(Action::Shuttle(1)));
+        assert!(clock(60, true).changes(Action::Shuttle(1)));
+        assert!(clock(60, true).changes(Action::Shuttle(-1)));
+        assert!(clock(slowest, true).changes(Action::Shuttle(-1)));
+        assert!(!clock(fastest, true).changes(Action::Shuttle(1)));
+        assert!(!clock(-fastest, true).changes(Action::Shuttle(-1)));
     }
 
     #[test]

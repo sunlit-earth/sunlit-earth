@@ -295,8 +295,9 @@ export component MainWindow inherits Window {
     callback time-toggle-play();
     callback time-pause();
     callback time-rate(int);
-    // J and L: -1 and 1.
-    callback time-shuttle(int);
+    // J and L: -1 and 1. Returns whether the step changed the speed or
+    // whether play runs.
+    callback time-shuttle(int) -> bool;
     callback time-reverse();
     // Forward or back, and the bigger step.
     callback time-skip(bool, bool);
@@ -1870,6 +1871,13 @@ export component MainWindow inherits Window {
             : self.key-plus || self.key-minus ? "zoom"
             : "";
         property <duration> key-tick;
+        // J or L held, -1 or 1, and 0 for neither. A press steps at once;
+        // held, the key steps again after `shuttle-delay` and then every
+        // `shuttle-repeat`, until it is let go or a step changes nothing.
+        property <int> key-shuttle;
+        property <bool> shuttle-repeating;
+        property <duration> shuttle-delay: 400ms;
+        property <duration> shuttle-repeat: 200ms;
 
         function release-keys() {
             image-container.key-left = false;
@@ -1886,6 +1894,7 @@ export component MainWindow inherits Window {
             image-container.key-e = false;
             image-container.key-shift = false;
             image-container.key-control = false;
+            image-container.key-shuttle = 0;
         }
 
         // The skip a key asks for: 1 forward, 2 forward by the bigger step,
@@ -1959,8 +1968,17 @@ export component MainWindow inherits Window {
                     root.time-toggle-play();
                 }
             } else if event.text.to-lowercase() == "j" || event.text.to-lowercase() == "l" {
-                if down && !event.repeat {
-                    root.time-shuttle(event.text.to-lowercase() == "j" ? -1 : 1);
+                let direction = event.text.to-lowercase() == "j" ? -1 : 1;
+                if !down {
+                    if image-container.key-shuttle == direction {
+                        image-container.key-shuttle = 0;
+                    }
+                } else if !event.repeat {
+                    if image-container.key-shuttle == direction {
+                        shuttle-timer.restart();
+                    }
+                    image-container.shuttle-repeating = false;
+                    image-container.key-shuttle = root.time-shuttle(direction) ? direction : 0;
                 }
             } else if event.text.to-lowercase() == "k" {
                 if down && !event.repeat {
@@ -2048,6 +2066,17 @@ export component MainWindow inherits Window {
                 }
                 if image-container.key-q != image-container.key-e {
                     root.camera-roll((image-container.key-e ? 60 : -60) * seconds);
+                }
+            }
+        }
+
+        shuttle-timer := Timer {
+            interval: image-container.shuttle-repeating ? image-container.shuttle-repeat : image-container.shuttle-delay;
+            running: image-container.key-shuttle != 0;
+            triggered => {
+                image-container.shuttle-repeating = true;
+                if !root.time-shuttle(image-container.key-shuttle) {
+                    image-container.key-shuttle = 0;
                 }
             }
         }

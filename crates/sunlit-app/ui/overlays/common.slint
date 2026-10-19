@@ -161,12 +161,12 @@ export global OverlayHints {
         if id == "ruler" {
             return {
                 title: "Speed",
-                body: "Backward on the left, forward on the right, one dot per speed, the slowest next to play. Click a dot or drag along the ruler to run at that speed.",
+                body: "Backward on the left, forward on the right, one dot per speed, the slowest next to play. Click a dot or drag along the ruler to run at that speed. J and L step slower or faster; hold to keep going.",
                 keys: ["J", "K", "L"],
             };
         }
         if id == "rate" {
-            return { title: speed == "" ? "Speed" : "Speed: " + speed, body: "Click for every speed in both directions. R turns the direction.", keys: ["J", "K", "L"] };
+            return { title: speed == "" ? "Speed" : "Speed: " + speed, body: "Click for every speed in both directions. J and L step slower or faster; hold to keep going. R turns the direction.", keys: ["J", "K", "L"] };
         }
         if id == "drive-time" {
             return {

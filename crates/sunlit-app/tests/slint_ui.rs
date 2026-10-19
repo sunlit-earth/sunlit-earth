@@ -5189,13 +5189,47 @@ fn test_the_speed_list_aligns_speeds_right_and_meanings_left() {
     }
 }
 
-/// A click outside the date or the time picker closes it as Cancel does: the
-/// time setting stays as it was, nothing reaches the engine, and the bar
-/// folds again once the pointer has left it.
+/// Pick another day in the open date picker, or another hour in the open
+/// time picker, and check that the picker shows it.
+fn pick_another(window: &MainWindow, label: &str) {
+    if label == "Date" {
+        let day = ["15", "16"]
+            .into_iter()
+            .map(|day| the_labeled(window, day))
+            .find(|day| day.accessible_checked() != Some(true))
+            .expect("a day not picked");
+        day.invoke_accessible_default_action();
+        assert_eq!(day.accessible_checked(), Some(true), "the day is picked");
+        return;
+    }
+    let field = || {
+        ElementHandle::find_by_accessible_label(window, "hour")
+            .next()
+            .expect("an hour field")
+            .accessible_value()
+            .expect("an hour")
+    };
+    let hour = field();
+    let other = (hour.parse::<u32>().expect("a number") + 5) % 24;
+    the_labeled(window, &format!("{other} Hours or minutes of 24"))
+        .invoke_accessible_default_action();
+    assert_eq!(field(), other.to_string(), "the hour is picked");
+}
+
+/// A click outside the date or the time picker closes it as Cancel does: a
+/// day or an hour picked in it is dropped, the time setting stays as it was,
+/// nothing reaches the engine, and the bar folds again once the pointer has
+/// left it. The same pick taken with OK changes the setting, which shows the
+/// pick is one the setting would follow.
 #[test]
 fn test_a_click_outside_a_picker_closes_it_as_cancel_does() {
     let away = slint::LogicalPosition::new(900.0, 300.0);
-    for label in ["Date", "Time"] {
+    for (label, ok) in [
+        ("Date", true),
+        ("Date", false),
+        ("Time", true),
+        ("Time", false),
+    ] {
         let (window, sent) = wired_window();
         let setting = window.get_datetime();
         let _ = excursion_commands(&sent);
@@ -5206,6 +5240,16 @@ fn test_a_click_outside_a_picker_closes_it_as_cancel_does() {
             1,
             "{label}: the picker opens"
         );
+        pick_another(&window, label);
+        if ok {
+            the_labeled(&window, "OK").invoke_accessible_default_action();
+            assert_ne!(
+                window.get_datetime(),
+                setting,
+                "{label}: OK left the setting as it was"
+            );
+            continue;
+        }
 
         press_at(&window, away);
         let_pass(100);

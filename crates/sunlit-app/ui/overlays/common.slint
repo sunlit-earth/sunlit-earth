@@ -137,6 +137,84 @@ export global OverlayHints {
         if id == "show" {
             return { title: "Show controls", keys: ["H"] };
         }
+        if id == "skip-back" || id == "skip-forward" {
+            return {
+                title: id == "skip-back" ? "Step back" : "Step forward",
+                body: "15 minutes when play runs the time, a day when it runs the date. With " + shift-key + ", an hour or a week.",
+                keys: [id == "skip-back" ? "," : "."],
+            };
+        }
+        if id == "play" {
+            return {
+                title: "Play / pause",
+                body: "Run the preview's time at the chosen speed. The Sun, the terminator, the Moon and the stars move; the clouds stay as observed, and the wallpaper keeps the time setting.",
+                keys: ["Space"],
+            };
+        }
+        if id == "ruler" {
+            return {
+                title: "Speed",
+                body: "Backward on the left, forward on the right, one dot per speed, the slowest next to play. Click a dot or drag along the ruler to run at that speed.",
+                keys: ["J", "K", "L"],
+            };
+        }
+        if id == "rate" {
+            return { title: "Speed", body: "Click for every speed in both directions. R turns the direction.", keys: ["J", "K", "L"] };
+        }
+        if id == "drive-time" {
+            return {
+                title: "Play runs the time",
+                body: "The clock runs, from real time to 6 hours a second, and the date follows. Day and night sweep across the globe.",
+            };
+        }
+        if id == "drive-date" {
+            return {
+                title: "Play runs the date",
+                body: "The date runs, from a day to 3 months a second, and the time of day stays, in UTC: the local clock moves an hour at a summer time change. The terminator swings through the seasons.",
+            };
+        }
+        if id == "pick-date" {
+            return { title: "Date", body: "Click to enter an exact date, which becomes the time setting." };
+        }
+        if id == "pick-time" {
+            return { title: "Time", body: "Click to enter an exact time, which becomes the time setting." };
+        }
+        if id == "zone" {
+            return { title: "Time zone", body: "Switch between UTC and your local time. The tracks and the sidebar follow." };
+        }
+        if id == "now" {
+            return { title: "Back to now", body: "Return to live time, which follows the clock.", keys: ["0"] };
+        }
+        if id == "live" {
+            return { title: "Live", body: "The preview and the wallpaper follow the clock." };
+        }
+        if id == "preview" {
+            return {
+                title: "Preview",
+                body: "Playback has taken the preview away from the time setting. " + wallpaper-time + " Click to go back to it.",
+            };
+        }
+        if id == "pin" {
+            return { title: "Keep open", body: "Keep the full bar open and at full strength, wherever the pointer goes." };
+        }
+        if id == "day-track" {
+            return {
+                title: "Time of day",
+                body: "Drag to change the time and keep the date. Shaded for day, twilight and night at the point under the camera.",
+            };
+        }
+        if id == "day-track-sun-fixed" {
+            return {
+                title: "Time of day",
+                body: "Drag to change the time and keep the date. With the camera fixed toward the Sun, the hour turns the Earth beneath the camera and the light under it stays, so the track is plain.",
+            };
+        }
+        if id == "year-track" {
+            return {
+                title: "Date",
+                body: "Drag to change the date and keep the time of day. Diamonds mark the equinoxes and the solstices, and the handle snaps to them.",
+            };
+        }
         return { title: "" };
     }
 }

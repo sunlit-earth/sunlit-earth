@@ -2996,3 +2996,312 @@ fn test_the_override_fixes_now_and_off_is_live() {
         "{at} is not the moment the override went on"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The time bar
+// ---------------------------------------------------------------------------
+
+use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind, ExcursionState};
+
+/// The excursion commands the window sent, in order, and the last scene it
+/// pushed among them.
+fn excursion_commands(
+    sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+) -> (Vec<ExcursionCommand>, Option<SceneParams>) {
+    let mut commands = Vec::new();
+    let mut pushed = None;
+    for command in sent.try_iter() {
+        match command {
+            sunlit_core::engine::EngineCommand::Excursion(command) => commands.push(command),
+            sunlit_core::engine::EngineCommand::UpdateParams(params) => pushed = Some(*params),
+            _ => {}
+        }
+    }
+    (commands, pushed)
+}
+
+/// Rest the pointer on the folded bar, which opens it.
+fn open_the_bar(window: &MainWindow) {
+    let bar = the_element(window, "MainWindow::time-bar");
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: point_in(&bar, 0.5, 0.5),
+        });
+    assert!(bar.size().height > 100.0, "hovering the pill opens the bar");
+}
+
+/// The one button labeled `label`.
+fn the_labeled(window: &MainWindow, label: &str) -> ElementHandle {
+    let found: Vec<_> = ElementHandle::find_by_accessible_label(window, label)
+        .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
+        .collect();
+    assert_eq!(found.len(), 1, "expected exactly one '{label}'");
+    found.into_iter().next().expect("one element")
+}
+
+/// The middle of dot `slot` of a ruler, counted from its left end.
+fn ruler_dot(ruler: &ElementHandle, slot: u8) -> slint::LogicalPosition {
+    let at = ruler.absolute_position();
+    let x = at.x + 4.0 + f32::from(slot) * 11.0 + 4.5;
+    slint::LogicalPosition::new(x, at.y + ruler.size().height / 2.0)
+}
+
+/// How many dots a ruler holds, from its width.
+fn ruler_dots(ruler: &ElementHandle) -> usize {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a count of dots, rounded"
+    )]
+    let dots = ((ruler.size().width - 8.0 + 2.0) / 11.0).round() as usize;
+    dots
+}
+
+fn paused(rate: i32) -> ExcursionState {
+    ExcursionState {
+        running: false,
+        rate,
+        kind: ExcursionKind::Clock,
+    }
+}
+
+/// A dot of the forward ruler runs the excursion at its rate, and the time
+/// setting stays where it was.
+#[test]
+fn test_a_forward_ruler_dot_runs_at_its_rate_and_leaves_the_setting() {
+    let (window, sent) = wired_window();
+    let instant = window.get_datetime().instant;
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+
+    let forward = the_element(&window, "TimeBar::forward");
+    press_at(&window, ruler_dot(&forward, 4));
+    let rate = i32::try_from(ExcursionKind::Clock.ladder()[4]).expect("a rate");
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(
+        commands,
+        [ExcursionCommand::Play {
+            rate,
+            kind: ExcursionKind::Clock
+        }]
+    );
+    assert!(pushed.is_none(), "a speed pushed the scene");
+    assert_eq!(window.get_datetime().instant, instant);
+}
+
+/// The radio labels choose what play runs, and the rulers carry that kind's
+/// speeds; going over to the date while paused asks nothing of the engine.
+#[test]
+fn test_the_radio_labels_switch_the_rulers_ladder() {
+    let (window, sent) = wired_window();
+    open_the_bar(&window);
+    let forward = |window: &MainWindow| the_element(window, "TimeBar::forward");
+    assert_eq!(
+        ruler_dots(&forward(&window)),
+        ExcursionKind::Clock.ladder().len()
+    );
+
+    let _ = excursion_commands(&sent);
+    press_at(&window, point_in(&the_labeled(&window, "DATE"), 0.5, 0.5));
+    assert_eq!(
+        ruler_dots(&forward(&window)),
+        ExcursionKind::Date.ladder().len()
+    );
+    assert!(window.get_time_bar().date_kind);
+    assert_eq!(excursion_commands(&sent).0, []);
+
+    press_at(&window, point_in(&the_labeled(&window, "Play"), 0.5, 0.5));
+    let rate = i32::try_from(ExcursionKind::Date.default_rate()).expect("a rate");
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [ExcursionCommand::Play {
+            rate,
+            kind: ExcursionKind::Date
+        }]
+    );
+}
+
+/// A press on the time track sets the time setting to that time of the day
+/// on screen, which during an excursion is the excursion's day, and ends the
+/// excursion; a drag carries on from there.
+#[test]
+fn test_a_track_drag_sets_the_time_setting() {
+    use sunlit_core::scene::scene_time::SceneTime;
+    use time::macros::datetime;
+
+    let (window, sent) = wired_window();
+    sunlit_earth::time_bar::excursion_changed(&window, Some(paused(60)));
+    sunlit_earth::time_bar::frame_shown(&window, datetime!(2026-05-10 03:00 UTC));
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+
+    let track = the_element(&window, "TimeBar::day-track");
+    hold_at(&window, point_in(&track, 0.5, 0.5));
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(
+        pushed.expect("the press pushed the scene").time,
+        SceneTime::fixed(datetime!(2026-05-10 12:00 UTC))
+    );
+    assert_eq!(commands, [ExcursionCommand::End]);
+
+    let to = point_in(&track, 0.75, 0.5);
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: to });
+    release_at(&window, to);
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(
+        pushed.expect("the drag pushed the scene").time,
+        SceneTime::fixed(datetime!(2026-05-10 18:00 UTC))
+    );
+    assert_eq!(commands, [], "the excursion had ended already");
+}
+
+/// Now puts the time setting back to live and ends any excursion, and so
+/// does 0.
+#[test]
+fn test_now_sends_live_and_end() {
+    use sunlit_core::scene::scene_time::SceneTime;
+
+    let (window, sent) = wired_window();
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+    press_at(&window, point_in(&the_labeled(&window, "Now"), 0.5, 0.5));
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(pushed.expect("Now pushed the scene").time, SceneTime::Live);
+    assert_eq!(commands, [ExcursionCommand::End]);
+    assert!(window.get_time_bar().live);
+
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    let _ = excursion_commands(&sent);
+    tap(&window, "0");
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(pushed.expect("0 pushed the scene").time, SceneTime::Live);
+    assert_eq!(commands, [ExcursionCommand::End]);
+}
+
+/// During an excursion the clock block says Preview, and a click on it ends
+/// the excursion and leaves the time setting alone.
+#[test]
+fn test_the_preview_pill_ends_the_excursion() {
+    let (window, sent) = wired_window();
+    sunlit_earth::time_bar::excursion_changed(&window, Some(paused(60)));
+    assert_eq!(window.get_time_bar().state_text.as_str(), "Preview");
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+    press_at(
+        &window,
+        point_in(&the_labeled(&window, "Preview"), 0.5, 0.5),
+    );
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(commands, [ExcursionCommand::End]);
+    assert!(pushed.is_none());
+}
+
+/// The bar folds 0.7 s after the pointer leaves it, unless it is pinned.
+#[test]
+fn test_the_pin_keeps_the_bar_open_with_the_pointer_outside() {
+    let (window, _sent) = wired_window();
+    let height = |window: &MainWindow| the_element(window, "MainWindow::time-bar").size().height;
+    let away = || slint::platform::WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(900.0, 300.0),
+    };
+
+    open_the_bar(&window);
+    window.window().dispatch_event(away());
+    let_pass(1000);
+    assert!(
+        height(&window) < 40.0,
+        "the bar folds once the pointer left"
+    );
+
+    open_the_bar(&window);
+    press_at(
+        &window,
+        point_in(&the_labeled(&window, "Keep open"), 0.5, 0.5),
+    );
+    assert!(window.get_time_bar_pinned());
+    window.window().dispatch_event(away());
+    let_pass(1000);
+    assert!(height(&window) > 100.0, "the pinned bar folded");
+}
+
+/// The sidebar's Date / Time group and the bar show the same instant in the
+/// same zone, before and after the zone chip switches it.
+#[test]
+fn test_the_sidebar_group_and_the_bar_show_the_same_instant() {
+    let (window, _sent) = wired_window();
+    let agree = |window: &MainWindow| {
+        let view = window.get_time_bar();
+        assert_eq!(
+            window.get_hour_label().as_str(),
+            format!("{} {}", view.time_text, view.zone_text)
+        );
+        assert!(
+            view.date_text.starts_with(window.get_day_label().as_str()),
+            "{} against {}",
+            view.date_text,
+            window.get_day_label()
+        );
+    };
+    window.invoke_sliders_changed();
+    assert_eq!(window.get_time_bar().time_text.as_str(), "09:15");
+    agree(&window);
+    window.invoke_time_zone_toggled();
+    assert!(!window.get_time_zone_utc());
+    agree(&window);
+}
+
+/// Space plays and pauses through the engine, J and L shuttle, K pauses, the
+/// comma and the period skip, with Shift by the bigger step.
+#[test]
+fn test_the_time_keys_drive_the_transport() {
+    use slint::platform::Key;
+    use sunlit_core::engine::excursion::TimeStep;
+
+    let play = |rate| ExcursionCommand::Play {
+        rate,
+        kind: ExcursionKind::Clock,
+    };
+    let step = |forward, big| {
+        ExcursionCommand::Skip(TimeStep {
+            kind: ExcursionKind::Clock,
+            forward,
+            big,
+        })
+    };
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    let _ = excursion_commands(&sent);
+    tap(&window, " ");
+    tap(&window, "l");
+    tap(&window, ",");
+    key_down(&window, Key::Shift);
+    tap(&window, ">");
+    key_up(&window, Key::Shift);
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [play(60), play(60), step(false, false), step(true, true)]
+    );
+
+    sunlit_earth::time_bar::excursion_changed(
+        &window,
+        Some(ExcursionState {
+            running: true,
+            rate: 60,
+            kind: ExcursionKind::Clock,
+        }),
+    );
+    assert_eq!(
+        window.get_time_bar().state_text.as_str(),
+        "\u{25b6} 60\u{d7}"
+    );
+    tap(&window, "l");
+    tap(&window, "k");
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [play(120), ExcursionCommand::Pause]
+    );
+}

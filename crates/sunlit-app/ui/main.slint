@@ -3,7 +3,7 @@ import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, Se
 import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } from "overlays/common.slint";
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
-import { TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
+import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
@@ -1867,6 +1867,26 @@ export component MainWindow inherits Window {
             image-container.key-control = false;
         }
 
+        // The skip a key asks for: 1 forward, 2 forward by the bigger step,
+        // -1 and -2 back, 0 for none. The text a key gives with Shift depends
+        // on the layout, so with Shift held the comma and period keys are
+        // read as the characters they give on the common ones.
+        function skip-of(event: KeyEvent) -> int {
+            if event.text == "," {
+                return event.modifiers.shift ? -2 : -1;
+            }
+            if event.text == "." {
+                return event.modifiers.shift ? 2 : 1;
+            }
+            if event.modifiers.shift && (event.text == "<" || event.text == ";") {
+                return -2;
+            }
+            if event.modifiers.shift && (event.text == ">" || event.text == ":") {
+                return 2;
+            }
+            return 0;
+        }
+
         // Track a key going down or up. Returns whether the key is one of
         // the preview's, so the others go on to the window.
         function track-key(event: KeyEvent, down: bool) -> bool {
@@ -1904,6 +1924,30 @@ export component MainWindow inherits Window {
             } else if event.text.to-lowercase() == "h" {
                 if down && !event.repeat {
                     root.overlays-hidden = !root.overlays-hidden;
+                }
+            } else if event.text == " " {
+                if down && !event.repeat {
+                    root.time-toggle-play();
+                }
+            } else if event.text.to-lowercase() == "j" || event.text.to-lowercase() == "l" {
+                if down && !event.repeat {
+                    root.time-shuttle(event.text.to-lowercase() == "j" ? -1 : 1);
+                }
+            } else if event.text.to-lowercase() == "k" {
+                if down && !event.repeat {
+                    root.time-pause();
+                }
+            } else if event.text.to-lowercase() == "r" {
+                if down && !event.repeat {
+                    root.time-reverse();
+                }
+            } else if event.text == "0" {
+                if down && !event.repeat {
+                    root.time-now();
+                }
+            } else if image-container.skip-of(event) != 0 {
+                if down && !event.repeat {
+                    root.time-skip(image-container.skip-of(event) > 0, abs(image-container.skip-of(event)) > 1);
                 }
             } else {
                 return false;
@@ -2194,11 +2238,42 @@ export component MainWindow inherits Window {
             clicked => { root.overlays-hidden = false; }
         }
 
+        time-bar := TimeBar {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 14px;
+            room: parent.width - 24px;
+            visible: !root.overlays-hidden;
+            view: root.time-bar;
+            ladder: root.time-ladder;
+            rates: root.time-rates;
+            seasons: root.time-seasons;
+            month-ticks: root.time-month-ticks;
+            shading: root.time-shading;
+            pinned <=> root.time-bar-pinned;
+            pointer-in: viewport-touch.has-hover || camera-panel.hovered-hint != "" || self.hovered;
+            toggle-play => { root.time-toggle-play(); }
+            rate-picked(rate) => { root.time-rate(rate); }
+            skip(forward, big) => { root.time-skip(forward, big); }
+            kind-picked(date) => { root.time-kind(date); }
+            now => { root.time-now(); }
+            end-excursion => { root.time-end(); }
+            zone => { root.time-zone-toggled(); }
+            track(year, x) => { root.time-track(year, x); }
+            exact-date(year, month, day) => { root.time-exact-date(year, month, day); }
+            exact-time(hour, minute) => { root.time-exact-time(hour, minute); }
+            tick => { root.time-tick(); }
+            date-at(x) => { return root.time-date-at(x); }
+        }
+
         // The hover hint of whichever overlay control the pointer rests on,
-        // after 450 ms, left of the camera panel.
+        // after 450 ms: left of the camera panel for its controls, above the
+        // time bar for the bar's.
         property <string> hint-id: root.shortcut-sheet-open ? ""
             : root.overlays-hidden ? (show-button.hovered ? "show" : "")
-            : camera-panel.any-held ? "" : camera-panel.hovered-hint;
+            : camera-panel.any-held ? ""
+            : camera-panel.hovered-hint != "" ? camera-panel.hovered-hint
+            : time-bar.hovered-hint;
+        property <bool> hint-over-bar: !root.overlays-hidden && camera-panel.hovered-hint == "" && time-bar.hovered-hint != "";
         property <string> shown-hint;
         property <duration> hint-since;
         changed hint-id => {
@@ -2217,8 +2292,12 @@ export component MainWindow inherits Window {
 
         if image-container.shown-hint != "" : hint := OverlayHint {
             content: OverlayHints.content(image-container.shown-hint);
-            x: camera-panel.x - self.width - 12px;
-            y: clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
+            x: image-container.hint-over-bar
+                ? clamp(time-bar.x + time-bar.hovered-x - self.width / 2, 6px, parent.width - self.width - 6px)
+                : camera-panel.x - self.width - 12px;
+            y: image-container.hint-over-bar
+                ? max(6px, time-bar.y - self.height - 8px)
+                : clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
         }
 
         if root.shortcut-sheet-open : shortcut-sheet := ShortcutSheet {

@@ -3884,7 +3884,7 @@ fn test_a_shuttle_key_let_go_under_a_modifier_stops_stepping() {
 
 /// A held key let go after `AltGr` changed the text it gives, as on a German
 /// layout `AltGr` turns q into @, e into € and + into ~, stops what it moved,
-/// with `AltGr` alone as Linux sends it and behind Ctrl as Windows does.
+/// with `AltGr` alone and with Ctrl held as well.
 #[test]
 fn test_a_held_key_let_go_under_altgr_stops_the_camera() {
     use slint::platform::Key;
@@ -3912,6 +3912,112 @@ fn test_a_held_key_let_go_under_altgr_stops_the_camera() {
         let stopped = camera(&window);
         let_pass(300);
         assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+    }
+}
+
+/// A held key let go after Ctrl and Alt went down and changed the text it
+/// gives as `AltGr` would, as Windows lets left Ctrl + left Alt do on a
+/// German layout or a US International one, where they turn w into å, stops
+/// what it moved, though on Windows Slint then reports neither Ctrl nor Alt
+/// in the release's modifiers; and so does one pressed under Alt alone.
+#[test]
+fn test_a_held_key_let_go_under_ctrl_and_alt_as_altgr_stops_the_camera() {
+    use slint::platform::Key;
+
+    let cases: [(&[Key], &str, &[Key], &str); 4] = [
+        (&[], "q", &[Key::Control, Key::Alt], "@"),
+        (&[], "e", &[Key::Control, Key::Alt], "€"),
+        (&[], "+", &[Key::Control, Key::Alt], "~"),
+        (&[Key::Alt], "w", &[Key::Control], "å"),
+    ];
+    for (before, pressed, after, released) in cases {
+        let what = format!(
+            "{pressed:?} pressed with {before:?} down, let go as {released:?} after {after:?}"
+        );
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        for &modifier in before {
+            key_down(&window, modifier);
+        }
+        key_down(&window, pressed);
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press moves the camera");
+        for &modifier in after {
+            key_down(&window, modifier);
+        }
+        key_up(&window, released);
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+        for &modifier in before.iter().chain(after) {
+            key_up(&window, modifier);
+        }
+    }
+}
+
+/// W pressed under Ctrl and Alt moves the frame on while another key comes
+/// up under the same Ctrl and Alt, and stops when W is let go.
+#[test]
+fn test_a_release_under_the_same_ctrl_and_alt_leaves_a_held_key_at_work() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    key_down(&window, Key::Control);
+    key_down(&window, Key::Alt);
+    key_down(&window, "w");
+    let_pass(50);
+    tap(&window, "x");
+    let tapped = camera(&window);
+    let_pass(100);
+    assert_ne!(camera(&window), tapped, "the frame stops while W is held");
+    key_up(&window, "w");
+    let stopped = camera(&window);
+    let_pass(300);
+    assert_eq!(
+        camera(&window),
+        stopped,
+        "the frame goes on after W is let go"
+    );
+    key_up(&window, Key::Alt);
+    key_up(&window, Key::Control);
+}
+
+/// A held J or L let go after Option, `AltGr` or Ctrl + Alt changed the text
+/// it gives, as Option turns j into ∆ on macOS and `AltGr` turns l into ł on
+/// a Polish layout, stops stepping.
+#[test]
+fn test_a_shuttle_key_let_go_as_other_text_stops_stepping() {
+    use slint::platform::Key;
+
+    let ladder = clock_ladder();
+    let cases: [(&str, &[Key], &str); 3] = [
+        ("j", &[Key::Alt], "∆"),
+        ("l", &[Key::AltGr], "ł"),
+        ("l", &[Key::Control, Key::Alt], "ł"),
+    ];
+    for (pressed, modifiers, released) in cases {
+        let what = format!("{pressed:?} let go as {released:?} with {modifiers:?} down");
+        let (window, sent) = wired_window();
+        click_the_globe(&window);
+        running_at(&window, ladder[ladder.len() / 2]);
+        let _ = excursion_commands(&sent);
+        key_down(&window, pressed);
+        assert_eq!(
+            excursion_commands(&sent).0.len(),
+            1,
+            "{what}: the press steps"
+        );
+        for &modifier in modifiers {
+            key_down(&window, modifier);
+        }
+        key_up(&window, released);
+        let_pass(1500);
+        assert_eq!(excursion_commands(&sent).0, [], "{what}: it keeps stepping");
+        for &modifier in modifiers.iter().rev() {
+            key_up(&window, modifier);
+        }
     }
 }
 

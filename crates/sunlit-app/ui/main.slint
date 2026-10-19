@@ -1860,6 +1860,12 @@ export component MainWindow inherits Window {
         property <bool> key-shift;
         property <bool> key-control;
         property <bool> key-altgr;
+        // Ctrl and Alt by their keys' own events: on Windows, Slint reports
+        // neither in the modifiers of a key whose text Ctrl + Alt changed as
+        // AltGr would.
+        property <bool> left-control-down;
+        property <bool> right-control-down;
+        property <bool> alt-down;
         // The modifiers, as `modifiers-of` counts them, of the last press or
         // release of each key held by its text: while it is held, its press's.
         property <int> w-under;
@@ -1908,6 +1914,9 @@ export component MainWindow inherits Window {
             image-container.key-shift = false;
             image-container.key-control = false;
             image-container.key-altgr = false;
+            image-container.left-control-down = false;
+            image-container.right-control-down = false;
+            image-container.alt-down = false;
             image-container.key-shuttle = 0;
         }
 
@@ -1931,10 +1940,13 @@ export component MainWindow inherits Window {
             return 0;
         }
 
-        // Shift, Alt and AltGr, the modifiers that change the text a key
-        // gives, as one number that differs whenever one of them does.
+        // Shift, Alt, and AltGr or Ctrl + Alt, the modifiers that change the
+        // text a key gives, as one number that differs whenever one of them
+        // does.
         function modifiers-of(event: KeyEvent) -> int {
-            return (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (image-container.key-altgr ? 4 : 0);
+            let alt = event.modifiers.alt || image-container.alt-down;
+            let control = event.modifiers.control || image-container.left-control-down || image-container.right-control-down;
+            return (event.modifiers.shift ? 1 : 0) + (alt ? 2 : 0) + (image-container.key-altgr || (control && alt) ? 4 : 0);
         }
 
         function let-go-of-keys-pressed-under-other-modifiers(modifiers: int) {
@@ -1983,6 +1995,15 @@ export component MainWindow inherits Window {
             }
             if event.text == Key.Control || event.text == Key.ControlR {
                 image-container.key-control = down;
+                if event.text == Key.Control {
+                    image-container.left-control-down = down;
+                } else {
+                    image-container.right-control-down = down;
+                }
+                return false;
+            }
+            if event.text == Key.Alt {
+                image-container.alt-down = down;
                 return false;
             }
             // Slint counts AltGr in no modifier of a key event.
@@ -2078,7 +2099,7 @@ export component MainWindow inherits Window {
                 // - into _ and AltGr turns q into @, so a release nothing
                 // matches lets go of the keys held by text that went down
                 // under other modifiers than those down now.
-                if !down && event.text != Key.Alt && event.text != Key.Meta && event.text != Key.MetaR {
+                if !down && event.text != Key.Meta && event.text != Key.MetaR {
                     image-container.let-go-of-keys-pressed-under-other-modifiers(modifiers);
                 }
                 return false;

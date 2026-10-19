@@ -289,4 +289,17 @@ Two proposals from the rebase onto the Sun-fixed camera, confirmed by the user o
 
 ## Validation Record
 
-None yet.
+### Round 1
+
+Validator round 1 ran on 2aa2eca..88f07ec in two halves: Part A found no major and 6 minor findings; Parts B to D found 1 major and 3 minor, with the gates green there (core lib 680, bc7 4, engine 135, golden 25, render_pipeline 51, shading 7, soak 1, app lib 115, slint_ui 78, xtask 693). Every fix below has a case that failed with the fix taken out.
+
+- Major, an excursion in another month broke a deferred wallpaper's `TILE_WAIT` bound: the preview's draws and the owed publish put their months in force in turn, each change renewing the wait, and the publish's tile checks judged whichever month the last draw left. Fixed in 9bd589a, departure 8, with two cases in `tests/engine/readiness.rs`, the preview shown and hidden.
+- Minor m1, a running 300 ms ease overwrote every writer of its values but the sticks, the roll ring and the held zoom button, worst after the Sun-fixed switch. Fixed in 656efe6: an ease lets go of a field that no longer holds what its last tick left there, and of the held longitude when the switch changes what it means; slint_ui cases for the switch and a globe drag.
+- Minor m2, the first-use tip counted the keys and a bare click on the globe as uses of a mouse gesture. Fixed in 656efe6: a drag on the globe counts once it has moved, and the wheel; a slint_ui case.
+- Minor m3, three comments gave the roll's sign as clockwise. Fixed in e423f2e; the code was right.
+- Minor m4, the sheet the panel's ? button opened did not close on Esc while a sidebar control had the keyboard. Fixed in 656efe6: the button focuses the preview's `FocusScope`; a slint_ui case.
+- Minor m5, `docs/usage.md` said the keys work once the globe has been clicked. Fixed in e423f2e.
+- Minor m6, `TimeZoneChoice` sat between `QualityTier` and its doc comment. Fixed in e423f2e.
+- Minor m7, the custom date's reasoning in `scene/month.rs` and in two docs. Fixed in e423f2e. `PREFETCH_WINDOW` now argues from a fixed time and an excursion: a day holds for the slider and for a Clock run, while a jump, a skip and a Date run can outrun it and draw the new month's floor until its tiles land, which the plan's Risks already accept and Step E watches; the behavior is unchanged.
+- Minor m8, the motion observer took a run's pause, where it hands over from the resolved camera and the Sun to the held camera, for a move at thousands of degrees a second, and an export drawn during a run showed it the setting's camera and Sun. Fixed in 07aa5e4: a change of what is watched rebases the watch, and an export's draw computes the wanted set under the preview's sky; a `DragWatch` unit case.
+- Declined by the orchestrator: `overlays_hidden`, `time_bar_pinned` and `time_zone` are saved only at the window's existing save points, like every other setting of the window: decision 5 makes them window settings and asks for no save of their own.

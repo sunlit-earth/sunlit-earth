@@ -562,6 +562,108 @@ fn the_tile_wait_starts_over_when_the_resolution_changes() {
     assert!(rig.harness.wait_for_publish().is_ok());
 }
 
+/// A publish while the preview rests on an excursion in another month waits
+/// for the setting's month's tiles no longer than `TILE_WAIT`, whether the
+/// preview is shown or hidden, and the month in force stays the setting's
+/// while it waits rather than going back and forth with every preview frame.
+/// Once the wallpaper is made from every tile, the preview's month is back.
+fn a_publish_during_an_excursion_in_another_month(name: &str, shown: bool) {
+    use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind, TimeStep};
+
+    let _gpu = gpu();
+    let rig = rig_configured(
+        name,
+        &view(),
+        time::OffsetDateTime::UNIX_EPOCH,
+        build_every_pack,
+        |config| config.every_floor = Some(true),
+    );
+    crate::months::wait_for_every_floor(&rig.harness, Some(&rig.clock));
+    let setting = sunlit_core::scene::month::month_in_force(&view().time, rig.clock.now_utc());
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    for _ in 0..5 {
+        rig.harness
+            .engine
+            .send(EngineCommand::Excursion(ExcursionCommand::Skip(TimeStep {
+                kind: ExcursionKind::Date,
+                forward: true,
+                big: true,
+            })));
+    }
+    let away = (setting + 1) % 12;
+    settled(&rig.harness, "the excursion's month", |r| {
+        r.named.iter().any(|id| id.pack == PackKind::Day(away))
+    });
+    if !shown {
+        rig.harness
+            .engine
+            .send(EngineCommand::SetPreviewEnabled(false));
+    }
+    rig.harness.settle();
+
+    rig.gate.shut();
+    rig.harness.engine.send(EngineCommand::RenderWallpaperNow);
+    report_when(&rig.harness, "the screen's tiles join the set", |r| {
+        r.wanted.len() > before.wanted.len()
+            && r.wanted[..r.in_view]
+                .iter()
+                .any(|id| id.pack == PackKind::Day(setting) && id.key.level == finest())
+    });
+    rig.harness.settle();
+
+    let mut frames = 0;
+    for _ in 0..4 {
+        rig.harness.advance(&rig.clock, TICK);
+        let _ = rig.harness.engine.memory_report();
+        let _ = rig.harness.engine.memory_report();
+        while let Ok(event) = rig.harness.events.try_recv() {
+            frames += usize::from(matches!(event, EngineEvent::PreviewFrame { .. }));
+        }
+        crate::months::assert_month(
+            &tile_report(&rig.harness),
+            setting,
+            None,
+            "while the publish waits",
+        );
+    }
+    assert!(
+        frames <= 1,
+        "the preview was drawn {frames} times in four ticks while nothing moved"
+    );
+
+    rig.harness.advance(
+        &rig.clock,
+        TILE_WAIT.saturating_sub(TICK * 4 + Duration::from_millis(1)),
+    );
+    rig.harness.settle();
+    assert!(
+        rig.sink.publications().is_empty(),
+        "the wallpaper went out before the tile wait was over"
+    );
+    rig.harness.advance(&rig.clock, Duration::from_millis(1));
+    assert!(
+        rig.harness.wait_for_publish().is_ok(),
+        "no publish once the tile wait was over"
+    );
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+    settled(&rig.harness, "the excursion's month again", |r| {
+        r.named.iter().any(|id| id.pack == PackKind::Day(away))
+    });
+}
+
+#[test]
+fn a_publish_during_an_excursion_in_another_month_waits_no_longer_than_the_tile_wait() {
+    a_publish_during_an_excursion_in_another_month("engine_ready_excursion_shown", true);
+}
+
+#[test]
+fn a_publish_during_an_excursion_hidden_in_another_month_waits_no_longer_than_the_tile_wait() {
+    a_publish_during_an_excursion_in_another_month("engine_ready_excursion_hidden", false);
+}
+
 /// The live clock crossing into the next month while a publish waits for its
 /// tiles asks for the new month's tiles at once, though no draw follows: the
 /// publish is what sees the change, and it returns without drawing while it

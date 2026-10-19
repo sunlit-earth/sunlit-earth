@@ -580,6 +580,20 @@ impl Engine {
         self.params.time.instant(self.clock.now_utc())
     }
 
+    /// The instant the month in force follows in a draw at `at`: the time
+    /// setting's while a wallpaper or an export waits for its tiles, since
+    /// they are of the setting's month and the set has one month, and `at`
+    /// otherwise. An excursion in another month is drawn from the setting's
+    /// month meanwhile, rather than the two months taking turns in force and
+    /// each turn starting the tile wait over.
+    fn month_instant(&self, at: time::OffsetDateTime) -> time::OffsetDateTime {
+        if self.wallpaper_shots.is_empty() && self.exports.is_empty() {
+            at
+        } else {
+            self.setting_instant()
+        }
+    }
+
     /// Point the renderer at another texture resolution's set of assets.
     fn set_texture_resolution(&mut self, width: u32) {
         if self.renderer.set_texture_resolution(width) {
@@ -859,7 +873,7 @@ impl Engine {
     /// build of the rest of the year gives way at its next check rather than
     /// running through the frame.
     fn draw(&mut self, at: time::OffsetDateTime) -> (RenderOutcome, SkyState) {
-        self.sync_month(at);
+        self.sync_month(self.month_instant(at));
         self.mark_busy();
         let sky = sky::compute_sky_state_for(at);
         self.want_tiles(&sky);

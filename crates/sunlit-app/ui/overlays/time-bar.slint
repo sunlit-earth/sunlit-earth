@@ -19,6 +19,8 @@ export struct TimeBarView {
     // "Preview".
     state-text: string,
     pill-text: string,
+    // "UTC" while the bar shows UTC, empty in local time.
+    pill-zone: string,
     zone-text: string,
     time-text: string,
     // ":07" while live, empty otherwise.
@@ -482,8 +484,8 @@ export component TimeBar inherits Rectangle {
                 vertical-alignment: center;
             }
 
-            Text {
-                text: root.view.zone-text;
+            if root.view.pill-zone != "" : Text {
+                text: root.view.pill-zone;
                 color: OverlayStyle.dim;
                 font-size: 13px;
                 vertical-alignment: center;

@@ -530,6 +530,12 @@ pub fn refresh(window: &MainWindow) {
         format!("{day} {} \u{b7} {clock}", local.year())
     }
     .into();
+    view.pill_zone = if window.get_time_zone_utc() {
+        "UTC"
+    } else {
+        ""
+    }
+    .into();
     view.zone_text = datetime::zone_label(local.offset()).into();
     view.time_text = clock.into();
     view.seconds_text = seconds.into();

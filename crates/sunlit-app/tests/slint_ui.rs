@@ -4067,6 +4067,35 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
     }
 }
 
+/// The folded pill names the zone only in UTC, where its time would
+/// otherwise be taken for local time.
+#[test]
+fn test_the_folded_pill_names_utc_and_leaves_local_time_plain() {
+    let (window, _sent) = wired_window();
+    let texts = |window: &MainWindow| -> Vec<String> {
+        the_element(window, "TimeBar::pill-row")
+            .query_descendants()
+            .match_inherits("Text")
+            .find_all()
+            .iter()
+            .filter_map(ElementHandle::accessible_label)
+            .map(|label| label.to_string())
+            .collect()
+    };
+    if window.get_time_zone_utc() {
+        window.invoke_time_zone_toggled();
+    }
+    let local = texts(&window);
+    assert!(local.len() >= 2, "the pill's texts: {local:?}");
+    assert!(
+        local.iter().all(|text| !text.contains("UTC")),
+        "local time: {local:?}"
+    );
+    window.invoke_time_zone_toggled();
+    let utc = texts(&window);
+    assert!(utc.iter().any(|text| text == "UTC"), "UTC: {utc:?}");
+}
+
 /// The left and right edges of each row's elements in `column`, top to
 /// bottom, the rows told apart by their vertical middles.
 fn row_spans(column: &ElementHandle, component: &str) -> Vec<(f32, f32)> {

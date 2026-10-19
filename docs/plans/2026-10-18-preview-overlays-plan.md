@@ -319,3 +319,13 @@ Validator round 3 ran on cba3157..b26c80b, verified R2-1 (it took the fix out an
 
 - Minor R3-1, the doc comment on `Engine::draw` said the wanted set is computed under the preview's sky whichever is drawn, which since ef1092c leaves out the setting's month and Sun while outputs wait; departure 9 also named only the preview's day under the setting's night. Both corrected.
 - Minor R3-2, a publish owed during an excursion that ends in `report_wallpaper(Err)`, from `check_supported` or `plan_wallpaper` after its wait, cleared the shots without marking the frame dirty, so a paused excursion kept the setting's month and Sun in its wanted set until something else dirtied it. `report_wallpaper` now marks the frame dirty while there is an excursion. No case: the path needs a sink that stops being supported between planning a publish and paying for it.
+
+### Step E, round 1
+
+The user's first look at the overlays found three layout bugs; a sweep of every hover hint in both platforms' key names and of the shortcut sheet with an offscreen render found two more of the same kind. Each fix has a slint_ui case that failed with the fix taken out, and the gates were green at 554e1bd (core lib 681, bc7 4, engine 138, golden 25, render_pipeline 51, shading 7, soak 1, app lib 116, slint_ui 86, xtask 693).
+
+- The second line of a wrapping gesture ("Drag the globe with the left button") ran over the hint's bottom border, in the orbit, look and frame hints. Slint 1.18 measures the gesture section, made by an `if`, at its own preferred width, so the text was measured on one line. Fixed in 9ced79d: the row places the glyph, the text and the keys by hand and takes the text's height at the width it has.
+- Key caps overlapped, Ctrl (⌘) and the arrows of the frame hint: the row squeezed them to 18 px to make room for the text. Fixed in 9ced79d: the keys keep their full width on one line at the right, the gesture text wraps beside them, and a `KeyCap` no longer narrows below its label.
+- Play and everything around it stood 200 px right of the tracks' center and the forward ruler ran under the Live pill: the transport row had no width, so its centering spread over the whole bar. Fixed in 2bd7852.
+- Found in the sweep: in the hints with keys and no gesture (the sheet's F1 or ⌘ ?) and in the zoom hint the caps stretched across the row. Fixed with the hint's row in 9ced79d.
+- Found in the sweep: in a narrow window the shortcut sheet's keyboard descriptions ran past the card's right edge. Fixed in 9a2a270: the rows wrap their text, with equal columns as in the mockup.

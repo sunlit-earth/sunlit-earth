@@ -587,11 +587,16 @@ impl Engine {
     /// month meanwhile, rather than the two months taking turns in force and
     /// each turn starting the tile wait over.
     fn month_instant(&self, at: time::OffsetDateTime) -> time::OffsetDateTime {
-        if self.wallpaper_shots.is_empty() && self.exports.is_empty() {
-            at
-        } else {
+        if self.outputs_waiting() {
             self.setting_instant()
+        } else {
+            at
         }
+    }
+
+    /// Whether a wallpaper or an export waits for its tiles.
+    fn outputs_waiting(&self) -> bool {
+        !self.wallpaper_shots.is_empty() || !self.exports.is_empty()
     }
 
     /// Point the renderer at another texture resolution's set of assets.
@@ -946,11 +951,20 @@ impl Engine {
     /// in the Sun-fixed mode the read-ahead follows the Earth's turn; outside
     /// one it watches the held camera alone, as a drag always was. A run
     /// starting or stopping changes what is watched, which is not a move.
+    ///
+    /// In Blend mode the set has one Sun to choose the day and the night by:
+    /// the setting's while a wallpaper or an export waits, as the month in
+    /// force is (plan departure 9), and the preview's otherwise.
     fn want_tiles(&mut self, sky: &SkyState) {
         let exports_sky = if self.excursion.is_some() {
             sky::compute_sky_state_for(self.setting_instant())
         } else {
             sky.clone()
+        };
+        let sun = if self.outputs_waiting() {
+            exports_sky.sun_direction
+        } else {
+            sky.sun_direction
         };
         let running = self.excursion.as_ref().is_some_and(Excursion::is_running);
         let Some(surface) = &mut self.surface else {
@@ -980,7 +994,7 @@ impl Engine {
             outputs: &outputs,
             month: surface.month(),
             ahead: surface.ahead(),
-            surfaces: surfaces_for(&self.params, sky.sun_direction),
+            surfaces: surfaces_for(&self.params, sun),
             texture_resolution: self.renderer.texture_resolution(),
             drag: surface.drag(
                 &if running {

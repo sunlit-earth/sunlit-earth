@@ -664,6 +664,56 @@ fn a_publish_during_an_excursion_hidden_in_another_month_waits_no_longer_than_th
     a_publish_during_an_excursion_in_another_month("engine_ready_excursion_hidden", false);
 }
 
+/// In Blend mode a wallpaper made while the preview rests twelve hours away
+/// from the setting, its Sun on the far side of the globe, waits for the day
+/// and night tiles the setting's Sun lights and darkens, and is the one the
+/// setting makes with no excursion, pixel for pixel. The excursion's publish
+/// comes first, so none of the screen's tiles are resident from the other.
+#[test]
+fn a_publish_in_blend_mode_during_an_excursion_wants_the_settings_day_and_night() {
+    use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind, TimeStep};
+
+    let _gpu = gpu();
+    let blend = SceneParams {
+        texture_index: 3,
+        ..view()
+    };
+    let rig = rig("engine_ready_excursion_blend", &blend, |_| {});
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    for _ in 0..12 {
+        rig.harness
+            .engine
+            .send(EngineCommand::Excursion(ExcursionCommand::Skip(TimeStep {
+                kind: ExcursionKind::Clock,
+                forward: true,
+                big: true,
+            })));
+    }
+    settled(&rig.harness, "the excursion's tiles", |r| {
+        r.wanted != before.wanted
+    });
+    rig.harness.settle();
+
+    assert!(rig.harness.publish().is_ok());
+    rig.harness
+        .engine
+        .send(EngineCommand::Excursion(ExcursionCommand::End));
+    rig.harness.settle();
+    assert!(rig.harness.publish().is_ok());
+    assert_eq!(
+        rig.sink.publications().len(),
+        2,
+        "the premise: neither publish was made again"
+    );
+    assert!(
+        published(&rig, 0) == published(&rig, 1),
+        "the wallpaper made during the excursion was not drawn from the tiles the setting's \
+         Sun wants"
+    );
+}
+
 /// The live clock crossing into the next month while a publish waits for its
 /// tiles asks for the new month's tiles at once, though no draw follows: the
 /// publish is what sees the change, and it returns without drawing while it

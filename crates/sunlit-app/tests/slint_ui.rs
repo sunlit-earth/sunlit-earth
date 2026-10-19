@@ -3411,3 +3411,199 @@ fn test_the_time_keys_drive_the_transport() {
         [play(120), ExcursionCommand::Pause]
     );
 }
+
+/// The left, top, right and bottom edges of an element in the window.
+fn edges(element: &ElementHandle) -> [f32; 4] {
+    let at = element.absolute_position();
+    let size = element.size();
+    [at.x, at.y, at.x + size.width, at.y + size.height]
+}
+
+/// The one element `id` under `parent`.
+fn the_descendant(parent: &ElementHandle, id: &str) -> ElementHandle {
+    let found = parent.query_descendants().match_id(id).find_all();
+    assert_eq!(found.len(), 1, "expected exactly one '{id}'");
+    found.into_iter().next().expect("one element")
+}
+
+/// Rest the pointer on `control` until its hover hint shows, and return the
+/// hint.
+fn hint_over(window: &MainWindow, control: &ElementHandle) -> ElementHandle {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: point_in(control, 0.5, 0.5),
+        });
+    for _ in 0..12 {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+    }
+    the_element(window, "MainWindow::hint")
+}
+
+/// Every key cap under `parent`, row by row and left to right, each wide
+/// enough for its label and clear of the next one in its row.
+fn caps_holding_their_labels(parent: &ElementHandle, what: &str) -> Vec<ElementHandle> {
+    let mut caps = parent
+        .query_descendants()
+        .match_inherits("KeyCap")
+        .find_all();
+    caps.sort_by(|a, b| {
+        let (a, b) = (a.absolute_position(), b.absolute_position());
+        a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x))
+    });
+    for cap in &caps {
+        let label = the_descendant(cap, "KeyCap::label");
+        let [cap_left, _, cap_right, _] = edges(cap);
+        let [label_left, _, label_right, _] = edges(&label);
+        assert!(
+            label_left >= cap_left + 4.0 && label_right <= cap_right - 4.0,
+            "{what}: a cap {} px wide holds a label {} px wide",
+            cap_right - cap_left,
+            label_right - label_left
+        );
+    }
+    for pair in caps.windows(2) {
+        let [_, top, right, _] = edges(&pair[0]);
+        let [next_left, next_top, _, _] = edges(&pair[1]);
+        assert!(
+            (top - next_top).abs() > 0.5 || right <= next_left,
+            "{what}: two caps overlap"
+        );
+    }
+    caps
+}
+
+/// The overlay controls whose hints carry keys, most of them a mouse gesture
+/// too.
+const HINTED_CONTROLS: [&str; 8] = [
+    "CameraPanel::orbit",
+    "CameraPanel::zoom-in",
+    "CameraPanel::zoom-slider",
+    "CameraPanel::zoom-out",
+    "CameraPanel::look",
+    "CameraPanel::frame",
+    "CameraPanel::help-button",
+    "CameraPanel::hide-button",
+];
+
+/// Every hint's gesture and keys stay inside its border in both platforms'
+/// key names: the keys keep their width on one line at the right, and the
+/// gesture text takes the room left beside them.
+#[test]
+fn test_a_hints_gesture_and_keys_stay_inside_it() {
+    for macos in [false, true] {
+        let (window, _sent) = wired_window();
+        window
+            .global::<sunlit_earth::OverlayHints>()
+            .set_is_macos(macos);
+        for id in HINTED_CONTROLS {
+            let what = format!("{id} (macOS: {macos})");
+            let hint = hint_over(&window, &the_element(&window, id));
+            let [left, top, right, bottom] = edges(&hint);
+            let row = the_descendant(&hint, "OverlayHint::gesture-row");
+            let [row_left, row_top, row_right, row_bottom] = edges(&row);
+            assert!(
+                row_left >= left + 10.0 - 0.5
+                    && row_right <= right - 10.0 + 0.5
+                    && row_top >= top
+                    && row_bottom <= bottom - 8.0 + 0.5,
+                "{what}: the gesture row runs out of the hint"
+            );
+            let gesture = the_descendant(&hint, "OverlayHint::gesture");
+            let [_, text_top, text_right, text_bottom] = edges(&gesture);
+            assert!(
+                text_top >= row_top - 0.5 && text_bottom <= row_bottom + 0.5,
+                "{what}: the gesture text spills out of its row"
+            );
+            let caps = caps_holding_their_labels(&hint, &what);
+            assert!(!caps.is_empty(), "{what}: the hint names its keys");
+            assert!(
+                text_right <= edges(&caps[0])[0],
+                "{what}: the gesture text runs under the keys"
+            );
+            assert!(
+                edges(&caps[caps.len() - 1])[2] <= row_right + 0.5,
+                "{what}: the keys run out of the row"
+            );
+        }
+    }
+}
+
+/// A gesture too long for the room beside the keys wraps, and the hint grows
+/// to hold every line of it.
+#[test]
+fn test_a_wrapping_gesture_keeps_its_hint_around_it() {
+    for macos in [false, true] {
+        let (window, _sent) = wired_window();
+        window
+            .global::<sunlit_earth::OverlayHints>()
+            .set_is_macos(macos);
+        for id in ["CameraPanel::orbit", "CameraPanel::frame"] {
+            let hint = hint_over(&window, &the_element(&window, id));
+            let line = the_descendant(&hint, "OverlayHint::title").size().height;
+            let gesture = the_descendant(&hint, "OverlayHint::gesture");
+            assert!(
+                gesture.size().height >= 2.0 * line - 0.5,
+                "{id} (macOS: {macos}): the gesture is {} px high, one line {line} px",
+                gesture.size().height
+            );
+            assert!(
+                edges(&gesture)[3] <= edges(&hint)[3] - 8.0 + 0.5,
+                "{id} (macOS: {macos}): the gesture runs over the hint's border"
+            );
+        }
+    }
+}
+
+/// Every description on the shortcut sheet stays on the card in a narrow
+/// window, wrapping where it must, and every key cap holds its label.
+#[test]
+fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
+    for macos in [false, true] {
+        let window = create_window();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(800, 5000));
+        window
+            .global::<sunlit_earth::OverlayHints>()
+            .set_is_macos(macos);
+        window.set_shortcut_sheet_open(true);
+        let card = the_element(&window, "ShortcutSheet::card");
+        let [left, _, right, bottom] = edges(&card);
+        let texts = card
+            .query_descendants()
+            .match_inherits("SheetText")
+            .find_all();
+        assert!(texts.len() > 10, "the sheet lists its gestures and keys");
+        for text in &texts {
+            let [text_left, _, text_right, text_bottom] = edges(text);
+            assert!(
+                text_left >= left + 22.0 - 0.5
+                    && text_right <= right - 22.0 + 0.5
+                    && text_bottom <= bottom,
+                "{:?} (macOS: {macos}) runs off the card",
+                text.accessible_label()
+            );
+        }
+        caps_holding_their_labels(&card, &format!("the sheet (macOS: {macos})"));
+    }
+}
+
+/// The transport stands centered over the tracks whatever the bar's width.
+#[test]
+fn test_play_stands_centered_over_the_tracks() {
+    for width in [1400, 1000] {
+        let (window, _sent) = wired_window();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        open_the_bar(&window);
+        let [play_left, _, play_right, _] = edges(&the_labeled(&window, "Play"));
+        let [track_left, _, track_right, _] = edges(&the_element(&window, "TimeBar::day-track"));
+        approx::assert_abs_diff_eq!(
+            f32::midpoint(play_left, play_right),
+            f32::midpoint(track_left, track_right),
+            epsilon = 1.5
+        );
+    }
+}

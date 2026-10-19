@@ -4860,3 +4860,49 @@ fn test_the_speed_list_aligns_speeds_right_and_meanings_left() {
         }
     }
 }
+
+/// A click outside the date or the time picker closes it as Cancel does: the
+/// time setting stays as it was, nothing reaches the engine, and the bar
+/// folds again once the pointer has left it.
+#[test]
+fn test_a_click_outside_a_picker_closes_it_as_cancel_does() {
+    let away = slint::LogicalPosition::new(900.0, 300.0);
+    for label in ["Date", "Time"] {
+        let (window, sent) = wired_window();
+        let setting = window.get_datetime();
+        let _ = excursion_commands(&sent);
+        open_the_bar(&window);
+        press_at(&window, point_in(&the_labeled(&window, label), 0.5, 0.5));
+        assert_eq!(
+            all_of(&window, "Dialog").len(),
+            1,
+            "{label}: the picker opens"
+        );
+
+        press_at(&window, away);
+        let_pass(100);
+        assert!(
+            all_of(&window, "Dialog").is_empty(),
+            "{label}: a click outside closes the picker"
+        );
+        assert_eq!(
+            window.get_datetime(),
+            setting,
+            "{label}: the setting changed"
+        );
+        let (commands, pushed) = excursion_commands(&sent);
+        assert!(
+            commands.is_empty() && pushed.is_none(),
+            "{label}: the close reached the engine: {commands:?}"
+        );
+
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: away });
+        let_pass(1000);
+        assert!(
+            the_element(&window, "MainWindow::time-bar").size().height < 40.0,
+            "{label}: the bar stays open after its picker closed"
+        );
+    }
+}

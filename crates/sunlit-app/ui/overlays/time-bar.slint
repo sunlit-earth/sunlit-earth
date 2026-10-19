@@ -375,7 +375,7 @@ export component TimeBar inherits Rectangle {
     property <bool> hover-open;
     property <duration> left-at;
     property <bool> rates-open;
-    property <bool> picker-open;
+    property <bool> picker-open: date-picker.is-open || time-picker.is-open;
     property <{ width: length, height: length }> date-picker-size;
     property <{ width: length, height: length }> time-picker-size;
     property <length> left-column: 12px;
@@ -927,7 +927,6 @@ export component TimeBar inherits Rectangle {
                         accessible-role: button;
                         accessible-label: "Time";
                         clicked => {
-                            root.picker-open = true;
                             time-picker.show();
                         }
                         changed has-hover => { root.time-hovered = self.has-hover; }
@@ -1019,7 +1018,6 @@ export component TimeBar inherits Rectangle {
                         accessible-role: button;
                         accessible-label: "Date";
                         clicked => {
-                            root.picker-open = true;
                             date-picker.show();
                         }
                         changed has-hover => { root.date-hovered = self.has-hover; }
@@ -1181,30 +1179,30 @@ export component TimeBar inherits Rectangle {
         max(-height - 8px, root.preview-top + 6px)
     }
 
+    // A click outside a picker closes it as Cancel does, since nothing
+    // applies before OK.
     date-picker := DatePickerPopup {
         x: root.picker-x(self.width);
         y: root.picker-y(self.height);
+        close-policy: PopupClosePolicy.close-on-click-outside;
         init => { root.date-picker-size = { width: self.width, height: self.height }; }
         title: "Date of the time setting";
         date: { year: root.view.year, month: root.view.month, day: root.view.day };
         accepted(date) => {
-            root.picker-open = false;
             root.exact-date(date.year, date.month, date.day);
         }
-        canceled => { root.picker-open = false; }
     }
 
     time-picker := TimePickerPopup {
         x: root.picker-x(self.width);
         y: root.picker-y(self.height);
+        close-policy: PopupClosePolicy.close-on-click-outside;
         init => { root.time-picker-size = { width: self.width, height: self.height }; }
         title: "Time of the time setting";
         use-24-hour-format: true;
         time: { hour: root.view.hour, minute: root.view.minute, second: 0 };
         accepted(time) => {
-            root.picker-open = false;
             root.exact-time(time.hour, time.minute);
         }
-        canceled => { root.picker-open = false; }
     }
 }

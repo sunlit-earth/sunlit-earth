@@ -381,6 +381,12 @@ pub struct AppConfig {
     pub custom_day_of_year: f32,
     pub custom_year: i32,
 
+    // The controls over the preview
+    /// Whether the camera panel and the time bar are hidden, leaving a button
+    /// in the corner to bring them back. A setting of the window, not of what
+    /// is drawn.
+    pub overlays_hidden: bool,
+
     // Window geometry (None on first launch — let the OS place the window)
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
@@ -500,6 +506,7 @@ impl Default for AppConfig {
             custom_hour: 12.0,
             custom_day_of_year: 1.0,
             custom_year: default_custom_year(),
+            overlays_hidden: false,
             window_x: None,
             window_y: None,
             window_width: None,
@@ -898,6 +905,7 @@ mod tests {
             custom_hour: 14.5,
             custom_day_of_year: 76.0,
             custom_year: 2030,
+            overlays_hidden: true,
             window_x: Some(100),
             window_y: Some(200),
             window_width: Some(1024),
@@ -1145,6 +1153,7 @@ sky_fov = 111.0
             custom_hour: 8.25,
             custom_day_of_year: 200.0,
             custom_year: 2020,
+            overlays_hidden: true,
             window_x: Some(50),
             window_y: Some(75),
             window_width: Some(800),

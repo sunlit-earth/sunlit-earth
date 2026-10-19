@@ -10,8 +10,8 @@ use crate::{
     AtmosphereSettings, CameraOrientationSettings, CameraPositionSettings, CameraReset,
     CameraStick, CelestialSettings, CloudCoverSettings, CloudSettings, ColorCorrectionSettings,
     ColorText, DateTimeSettings, FramingSettings, HazeSettings, LightingSettings, MainWindow,
-    MoonSettings, NightglowSettings, ParsedColor, RayleighSettings, SceneSettings, SkySettings,
-    StarSettings, SunSettings, SunriseBandSettings, TextureColorSettings,
+    MoonSettings, NightglowSettings, OverlayHints, ParsedColor, RayleighSettings, SceneSettings,
+    SkySettings, StarSettings, SunSettings, SunriseBandSettings, TextureColorSettings,
 };
 use sunlit_core::color::Rgb8;
 use sunlit_core::config::{self, AppConfig};
@@ -323,6 +323,9 @@ fn reset_targets(defaults: &SceneSettings, which: CameraReset) -> Vec<(EaseField
 /// report, so the camera moves by the time that passed rather than by the
 /// number of ticks.
 fn register_camera_panel(window: &MainWindow, link: &EngineLink) {
+    window
+        .global::<OverlayHints>()
+        .set_is_macos(cfg!(target_os = "macos"));
     let eases = SharedEases::default();
 
     let window_weak = window.as_weak();
@@ -807,6 +810,7 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     update_solar_time_label(window);
 
     window.set_auto_refresh_enabled(config.auto_refresh_enabled);
+    window.set_overlays_hidden(config.overlays_hidden);
     #[expect(
         clippy::cast_precision_loss,
         reason = "an interval in minutes is far inside the f32 mantissa"
@@ -1143,6 +1147,7 @@ pub fn read_config_from_window_onto(
     let mut config = AppConfig {
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
         auto_refresh_interval_minutes: slider_u32(window.get_auto_refresh_interval()),
+        overlays_hidden: window.get_overlays_hidden(),
         texture_resolution,
         display_mode: displays::mode_from_window(window),
         anchor_monitor: displays::anchor_to_store(window, &stored.anchor_monitor),

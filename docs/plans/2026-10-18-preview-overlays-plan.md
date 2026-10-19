@@ -266,6 +266,8 @@ Revert the change. Part A leaves `overlays_hidden` in the config, which an older
 
 2. An idle control drops to 30% opacity without the faint dark drop shadow decision 2 asks for. Slint draws a drop shadow for a rectangle's shape only, not for a glyph, an SVG icon or a path, and the controls that most need contrast over a bright globe (the N, the ticks, the knobs' rims) are those. The fade alone is what the panel does when idle; Step E will show whether it needs more over a bright day side.
 
+3. H, which toggles, is read in the `FocusScope`'s `key-pressed` rather than declared as a `KeyBinding` (decision 4). A `KeyBinding` fires on every auto-repeat and does not see the event, so a held H would flicker the overlays; `key-pressed` sees `repeat` and toggles once per press. N, F1, Ctrl + ? and Esc stay `KeyBinding`s, since repeating them does no harm.
+
 ## Open items
 
 The user settled the questions of the first draft on 2026-10-18: the drags on the globe stay as they are, the bar has no year stepper, the sidebar keeps its Date / Time group (decision 8), playback never reaches the wallpaper and pauses when the window closes (decision 6), and the bar's edits are the time setting (decisions 5 and 7).

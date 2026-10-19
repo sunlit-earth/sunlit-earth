@@ -1,12 +1,14 @@
 import { Slider, Button, Palette, ScrollView } from "std-widgets.slint";
 import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, SettingCombo, SettingHeading, SettingGroup } from "widgets.slint";
-import { OverlayHint, OverlayHints, GestureTip } from "overlays/common.slint";
+import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } from "overlays/common.slint";
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
+import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
 export { TrayIcon } from "tray.slint";
 export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
+export { OverlayHints } from "overlays/common.slint";
 
 // The settings behind the Advanced section, one struct per group, nested the
 // way the panel nests its subsections. The nesting is the one statement of
@@ -165,6 +167,7 @@ export struct SceneSettings {
 }
 
 export component MainWindow inherits Window {
+    forward-focus: preview-keys;
     title: "Sunlit Earth " + root.version;
     // The SVG master rather than a baked raster: Slint asks for the icon at 64
     // logical pixels times the scale factor, so a vector source lands exactly
@@ -255,6 +258,12 @@ export component MainWindow inherits Window {
     callback camera-zoom-rate(int, float);
     callback camera-ease-tick(float);
     in property <bool> camera-easing;
+    // Whether the camera panel and the time bar are hidden behind the button
+    // that brings them back, which H toggles. Saved with the window's other
+    // settings.
+    in-out property <bool> overlays-hidden;
+    // The sheet of every gesture and shortcut, which F1 or Ctrl + ? opens.
+    in-out property <bool> shortcut-sheet-open;
 
     callback load-defaults();
     callback reset();
@@ -1759,11 +1768,165 @@ export component MainWindow inherits Window {
         property <bool> right-held: false;
         property <bool> middle-held: false;
 
+        // The keys held down for the controls that run while held: the
+        // arrows, + and -, Q and E, and the modifiers that turn the arrows
+        // from orbit into look or frame.
+        property <bool> key-left;
+        property <bool> key-right;
+        property <bool> key-up;
+        property <bool> key-down;
+        property <bool> key-plus;
+        property <bool> key-minus;
+        property <bool> key-q;
+        property <bool> key-e;
+        property <bool> key-shift;
+        property <bool> key-control;
+        property <bool> arrows-held: self.key-left || self.key-right || self.key-up || self.key-down;
+        property <bool> any-key-held: self.arrows-held || self.key-plus || self.key-minus || self.key-q || self.key-e;
+        // The control the held keys work, by the name of its gesture.
+        property <string> key-gesture: self.arrows-held ? (self.key-control ? "frame" : self.key-shift ? "look" : "orbit")
+            : self.key-q || self.key-e ? "roll"
+            : self.key-plus || self.key-minus ? "zoom"
+            : "";
+        property <duration> key-tick;
+
+        function release-keys() {
+            image-container.key-left = false;
+            image-container.key-right = false;
+            image-container.key-up = false;
+            image-container.key-down = false;
+            image-container.key-plus = false;
+            image-container.key-minus = false;
+            image-container.key-q = false;
+            image-container.key-e = false;
+            image-container.key-shift = false;
+            image-container.key-control = false;
+        }
+
+        // Track a key going down or up. Returns whether the key is one of
+        // the preview's, so the others go on to the window.
+        function track-key(event: KeyEvent, down: bool) -> bool {
+            if down && !image-container.any-key-held {
+                image-container.key-tick = animation-tick();
+            }
+            image-container.key-shift = event.modifiers.shift;
+            image-container.key-control = event.modifiers.control;
+            if event.text == Key.Shift || event.text == Key.ShiftR {
+                image-container.key-shift = down;
+                return false;
+            }
+            if event.text == Key.Control || event.text == Key.ControlR {
+                image-container.key-control = down;
+                return false;
+            }
+            if event.text == Key.LeftArrow {
+                image-container.key-left = down;
+            } else if event.text == Key.RightArrow {
+                image-container.key-right = down;
+            } else if event.text == Key.UpArrow {
+                image-container.key-up = down;
+            } else if event.text == Key.DownArrow {
+                image-container.key-down = down;
+            } else if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                return false;
+            } else if event.text == "+" || event.text == "=" {
+                image-container.key-plus = down;
+            } else if event.text == "-" {
+                image-container.key-minus = down;
+            } else if event.text.to-lowercase() == "q" {
+                image-container.key-q = down;
+            } else if event.text.to-lowercase() == "e" {
+                image-container.key-e = down;
+            } else if event.text.to-lowercase() == "h" {
+                if down && !event.repeat {
+                    root.overlays-hidden = !root.overlays-hidden;
+                }
+            } else {
+                return false;
+            }
+            return true;
+        }
+
+        // Every shortcut of the preview. A click on the globe gives it the
+        // focus, and the window forwards its own focus here when it opens.
+        preview-keys := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            focus-on-click: false;
+
+            KeyBinding {
+                keys: @keys(N);
+                activated => { root.camera-reset(CameraReset.north); }
+            }
+
+            KeyBinding {
+                keys: @keys(F1);
+                activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
+            }
+
+            KeyBinding {
+                keys: @keys(Control + Shift? + "?");
+                activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
+            }
+
+            KeyBinding {
+                keys: @keys(Escape);
+                activated => { root.shortcut-sheet-open = false; }
+            }
+
+            key-pressed(event) => {
+                if image-container.track-key(event, true) {
+                    image-container.note-gesture(image-container.key-gesture);
+                    return accept;
+                }
+                return reject;
+            }
+
+            key-released(event) => {
+                return image-container.track-key(event, false) ? accept : reject;
+            }
+
+            focus-lost => {
+                image-container.release-keys();
+            }
+        }
+
+        Timer {
+            interval: 16ms;
+            running: image-container.any-key-held;
+            triggered => {
+                let now = animation-tick();
+                let seconds = (now - image-container.key-tick) / 1s;
+                image-container.key-tick = now;
+                if image-container.arrows-held {
+                    // The square root of the 0.6 the keys run at, since a
+                    // stick squares its deflection.
+                    let reach = 0.7746;
+                    let x = ((image-container.key-right ? 1 : 0) - (image-container.key-left ? 1 : 0)) * reach;
+                    let y = ((image-container.key-up ? 1 : 0) - (image-container.key-down ? 1 : 0)) * reach;
+                    root.camera-stick(
+                        image-container.key-control ? CameraStick.frame : image-container.key-shift ? CameraStick.look : CameraStick.orbit,
+                        x,
+                        y,
+                        seconds);
+                }
+                if image-container.key-plus != image-container.key-minus {
+                    root.camera-zoom-rate(image-container.key-plus ? 1 : -1, seconds);
+                }
+                if image-container.key-q != image-container.key-e {
+                    root.camera-roll((image-container.key-e ? 60 : -60) * seconds);
+                }
+            }
+        }
+
         viewport-touch := TouchArea {
             width: parent.width;
             height: parent.height;
 
             pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    preview-keys.focus();
+                }
                 if event.button == PointerEventButton.left {
                     image-container.left-held = event.kind == PointerEventKind.down;
                     if event.kind == PointerEventKind.down {
@@ -1933,11 +2096,12 @@ export component MainWindow inherits Window {
                 || root.camera-orientation.pitch != root.defaults.camera-orientation.pitch;
             frame-modified: root.framing.offset-x != root.defaults.framing.offset-x
                 || root.framing.offset-y != root.defaults.framing.offset-y;
-            lit-orbit: image-container.gesture == "orbit";
-            lit-roll: image-container.gesture == "roll";
-            lit-zoom: image-container.wheel-turning;
-            lit-look: image-container.gesture == "look";
-            lit-frame: image-container.gesture == "frame";
+            visible: !root.overlays-hidden;
+            lit-orbit: image-container.gesture == "orbit" || image-container.key-gesture == "orbit";
+            lit-roll: image-container.gesture == "roll" || image-container.key-q || image-container.key-e;
+            lit-zoom: image-container.wheel-turning || image-container.key-plus || image-container.key-minus;
+            lit-look: image-container.gesture == "look" || image-container.key-gesture == "look";
+            lit-frame: image-container.gesture == "frame" || image-container.key-gesture == "frame";
             stick(which, x, y, seconds) => { root.camera-stick(which, x, y, seconds); }
             orbit-step(right, up) => { root.camera-orbit-step(right, up); }
             roll(degrees) => { root.camera-roll(degrees); }
@@ -1946,11 +2110,31 @@ export component MainWindow inherits Window {
             zoom-rate(direction, seconds) => { root.camera-zoom-rate(direction, seconds); }
             zoom-changed => { root.sliders-changed(); }
             used(control) => { image-container.teach(control); }
+            show-shortcuts => { root.shortcut-sheet-open = true; }
+            hide-overlays => { root.overlays-hidden = true; }
+        }
+
+        show-button := OverlayButton {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: OverlayStyle.border;
+            background: self.hovered ? OverlayStyle.faint : OverlayStyle.panel;
+            visible: root.overlays-hidden;
+            icon: @image-url("icons/eye-off.svg");
+            icon-width: 16px;
+            icon-height: 12px;
+            clicked => { root.overlays-hidden = false; }
         }
 
         // The hover hint of whichever overlay control the pointer rests on,
         // after 450 ms, left of the camera panel.
-        property <string> hint-id: camera-panel.any-held ? "" : camera-panel.hovered-hint;
+        property <string> hint-id: root.shortcut-sheet-open ? ""
+            : root.overlays-hidden ? (show-button.hovered ? "show" : "")
+            : camera-panel.any-held ? "" : camera-panel.hovered-hint;
         property <string> shown-hint;
         property <duration> hint-since;
         changed hint-id => {
@@ -1970,10 +2154,16 @@ export component MainWindow inherits Window {
         if image-container.shown-hint != "" : hint := OverlayHint {
             content: OverlayHints.content(image-container.shown-hint);
             x: camera-panel.x - self.width - 12px;
-            y: clamp(camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
+            y: clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
         }
 
-        if image-container.tip-shown : GestureTip {
+        if root.shortcut-sheet-open : shortcut-sheet := ShortcutSheet {
+            width: parent.width;
+            height: parent.height;
+            close => { root.shortcut-sheet-open = false; }
+        }
+
+        if image-container.tip-shown && !root.overlays-hidden : GestureTip {
             x: (parent.width - self.width) / 2;
             y: 14px;
             mouse: image-container.tip-mouse;

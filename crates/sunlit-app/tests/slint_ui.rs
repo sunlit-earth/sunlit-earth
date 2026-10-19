@@ -2813,3 +2813,122 @@ fn test_the_zoom_slider_snaps_to_the_mark() {
     approx::assert_relative_eq!(window.get_camera_position().zoom, default);
     approx::assert_relative_eq!(last_pushed(&sent).camera.zoom, default);
 }
+
+/// A click on the globe, which is what gives the preview's shortcuts the
+/// keyboard.
+fn click_the_globe(window: &MainWindow) {
+    let size = window.window().size().to_logical(1.0);
+    press_at(
+        window,
+        slint::LogicalPosition::new(size.width - 300.0, size.height / 2.0),
+    );
+}
+
+fn key_down(window: &MainWindow, text: impl Into<slint::SharedString>) {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.into() });
+}
+
+fn key_up(window: &MainWindow, text: impl Into<slint::SharedString>) {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: text.into() });
+}
+
+fn tap(window: &MainWindow, text: impl Into<slint::SharedString>) {
+    let text = text.into();
+    key_down(window, text.clone());
+    key_up(window, text);
+}
+
+/// F1 opens the sheet and Esc closes it, and so does a click outside its
+/// card.
+#[test]
+fn test_f1_opens_the_shortcut_sheet_and_escape_closes_it() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    let sheets = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "MainWindow::shortcut-sheet").count()
+    };
+    click_the_globe(&window);
+    assert_eq!(sheets(&window), 0);
+    tap(&window, Key::F1);
+    assert_eq!(sheets(&window), 1, "F1 opens the sheet");
+    tap(&window, Key::Escape);
+    assert_eq!(sheets(&window), 0, "Esc closes it");
+
+    tap(&window, Key::F1);
+    assert_eq!(sheets(&window), 1);
+    press_at(
+        &window,
+        slint::LogicalPosition::new(window.window().size().to_logical(1.0).width - 20.0, 20.0),
+    );
+    assert_eq!(sheets(&window), 0, "a click outside the card closes it");
+}
+
+/// H hides the overlays and shows them again, the corner button brings them
+/// back too, and the choice is saved with the window's settings.
+#[test]
+fn test_h_hides_and_shows_the_overlays() {
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    tap(&window, "h");
+    assert!(window.get_overlays_hidden(), "H hides the overlays");
+    let saved = ui_callbacks::read_config_from_window_onto(
+        &window,
+        &AA_COUNTS,
+        &AppConfig::default(),
+        false,
+    );
+    assert!(saved.overlays_hidden, "the hidden overlays are saved");
+    tap(&window, "h");
+    assert!(!window.get_overlays_hidden(), "H again shows them");
+
+    tap(&window, "h");
+    press_at(
+        &window,
+        point_in(&the_element(&window, "MainWindow::show-button"), 0.5, 0.5),
+    );
+    assert!(
+        !window.get_overlays_hidden(),
+        "the corner button shows them"
+    );
+}
+
+/// A held arrow orbits the camera for as long as it is held, and with Shift
+/// held it swings the look instead.
+#[test]
+fn test_held_arrows_orbit_and_with_shift_look() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    let start = window.get_camera_position();
+    key_down(&window, Key::RightArrow);
+    let_pass(200);
+    key_up(&window, Key::RightArrow);
+    let turned = window.get_camera_position();
+    assert!(
+        turned.longitude > start.longitude + 1.0,
+        "the right arrow travels east: {} to {}",
+        start.longitude,
+        turned.longitude
+    );
+    let_pass(100);
+    assert_eq!(window.get_camera_position(), turned, "and stops on release");
+
+    let pitch = window.get_camera_orientation().pitch;
+    key_down(&window, Key::Shift);
+    key_down(&window, Key::UpArrow);
+    let_pass(200);
+    key_up(&window, Key::UpArrow);
+    key_up(&window, Key::Shift);
+    assert!(window.get_camera_orientation().pitch > pitch + 1.0);
+    assert_eq!(
+        window.get_camera_position(),
+        turned,
+        "Shift leaves the orbit alone"
+    );
+}

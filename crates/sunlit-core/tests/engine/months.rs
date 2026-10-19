@@ -100,7 +100,7 @@ fn missing(report: &TileReport) -> usize {
 /// is read ahead: the day tiles in view and those the table names are that
 /// month's alone, and those of another month in the set are the month
 /// ahead's, after everything in view.
-fn assert_month(report: &TileReport, month: usize, ahead: Option<usize>, at: &str) {
+pub(crate) fn assert_month(report: &TileReport, month: usize, ahead: Option<usize>, at: &str) {
     let day = |id: &&TileId| matches!(id.pack, PackKind::Day(_));
     assert!(
         report.wanted[..report.in_view]

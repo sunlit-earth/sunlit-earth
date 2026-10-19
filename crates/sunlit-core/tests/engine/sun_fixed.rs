@@ -123,7 +123,10 @@ fn the_wanted_tiles_follow_the_turn_and_only_a_hand_on_the_time_is_a_drag() {
     let later = settled(&harness, "the tiles an hour later", |r| {
         r.wanted != noon.wanted
     });
-    assert!(!later.dragging, "the Earth's turn was taken for a drag");
+    assert!(
+        later.drag.is_none(),
+        "the Earth's turn was taken for a drag"
+    );
 
     // What is wanted is what an Earth-fixed camera at the longitude the time
     // of day puts beneath the camera now wants, at the same instant.
@@ -155,7 +158,7 @@ fn the_wanted_tiles_follow_the_turn_and_only_a_hand_on_the_time_is_a_drag() {
         harness.advance(&clock, Duration::from_millis(50));
         harness.settle_at(&sun_fixed);
         assert!(
-            !tile_report(&harness).dragging,
+            tile_report(&harness).drag.is_none(),
             "the turn between draws 50 ms apart was taken for a drag"
         );
     }
@@ -172,7 +175,7 @@ fn the_wanted_tiles_follow_the_turn_and_only_a_hand_on_the_time_is_a_drag() {
         ..sun_fixed
     });
     assert!(
-        tile_report(&harness).dragging,
+        tile_report(&harness).drag.is_some(),
         "two moves of the time of day 30 ms apart are not a drag"
     );
 }

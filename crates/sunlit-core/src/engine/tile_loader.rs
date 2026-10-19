@@ -224,7 +224,7 @@ impl DragWatch {
 }
 
 /// What the tile loader holds, for a client that asks.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TileReport {
     /// Layers the tile array has.
     pub capacity: u32,
@@ -245,9 +245,9 @@ pub struct TileReport {
     pub reads: u64,
     /// How many times the tile array was purged.
     pub epoch: u64,
-    /// Whether the set was computed for a drag in progress, at the drag's
+    /// The drag in progress the set was computed for, at the drag's
     /// threshold rather than 1 px.
-    pub dragging: bool,
+    pub drag: Option<Drag>,
     /// How many day floors were made resident, one let go of and made
     /// resident again counting twice.
     pub floors_installed: u64,
@@ -1016,10 +1016,7 @@ impl TileLoader {
             named,
             reads: self.reads,
             epoch: self.epoch,
-            dragging: self
-                .inputs
-                .as_ref()
-                .is_some_and(|inputs| inputs.drag.is_some()),
+            drag: self.inputs.as_ref().and_then(|inputs| inputs.drag),
             floors_installed: target.floors_installed(),
         }
     }

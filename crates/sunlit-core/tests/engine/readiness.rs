@@ -890,7 +890,10 @@ fn a_drag_converges_to_the_one_pixel_set_within_half_a_second_of_stopping() {
         std::thread::sleep(TICK);
         let report = tile_report(&rig.harness);
         if step > 1 {
-            assert!(report.dragging, "step {step} is not a drag: {report:#?}");
+            assert!(
+                report.drag.is_some(),
+                "step {step} is not a drag: {report:#?}"
+            );
         }
         while let Ok(event) = rig.harness.events.try_recv() {
             ready_while_dragging |= step > 1 && matches!(event, EngineEvent::TexturesReady);
@@ -908,7 +911,7 @@ fn a_drag_converges_to_the_one_pixel_set_within_half_a_second_of_stopping() {
         while let Ok(event) = rig.harness.events.try_recv() {
             ready |= matches!(event, EngineEvent::TexturesReady);
         }
-        if !report.dragging && missing(&report) == 0 {
+        if report.drag.is_none() && missing(&report) == 0 {
             break report;
         }
         assert!(

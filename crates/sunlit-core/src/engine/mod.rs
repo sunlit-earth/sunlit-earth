@@ -45,7 +45,7 @@ pub use loading::TILES_NAMED_AFTER;
 pub use protocol::{EngineCommand, EngineEvent};
 use schedule::Schedule;
 use surface::SurfaceFeed;
-use tile_loader::{LoaderConfig, View};
+use tile_loader::{LoaderConfig, View, Watched};
 pub use tile_loader::{TileGate, TileReport};
 use wallpaper_sink::WallpaperSink;
 
@@ -872,11 +872,20 @@ impl Engine {
     /// export's, so that the pause gate closes before any of them draws: a
     /// build of the rest of the year gives way at its next check rather than
     /// running through the frame.
-    fn draw(&mut self, at: time::OffsetDateTime) -> (RenderOutcome, SkyState) {
+    ///
+    /// The wanted set is computed under the preview's sky whichever is drawn,
+    /// so an export during an excursion neither moves the preview's output
+    /// in it nor shows the motion observer the setting's camera and Sun
+    /// between two of the excursion's.
+    fn draw(&mut self, at: time::OffsetDateTime, preview: bool) -> (RenderOutcome, SkyState) {
         self.sync_month(self.month_instant(at));
         self.mark_busy();
         let sky = sky::compute_sky_state_for(at);
-        self.want_tiles(&sky);
+        if preview || self.excursion.is_none() {
+            self.want_tiles(&sky);
+        } else {
+            self.want_tiles(&self.sky_state());
+        }
         let outcome = self.renderer.render(&self.params, &sky);
         self.drawn_instant = at;
         self.note_readiness();
@@ -935,7 +944,8 @@ impl Engine {
     /// runs, the motion observer watches the Sun as well as the camera, and
     /// the camera the preview shows rather than the one the settings hold, so
     /// in the Sun-fixed mode the read-ahead follows the Earth's turn; outside
-    /// one it watches the held camera alone, as a drag always was.
+    /// one it watches the held camera alone, as a drag always was. A run
+    /// starting or stopping changes what is watched, which is not a move.
     fn want_tiles(&mut self, sky: &SkyState) {
         let exports_sky = if self.excursion.is_some() {
             sky::compute_sky_state_for(self.setting_instant())
@@ -985,6 +995,7 @@ impl Engine {
                 } else {
                     glam::Vec3::ZERO
                 },
+                if running { Watched::Run } else { Watched::Held },
                 self.clock.elapsed(),
             ),
         };
@@ -1016,7 +1027,7 @@ impl Engine {
         if !self.dirty {
             return false;
         }
-        let (outcome, _) = self.draw(self.preview_instant());
+        let (outcome, _) = self.draw(self.preview_instant(), true);
         self.dirty = false;
         if matches!(outcome, RenderOutcome::Rendered { first_frame: true }) {
             info!("first frame rendered");
@@ -1082,7 +1093,7 @@ impl Engine {
         if let Some(surface) = &mut self.surface {
             surface.drain(&mut self.renderer);
         }
-        let (outcome, sky) = self.draw(self.setting_instant());
+        let (outcome, sky) = self.draw(self.setting_instant(), false);
         if self.excursion.is_some() {
             // The preview target now holds the setting's frame, and the
             // preview has to go back to the excursion's.

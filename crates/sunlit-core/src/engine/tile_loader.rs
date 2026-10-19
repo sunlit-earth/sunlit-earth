@@ -160,9 +160,33 @@ pub(super) struct DragWatch {
     /// The last observation saw a move that no draw has ended on yet.
     undrawn: bool,
     drag: Option<Drag>,
+    watched: Watched,
+    /// What is watched changed, and the next observation is where the view
+    /// stands rather than a move.
+    rebase: bool,
+}
+
+/// What the motion observer watches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Watched {
+    /// The camera the settings hold, without the Sun.
+    #[default]
+    Held,
+    /// The camera a running excursion resolves under its sky, and its Sun.
+    Run,
 }
 
 impl DragWatch {
+    /// Watch `watched` from the next observation on. A change is not a move:
+    /// the held camera and the one a run resolves can be half the globe
+    /// apart, and the Sun is left out of the one and not of the other.
+    pub(super) fn watch(&mut self, watched: Watched) {
+        if watched != self.watched {
+            self.watched = watched;
+            self.rebase = self.last.is_some();
+        }
+    }
+
     /// The motion in progress with the camera at `camera` and the Sun in
     /// direction `sun` at `now`, when a draw is about to start.
     pub(super) fn observe(
@@ -177,6 +201,10 @@ impl DragWatch {
             self.drawn = now;
             return None;
         };
+        if std::mem::take(&mut self.rebase) {
+            self.last = Some((longitude, latitude, sun, now));
+            return self.drag;
+        }
         if (longitude, latitude) == (last_longitude, last_latitude) && sun == last_sun {
             self.settle(camera, now);
             return self.drag;
@@ -1884,6 +1912,39 @@ mod tests {
             watch.settle(&camera, 70 * MS + DRAG_PAUSE),
             "it settles once the Sun stops"
         );
+    }
+
+    /// A run that pauses hands the watch from the camera it resolved and the
+    /// Sun, moving at every draw, to the held camera half the globe away, and
+    /// that is no move; the next move is measured from the held camera.
+    #[test]
+    fn a_change_of_what_is_watched_is_not_a_move() {
+        let mut watch = DragWatch::default();
+        watch.watch(Watched::Run);
+        let sun = |degrees: f32| {
+            let radians = degrees.to_radians();
+            glam::Vec3::new(radians.sin(), 0.0, radians.cos())
+        };
+        assert_eq!(
+            watch.observe(&at(80.0, 0.0), sun(0.0), Duration::ZERO),
+            None
+        );
+        watch.drawn(Duration::ZERO);
+        let running = watch
+            .observe(&at(80.0, 0.0), sun(1.0), 33 * MS)
+            .expect("the Sun moved within the pause");
+        watch.drawn(33 * MS);
+
+        watch.watch(Watched::Held);
+        assert_eq!(
+            watch.observe(&at(-60.0, 0.0), glam::Vec3::ZERO, 66 * MS),
+            Some(running),
+            "the hand-over was taken for a move"
+        );
+        let drag = watch
+            .observe(&at(-59.0, 0.0), glam::Vec3::ZERO, 106 * MS)
+            .expect("a move within the pause");
+        approx::assert_relative_eq!(drag.longitude_rate, 25.0, max_relative = 1e-3);
     }
 
     #[test]

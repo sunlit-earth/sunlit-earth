@@ -310,22 +310,27 @@ export component OverlayHint inherits Rectangle {
 
             // Placed by hand: a box layout in a conditional measures its
             // wrapping text at the row's one-line width, so the row would
-            // keep one line's height while the text wraps to two.
+            // keep one line's height while the text wraps to two. Keys that
+            // would leave the text less than 80 px go on a line of their own.
             gesture-row := Rectangle {
                 property <length> lead: root.content.mouse == "" ? 0px : glyph.width + 6px;
-                property <length> trail: root.content.keys.length == 0 ? 0px : keys.width + 6px;
+                property <bool> keys-below: root.content.keys.length > 0 && self.width - self.lead - keys.width - 6px < 80px;
+                property <length> trail: root.content.keys.length == 0 || self.keys-below ? 0px : keys.width + 6px;
 
-                height: max(18px, gesture.height);
+                height: self.keys-below ? gesture.height + 6px + 18px : gesture.height;
 
                 glyph := MouseGlyph {
                     x: 0;
+                    y: (gesture.height - self.height) / 2;
                     visible: root.content.mouse != "";
                     which: root.content.mouse;
                 }
 
                 gesture := Text {
                     x: parent.lead;
+                    y: 0;
                     width: parent.width - parent.lead - parent.trail;
+                    height: max(18px, self.preferred-height);
                     text: root.content.gesture;
                     color: #dfe3e8;
                     font-size: 12px;
@@ -334,7 +339,8 @@ export component OverlayHint inherits Rectangle {
                 }
 
                 keys := HorizontalLayout {
-                    x: parent.width - self.width;
+                    x: max(0px, parent.width - self.width);
+                    y: parent.keys-below ? parent.height - 18px : (parent.height - 18px) / 2;
                     width: self.preferred-width;
                     height: 18px;
                     spacing: 6px;

@@ -3814,3 +3814,43 @@ fn test_the_speed_hint_names_the_speed() {
         "the hint says {title}"
     );
 }
+
+// A key cap in a row narrower than its label asks for, beside text that would
+// take every pixel the cap gives up, and the label alone in the cap's font.
+slint::slint! {
+    import { KeyCap } from "ui/overlays/common.slint";
+    export component SqueezedCap inherits Window {
+        out property <length> cap-width: cap.width;
+        out property <length> label-width: label.preferred-width;
+        HorizontalLayout {
+            width: 24px;
+            cap := KeyCap {
+                text: "Space";
+            }
+            Text {
+                text: "Play / pause";
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        label := Text {
+            text: "Space";
+            font-size: 11px;
+            visible: false;
+        }
+    }
+}
+
+/// A key cap squeezed by its row keeps the width its label needs.
+#[test]
+fn test_a_squeezed_key_cap_keeps_its_label_inside() {
+    init();
+    let window = SqueezedCap::new().expect("a window");
+    window.show().expect("shown");
+    assert!(
+        window.get_cap_width() >= window.get_label_width() + 10.0 - 0.5,
+        "a cap {} px wide holds a label {} px wide",
+        window.get_cap_width(),
+        window.get_label_width()
+    );
+}

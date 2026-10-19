@@ -4788,3 +4788,75 @@ fn test_a_squeezed_key_cap_keeps_its_label_inside() {
         window.get_label_width()
     );
 }
+
+/// In the list of every speed, each side's speeds stand flush right and
+/// their meanings flush left, and each side's heading is centered over it,
+/// for both kinds of play and at two window widths.
+#[test]
+fn test_the_speed_list_aligns_speeds_right_and_meanings_left() {
+    for date in [false, true] {
+        for width in [1000, 1400] {
+            let what = format!("{width} px (date: {date})");
+            let (window, _sent) = wired_window();
+            window.invoke_time_kind(date);
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            window.set_time_bar_pinned(true);
+            let_pass(500);
+            let readout = the_element(&window, "TimeBar::speed-readout");
+            press_at(&window, point_in(&readout, 0.5, 0.5));
+            let_pass(100);
+
+            let rows: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::choice-row").collect();
+            let labels: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::rate-label").collect();
+            let notes: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::rate-note").collect();
+            let headings: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::rates-heading").collect();
+            assert!(rows.len() >= 4, "{what}: the list is open");
+            assert_eq!(
+                (labels.len(), notes.len()),
+                (rows.len(), rows.len()),
+                "{what}"
+            );
+            assert_eq!(headings.len(), 2, "{what}: a heading per side");
+
+            for side in 0..2 {
+                let column: Vec<usize> = (side..rows.len()).step_by(2).collect();
+                let label_rights: Vec<f32> = column.iter().map(|&i| edges(&labels[i])[2]).collect();
+                let label_lefts: Vec<f32> = column.iter().map(|&i| edges(&labels[i])[0]).collect();
+                for right in &label_rights {
+                    approx::assert_abs_diff_eq!(*right, label_rights[0], epsilon = 0.5);
+                }
+                assert!(
+                    label_lefts
+                        .iter()
+                        .any(|left| (left - label_lefts[0]).abs() > 2.0),
+                    "{what}: the speeds of side {side} all start at one place: {label_lefts:?}"
+                );
+                for &i in &column {
+                    let note = edges(&notes[i]);
+                    approx::assert_abs_diff_eq!(
+                        note[0],
+                        edges(&notes[column[0]])[0],
+                        epsilon = 0.5
+                    );
+                    assert!(
+                        note[0] > label_rights[0],
+                        "{what}: a meaning starts before its speed ends"
+                    );
+                }
+                let row = edges(&rows[column[0]]);
+                let heading = edges(&headings[side]);
+                approx::assert_abs_diff_eq!(
+                    f32::midpoint(heading[0], heading[2]),
+                    f32::midpoint(row[0], row[2]),
+                    epsilon = 0.5
+                );
+            }
+        }
+    }
+}

@@ -1059,11 +1059,18 @@ export component TimeBar inherits Rectangle {
         }
     }
 
-    // Every speed in both directions, above the speed readout.
-    if root.rates-open && root.open : Rectangle {
+    // Every speed in both directions, above the speed readout. On each side
+    // the speeds stand flush right in a column as wide as the widest of
+    // them and their meanings flush left after it, which hidden layouts
+    // measure, and the side's heading is centered over it.
+    if root.rates-open && root.open : rates-list := Rectangle {
+        property <length> label-width: label-sizer.preferred-width;
+        property <length> note-width: note-sizer.preferred-width;
+        property <length> side: 8px + self.label-width + (self.note-width > 0 ? 8px + self.note-width : 0px) + 8px;
+
         x: speed-readout.x;
         y: -self.height - 8px;
-        width: 2 * 128px + 12px;
+        width: 6px + 2 * self.side + 4px + 6px;
         height: 12px + 18px + ceil(root.rates.length / 2) * 22px;
         border-radius: 10px;
         border-width: 1px;
@@ -1077,9 +1084,36 @@ export component TimeBar inherits Rectangle {
             changed has-hover => { root.rates-hovered = self.has-hover; }
         }
 
-        for heading[side] in ["BACKWARD", "FORWARD"] : Text {
-            x: 6px + side * 128px + 8px;
+        Rectangle {
+            visible: false;
+            width: 0px;
+            height: 0px;
+
+            label-sizer := VerticalLayout {
+                width: self.preferred-width;
+                height: self.preferred-height;
+
+                for choice in root.rates : Text {
+                    text: choice.label;
+                    font-size: 12px;
+                }
+            }
+
+            note-sizer := VerticalLayout {
+                width: self.preferred-width;
+                height: self.preferred-height;
+
+                for choice in root.rates : Text {
+                    text: choice.note;
+                    font-size: 11px;
+                }
+            }
+        }
+
+        for heading[side] in ["BACKWARD", "FORWARD"] : rates-heading := Text {
+            x: 6px + side * (rates-list.side + 4px) + (rates-list.side - self.width) / 2;
             y: 6px;
+            width: self.preferred-width;
             height: 18px;
             text: heading;
             color: OverlayStyle.dim;
@@ -1090,30 +1124,29 @@ export component TimeBar inherits Rectangle {
 
         for choice[index] in root.rates : choice-row := Rectangle {
             property <bool> on: root.view.running && choice.rate == root.view.rate;
-            x: 6px + mod(index, 2) * 128px;
+            x: 6px + mod(index, 2) * (rates-list.side + 4px);
             y: 6px + 18px + floor(index / 2) * 22px;
-            width: 124px;
+            width: rates-list.side;
             height: 22px;
             border-radius: 6px;
             background: self.on ? OverlayStyle.accent : choice-touch.has-hover ? OverlayStyle.faint : transparent;
 
-            HorizontalLayout {
-                padding-left: 8px;
-                spacing: 6px;
+            rate-label := Text {
+                x: 8px + rates-list.label-width - self.width;
+                width: self.preferred-width;
+                text: choice.label;
+                color: choice-row.on ? #04121b : OverlayStyle.fg;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
 
-                Text {
-                    text: choice.label;
-                    color: choice-row.on ? #04121b : OverlayStyle.fg;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                }
-
-                Text {
-                    text: choice.note;
-                    color: choice-row.on ? #04121b : OverlayStyle.dim;
-                    font-size: 11px;
-                    vertical-alignment: center;
-                }
+            rate-note := Text {
+                x: 8px + rates-list.label-width + 8px;
+                width: self.preferred-width;
+                text: choice.note;
+                color: choice-row.on ? #04121b : OverlayStyle.dim;
+                font-size: 11px;
+                vertical-alignment: center;
             }
 
             choice-touch := TouchArea {

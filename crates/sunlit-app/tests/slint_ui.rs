@@ -2717,6 +2717,96 @@ fn test_north_puts_the_roll_back_to_zero_once_the_ease_has_passed() {
     approx::assert_relative_eq!(last_pushed(&sent).camera.tilt_deg, 0.0);
 }
 
+/// Move the held pointer to `position`.
+fn drag_to(window: &MainWindow, position: slint::LogicalPosition) {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+}
+
+/// A press on the N that wanders less than a drag before it is let go is a
+/// click: it rolls nothing on the way and puts north up.
+#[test]
+fn test_a_click_on_the_n_puts_north_up_even_with_a_wobble() {
+    for wobble in [0.0, 2.0] {
+        let (window, _sent) = wired_window();
+        let mut orientation = window.get_camera_orientation();
+        orientation.tilt = 120.0;
+        window.set_camera_orientation(orientation);
+        let at = point_in(&the_element(&window, "RollRing::north-touch"), 0.5, 0.5);
+        let to = slint::LogicalPosition::new(at.x + wobble, at.y + wobble);
+
+        hold_at(&window, at);
+        drag_to(&window, to);
+        approx::assert_relative_eq!(window.get_camera_orientation().tilt, 120.0);
+        release_at(&window, to);
+        let_pass(400);
+        approx::assert_relative_eq!(window.get_camera_orientation().tilt, 0.0);
+    }
+}
+
+/// The ring's middle and the N's, in the window.
+fn ring_and_north(window: &MainWindow) -> (slint::LogicalPosition, slint::LogicalPosition) {
+    (
+        point_in(&the_element(window, "CameraPanel::ring"), 0.5, 0.5),
+        point_in(&the_element(window, "RollRing::north-touch"), 0.5, 0.5),
+    )
+}
+
+/// The roll a drag from `from` 60 degrees clockwise around `middle` makes,
+/// with the button let go where it ends.
+fn roll_of_a_drag(
+    window: &MainWindow,
+    middle: slint::LogicalPosition,
+    from: slint::LogicalPosition,
+) -> f32 {
+    let before = window.get_camera_orientation().tilt;
+    let (dx, dy) = (from.x - middle.x, from.y - middle.y);
+    let radius = dx.hypot(dy);
+    let start = dx.atan2(-dy);
+    let along = |degrees: f32| {
+        let angle = start + degrees.to_radians();
+        slint::LogicalPosition::new(
+            middle.x + radius * angle.sin(),
+            middle.y - radius * angle.cos(),
+        )
+    };
+    hold_at(window, from);
+    for step in 1..=12_u8 {
+        drag_to(window, along(f32::from(step) * 5.0));
+    }
+    release_at(window, along(60.0));
+    let_pass(400);
+    window.get_camera_orientation().tilt - before
+}
+
+/// A drag that starts on the N rolls as a drag on the ring from the same
+/// point does, and its release does not put north up.
+#[test]
+fn test_a_drag_from_the_n_rolls_like_one_on_the_ring() {
+    let (window, _sent) = wired_window();
+    let (middle, north) = ring_and_north(&window);
+    let from_north = roll_of_a_drag(&window, middle, north);
+    approx::assert_abs_diff_eq!(from_north.abs(), 60.0, epsilon = 0.5);
+    approx::assert_abs_diff_eq!(
+        window.get_camera_orientation().tilt,
+        from_north,
+        epsilon = 0.01
+    );
+
+    let (window, _sent) = wired_window();
+    let mut orientation = window.get_camera_orientation();
+    orientation.tilt = 90.0;
+    window.set_camera_orientation(orientation);
+    let (_, moved_north) = ring_and_north(&window);
+    assert!(
+        (moved_north.x - north.x).hypot(moved_north.y - north.y) > 20.0,
+        "the N is out of the way"
+    );
+    let from_ring = roll_of_a_drag(&window, middle, north);
+    approx::assert_abs_diff_eq!(from_north, from_ring, epsilon = 0.01);
+}
+
 /// Holding the orbit joystick up and to the right, clear of the arrows, keeps
 /// the camera traveling east, and in the Sun-fixed mode it moves the time of
 /// day instead and leaves the longitude alone.

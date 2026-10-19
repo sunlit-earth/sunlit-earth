@@ -78,7 +78,7 @@ export global OverlayHints {
             };
         }
         if id == "north" {
-            return { title: "North up", body: "Turn the picture back so that north points up.", keys: ["N"] };
+            return { title: "North up", body: "Click to turn the picture back so that north points up. Drag the N around the ring to roll.", keys: ["N"] };
         }
         if id == "zoom" {
             return {
@@ -626,13 +626,13 @@ export component HoldButton inherits Rectangle {
 }
 
 // The compass ring: ticks every 30° and an N that turn with the roll, a drag
-// around it that rolls the picture, and a click on the N that puts north up.
-// Its children sit in the middle.
+// around it or from the N that rolls the picture, and a click on the N that
+// puts north up. Its children sit in the middle.
 export component RollRing inherits Rectangle {
     // The roll in degrees, positive counterclockwise on screen.
     in property <float> tilt;
     in property <bool> lit;
-    out property <bool> held: touch.pressed;
+    out property <bool> held: touch.pressed || root.north-rolling;
     out property <bool> ring-hovered: touch.has-hover;
     out property <bool> north-hovered: north-touch.has-hover;
     callback pressed();
@@ -642,6 +642,13 @@ export component RollRing inherits Rectangle {
 
     property <length> middle: self.width / 2;
     property <angle> last-angle;
+    // A press on the N that moves farther than this from where it went down
+    // rolls; a shorter one is a click.
+    property <length> drag-threshold: 4px;
+    property <length> north-press-x;
+    property <length> north-press-y;
+    property <bool> north-dragged;
+    property <bool> north-rolling: north-touch.pressed && self.north-dragged;
 
     width: 78px;
     height: 78px;
@@ -650,11 +657,18 @@ export component RollRing inherits Rectangle {
         return atan2((x - root.middle) / 1px, (root.middle - y) / 1px);
     }
 
+    function roll-to(x: length, y: length) {
+        let now = root.angle-at(x, y);
+        let turn = mod((now - root.last-angle) / 1deg + 540, 360) - 180;
+        root.last-angle = now;
+        root.rolled(-turn);
+    }
+
     Rectangle {
         border-radius: root.width / 2;
         border-width: 9px;
         border-color: root.lit ? OverlayStyle.accent-soft
-            : touch.has-hover || touch.pressed ? #ffffff1f : #ffffff12;
+            : touch.has-hover || root.held ? #ffffff1f : #ffffff12;
         drop-shadow-blur: root.lit ? 14px : 0px;
         drop-shadow-color: OverlayStyle.accent-glow;
     }
@@ -671,10 +685,7 @@ export component RollRing inherits Rectangle {
 
         moved => {
             if self.pressed {
-                let now = root.angle-at(self.mouse-x, self.mouse-y);
-                let turn = mod((now - root.last-angle) / 1deg + 540, 360) - 180;
-                root.last-angle = now;
-                root.rolled(-turn);
+                root.roll-to(self.mouse-x, self.mouse-y);
             }
         }
     }
@@ -704,7 +715,7 @@ export component RollRing inherits Rectangle {
 
     @children
 
-    Rectangle {
+    north := Rectangle {
         property <angle> at: -root.tilt * 1deg;
         property <length> radius: root.middle - 5.5px;
         x: root.middle + self.radius * sin(self.at) - self.width / 2;
@@ -726,10 +737,38 @@ export component RollRing inherits Rectangle {
         }
 
         north-touch := TouchArea {
-            mouse-cursor: pointer;
+            mouse-cursor: root.north-rolling ? ew-resize : pointer;
             accessible-role: button;
             accessible-label: "North up";
-            clicked => { root.north(); }
+
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.north-dragged = false;
+                    root.north-press-x = north.x + self.mouse-x;
+                    root.north-press-y = north.y + self.mouse-y;
+                }
+            }
+
+            moved => {
+                if self.pressed {
+                    let x = north.x + self.mouse-x;
+                    let y = north.y + self.mouse-y;
+                    if !root.north-dragged && max(abs(x - root.north-press-x), abs(y - root.north-press-y)) > root.drag-threshold {
+                        root.north-dragged = true;
+                        root.last-angle = root.angle-at(root.north-press-x, root.north-press-y);
+                        root.pressed();
+                    }
+                    if root.north-dragged {
+                        root.roll-to(x, y);
+                    }
+                }
+            }
+
+            clicked => {
+                if !root.north-dragged {
+                    root.north();
+                }
+            }
         }
     }
 }

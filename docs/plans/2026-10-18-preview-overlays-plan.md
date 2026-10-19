@@ -270,6 +270,8 @@ Revert the change. Part A leaves `overlays_hidden` in the config, which an older
 
 4. The `time` crate gets three features besides `local-offset`: `formatting` and `parsing` for the RFC 3339 spelling of `scene_time` in the config, and `macros` for `datetime!`, which the tests that pin a date are written in (Step B1) and which gives `SceneTime`'s range its two constants. None of the three adds a crate (`time-macros` and `itoa` were in `Cargo.lock` already). `local-offset` does add one, `num_threads`, which `time` uses on some Unix targets, so `cargo xtask bake licenses` was rerun and its two outputs committed with Step B1. The migration step also keeps a `scene_time` a file already names when it holds no override, which only a file written for version 3 by hand does; without that, the unstamped `e2e_config.toml`, which now names its instant directly, would have been migrated to live time.
 
+5. The seasons are `scene::sky::seasons(year) -> Option<[OffsetDateTime; 4]>` rather than `scene::seasons(year) -> [OffsetDateTime; 4]` (Step B4). They sit in `sky` beside `sun_direction_at`, where the Astronomy Engine calls and the conversion of its times already are, and the `Option` carries the status `Astronomy_Seasons` returns, which a caller drawing the date track can answer by leaving the diamonds out instead of the crate panicking.
+
 ## Open items
 
 The user settled the questions of the first draft on 2026-10-18: the drags on the globe stay as they are, the bar has no year stepper, the sidebar keeps its Date / Time group (decision 8), playback never reaches the wallpaper and pauses when the window closes (decision 6), and the bar's edits are the time setting (decisions 5 and 7).

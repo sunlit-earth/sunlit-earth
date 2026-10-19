@@ -71,6 +71,46 @@ pub fn compute_sky_state_for(at: time::OffsetDateTime) -> SkyState {
     compute_sky_state_from_time(time_for_instant(at))
 }
 
+/// The Sun's direction alone at `at`, in the renderer's world frame, for
+/// whoever needs the light and not the sky: the time bar shades its day from
+/// it, 48 times per redraw.
+#[must_use]
+pub fn sun_direction_at(at: time::OffsetDateTime) -> Vec3 {
+    let mut time = time_for_instant(at);
+    let world_from_eqj = rotation_world_from_eqj(&mut time);
+    body_direction(astro_body_t_BODY_SUN, time, world_from_eqj)
+}
+
+/// The March equinox, the June solstice, the September equinox and the
+/// December solstice of `year`, in that order, or `None` for a year the
+/// ephemeris does not answer for.
+#[must_use]
+pub fn seasons(year: i32) -> Option<[time::OffsetDateTime; 4]> {
+    // SAFETY: Astronomy_Seasons is a pure C function that searches the Sun's
+    // ecliptic longitude for one year and returns a value type.
+    #[allow(unsafe_code)]
+    let found = unsafe { astronomy_engine_bindings::Astronomy_Seasons(year) };
+    if found.status != astronomy_engine_bindings::astro_status_t_ASTRO_SUCCESS {
+        return None;
+    }
+    Some(
+        [
+            found.mar_equinox,
+            found.jun_solstice,
+            found.sep_equinox,
+            found.dec_solstice,
+        ]
+        .map(instant_of_time),
+    )
+}
+
+/// An Astronomy Engine time as an instant: its `ut` counts days from noon
+/// on the first of January 2000.
+fn instant_of_time(time: astro_time_t) -> time::OffsetDateTime {
+    let noon_2000 = time::macros::datetime!(2000-01-01 12:00 UTC);
+    noon_2000 + time::Duration::seconds_f64(time.ut * 86_400.0)
+}
+
 /// Compute all astronomy inputs for a scene using the current UTC time.
 pub fn compute_sky_state(scene_time: &SceneTime) -> SkyState {
     compute_sky_state_at(scene_time, time::OffsetDateTime::now_utc())
@@ -303,6 +343,35 @@ mod tests {
         let selected = compute_sky_state_at(&fixed, time::OffsetDateTime::UNIX_EPOCH);
         let expected = compute_sky_state_from_time(make_time(2025, 6, 21, 12, 0, 30.5));
         assert_eq!(selected, expected);
+    }
+
+    /// The Sun alone agrees with the whole sky's Sun.
+    #[test]
+    fn the_sun_alone_is_the_skys_sun() {
+        let at = time::macros::datetime!(2026-06-21 07:30 UTC);
+        let alone = sun_direction_at(at);
+        let whole = compute_sky_state_for(at).sun_direction;
+        assert!(alone.angle_between(whole) < 1e-5);
+    }
+
+    /// The seasons of 2026, against the published times to the minute: March
+    /// 20 14:46, June 21 08:24, September 23 00:05, December 21 20:50 UTC.
+    #[test]
+    fn the_seasons_of_a_year_are_its_equinoxes_and_solstices() {
+        use time::macros::datetime;
+        let found = seasons(2026).expect("2026 is in range");
+        let published = [
+            datetime!(2026-03-20 14:46 UTC),
+            datetime!(2026-06-21 08:24 UTC),
+            datetime!(2026-09-23 00:05 UTC),
+            datetime!(2026-12-21 20:50 UTC),
+        ];
+        for (found, published) in found.iter().zip(published) {
+            assert!(
+                (*found - published).abs() < time::Duration::minutes(2),
+                "{found} against {published}"
+            );
+        }
     }
 
     /// Live time reads the injected `now`, which is what lets the mock clock in

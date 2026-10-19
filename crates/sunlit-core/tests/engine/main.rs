@@ -29,6 +29,7 @@ mod clouds_variant;
 mod cube;
 mod display_change;
 mod display_plan;
+mod excursion;
 mod groups;
 mod harness;
 mod lifecycle;

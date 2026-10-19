@@ -166,6 +166,14 @@ pub fn month_ahead(scene_time: &SceneTime, now_utc: time::OffsetDateTime) -> Opt
     )
 }
 
+/// The month read ahead for an instant being drawn, January 0: across a
+/// hand-over within [`PREFETCH_WINDOW`] ahead of it, and with `both_ways`
+/// behind it as well.
+#[must_use]
+pub fn month_across_at(at: time::OffsetDateTime, both_ways: bool) -> Option<usize> {
+    month_across(&CivilTime::of(at), both_ways)
+}
+
 #[cfg(test)]
 mod tests {
     use time::macros::datetime;

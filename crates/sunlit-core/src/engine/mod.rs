@@ -8,6 +8,7 @@
 
 pub mod clock;
 mod cloud_worker;
+pub mod excursion;
 mod handle;
 mod loading;
 mod protocol;
@@ -37,6 +38,7 @@ use crate::scene::sky::{self, SkyState};
 
 use clock::Clock;
 use cloud_worker::{CloudWorker, FirstAnswer, spawn_cloud_worker};
+use excursion::{Excursion, ExcursionCommand};
 use handle::AdapterReport;
 pub use handle::{EngineConfig, EngineHandle, start};
 pub use loading::TILES_NAMED_AFTER;
@@ -51,6 +53,11 @@ use wallpaper_sink::WallpaperSink;
 /// schedule. Short enough that a real-clock deadline is never missed by more
 /// than this, cheap enough to ignore: the wake does nothing when nothing is due.
 const TICK: Duration = Duration::from_millis(50);
+
+/// The longest the loop waits while an excursion runs and the preview is
+/// shown: about 30 frames a second where the adapter keeps up. The time comes
+/// from the clock, so a slower adapter drops frames and keeps the speed.
+const EXCURSION_TICK: Duration = Duration::from_millis(33);
 
 /// How often decoded textures are uploaded to the GPU. Unconditional: this is
 /// what keeps cloud updates flowing while no window is visible.
@@ -163,6 +170,12 @@ struct Engine {
     /// accepted one and never on a refusal, so a layout change cannot produce a
     /// wallpaper nobody asked for or an error out of nowhere.
     published: bool,
+    /// The preview's time while it is away from the setting, running or
+    /// paused.
+    excursion: Option<Excursion>,
+    /// The instant the last draw was drawn at, which the preview frame read
+    /// back from it shows.
+    drawn_instant: time::OffsetDateTime,
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
@@ -254,6 +267,7 @@ impl Engine {
 
         let now = clock.elapsed();
         let month = crate::scene::month::month_in_force(&params.time, clock.now_utc());
+        let drawn_instant = params.time.instant(clock.now_utc());
         let cpu_adapter = gpu.device_type == wgpu::DeviceType::Cpu;
         let formats = SurfaceFormats::for_adapter(
             gpu.device
@@ -353,13 +367,15 @@ impl Engine {
             display_recheck: None,
             known_monitors: None,
             published: false,
+            excursion: None,
+            drawn_instant,
             dirty: true,
             textures_ready: false,
             clouds_settled: false,
             memory_dumped: false,
             last_status: String::new(),
             drain: Schedule::new(DRAIN_INTERVAL, now),
-            sky: Schedule::new(sky_interval(&params, height, preview_enabled), now),
+            sky: Schedule::new(sky_interval(&params, false, height, preview_enabled), now),
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
@@ -374,7 +390,7 @@ impl Engine {
             crate::memory::record_metrics_sample(self.renderer.texture_resolution());
         }
         loop {
-            match self.rx.recv_timeout(TICK) {
+            match self.rx.recv_timeout(self.wait()) {
                 Ok(cmd) => {
                     if !self.handle(cmd) {
                         break;
@@ -415,6 +431,9 @@ impl Engine {
     fn handle(&mut self, cmd: EngineCommand) -> bool {
         match cmd {
             EngineCommand::UpdateParams(params) => {
+                if params.time != self.params.time {
+                    self.set_excursion(None);
+                }
                 self.params = *params;
                 self.resolve_requested_sample_count();
                 self.dirty = true;
@@ -434,11 +453,16 @@ impl Engine {
                 }
                 if !enabled {
                     self.renderer.release_preview_readback();
+                    if let Some(mut excursion) = self.excursion.filter(Excursion::is_running) {
+                        excursion.pause(self.clock.elapsed());
+                        self.set_excursion(Some(excursion));
+                    }
                 }
                 self.preview.enabled = enabled;
                 self.retime_sky();
             }
             EngineCommand::RenderWallpaperNow => self.publish_asked = true,
+            EngineCommand::Excursion(command) => self.excursion_command(command),
             EngineCommand::SetDisplayPlan { mode, anchor } => {
                 self.display_mode = mode;
                 self.anchor_monitor = anchor;
@@ -508,6 +532,54 @@ impl Engine {
         true
     }
 
+    /// How long the loop waits for a command: a frame's worth while an
+    /// excursion runs and the preview is shown, [`TICK`] otherwise.
+    fn wait(&self) -> Duration {
+        if self.preview.enabled && self.excursion.as_ref().is_some_and(Excursion::is_running) {
+            EXCURSION_TICK
+        } else {
+            TICK
+        }
+    }
+
+    /// Apply a client's excursion command.
+    fn excursion_command(&mut self, command: ExcursionCommand) {
+        let now = self.clock.elapsed();
+        let setting = self.params.time.instant(self.clock.now_utc());
+        let next = excursion::apply(self.excursion, command, now, setting);
+        self.set_excursion(next);
+    }
+
+    /// Replace the excursion, and when its state changed tell clients and
+    /// draw the preview again.
+    fn set_excursion(&mut self, next: Option<Excursion>) {
+        let before = self.excursion.map(|excursion| excursion.state());
+        let moved = self.excursion != next;
+        self.excursion = next;
+        let after = next.map(|excursion| excursion.state());
+        if before != after {
+            self.emit(EngineEvent::Excursion(after));
+        }
+        if moved {
+            self.dirty = true;
+            self.retime_sky();
+        }
+    }
+
+    /// The instant the preview shows now: the excursion's while there is
+    /// one, the time setting's otherwise.
+    fn preview_instant(&self) -> time::OffsetDateTime {
+        match &self.excursion {
+            Some(excursion) => excursion.instant_at(self.clock.elapsed()),
+            None => self.params.time.instant(self.clock.now_utc()),
+        }
+    }
+
+    /// The instant every export draws at: the time setting's.
+    fn setting_instant(&self) -> time::OffsetDateTime {
+        self.params.time.instant(self.clock.now_utc())
+    }
+
     /// Point the renderer at another texture resolution's set of assets.
     fn set_texture_resolution(&mut self, width: u32) {
         if self.renderer.set_texture_resolution(width) {
@@ -541,7 +613,12 @@ impl Engine {
     /// Give the sky schedule the interval the scene and the preview now call
     /// for, counting it from now when that is a change.
     fn retime_sky(&mut self) {
-        let interval = sky_interval(&self.params, self.renderer.size().1, self.preview.enabled);
+        let interval = sky_interval(
+            &self.params,
+            self.excursion.is_some(),
+            self.renderer.size().1,
+            self.preview.enabled,
+        );
         if interval != self.sky.interval {
             debug!(
                 interval_secs = interval.as_secs_f32(),
@@ -621,8 +698,19 @@ impl Engine {
         // Live time keeps moving even when nothing else changes, so the
         // terminator and the sky have to be recomputed on a schedule of their
         // own.
-        if self.sky.due(now) && self.params.time.is_live() {
+        if self.sky.due(now) && self.params.time.is_live() && self.excursion.is_none() {
             self.dirty = true;
+        }
+
+        // A running excursion moves the preview on every tick it is shown,
+        // and stops at the edge of the range.
+        if let Some(mut excursion) = self.excursion.filter(Excursion::is_running) {
+            if excursion.stop_at_the_edge(now) {
+                self.set_excursion(Some(excursion));
+            }
+            if self.preview.enabled {
+                self.dirty = true;
+            }
         }
 
         if let Some(metrics) = &mut self.metrics
@@ -631,10 +719,13 @@ impl Engine {
             crate::memory::record_metrics_sample(self.renderer.texture_resolution());
         }
 
-        if let Some(surface) = &mut self.surface
-            && surface.settle_drag(&self.params.held_camera(), now)
-        {
-            self.dirty = true;
+        if self.surface.is_some() {
+            let camera = self.watched_camera();
+            if let Some(surface) = &mut self.surface
+                && surface.settle_drag(&camera, now)
+            {
+                self.dirty = true;
+            }
         }
 
         if let Some(schedule) = &mut self.auto_refresh
@@ -707,9 +798,9 @@ impl Engine {
         self.params.sample_count = resolved;
     }
 
-    /// The astronomy state for the current parameters and clock reading.
+    /// The astronomy state the preview is drawn under now.
     fn sky_state(&self) -> SkyState {
-        sky::compute_sky_state_at(&self.params.time, self.clock.now_utc())
+        sky::compute_sky_state_for(self.preview_instant())
     }
 
     /// Derive the month in force from the date, as the sky state is, and move
@@ -722,13 +813,16 @@ impl Engine {
     /// whichever path saw it first, a draw or a publish, so the next tick
     /// draws the new month and asks for its tiles; a publish that is owed
     /// and still waiting returns without drawing, and nothing else would.
-    fn sync_month(&mut self) {
+    fn sync_month(&mut self, at: time::OffsetDateTime) {
+        // The live clock only goes forward; a fixed time and an excursion can
+        // go either way.
+        let both_ways = !self.params.time.is_live() || self.excursion.is_some();
         let Some(surface) = &mut self.surface else {
             return;
         };
-        let (date, now) = (&self.params.time, self.clock.now_utc());
-        let month = crate::scene::month::month_in_force(date, now);
-        let ahead = crate::scene::month::month_ahead(date, now);
+        let scene_time = crate::scene::scene_time::SceneTime::fixed(at);
+        let month = crate::scene::month::month_in_force(&scene_time, at);
+        let ahead = crate::scene::month::month_across_at(at, both_ways);
         if surface.set_month(month, ahead, &mut self.renderer) {
             self.dirty = true;
         }
@@ -764,12 +858,13 @@ impl Engine {
     /// export's, so that the pause gate closes before any of them draws: a
     /// build of the rest of the year gives way at its next check rather than
     /// running through the frame.
-    fn draw(&mut self) -> (RenderOutcome, SkyState) {
-        self.sync_month();
+    fn draw(&mut self, at: time::OffsetDateTime) -> (RenderOutcome, SkyState) {
+        self.sync_month(at);
         self.mark_busy();
-        let sky = self.sky_state();
+        let sky = sky::compute_sky_state_for(at);
         self.want_tiles(&sky);
         let outcome = self.renderer.render(&self.params, &sky);
+        self.drawn_instant = at;
         self.note_readiness();
         (outcome, sky)
     }
@@ -819,7 +914,21 @@ impl Engine {
     /// Ask the tile loader for the tiles the preview wants under `sky`, and
     /// every export waiting for its tiles, before the frame is drawn, so the
     /// page table it draws with is held to the preview's cap.
+    ///
+    /// The preview is resolved under the sky of the instant it shows, and
+    /// the exports under the time setting's, which is the one they are drawn
+    /// at; the two are one sky but during an excursion. While an excursion
+    /// runs, the motion observer watches the Sun as well as the camera, and
+    /// the camera the preview shows rather than the one the settings hold, so
+    /// in the Sun-fixed mode the read-ahead follows the Earth's turn; outside
+    /// one it watches the held camera alone, as a drag always was.
     fn want_tiles(&mut self, sky: &SkyState) {
+        let exports_sky = if self.excursion.is_some() {
+            sky::compute_sky_state_for(self.setting_instant())
+        } else {
+            sky.clone()
+        };
+        let running = self.excursion.as_ref().is_some_and(Excursion::is_running);
         let Some(surface) = &mut self.surface else {
             return;
         };
@@ -828,27 +937,45 @@ impl Engine {
         outputs.extend(self.wallpaper_shots.iter().map(|shot| {
             tile_output(
                 &shot.framing.applied_to(&self.params),
-                sky,
+                &exports_sky,
                 shot.width,
                 shot.height,
                 true,
             )
         }));
-        outputs.extend(
-            self.exports
-                .iter()
-                .map(|export| tile_output(&self.params, sky, export.width, export.height, true)),
-        );
+        outputs.extend(self.exports.iter().map(|export| {
+            tile_output(
+                &self.params,
+                &exports_sky,
+                export.width,
+                export.height,
+                true,
+            )
+        }));
         let view = View {
             outputs: &outputs,
             month: surface.month(),
             ahead: surface.ahead(),
             surfaces: surfaces_for(&self.params, sky.sun_direction),
             texture_resolution: self.renderer.texture_resolution(),
-            drag: surface.drag(&self.params.held_camera(), self.clock.elapsed()),
+            drag: surface.drag(
+                &if running {
+                    self.params.camera_at(sky)
+                } else {
+                    self.params.held_camera()
+                },
+                // Outside a run the Sun's motion is the live clock's, which the
+                // read-ahead has never treated as a drag.
+                if running {
+                    sky.sun_direction
+                } else {
+                    glam::Vec3::ZERO
+                },
+                self.clock.elapsed(),
+            ),
         };
         surface.want_tiles(&view, &mut self.renderer);
-        self.wanted_sky = Some(sky.clone());
+        self.wanted_sky = Some(exports_sky);
     }
 
     /// Bring the wanted set up to date with the outputs as they stand,
@@ -859,13 +986,23 @@ impl Engine {
         self.want_tiles(&sky);
     }
 
+    /// The camera the motion observer last watched, for deciding whether it
+    /// has rested: the one the preview shows while an excursion runs.
+    fn watched_camera(&self) -> crate::scene::camera::CameraParams {
+        if self.excursion.as_ref().is_some_and(Excursion::is_running) {
+            self.params.camera_at(&self.sky_state())
+        } else {
+            self.params.held_camera()
+        }
+    }
+
     /// Returns whether a new frame was drawn. Emitting it is `tick`'s, so that
     /// a tick asks the preview target for its pixels once however it got here.
     fn render_if_dirty(&mut self) -> bool {
         if !self.dirty {
             return false;
         }
-        let (outcome, _) = self.draw();
+        let (outcome, _) = self.draw(self.preview_instant());
         self.dirty = false;
         if matches!(outcome, RenderOutcome::Rendered { first_frame: true }) {
             info!("first frame rendered");
@@ -915,6 +1052,7 @@ impl Engine {
             rgba,
             width,
             height,
+            instant: self.drawn_instant,
         });
         true
     }
@@ -930,7 +1068,12 @@ impl Engine {
         if let Some(surface) = &mut self.surface {
             surface.drain(&mut self.renderer);
         }
-        let (outcome, sky) = self.draw();
+        let (outcome, sky) = self.draw(self.setting_instant());
+        if self.excursion.is_some() {
+            // The preview target now holds the setting's frame, and the
+            // preview has to go back to the excursion's.
+            self.dirty = true;
+        }
         if matches!(outcome, RenderOutcome::Skipped) {
             // A skipped frame kept the sky the last render was drawn with, and
             // for a hidden window that can be hours old. A rendered one is
@@ -1121,8 +1264,13 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 /// the time it takes to move one pixel, clamped between [`SKY_FLOOR`] and
 /// [`SKY_INTERVAL`]. A hidden preview has nobody to show a frame to, and an
 /// Earth-fixed camera or an overridden instant does not move with the turn.
-fn sky_interval(params: &SceneParams, preview_height: u32, shown: bool) -> Duration {
-    if !shown || !params.sun_fixed || !params.time.is_live() {
+fn sky_interval(
+    params: &SceneParams,
+    excursion: bool,
+    preview_height: u32,
+    shown: bool,
+) -> Duration {
+    if !shown || !params.sun_fixed || !params.time.is_live() || excursion {
         return SKY_INTERVAL;
     }
     let camera = &params.camera;
@@ -1224,7 +1372,7 @@ mod tests {
         let height = 1080;
         let focal = 1080.0 / (2.0 * (params.camera.fov_deg.to_radians() / 2.0).tan());
         let expected = 7.0 / (focal * EARTH_TURN);
-        let interval = sky_interval(&params, height, true);
+        let interval = sky_interval(&params, false, height, true);
         approx::assert_relative_eq!(interval.as_secs_f32(), expected, max_relative = 1e-3);
         assert!(SKY_FLOOR < interval && interval < SKY_INTERVAL);
     }
@@ -1233,13 +1381,19 @@ mod tests {
     /// across the frame, down to the floor and never below it.
     #[test]
     fn the_interval_shortens_with_the_zoom_and_the_preview_down_to_the_floor() {
-        let far = sky_interval(&sun_fixed_live(0.5), 720, true);
-        let near = sky_interval(&sun_fixed_live(0.3), 720, true);
-        let taller = sky_interval(&sun_fixed_live(0.5), 1440, true);
+        let far = sky_interval(&sun_fixed_live(0.5), false, 720, true);
+        let near = sky_interval(&sun_fixed_live(0.3), false, 720, true);
+        let taller = sky_interval(&sun_fixed_live(0.5), false, 1440, true);
         assert!(near < far, "{near:?} against {far:?}");
         assert!(taller < far, "{taller:?} against {far:?}");
-        assert_eq!(sky_interval(&sun_fixed_live(0.0), 2160, true), SKY_FLOOR);
-        assert_eq!(sky_interval(&sun_fixed_live(1.0), 64, true), SKY_INTERVAL);
+        assert_eq!(
+            sky_interval(&sun_fixed_live(0.0), false, 2160, true),
+            SKY_FLOOR
+        );
+        assert_eq!(
+            sky_interval(&sun_fixed_live(1.0), false, 64, true),
+            SKY_INTERVAL
+        );
     }
 
     /// Hidden, Earth-fixed, or at an overridden instant, the picture has no
@@ -1247,18 +1401,23 @@ mod tests {
     #[test]
     fn only_a_shown_sun_fixed_camera_at_live_time_shortens_the_interval() {
         let live = sun_fixed_live(0.0);
-        assert!(sky_interval(&live, 1080, true) < SKY_INTERVAL);
-        assert_eq!(sky_interval(&live, 1080, false), SKY_INTERVAL);
+        assert!(sky_interval(&live, false, 1080, true) < SKY_INTERVAL);
+        assert_eq!(sky_interval(&live, false, 1080, false), SKY_INTERVAL);
         let earth = SceneParams {
             sun_fixed: false,
             ..live
         };
-        assert_eq!(sky_interval(&earth, 1080, true), SKY_INTERVAL);
+        assert_eq!(sky_interval(&earth, false, 1080, true), SKY_INTERVAL);
         let mut overridden = live;
         overridden.time =
             crate::scene::scene_time::SceneTime::fixed(time::OffsetDateTime::UNIX_EPOCH);
-        assert_eq!(sky_interval(&overridden, 1080, true), SKY_INTERVAL);
-        assert_eq!(sky_interval(&live, 0, true), SKY_INTERVAL);
+        assert_eq!(sky_interval(&overridden, false, 1080, true), SKY_INTERVAL);
+        assert_eq!(
+            sky_interval(&live, true, 1080, true),
+            SKY_INTERVAL,
+            "an excursion counts as a fixed time"
+        );
+        assert_eq!(sky_interval(&live, false, 0, true), SKY_INTERVAL);
     }
 
     /// The length check comes before the filesystem does, so this needs no

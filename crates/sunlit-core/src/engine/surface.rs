@@ -260,9 +260,15 @@ impl SurfaceFeed {
         self.tiles.want(view, renderer);
     }
 
-    /// The drag in progress with the camera at `camera` at `now`, if one is.
-    pub(super) fn drag(&mut self, camera: &CameraParams, now: Duration) -> Option<Drag> {
-        self.drag.observe(camera, now)
+    /// The motion in progress with the camera at `camera` and the Sun in
+    /// direction `sun` at `now`, if there is one.
+    pub(super) fn drag(
+        &mut self,
+        camera: &CameraParams,
+        sun: glam::Vec3,
+        now: Duration,
+    ) -> Option<Drag> {
+        self.drag.observe(camera, sun, now)
     }
 
     /// A tick's work ended at `now`, the frame it drew and read back

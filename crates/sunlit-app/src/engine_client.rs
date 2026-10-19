@@ -166,6 +166,7 @@ pub fn event_forwarder(
             rgba,
             width,
             height,
+            ..
         } => {
             *mailbox.slot.lock().expect("preview mailbox poisoned") = Some(Frame {
                 rgba,
@@ -242,7 +243,7 @@ pub fn event_forwarder(
         }
         // The running app publishes again within the hour whatever the clouds
         // said, so only the one-shot commands wait for them.
-        EngineEvent::CloudsSettled { .. } => {}
+        EngineEvent::CloudsSettled { .. } | EngineEvent::Excursion(_) => {}
     })
 }
 

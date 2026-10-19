@@ -205,6 +205,7 @@ impl Harness {
                 rgba,
                 width,
                 height,
+                ..
             } = event
             {
                 return (rgba, width, height);

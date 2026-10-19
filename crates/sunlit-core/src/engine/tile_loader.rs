@@ -134,8 +134,11 @@ pub(super) struct View<'a> {
 /// globe, a few to a few tens of milliseconds apart.
 pub(super) const DRAG_PAUSE: Duration = Duration::from_millis(100);
 
-/// Whether the camera is being dragged, and how fast, from the moves of its
-/// longitude and latitude that the engine's draws see, on the injected clock.
+/// Whether the view is in motion, and how fast the camera moves, from the
+/// moves of its longitude and latitude and of the Sun's direction that the
+/// engine's draws see, on the injected clock. The Sun moving counts like the
+/// camera moving, which is what an excursion does, so Blend mode wants the
+/// coarse set while one runs; the rate is the camera's alone.
 ///
 /// A move is part of a drag when it comes within [`DRAG_PAUSE`] of the end of
 /// the tick that drew the move before it, or of the first sight of the
@@ -149,8 +152,9 @@ pub(super) const DRAG_PAUSE: Duration = Duration::from_millis(100);
 /// the next that is not.
 #[derive(Debug, Default)]
 pub(super) struct DragWatch {
-    /// Where the camera was at its last measured move, and when it was seen.
-    last: Option<(f32, f32, Duration)>,
+    /// Where the camera and the Sun were at the last measured move, and
+    /// when it was seen.
+    last: Option<(f32, f32, glam::Vec3, Duration)>,
     /// When the tick that drew the last move ended.
     drawn: Duration,
     /// The last observation saw a move that no draw has ended on yet.
@@ -159,16 +163,21 @@ pub(super) struct DragWatch {
 }
 
 impl DragWatch {
-    /// The drag in progress with the camera at `camera` at `now`, when a draw
-    /// is about to start.
-    pub(super) fn observe(&mut self, camera: &CameraParams, now: Duration) -> Option<Drag> {
+    /// The motion in progress with the camera at `camera` and the Sun in
+    /// direction `sun` at `now`, when a draw is about to start.
+    pub(super) fn observe(
+        &mut self,
+        camera: &CameraParams,
+        sun: glam::Vec3,
+        now: Duration,
+    ) -> Option<Drag> {
         let (longitude, latitude) = (camera.longitude, camera.latitude);
-        let Some((last_longitude, last_latitude, at)) = self.last else {
-            self.last = Some((longitude, latitude, now));
+        let Some((last_longitude, last_latitude, last_sun, at)) = self.last else {
+            self.last = Some((longitude, latitude, sun, now));
             self.drawn = now;
             return None;
         };
-        if (longitude, latitude) == (last_longitude, last_latitude) {
+        if (longitude, latitude) == (last_longitude, last_latitude) && sun == last_sun {
             self.settle(camera, now);
             return self.drag;
         }
@@ -189,7 +198,7 @@ impl DragWatch {
                 latitude_rate: (latitude - last_latitude) / seconds,
             }
         });
-        self.last = Some((longitude, latitude, now));
+        self.last = Some((longitude, latitude, sun, now));
         self.undrawn = true;
         self.drag
     }
@@ -206,7 +215,7 @@ impl DragWatch {
     /// before `now`. Returns whether one ended.
     pub(super) fn settle(&mut self, camera: &CameraParams, now: Duration) -> bool {
         let rested = !self.undrawn
-            && self.last.is_some_and(|(longitude, latitude, _)| {
+            && self.last.is_some_and(|(longitude, latitude, _, _)| {
                 (camera.longitude, camera.latitude) == (longitude, latitude)
             })
             && now.saturating_sub(self.drawn) >= DRAG_PAUSE;
@@ -1769,7 +1778,7 @@ mod tests {
 
     /// Observe `camera` at `now` and end the draw there.
     fn draw(watch: &mut DragWatch, camera: &CameraParams, now: Duration) -> Option<Drag> {
-        let drag = watch.observe(camera, now);
+        let drag = watch.observe(camera, glam::Vec3::Z, now);
         watch.drawn(now);
         drag
     }
@@ -1800,10 +1809,10 @@ mod tests {
         let mut watch = DragWatch::default();
         draw(&mut watch, &at(0.0, 0.0), Duration::ZERO);
         let (rest, slow) = (DRAG_PAUSE * 10, DRAG_PAUSE * 3);
-        assert_eq!(watch.observe(&at(5.0, 0.0), rest), None);
+        assert_eq!(watch.observe(&at(5.0, 0.0), glam::Vec3::Z, rest), None);
         watch.drawn(rest + slow);
         let drag = watch
-            .observe(&at(20.0, 0.0), rest + slow)
+            .observe(&at(20.0, 0.0), glam::Vec3::Z, rest + slow)
             .expect("the move queued behind a slow draw");
         approx::assert_relative_eq!(
             drag.longitude_rate,
@@ -1854,6 +1863,30 @@ mod tests {
         draw(&mut watch, &held(23.9), Duration::ZERO);
         let drag = draw(&mut watch, &held(0.1), 40 * MS).expect("a move within the pause");
         approx::assert_relative_eq!(drag.longitude_rate, 3.0 / 0.04, max_relative = 1e-3);
+    }
+
+    /// The Sun moving with the camera still is motion at no rate: the
+    /// coarse set is wanted, and nothing is read ahead.
+    #[test]
+    fn the_sun_moving_is_motion_with_the_camera_still() {
+        let mut watch = DragWatch::default();
+        let camera = at(10.0, 0.0);
+        let sun = |degrees: f32| {
+            let radians = degrees.to_radians();
+            glam::Vec3::new(radians.sin(), 0.0, radians.cos())
+        };
+        assert_eq!(watch.observe(&camera, sun(0.0), Duration::ZERO), None);
+        watch.drawn(Duration::ZERO);
+        let drag = watch.observe(&camera, sun(1.0), 33 * MS);
+        watch.drawn(40 * MS);
+        let drag = drag.expect("the Sun moved within the pause");
+        assert_eq!((drag.longitude_rate, drag.latitude_rate), (0.0, 0.0));
+        assert!(watch.observe(&camera, sun(2.0), 66 * MS).is_some());
+        watch.drawn(70 * MS);
+        assert!(
+            watch.settle(&camera, 70 * MS + DRAG_PAUSE),
+            "it settles once the Sun stops"
+        );
     }
 
     #[test]

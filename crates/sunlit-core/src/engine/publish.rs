@@ -98,7 +98,7 @@ impl Engine {
         // The month is judged before the textures are: a publish can arrive
         // in a tick with nothing dirty, after the date crossed into the next
         // month, and would otherwise find the old month's floor ready.
-        self.sync_month();
+        self.sync_month(self.setting_instant());
         let now = self.clock.elapsed();
         let cubes_pending = self.renderer.textures_pending(&self.params);
         if cubes_pending {

@@ -3714,27 +3714,34 @@ fn rates_played(
         .collect()
 }
 
+/// The engine reporting play running on the clock at `rate`.
+fn running_at(window: &MainWindow, rate: i32) {
+    sunlit_earth::time_bar::excursion_changed(
+        window,
+        Some(ExcursionState {
+            running: true,
+            rate,
+            kind: ExcursionKind::Clock,
+        }),
+    );
+}
+
+/// The clock's speeds, slowest first.
+fn clock_ladder() -> Vec<i32> {
+    ExcursionKind::Clock
+        .ladder()
+        .iter()
+        .map(|&rate| i32::try_from(rate).expect("a rate"))
+        .collect()
+}
+
 /// A held L steps once at once, then again after a pause and at a steady
 /// pace after that, as further presses would, and stops when let go; held
 /// on, it stops by itself at the fastest speed, and when the window loses
 /// the keyboard.
 #[test]
 fn test_holding_l_keeps_shuttling_until_let_go_or_the_fastest() {
-    let running_at = |window: &MainWindow, rate| {
-        sunlit_earth::time_bar::excursion_changed(
-            window,
-            Some(ExcursionState {
-                running: true,
-                rate,
-                kind: ExcursionKind::Clock,
-            }),
-        );
-    };
-    let ladder: Vec<i32> = ExcursionKind::Clock
-        .ladder()
-        .iter()
-        .map(|&rate| i32::try_from(rate).expect("a rate"))
-        .collect();
+    let ladder = clock_ladder();
     let (window, sent) = wired_window();
     click_the_globe(&window);
     running_at(&window, ladder[1]);
@@ -3776,6 +3783,167 @@ fn test_holding_l_keeps_shuttling_until_let_go_or_the_fastest() {
         [ladder[2]],
         "and it stops when the window loses the keyboard"
     );
+}
+
+/// A held key let go while Ctrl, Alt or the Windows key (⌘ on macOS) is
+/// down stops what it moved, though those modifiers send a press of most of
+/// these keys to the window; and so does one let go after Shift or Alt
+/// changed the text it gives, as Shift turns - into _.
+#[test]
+fn test_a_held_key_let_go_under_a_modifier_stops_the_camera() {
+    use slint::SharedString;
+    use slint::platform::Key;
+
+    let camera = |window: &MainWindow| {
+        (
+            window.get_camera_position(),
+            window.get_camera_orientation(),
+            window.get_framing(),
+        )
+    };
+    let held: Vec<SharedString> = vec![
+        Key::LeftArrow.into(),
+        Key::RightArrow.into(),
+        Key::UpArrow.into(),
+        Key::DownArrow.into(),
+        "w".into(),
+        "a".into(),
+        "s".into(),
+        "d".into(),
+        "q".into(),
+        "e".into(),
+        "+".into(),
+        "=".into(),
+        "-".into(),
+    ];
+    let mut cases: Vec<(SharedString, Key, SharedString)> = Vec::new();
+    for modifier in [Key::Control, Key::Alt, Key::Meta] {
+        cases.extend(held.iter().map(|key| (key.clone(), modifier, key.clone())));
+    }
+    cases.extend([
+        ("-".into(), Key::Shift, "_".into()),
+        ("+".into(), Key::Shift, "*".into()),
+        ("q".into(), Key::Alt, "œ".into()),
+    ]);
+    for (pressed, modifier, released) in cases {
+        let what = format!("{pressed:?} let go as {released:?} with {modifier:?} down");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        key_down(&window, pressed.clone());
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press moves the camera");
+        key_down(&window, modifier);
+        key_up(&window, released);
+        key_up(&window, modifier);
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+    }
+}
+
+/// A held J or L let go while a modifier is down stops stepping.
+#[test]
+fn test_a_shuttle_key_let_go_under_a_modifier_stops_stepping() {
+    use slint::platform::Key;
+
+    let ladder = clock_ladder();
+    for key in ["j", "l"] {
+        for modifier in [Key::Control, Key::Alt, Key::Meta, Key::Shift] {
+            let what = format!("{key} let go with {modifier:?} down");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            let _ = excursion_commands(&sent);
+            key_down(&window, key);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: the press steps"
+            );
+            key_down(&window, modifier);
+            if modifier == Key::Shift {
+                key_up(&window, key.to_uppercase());
+            } else {
+                key_up(&window, key);
+            }
+            key_up(&window, modifier);
+            let_pass(1500);
+            assert_eq!(excursion_commands(&sent).0, [], "{what}: it keeps stepping");
+        }
+    }
+}
+
+/// J pressed while L is held, or L while J is, takes the hold over and waits
+/// its own full delay before it repeats, however soon after the first key it
+/// came.
+#[test]
+fn test_a_shuttle_key_pressed_during_the_other_waits_its_own_delay() {
+    let ladder = clock_ladder();
+    for (first, second) in [("l", "j"), ("j", "l")] {
+        for after in [100, 300, 600] {
+            let what = format!("{second} {after} ms into a held {first}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, first);
+            let_pass(after);
+            let _ = excursion_commands(&sent);
+            key_down(&window, second);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: the press steps at once"
+            );
+            let_pass(350);
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: it repeats before its own delay"
+            );
+            let_pass(100);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: it repeats after its delay"
+            );
+            key_up(&window, second);
+            key_up(&window, first);
+        }
+    }
+}
+
+/// K, Space, 0 and R end a J or L hold before they act, so the held key
+/// does not take play up again; a new press of J or L does.
+#[test]
+fn test_k_space_0_and_r_end_a_shuttle_hold() {
+    let ladder = clock_ladder();
+    for held in ["j", "l"] {
+        for key in ["k", " ", "0", "r"] {
+            let what = format!("{key:?} during a held {held}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, held);
+            let_pass(100);
+            tap(&window, key);
+            let _ = excursion_commands(&sent);
+            let_pass(1500);
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: the held key took play up again"
+            );
+            key_up(&window, held);
+            key_down(&window, held);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: a new press steps"
+            );
+            key_up(&window, held);
+        }
+    }
 }
 
 /// G makes play run the date and T the time, as the radio labels do: paused

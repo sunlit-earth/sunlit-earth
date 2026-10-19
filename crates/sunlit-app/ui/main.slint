@@ -1873,7 +1873,8 @@ export component MainWindow inherits Window {
         property <duration> key-tick;
         // J or L held, -1 or 1, and 0 for neither. A press steps at once;
         // held, the key steps again after `shuttle-delay` and then every
-        // `shuttle-repeat`, until it is let go or a step changes nothing.
+        // `shuttle-repeat`, until it is let go, K, Space, 0 or R ends it, or a
+        // step changes nothing.
         property <int> key-shuttle;
         property <bool> shuttle-repeating;
         property <duration> shuttle-delay: 400ms;
@@ -1917,8 +1918,22 @@ export component MainWindow inherits Window {
             return 0;
         }
 
+        function let-go-of-text-keys() {
+            image-container.key-w = false;
+            image-container.key-a = false;
+            image-container.key-s = false;
+            image-container.key-d = false;
+            image-container.key-plus = false;
+            image-container.key-minus = false;
+            image-container.key-q = false;
+            image-container.key-e = false;
+            image-container.key-shuttle = 0;
+        }
+
         // Track a key going down or up. Returns whether the key is one of
-        // the preview's, so the others go on to the window.
+        // the preview's, so the others go on to the window. Ctrl, Alt and
+        // the Windows key decide only whether a press is the preview's: a
+        // release ends what the key held whatever is down with it.
         function track-key(event: KeyEvent, down: bool) -> bool {
             if down && !image-container.any-key-held {
                 image-container.key-tick = animation-tick();
@@ -1949,7 +1964,7 @@ export component MainWindow inherits Window {
                 image-container.key-s = down;
             } else if event.text.to-lowercase() == "d" {
                 image-container.key-d = down;
-            } else if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+            } else if down && (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
                 return false;
             } else if event.text == "+" || event.text == "=" {
                 image-container.key-plus = down;
@@ -1965,6 +1980,7 @@ export component MainWindow inherits Window {
                 }
             } else if event.text == " " {
                 if down && !event.repeat {
+                    image-container.key-shuttle = 0;
                     root.time-toggle-play();
                 }
             } else if event.text.to-lowercase() == "j" || event.text.to-lowercase() == "l" {
@@ -1974,14 +1990,16 @@ export component MainWindow inherits Window {
                         image-container.key-shuttle = 0;
                     }
                 } else if !event.repeat {
-                    if image-container.key-shuttle == direction {
-                        shuttle-timer.restart();
-                    }
+                    let holding = image-container.key-shuttle != 0;
                     image-container.shuttle-repeating = false;
                     image-container.key-shuttle = root.time-shuttle(direction) ? direction : 0;
+                    if holding && image-container.key-shuttle != 0 {
+                        shuttle-timer.restart();
+                    }
                 }
             } else if event.text.to-lowercase() == "k" {
                 if down && !event.repeat {
+                    image-container.key-shuttle = 0;
                     root.time-pause();
                 }
             } else if event.text.to-lowercase() == "t" || event.text.to-lowercase() == "g" {
@@ -1990,10 +2008,12 @@ export component MainWindow inherits Window {
                 }
             } else if event.text.to-lowercase() == "r" {
                 if down && !event.repeat {
+                    image-container.key-shuttle = 0;
                     root.time-reverse();
                 }
             } else if event.text == "0" {
                 if down && !event.repeat {
+                    image-container.key-shuttle = 0;
                     root.time-now();
                 }
             } else if image-container.skip-of(event) != 0 {
@@ -2001,6 +2021,12 @@ export component MainWindow inherits Window {
                     root.time-skip(image-container.skip-of(event) > 0, abs(image-container.skip-of(event)) > 1);
                 }
             } else {
+                // Shift or Alt down since a held key's press can change the
+                // text its release gives, as Shift turns - into _, so a
+                // release nothing matches lets go of every key held by text.
+                if !down && (event.modifiers.shift || event.modifiers.alt) && event.text != Key.Alt && event.text != Key.AltGr && event.text != Key.Meta && event.text != Key.MetaR {
+                    image-container.let-go-of-text-keys();
+                }
                 return false;
             }
             return true;

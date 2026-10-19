@@ -86,8 +86,8 @@ export component ShortcutSheet inherits Rectangle {
         TouchArea { }
 
         scroller := Flickable {
-            viewport-width: self.width;
-            viewport-height: card-layout.preferred-height;
+            content-width: self.width;
+            content-height: card-layout.preferred-height;
 
             card-layout := VerticalLayout {
                 padding-top: 18px;
@@ -208,11 +208,11 @@ export component ShortcutSheet inherits Rectangle {
             }
         }
 
-        if scroller.viewport-height > scroller.height : Rectangle {
+        if scroller.content-height > scroller.height : Rectangle {
             x: parent.width - 6px;
-            y: 6px + (parent.height - 12px - self.height) * (-scroller.viewport-y) / (scroller.viewport-height - scroller.height);
+            y: 6px + (parent.height - 12px - self.height) * (-scroller.content-y) / (scroller.content-height - scroller.height);
             width: 3px;
-            height: max(24px, (parent.height - 12px) * scroller.height / scroller.viewport-height);
+            height: max(24px, (parent.height - 12px) * scroller.height / scroller.content-height);
             border-radius: 1.5px;
             background: #ffffff40;
         }

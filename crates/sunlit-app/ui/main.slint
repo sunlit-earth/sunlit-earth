@@ -1842,19 +1842,27 @@ export component MainWindow inherits Window {
         property <bool> middle-held: false;
 
         // The keys held down for the controls that run while held: the
-        // arrows, + and -, Q and E, and the modifiers that turn the arrows
-        // from orbit into look or frame.
+        // arrows and W A S D, + and -, Q and E, and the modifiers that turn
+        // them from orbit into look or frame.
         property <bool> key-left;
         property <bool> key-right;
         property <bool> key-up;
         property <bool> key-down;
+        property <bool> key-w;
+        property <bool> key-a;
+        property <bool> key-s;
+        property <bool> key-d;
         property <bool> key-plus;
         property <bool> key-minus;
         property <bool> key-q;
         property <bool> key-e;
         property <bool> key-shift;
         property <bool> key-control;
-        property <bool> arrows-held: self.key-left || self.key-right || self.key-up || self.key-down;
+        property <bool> held-left: self.key-left || self.key-a;
+        property <bool> held-right: self.key-right || self.key-d;
+        property <bool> held-up: self.key-up || self.key-w;
+        property <bool> held-down: self.key-down || self.key-s;
+        property <bool> arrows-held: self.held-left || self.held-right || self.held-up || self.held-down;
         property <bool> any-key-held: self.arrows-held || self.key-plus || self.key-minus || self.key-q || self.key-e;
         // The control the held keys work, by the name of its gesture.
         property <string> key-gesture: self.arrows-held ? (self.key-control ? "frame" : self.key-shift ? "look" : "orbit")
@@ -1868,6 +1876,10 @@ export component MainWindow inherits Window {
             image-container.key-right = false;
             image-container.key-up = false;
             image-container.key-down = false;
+            image-container.key-w = false;
+            image-container.key-a = false;
+            image-container.key-s = false;
+            image-container.key-d = false;
             image-container.key-plus = false;
             image-container.key-minus = false;
             image-container.key-q = false;
@@ -1920,6 +1932,14 @@ export component MainWindow inherits Window {
                 image-container.key-up = down;
             } else if event.text == Key.DownArrow {
                 image-container.key-down = down;
+            } else if event.text.to-lowercase() == "w" {
+                image-container.key-w = down;
+            } else if event.text.to-lowercase() == "a" {
+                image-container.key-a = down;
+            } else if event.text.to-lowercase() == "s" {
+                image-container.key-s = down;
+            } else if event.text.to-lowercase() == "d" {
+                image-container.key-d = down;
             } else if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
                 return false;
             } else if event.text == "+" || event.text == "=" {
@@ -2015,8 +2035,8 @@ export component MainWindow inherits Window {
                     // The square root of the 0.6 the keys run at, since a
                     // stick squares its deflection.
                     let reach = 0.7746;
-                    let x = ((image-container.key-right ? 1 : 0) - (image-container.key-left ? 1 : 0)) * reach;
-                    let y = ((image-container.key-up ? 1 : 0) - (image-container.key-down ? 1 : 0)) * reach;
+                    let x = ((image-container.held-right ? 1 : 0) - (image-container.held-left ? 1 : 0)) * reach;
+                    let y = ((image-container.held-up ? 1 : 0) - (image-container.held-down ? 1 : 0)) * reach;
                     root.camera-stick(
                         image-container.key-control ? CameraStick.frame : image-container.key-shift ? CameraStick.look : CameraStick.orbit,
                         x,

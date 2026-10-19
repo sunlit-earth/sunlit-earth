@@ -3197,6 +3197,80 @@ fn test_held_arrows_orbit_and_with_shift_look() {
     );
 }
 
+/// Every number of the camera the keys move.
+fn camera_numbers(window: &MainWindow) -> [f32; 7] {
+    let position = window.get_camera_position();
+    let orientation = window.get_camera_orientation();
+    let framing = window.get_framing();
+    [
+        position.longitude,
+        position.latitude,
+        orientation.tilt,
+        orientation.yaw,
+        orientation.pitch,
+        framing.offset_x,
+        framing.offset_y,
+    ]
+}
+
+/// The camera after `key` is held for a fifth of a second with `modifier`
+/// held around it, in a window of its own.
+fn camera_after_holding(
+    modifier: Option<slint::platform::Key>,
+    key: impl Into<slint::SharedString>,
+) -> [f32; 7] {
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    let key = key.into();
+    if let Some(modifier) = modifier {
+        key_down(&window, modifier);
+    }
+    key_down(&window, key.clone());
+    let_pass(200);
+    key_up(&window, key);
+    if let Some(modifier) = modifier {
+        key_up(&window, modifier);
+    }
+    let_pass(100);
+    camera_numbers(&window)
+}
+
+/// W, A, S and D move the camera exactly as the up, left, down and right
+/// arrows do, alone, with Shift (which gives the capital) and with Ctrl.
+#[test]
+fn test_wasd_moves_the_camera_as_the_arrows_do() {
+    use slint::platform::Key;
+
+    let still = {
+        let (window, _sent) = wired_window();
+        camera_numbers(&window)
+    };
+    for (modifier, what) in [
+        (None, "alone"),
+        (Some(Key::Shift), "with Shift"),
+        (Some(Key::Control), "with Ctrl"),
+    ] {
+        for (arrow, letter) in [
+            (Key::UpArrow, "w"),
+            (Key::LeftArrow, "a"),
+            (Key::DownArrow, "s"),
+            (Key::RightArrow, "d"),
+        ] {
+            let letter = if modifier == Some(Key::Shift) {
+                letter.to_uppercase()
+            } else {
+                letter.to_owned()
+            };
+            let by_arrow = camera_after_holding(modifier.clone(), arrow);
+            let by_letter = camera_after_holding(modifier.clone(), letter.as_str());
+            assert_ne!(by_arrow, still, "{arrow:?} {what} moves the camera");
+            for (a, b) in by_arrow.iter().zip(by_letter) {
+                approx::assert_relative_eq!(*a, b, epsilon = 1e-4);
+            }
+        }
+    }
+}
+
 /// Leaving the Sun-fixed mode while an orbit step eases the time of day ends
 /// the ease: the longitude the switch converted stays, rather than taking
 /// the rest of the eased time of day as degrees.

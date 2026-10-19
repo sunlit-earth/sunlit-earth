@@ -69,7 +69,7 @@ export global OverlayHints {
                 body: "Push the knob and hold: the camera travels over the globe the way you push, faster the farther. The arrows step 10°.",
                 mouse: "left",
                 gesture: "Drag the globe with the left button",
-                keys: ["←", "↑", "↓", "→"],
+                keys: ["←↑↓→", "or", "WASD"],
             };
         }
         if id == "roll" {
@@ -117,7 +117,7 @@ export global OverlayHints {
                 body: "Aim the camera away from the Earth's center. The view swings the way you push; the globe slides the other way.",
                 mouse: "middle",
                 gesture: "Drag with the middle button",
-                keys: [shift-key, "←↑↓→"],
+                keys: [shift-key, "←↑↓→", "or", "WASD"],
             };
         }
         if id == "look-reset" {
@@ -129,7 +129,7 @@ export global OverlayHints {
                 body: "Moves the camera across the picture the way you push, without turning it, so the Earth slides the other way and ends up off center.",
                 mouse: "right",
                 gesture: "Drag with the right button (the globe follows the hand)",
-                keys: [mod-key, "←↑↓→"],
+                keys: [mod-key, "←↑↓→", "or", "WASD"],
             };
         }
         if id == "frame-reset" {
@@ -239,28 +239,31 @@ export component MouseGlyph inherits Image {
         : @image-url("../icons/mouse-wheel.svg");
 }
 
-// One key as it is printed on the keyboard.
+// One key as it is printed on the keyboard, `size` tall. An "or" between
+// two keys is drawn as the word.
 export component KeyCap inherits Rectangle {
     in property <string> text;
+    in property <length> size: 18px;
+    property <bool> word: root.text == "or";
 
-    min-width: max(18px, label.preferred-width + 10px);
+    min-width: root.word ? label.preferred-width + 4px : max(root.size, label.preferred-width + root.size * 10 / 18);
     preferred-width: self.min-width;
-    height: 18px;
+    height: root.size;
     border-radius: 4px;
-    background: #4a5059;
+    background: root.word ? transparent : #4a5059;
 
     Rectangle {
         y: 0;
         height: parent.height - 1px;
         border-radius: 4px;
-        border-width: 1px;
+        border-width: root.word ? 0px : 1px;
         border-color: #4a5059;
-        background: #1d2026;
+        background: root.word ? transparent : #1d2026;
 
         label := Text {
             text: root.text;
-            color: #e7eaee;
-            font-size: 11px;
+            color: root.word ? OverlayStyle.dim : #e7eaee;
+            font-size: root.size * 11 / 18;
             horizontal-alignment: center;
             vertical-alignment: center;
         }

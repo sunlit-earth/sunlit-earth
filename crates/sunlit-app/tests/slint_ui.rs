@@ -3785,6 +3785,21 @@ fn test_holding_l_keeps_shuttling_until_let_go_or_the_fastest() {
     );
 }
 
+/// The camera's position, orientation and framing.
+fn camera(
+    window: &MainWindow,
+) -> (
+    CameraPositionSettings,
+    sunlit_earth::CameraOrientationSettings,
+    FramingSettings,
+) {
+    (
+        window.get_camera_position(),
+        window.get_camera_orientation(),
+        window.get_framing(),
+    )
+}
+
 /// A held key let go while Ctrl, Alt or the Windows key (⌘ on macOS) is
 /// down stops what it moved, though those modifiers send a press of most of
 /// these keys to the window; and so does one let go after Shift or Alt
@@ -3794,13 +3809,6 @@ fn test_a_held_key_let_go_under_a_modifier_stops_the_camera() {
     use slint::SharedString;
     use slint::platform::Key;
 
-    let camera = |window: &MainWindow| {
-        (
-            window.get_camera_position(),
-            window.get_camera_orientation(),
-            window.get_framing(),
-        )
-    };
     let held: Vec<SharedString> = vec![
         Key::LeftArrow.into(),
         Key::RightArrow.into(),
@@ -3872,6 +3880,85 @@ fn test_a_shuttle_key_let_go_under_a_modifier_stops_stepping() {
             assert_eq!(excursion_commands(&sent).0, [], "{what}: it keeps stepping");
         }
     }
+}
+
+/// A held key let go after `AltGr` changed the text it gives, as on a German
+/// layout `AltGr` turns q into @, e into € and + into ~, stops what it moved,
+/// with `AltGr` alone as Linux sends it and behind Ctrl as Windows does.
+#[test]
+fn test_a_held_key_let_go_under_altgr_stops_the_camera() {
+    use slint::platform::Key;
+
+    let cases: [(&str, &[Key], &str); 3] = [
+        ("q", &[Key::AltGr], "@"),
+        ("e", &[Key::Control, Key::AltGr], "€"),
+        ("+", &[Key::AltGr], "~"),
+    ];
+    for (pressed, modifiers, released) in cases {
+        let what = format!("{pressed:?} let go as {released:?} with {modifiers:?} down");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        key_down(&window, pressed);
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press moves the camera");
+        for &modifier in modifiers {
+            key_down(&window, modifier);
+        }
+        key_up(&window, released);
+        for &modifier in modifiers.iter().rev() {
+            key_up(&window, modifier);
+        }
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+    }
+}
+
+/// A key pressed with Shift and let go after it, as + is Shift + 1 on a
+/// Swiss German layout and comes up as 1, stops what it moved.
+#[test]
+fn test_a_held_key_let_go_after_its_shift_stops_the_camera() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    let still = camera(&window);
+    key_down(&window, Key::Shift);
+    key_down(&window, "+");
+    let_pass(50);
+    assert_ne!(camera(&window), still, "the press zooms");
+    key_up(&window, Key::Shift);
+    key_up(&window, "1");
+    let stopped = camera(&window);
+    let_pass(300);
+    assert_eq!(camera(&window), stopped, "the zoom goes on");
+}
+
+/// Another key tapped under the Shift a held key went down with leaves the
+/// held key at work.
+#[test]
+fn test_a_tap_under_the_same_shift_leaves_a_held_key_at_work() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    key_down(&window, Key::Shift);
+    key_down(&window, "W");
+    let_pass(50);
+    tap(&window, "!");
+    let tapped = camera(&window);
+    let_pass(100);
+    assert_ne!(camera(&window), tapped, "the look stops while W is held");
+    key_up(&window, "W");
+    let stopped = camera(&window);
+    let_pass(300);
+    assert_eq!(
+        camera(&window),
+        stopped,
+        "the look goes on after W is let go"
+    );
+    key_up(&window, Key::Shift);
 }
 
 /// J pressed while L is held, or L while J is, takes the hold over and waits

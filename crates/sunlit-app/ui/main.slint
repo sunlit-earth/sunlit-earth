@@ -355,6 +355,13 @@ export component MainWindow inherits Window {
     out property <length> panel-min-width: panel.min-width;
     out property <length> panel-x: panel.x;
     out property <length> window-min-width: root.min-width;
+    // Where the date and time pickers open, in the window. The testing
+    // backend reports a popup's elements from the popup's own origin, so a
+    // test reads the origin here.
+    out property <length> date-picker-x: image-container.x + time-bar.x + time-bar.date-picker-x;
+    out property <length> date-picker-y: image-container.y + time-bar.y + time-bar.date-picker-y;
+    out property <length> time-picker-x: image-container.x + time-bar.x + time-bar.time-picker-x;
+    out property <length> time-picker-y: image-container.y + time-bar.y + time-bar.time-picker-y;
 
     // What the splitter drag stores, and what the window opens at. The
     // sidebar's real width is this held between the panel's own floor and
@@ -2245,6 +2252,9 @@ export component MainWindow inherits Window {
             x: (parent.width - self.width) / 2;
             y: parent.height - self.height - 14px;
             room: parent.width - 24px;
+            preview-left: -self.x;
+            preview-top: -self.y;
+            preview-width: parent.width;
             visible: !root.overlays-hidden;
             view: root.time-bar;
             ladder: root.time-ladder;
@@ -2333,6 +2343,7 @@ export component MainWindow inherits Window {
         if image-container.tip-shown && !root.overlays-hidden : GestureTip {
             x: (parent.width - self.width) / 2;
             y: 14px;
+            room: parent.width - 12px;
             mouse: image-container.tip-mouse;
             text: image-container.tip-text;
         }

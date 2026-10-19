@@ -3015,6 +3015,61 @@ fn test_only_a_mouse_gesture_that_moved_counts_as_used() {
     assert_eq!(tips(&window), 0, "the left drag was used already");
 }
 
+/// The first-use tip stays inside the preview, centered on it, and keeps its
+/// text on itself: on one line in the default window, wrapped in the
+/// narrowest one with the tip grown around the lines.
+#[test]
+fn test_the_gesture_tip_fits_the_preview() {
+    let mut line_height = None;
+    for width in [1000, 520] {
+        let (window, _sent) = wired_window();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 600));
+        press_at(
+            &window,
+            point_in(&the_element(&window, "CameraPanel::right-arrow"), 0.5, 0.5),
+        );
+        let tips = all_of(&window, "GestureTip");
+        assert_eq!(tips.len(), 1, "{width} px: the orbit control shows its tip");
+        let tip = edges(&tips[0]);
+        let preview = edges(&the_element(&window, "MainWindow::image-container"));
+        assert!(
+            tip[0] >= preview[0] && tip[2] <= preview[2],
+            "{width} px: the tip {}..{} leaves the preview {}..{}",
+            tip[0],
+            tip[2],
+            preview[0],
+            preview[2]
+        );
+        approx::assert_abs_diff_eq!(
+            f32::midpoint(tip[0], tip[2]),
+            f32::midpoint(preview[0], preview[2]),
+            epsilon = 0.5
+        );
+        for id in [
+            "GestureTip::label",
+            "GestureTip::glyph",
+            "GestureTip::message",
+        ] {
+            let part = edges(&the_element(&window, id));
+            assert!(
+                part[0] >= tip[0] && part[1] >= tip[1] && part[2] <= tip[2] && part[3] <= tip[3],
+                "{width} px: {id} at {part:?} is not on the tip at {tip:?}"
+            );
+        }
+        let message = edges(&the_element(&window, "GestureTip::message"));
+        let height = message[3] - message[1];
+        match line_height {
+            None => line_height = Some(height),
+            Some(line) => assert!(
+                height > 1.5 * line,
+                "{width} px: the text keeps one line's height, {height} px"
+            ),
+        }
+    }
+}
+
 /// H hides the overlays and shows them again, the corner button brings them
 /// back too, and the choice is saved with the window's settings.
 #[test]
@@ -4009,6 +4064,96 @@ fn test_the_cut_part_of_the_bar_takes_no_clicks() {
         excursion_commands(&sent).1.is_some(),
         "a press on the track's visible part sets the time"
     );
+}
+
+/// Where the picker `label` opens from a click on the part of its button the
+/// preview shows, as its left, top, right and bottom edges in the window, or
+/// `None` where the preview cuts the whole button away. The testing backend
+/// reports a popup's elements from the popup's own origin, so the origin comes
+/// from the window, moved inside the window the way Slint moves a popup that
+/// would leave it, and a click on the picker's Cancel button there, which
+/// closes it, proves the picker stood there.
+fn picker_edges(window: &MainWindow, label: &str) -> Option<[f32; 4]> {
+    let [preview_left, _, preview_right, _] =
+        edges(&the_element(window, "MainWindow::image-container"));
+    let [left, top, right, bottom] = edges(&the_labeled(window, label));
+    let (left, right) = (left.max(preview_left + 1.0), right.min(preview_right - 1.0));
+    if left >= right {
+        return None;
+    }
+    press_at(
+        window,
+        slint::LogicalPosition::new(f32::midpoint(left, right), f32::midpoint(top, bottom)),
+    );
+    let dialogs = all_of(window, "Dialog");
+    assert_eq!(dialogs.len(), 1, "the {label} button opens its picker");
+    let size = dialogs[0].size();
+    let (x, y) = if label == "Date" {
+        (window.get_date_picker_x(), window.get_date_picker_y())
+    } else {
+        (window.get_time_picker_x(), window.get_time_picker_y())
+    };
+    let room = window.window().size().to_logical(1.0);
+    let (x, y) = (
+        x.clamp(0.0, room.width - size.width),
+        y.clamp(0.0, room.height - size.height),
+    );
+    let cancel = point_in(&the_labeled(window, "Cancel"), 0.5, 0.5);
+    press_at(
+        window,
+        slint::LogicalPosition::new(x + cancel.x, y + cancel.y),
+    );
+    assert!(
+        all_of(window, "Dialog").is_empty(),
+        "the {label} picker was not at {x}, {y}"
+    );
+    Some([x, y, x + size.width, y + size.height])
+}
+
+/// The date and time pickers open inside the preview wherever they fit, above
+/// the bar. Where one is wider than the preview it stands against the
+/// window's right edge, so it covers no more of the side bar than its excess
+/// width.
+#[test]
+fn test_the_pickers_open_inside_the_preview() {
+    let (window, _sent) = wired_window();
+    window.set_time_bar_pinned(true);
+    let (mut opened, mut wider) = (0, 0);
+    for width in [520, 600, 700, 800, 1000] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 700));
+        let preview = edges(&the_element(&window, "MainWindow::image-container"));
+        let bar_top = edges(&the_element(&window, "MainWindow::time-bar"))[1];
+        for label in ["Date", "Time"] {
+            let what = format!("{width} px window, {label} picker");
+            let Some([left, top, right, bottom]) = picker_edges(&window, label) else {
+                continue;
+            };
+            opened += 1;
+            assert!(
+                top >= preview[1] && bottom <= bar_top,
+                "{what}: {top}..{bottom} is not between the preview's top and the bar"
+            );
+            assert!(
+                right <= preview[2] + 0.5,
+                "{what}: its right edge {right} is past the window's {}",
+                preview[2]
+            );
+            if right - left <= preview[2] - preview[0] {
+                assert!(
+                    left >= preview[0] - 0.5,
+                    "{what}: {left}..{right} reaches over the side bar left of {}",
+                    preview[0]
+                );
+            } else {
+                wider += 1;
+                approx::assert_abs_diff_eq!(right, preview[2], epsilon = 0.5);
+            }
+        }
+    }
+    assert!(opened >= 8, "only {opened} pickers opened");
+    assert!(wider > 0, "no window was narrower than a picker");
 }
 
 /// In the app's default window the rulers are packed closer than at full

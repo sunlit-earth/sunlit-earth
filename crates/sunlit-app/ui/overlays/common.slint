@@ -354,43 +354,47 @@ export component OverlayHint inherits Rectangle {
     }
 }
 
-// The one-line tip that names a mouse gesture the first time its control is
-// used.
+// The tip that names a mouse gesture the first time its control is used, on
+// one line where the preview has room and wrapped to `room` where it has not.
 export component GestureTip inherits Rectangle {
     in property <string> mouse;
     in property <string> text;
+    in property <length> room;
 
-    width: row.preferred-width;
-    height: 30px;
-    border-radius: self.height / 2;
+    // Placed by hand: a box layout would measure the wrapping text at its
+    // one-line width and keep one line's height.
+    property <length> lead: 12px + label.width + 6px + glyph.width + 6px;
+
+    width: min(self.lead + message.preferred-width + 12px, root.room);
+    height: max(30px, message.height + 12px);
+    border-radius: 15px;
     border-width: 1px;
     border-color: OverlayStyle.border;
     background: OverlayStyle.panel;
 
-    row := HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 6px;
-        alignment: center;
+    label := Text {
+        x: 12px;
+        y: (root.height - self.height) / 2;
+        text: "Tip";
+        color: OverlayStyle.dim;
+        font-size: 12px;
+    }
 
-        Text {
-            text: "Tip";
-            color: OverlayStyle.dim;
-            font-size: 12px;
-            vertical-alignment: center;
-        }
+    glyph := MouseGlyph {
+        x: label.x + label.width + 6px;
+        y: (root.height - self.height) / 2;
+        which: root.mouse;
+    }
 
-        MouseGlyph {
-            y: 6px;
-            which: root.mouse;
-        }
-
-        Text {
-            text: root.text;
-            color: OverlayStyle.fg;
-            font-size: 12px;
-            vertical-alignment: center;
-        }
+    message := Text {
+        x: root.lead;
+        y: (root.height - self.height) / 2;
+        width: root.width - root.lead - 12px;
+        height: self.preferred-height;
+        text: root.text;
+        color: OverlayStyle.fg;
+        font-size: 12px;
+        wrap: word-wrap;
     }
 }
 

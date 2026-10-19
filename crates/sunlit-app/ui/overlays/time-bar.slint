@@ -366,14 +366,17 @@ export component TimeBar inherits Rectangle {
     property <length> middle-column: 70px;
     property <length> right-column: root.width - 26px - 12px - 142px;
     property <length> middle-width: root.right-column - 10px - root.middle-column;
-    // Where the transport at full size, centered over the tracks, would run
-    // into the speed readout, the readout folds to its arrow in the left
-    // column and the rulers' dots pack closer, down to `min-pitch`, keeping
-    // the row inside the tracks' column. Below the bar width at which even
-    // that pitch is too wide, the row spills past the column on both sides.
+    // The speed readout starts at the left column. Where the transport at
+    // full size, centered over the tracks, would run into the widest readout
+    // of the ladder's speeds, the readout folds to its arrow and the rulers'
+    // dots pack closer, down to `min-pitch`, keeping the row inside the
+    // tracks' column. Below the bar width at which even that pitch is too
+    // wide, the row spills past the column on both sides.
     property <length> transport-fixed: 2 * 28px + 44px + 4 * 6px;
     property <length> full-row: root.transport-fixed + 2 * (6px + root.ladder.length * 11px);
-    property <bool> compact: (root.middle-width - root.full-row) / 2 < speed-column.preferred-width + 16px + 6px;
+    property <length> readout-width: widest-readout.preferred-width + 16px;
+    property <length> readout-height: readout-lines.preferred-height + 8px;
+    property <bool> compact: root.left-column + root.readout-width + 6px > root.middle-column + (root.middle-width - root.full-row) / 2;
     property <length> min-pitch: 7px;
     property <length> pitch: !root.compact ? 11px
         : max(root.min-pitch, min(11px, ((root.middle-width - root.transport-fixed) / 2 - 6px) / max(1, root.ladder.length)));
@@ -471,19 +474,69 @@ export component TimeBar inherits Rectangle {
         }
     }
 
+    // The readout's size at the widest of the ladder's speeds, measured out
+    // of sight.
+    Rectangle {
+        visible: false;
+        width: 0px;
+        height: 0px;
+
+        widest-readout := VerticalLayout {
+            padding-left: 8px;
+
+            for choice in root.rates : HorizontalLayout {
+                spacing: 4px;
+
+                Rectangle {
+                    width: 9px;
+                }
+
+                Text {
+                    text: choice.rate > 0 ? choice.label : "";
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+            }
+
+            for choice in root.rates : Text {
+                text: choice.note;
+                font-size: 11px;
+            }
+
+            Text {
+                text: root.view.date-kind ? root.view.speed-note : "";
+                font-size: 11px;
+            }
+        }
+
+        readout-lines := VerticalLayout {
+            padding-top: 4px;
+
+            Text {
+                text: "0";
+                font-size: 15px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: "0";
+                font-size: 11px;
+            }
+        }
+    }
+
     // The speed and what it means, or in a narrow bar its arrow alone; a
     // click lists every speed.
     speed-readout := Rectangle {
-        x: root.compact ? root.left-column + 10px : root.middle-column;
+        x: root.compact ? root.left-column + 10px : root.left-column;
         y: 8px + (44px - self.height) / 2;
-        width: root.compact ? 28px : speed-column.preferred-width + 16px;
-        height: root.compact ? 28px : speed-column.preferred-height + 8px;
+        width: root.compact ? 28px : root.readout-width;
+        height: root.compact ? 28px : root.readout-height;
         border-radius: 8px;
         visible: root.open;
         background: speed-touch.has-hover ? OverlayStyle.faint : transparent;
 
-        speed-column := VerticalLayout {
-            visible: !root.compact;
+        if !root.compact : VerticalLayout {
             padding-left: 8px;
             padding-top: 4px;
 
@@ -503,7 +556,7 @@ export component TimeBar inherits Rectangle {
                     }
                 }
 
-                speed-text := Text {
+                Text {
                     text: root.view.speed-text;
                     color: root.view.running ? OverlayStyle.fg : OverlayStyle.dim;
                     font-size: 15px;

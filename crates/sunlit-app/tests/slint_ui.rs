@@ -3794,25 +3794,182 @@ fn test_each_dot_of_a_compact_ruler_runs_at_its_own_rate() {
     }
 }
 
-/// The speed's hint names the speed, which a narrow bar shows as an arrow
-/// alone.
+/// Every speed of `kind`'s ladder in both directions, running.
+fn running_speeds(kind: ExcursionKind) -> Vec<ExcursionState> {
+    kind.ladder()
+        .iter()
+        .map(|&rate| i32::try_from(rate).expect("a rate"))
+        .flat_map(|rate| [rate, -rate])
+        .map(|rate| ExcursionState {
+            running: true,
+            rate,
+            kind,
+        })
+        .collect()
+}
+
+/// Whether the speed readout shows the speed and what it means in words
+/// rather than its arrow alone.
+fn the_readout_speaks(window: &MainWindow) -> bool {
+    let view = window.get_time_bar();
+    let labels: Vec<String> = the_element(window, "TimeBar::speed-readout")
+        .query_descendants()
+        .find_all()
+        .iter()
+        .filter_map(|element| element.accessible_label().map(|label| label.to_string()))
+        .collect();
+    let speaks = |text: &str| labels.iter().any(|label| label == text);
+    speaks(view.speed_text.as_str()) && speaks(view.speed_note.as_str())
+}
+
+/// At the bar's full width the readout gives every speed of both kinds in
+/// words, clear of the transport.
 #[test]
-fn test_the_speed_hint_names_the_speed() {
+fn test_a_full_bar_names_every_speed_in_words() {
     let (window, _sent) = wired_window();
     window
         .window()
-        .set_size(slint::PhysicalSize::new(1000, 5000));
-    sunlit_earth::time_bar::refresh(&window);
+        .set_size(slint::PhysicalSize::new(1400, 5000));
     open_the_bar(&window);
-    let hint = hint_over(&window, &the_labeled(&window, "Speed"));
-    let title = the_descendant(&hint, "OverlayHint::title")
-        .accessible_label()
-        .expect("a title");
-    let view = window.get_time_bar();
-    assert!(
-        title.contains(view.speed_text.as_str()) && title.contains(view.speed_note.as_str()),
-        "the hint says {title}"
-    );
+    let bar = edges(&the_element(&window, "MainWindow::time-bar"));
+    approx::assert_abs_diff_eq!(bar[2] - bar[0], 800.0, epsilon = 0.5);
+    for kind in [ExcursionKind::Clock, ExcursionKind::Date] {
+        for state in running_speeds(kind) {
+            sunlit_earth::time_bar::excursion_changed(&window, Some(state));
+            let what = format!("{} ({kind:?})", window.get_time_bar().speed_text);
+            assert!(the_readout_speaks(&window), "{what}: the readout is folded");
+            let readout = edges(&the_element(&window, "TimeBar::speed-readout"));
+            for id in [
+                "TimeBar::skip-back",
+                "TimeBar::backward",
+                "TimeBar::forward",
+                "TimeBar::skip-forward",
+            ] {
+                assert!(
+                    !overlap(readout, edges(&the_element(&window, id))),
+                    "{what}: the readout runs into {id}"
+                );
+            }
+        }
+    }
+}
+
+/// Whether the readout folds at each forward speed of `kind` in a window
+/// `width` px wide.
+fn folds_by_speed(window: &MainWindow, kind: ExcursionKind, width: u32) -> Vec<bool> {
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(width, 5000));
+    running_speeds(kind)
+        .into_iter()
+        .filter(|state| state.rate > 0)
+        .map(|state| {
+            sunlit_earth::time_bar::excursion_changed(window, Some(state));
+            !the_readout_speaks(window)
+        })
+        .collect()
+}
+
+/// Whether the readout folds depends on the bar's width and the kind of
+/// play, never on the speed: from the narrowest window that holds the compact
+/// row to the widest bar, and a pixel either side of the fold.
+#[test]
+fn test_the_readout_folds_alike_at_every_speed() {
+    let (window, _sent) = wired_window();
+    open_the_bar(&window);
+    for kind in [ExcursionKind::Clock, ExcursionKind::Date] {
+        let alike = |width: u32| {
+            let folds = folds_by_speed(&window, kind, width);
+            assert!(
+                folds.iter().all(|&folded| folded == folds[0]),
+                "{width} px window, {kind:?}: the readout folds at some speeds only: {folds:?}"
+            );
+            folds[0]
+        };
+        let mut widths: Vec<u32> = (BAR_WINDOWS[0]..1400).step_by(32).collect();
+        widths.push(1400);
+        let folded: Vec<bool> = widths.iter().map(|&width| alike(width)).collect();
+        assert!(
+            folded[0] && !folded[folded.len() - 1],
+            "{kind:?}: the readout folds in the narrowest window and speaks at the widest bar"
+        );
+        let flip = folded
+            .iter()
+            .position(|&f| !f)
+            .expect("a width that speaks");
+        let (mut narrow, mut wide) = (widths[flip - 1], widths[flip]);
+        while wide - narrow > 1 {
+            let middle = narrow.midpoint(wide);
+            if alike(middle) {
+                narrow = middle;
+            } else {
+                wide = middle;
+            }
+        }
+        assert!(
+            alike(narrow) && !alike(wide),
+            "{kind:?}: the fold sits between {narrow} and {wide} px"
+        );
+    }
+}
+
+/// The speed's hint names the speed, which a narrow bar shows as an arrow
+/// alone, and follows it while the pointer rests on the readout.
+#[test]
+fn test_the_speed_hint_names_the_speed() {
+    for width in [1000, 1400] {
+        let (window, _sent) = wired_window();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        sunlit_earth::time_bar::refresh(&window);
+        open_the_bar(&window);
+        let rest = point_in(&the_labeled(&window, "Speed"), 0.5, 0.5);
+        hint_over(&window, &the_labeled(&window, "Speed"));
+        let names_the_speed = |what: &str| {
+            let hints: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "MainWindow::hint").collect();
+            assert_eq!(
+                hints.len(),
+                1,
+                "{width} px window, {what}: the hint went away"
+            );
+            let title = the_descendant(&hints[0], "OverlayHint::title")
+                .accessible_label()
+                .expect("a title");
+            let view = window.get_time_bar();
+            assert!(
+                title.contains(view.speed_text.as_str())
+                    && title.contains(view.speed_note.as_str()),
+                "{width} px window, {what}: the hint says {title}"
+            );
+        };
+        names_the_speed("at the start");
+        for state in [
+            ExcursionState {
+                running: true,
+                rate: 3600,
+                kind: ExcursionKind::Clock,
+            },
+            ExcursionState {
+                running: true,
+                rate: -5,
+                kind: ExcursionKind::Clock,
+            },
+            ExcursionState {
+                running: true,
+                rate: 90,
+                kind: ExcursionKind::Date,
+            },
+        ] {
+            sunlit_earth::time_bar::excursion_changed(&window, Some(state));
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: rest });
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+            names_the_speed(&format!("{state:?}"));
+        }
+    }
 }
 
 // A key cap in a row narrower than its label asks for, beside text that would

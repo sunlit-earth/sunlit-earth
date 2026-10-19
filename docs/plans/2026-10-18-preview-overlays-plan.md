@@ -262,7 +262,9 @@ Revert the change. Part A leaves `overlays_hidden` in the config, which an older
 
 ## Departures
 
-None yet.
+1. The time between joystick ticks is measured in Slint on the animation clock (`animation-tick()`) rather than with `Instant` in Rust (Step A1), and the callbacks carry it: `camera-stick(CameraStick, float, float, float)` and `camera-zoom-rate(int, float)` end in the seconds since the previous report, and the eases run on a `camera-ease-tick(float)` timer that Rust starts through a `camera-easing` property. The guarantee is the same, a late timer moves the camera further rather than slower, because the elapsed time is measured and not assumed. What changes is the clock: the animation clock is the system clock in the app and the mock clock under the testing backend, so `mock_elapsed_time` drives the sticks and the 300 ms ease in `slint_ui.rs` exactly, which an `Instant` would not. With nothing to measure in Rust, `camera-stick-released` has no work and is left out; a stick, the roll ring or a held zoom button cancels any ease on the values it moves instead.
+
+2. An idle control drops to 30% opacity without the faint dark drop shadow decision 2 asks for. Slint draws a drop shadow for a rectangle's shape only, not for a glyph, an SVG icon or a path, and the controls that most need contrast over a bright globe (the N, the ticks, the knobs' rims) are those. The fade alone is what the panel does when idle; Step E will show whether it needs more over a bright day side.
 
 ## Open items
 

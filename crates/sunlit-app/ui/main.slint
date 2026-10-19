@@ -1,10 +1,12 @@
 import { Slider, Button, Palette, ScrollView } from "std-widgets.slint";
 import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, SettingCombo, SettingHeading, SettingGroup } from "widgets.slint";
-import { Joystick, HoldButton, RollRing, VZoomSlider, ResetBadge, MouseGlyph, KeyCap, OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton, StepArrow } from "overlays/common.slint";
+import { OverlayHint, OverlayHints, GestureTip } from "overlays/common.slint";
+import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
 export { TrayIcon } from "tray.slint";
+export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
 
 // The settings behind the Advanced section, one struct per group, nested the
 // way the panel nests its subsections. The nesting is the one statement of
@@ -239,6 +241,21 @@ export component MainWindow inherits Window {
     callback mouse-drag-tilt(float, float);
     callback mouse-scroll(float);
     callback apply-preset(int);
+
+    // The camera panel over the preview. A stick reports its deflection,
+    // right and up positive, and the seconds since its previous report; the
+    // steps, the resets and the zoom buttons ease toward their target, and
+    // Rust keeps `camera-easing` set while one is on its way so the ease
+    // timer reports the seconds that pass.
+    callback camera-stick(CameraStick, float, float, float);
+    callback camera-orbit-step(int, int);
+    callback camera-roll(float);
+    callback camera-reset(CameraReset);
+    callback camera-zoom-step(int);
+    callback camera-zoom-rate(int, float);
+    callback camera-ease-tick(float);
+    in property <bool> camera-easing;
+
     callback load-defaults();
     callback reset();
     callback datetime-override-toggled();
@@ -1763,6 +1780,7 @@ export component MainWindow inherits Window {
                     image-container.last-mouse-x = self.mouse-x;
                     image-container.last-mouse-y = self.mouse-y;
                 }
+                image-container.note-gesture(image-container.gesture);
             }
 
             moved => {
@@ -1793,8 +1811,173 @@ export component MainWindow inherits Window {
 
             scroll-event(event) => {
                 root.mouse-scroll(event.delta-y / 1px);
+                image-container.wheel-at = animation-tick();
+                image-container.wheel-turning = true;
+                image-container.note-gesture("zoom");
                 return accept;
             }
+        }
+
+        // The wheel has no held state of its own: it counts as in progress
+        // until it has been still for 350 ms.
+        property <bool> wheel-turning;
+        property <duration> wheel-at;
+        Timer {
+            interval: 50ms;
+            running: image-container.wheel-turning;
+            triggered => {
+                if animation-tick() - image-container.wheel-at >= 350ms {
+                    image-container.wheel-turning = false;
+                }
+            }
+        }
+
+        // The gesture in progress on the globe, by the name its control on
+        // the camera panel goes by.
+        property <string> gesture: self.left-held && self.right-held ? "roll"
+            : self.left-held ? "orbit"
+            : self.right-held ? "frame"
+            : self.middle-held ? "look"
+            : "";
+        // The gestures used on the globe this session, and the controls whose
+        // gesture a tip has named, so the first use of a control can tell
+        // whether its gesture is new. Nothing of it is saved.
+        property <bool> used-orbit;
+        property <bool> used-roll;
+        property <bool> used-zoom;
+        property <bool> used-look;
+        property <bool> used-frame;
+        property <bool> taught-orbit;
+        property <bool> taught-roll;
+        property <bool> taught-zoom;
+        property <bool> taught-look;
+        property <bool> taught-frame;
+        property <string> tip-mouse;
+        property <string> tip-text;
+        property <duration> tip-at;
+        property <bool> tip-shown;
+
+        function note-gesture(gesture: string) {
+            if gesture == "orbit" { image-container.used-orbit = true; }
+            if gesture == "roll" { image-container.used-roll = true; }
+            if gesture == "zoom" { image-container.used-zoom = true; }
+            if gesture == "look" { image-container.used-look = true; }
+            if gesture == "frame" { image-container.used-frame = true; }
+        }
+
+        function teach(control: string) {
+            if control == "orbit" {
+                if image-container.used-orbit || image-container.taught-orbit { return; }
+                image-container.taught-orbit = true;
+            } else if control == "roll" {
+                if image-container.used-roll || image-container.taught-roll { return; }
+                image-container.taught-roll = true;
+            } else if control == "zoom" {
+                if image-container.used-zoom || image-container.taught-zoom { return; }
+                image-container.taught-zoom = true;
+            } else if control == "look" {
+                if image-container.used-look || image-container.taught-look { return; }
+                image-container.taught-look = true;
+            } else if control == "frame" {
+                if image-container.used-frame || image-container.taught-frame { return; }
+                image-container.taught-frame = true;
+            } else {
+                return;
+            }
+            image-container.tip-mouse = control == "orbit" ? "left"
+                : control == "roll" ? "both"
+                : control == "frame" ? "right"
+                : control == "look" ? "middle"
+                : "wheel";
+            image-container.tip-text = control == "orbit" ? "Faster: drag the globe with the left button"
+                : control == "roll" ? "Or drag the globe with left and right held"
+                : control == "frame" ? "Or drag the globe with the right button"
+                : control == "look" ? "Or drag the globe with the middle button"
+                : "Or scroll the mouse wheel over the globe";
+            image-container.tip-at = animation-tick();
+            image-container.tip-shown = true;
+        }
+
+        Timer {
+            interval: 100ms;
+            running: image-container.tip-shown;
+            triggered => {
+                if animation-tick() - image-container.tip-at >= 2800ms {
+                    image-container.tip-shown = false;
+                }
+            }
+        }
+
+        Timer {
+            interval: 16ms;
+            running: root.camera-easing;
+            triggered => {
+                let now = animation-tick();
+                root.camera-ease-tick(min(now - image-container.ease-tick, 100ms) / 1s);
+                image-container.ease-tick = now;
+            }
+        }
+        property <duration> ease-tick;
+        changed ease-requested => {
+            image-container.ease-tick = animation-tick();
+        }
+        property <bool> ease-requested: root.camera-easing;
+
+        camera-panel := CameraPanel {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            tilt: root.camera-orientation.tilt;
+            zoom <=> root.camera-position.zoom;
+            default-zoom: root.defaults.camera-position.zoom;
+            look-modified: root.camera-orientation.yaw != root.defaults.camera-orientation.yaw
+                || root.camera-orientation.pitch != root.defaults.camera-orientation.pitch;
+            frame-modified: root.framing.offset-x != root.defaults.framing.offset-x
+                || root.framing.offset-y != root.defaults.framing.offset-y;
+            lit-orbit: image-container.gesture == "orbit";
+            lit-roll: image-container.gesture == "roll";
+            lit-zoom: image-container.wheel-turning;
+            lit-look: image-container.gesture == "look";
+            lit-frame: image-container.gesture == "frame";
+            stick(which, x, y, seconds) => { root.camera-stick(which, x, y, seconds); }
+            orbit-step(right, up) => { root.camera-orbit-step(right, up); }
+            roll(degrees) => { root.camera-roll(degrees); }
+            reset(which) => { root.camera-reset(which); }
+            zoom-step(direction) => { root.camera-zoom-step(direction); }
+            zoom-rate(direction, seconds) => { root.camera-zoom-rate(direction, seconds); }
+            zoom-changed => { root.sliders-changed(); }
+            used(control) => { image-container.teach(control); }
+        }
+
+        // The hover hint of whichever overlay control the pointer rests on,
+        // after 450 ms, left of the camera panel.
+        property <string> hint-id: camera-panel.any-held ? "" : camera-panel.hovered-hint;
+        property <string> shown-hint;
+        property <duration> hint-since;
+        changed hint-id => {
+            image-container.shown-hint = "";
+            image-container.hint-since = animation-tick();
+        }
+        Timer {
+            interval: 50ms;
+            running: image-container.hint-id != "" && image-container.shown-hint != image-container.hint-id;
+            triggered => {
+                if animation-tick() - image-container.hint-since >= 450ms {
+                    image-container.shown-hint = image-container.hint-id;
+                }
+            }
+        }
+
+        if image-container.shown-hint != "" : hint := OverlayHint {
+            content: OverlayHints.content(image-container.shown-hint);
+            x: camera-panel.x - self.width - 12px;
+            y: clamp(camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
+        }
+
+        if image-container.tip-shown : GestureTip {
+            x: (parent.width - self.width) / 2;
+            y: 14px;
+            mouse: image-container.tip-mouse;
+            text: image-container.tip-text;
         }
 
         if loading-text != "" : Rectangle {

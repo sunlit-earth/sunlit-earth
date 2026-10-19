@@ -1,0 +1,407 @@
+// The camera panel in the preview's top right corner: the compass ring with
+// the orbit joystick inside, the zoom buttons and slider, the look and frame
+// joysticks, and the footer with the shortcut sheet and the hide button.
+//
+// It is always expanded. While the pointer is elsewhere, nothing of it is
+// held and it has not been used for a moment, it is idle: its background goes
+// and its controls fade, apart from one whose gesture is in progress on the
+// globe, which lights up instead.
+
+import { OverlayStyle, Joystick, HoldButton, RollRing, VZoomSlider, ResetBadge, OverlayButton, StepArrow } from "common.slint";
+
+export enum CameraStick { orbit, look, frame }
+
+export enum CameraReset { north, look, frame }
+
+// A short caption above a joystick.
+component Caption inherits Text {
+    color: OverlayStyle.dim;
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    horizontal-alignment: center;
+}
+
+export component CameraPanel inherits Rectangle {
+    in property <float> tilt;
+    in-out property <float> zoom;
+    in property <float> default-zoom;
+    // Whether yaw and pitch, and the offsets, differ from their defaults.
+    in property <bool> look-modified;
+    in property <bool> frame-modified;
+
+    // The reverse highlight, one per gesture on the globe.
+    in property <bool> lit-orbit;
+    in property <bool> lit-roll;
+    in property <bool> lit-zoom;
+    in property <bool> lit-look;
+    in property <bool> lit-frame;
+
+    // The control under the pointer, by its hint id, and the vertical middle
+    // of that control in the panel's coordinates.
+    out property <string> hovered-hint: ring.north-hovered ? "north"
+        : look-reset-hovered ? "look-reset"
+        : frame-reset-hovered ? "frame-reset"
+        : orbit.hovered || orbit-arrow-hovered ? "orbit"
+        : ring.ring-hovered ? "roll"
+        : zoom-in.hovered ? "zoom-in"
+        : zoom-out.hovered ? "zoom-out"
+        : zoom-slider.hovered ? "zoom"
+        : look.hovered ? "look"
+        : frame.hovered ? "frame"
+        : help-button.hovered ? "help"
+        : hide-button.hovered ? "hide"
+        : "";
+    out property <length> hovered-y: hovered-hint == "north" || hovered-hint == "orbit" || hovered-hint == "roll" ? ring.y + ring.height / 2
+        : hovered-hint == "zoom-in" ? zoom-column.y + zoom-in.y + zoom-in.height / 2
+        : hovered-hint == "zoom-out" ? zoom-column.y + zoom-out.y + zoom-out.height / 2
+        : hovered-hint == "zoom" ? zoom-column.y + zoom-slider.y + zoom-slider.height / 2
+        : hovered-hint == "look" || hovered-hint == "look-reset" ? look-row.y + look-row.height / 2
+        : hovered-hint == "frame" || hovered-hint == "frame-reset" ? frame-row.y + frame-row.height / 2
+        : footer.y + footer.height / 2;
+
+    out property <bool> any-held: orbit.held || ring.held || zoom-in.held || zoom-out.held || zoom-slider.held || look.held || frame.held;
+    out property <bool> idle: !self.hovered && !self.any-held && !self.recent;
+
+    callback stick(CameraStick, float, float, float);
+    callback orbit-step(int, int);
+    callback roll(float);
+    callback reset(CameraReset);
+    callback zoom-step(int);
+    callback zoom-rate(int, float);
+    callback zoom-changed();
+    // A control was used, by the gesture that does the same: "orbit", "roll",
+    // "zoom", "look" or "frame".
+    callback used(string);
+    callback show-shortcuts();
+    callback hide-overlays();
+
+    property <bool> orbit-arrow-hovered: up-arrow.hovered || down-arrow.hovered || left-arrow.hovered || right-arrow.hovered;
+    property <bool> look-reset-hovered;
+    property <bool> frame-reset-hovered;
+    property <bool> hovered: background-touch.has-hover || self.hovered-hint != "";
+    property <bool> recent;
+    property <duration> last-use;
+    property <float> faded: root.idle ? OverlayStyle.idle-opacity : 1;
+
+    function mark-used() {
+        root.last-use = animation-tick();
+        root.recent = true;
+    }
+
+    changed hovered => {
+        if !self.hovered {
+            root.mark-used();
+        }
+    }
+
+    width: 92px;
+    height: layout.preferred-height;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: root.idle ? transparent : OverlayStyle.border;
+    background: root.idle ? transparent : OverlayStyle.panel;
+    drop-shadow-blur: root.idle ? 0px : 22px;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-color: root.idle ? transparent : #00000073;
+
+    animate background, border-color, drop-shadow-color { duration: OverlayStyle.idle-fade; }
+
+    background-touch := TouchArea { }
+
+    Timer {
+        interval: 100ms;
+        running: root.recent;
+        triggered => {
+            if animation-tick() - root.last-use > 900ms {
+                root.recent = false;
+            }
+        }
+    }
+
+    layout := VerticalLayout {
+        padding-top: 8px;
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-bottom: 4px;
+        spacing: 0px;
+        alignment: start;
+
+        HorizontalLayout {
+            alignment: center;
+
+            ring := RollRing {
+                tilt: root.tilt;
+                lit: root.lit-roll;
+                opacity: root.lit-roll || root.lit-orbit ? 1 : root.faded;
+                animate opacity { duration: OverlayStyle.idle-fade; }
+                pressed => {
+                    root.mark-used();
+                    root.used("roll");
+                }
+                rolled(degrees) => {
+                    root.mark-used();
+                    root.roll(degrees);
+                }
+                north => {
+                    root.mark-used();
+                    root.reset(CameraReset.north);
+                }
+
+                orbit := Joystick {
+                    x: 16px;
+                    y: 16px;
+                    lit: root.lit-orbit;
+                    pressed => {
+                        root.mark-used();
+                        root.used("orbit");
+                    }
+                    moved(x, y, seconds) => {
+                        root.mark-used();
+                        root.stick(CameraStick.orbit, x, y, seconds);
+                    }
+
+                    up-arrow := StepArrow {
+                        x: 16px;
+                        y: 1px;
+                        icon: @image-url("../icons/chevron-up.svg");
+                        clicked => {
+                            root.mark-used();
+                            root.used("orbit");
+                            root.orbit-step(0, 1);
+                        }
+                    }
+
+                    down-arrow := StepArrow {
+                        x: 16px;
+                        y: parent.height - self.height - 1px;
+                        icon: @image-url("../icons/chevron-down.svg");
+                        clicked => {
+                            root.mark-used();
+                            root.used("orbit");
+                            root.orbit-step(0, -1);
+                        }
+                    }
+
+                    left-arrow := StepArrow {
+                        x: 1px;
+                        y: 16px;
+                        icon: @image-url("../icons/chevron-left.svg");
+                        clicked => {
+                            root.mark-used();
+                            root.used("orbit");
+                            root.orbit-step(-1, 0);
+                        }
+                    }
+
+                    right-arrow := StepArrow {
+                        x: parent.width - self.width - 1px;
+                        y: 16px;
+                        icon: @image-url("../icons/chevron-right.svg");
+                        clicked => {
+                            root.mark-used();
+                            root.used("orbit");
+                            root.orbit-step(1, 0);
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            padding-top: 8px;
+            padding-bottom: 2px;
+
+            zoom-column := Rectangle {
+                width: 40px;
+                height: zoom-layout.preferred-height;
+                border-radius: 8px;
+                border-width: root.lit-zoom ? 2px : 0px;
+                border-color: OverlayStyle.accent;
+                drop-shadow-blur: root.lit-zoom ? 14px : 0px;
+                drop-shadow-color: OverlayStyle.accent-glow;
+                opacity: root.lit-zoom ? 1 : root.faded;
+                animate opacity { duration: OverlayStyle.idle-fade; }
+
+                zoom-layout := VerticalLayout {
+                    spacing: 4px;
+                    alignment: start;
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        zoom-in := HoldButton {
+                            text: "+";
+                            step => {
+                                root.mark-used();
+                                root.used("zoom");
+                                root.zoom-step(1);
+                            }
+                            run(seconds) => {
+                                root.mark-used();
+                                root.zoom-rate(1, seconds);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        zoom-slider := VZoomSlider {
+                            value <=> root.zoom;
+                            mark: root.default-zoom;
+                            pressed => {
+                                root.mark-used();
+                                root.used("zoom");
+                            }
+                            changed => {
+                                root.mark-used();
+                                if abs(root.zoom - root.default-zoom) < 0.03 {
+                                    root.zoom = root.default-zoom;
+                                }
+                                root.zoom-changed();
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+
+                        zoom-out := HoldButton {
+                            text: "−";
+                            step => {
+                                root.mark-used();
+                                root.used("zoom");
+                                root.zoom-step(-1);
+                            }
+                            run(seconds) => {
+                                root.mark-used();
+                                root.zoom-rate(-1, seconds);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Caption {
+            text: "LOOK";
+            height: 26px;
+            vertical-alignment: bottom;
+            opacity: root.faded;
+            animate opacity { duration: OverlayStyle.idle-fade; }
+        }
+
+        look-row := HorizontalLayout {
+            alignment: center;
+            padding-top: 4px;
+
+            Rectangle {
+                width: 46px;
+                height: 46px;
+                opacity: root.lit-look ? 1 : root.faded;
+                animate opacity { duration: OverlayStyle.idle-fade; }
+
+                look := Joystick {
+                    lit: root.lit-look;
+                    pressed => {
+                        root.mark-used();
+                        root.used("look");
+                    }
+                    moved(x, y, seconds) => {
+                        root.mark-used();
+                        root.stick(CameraStick.look, x, y, seconds);
+                    }
+                }
+
+                if root.look-modified : look-reset := ResetBadge {
+                    x: parent.width - 2px;
+                    y: -4px;
+                    changed hovered => {
+                        root.look-reset-hovered = self.hovered;
+                    }
+                    clicked => {
+                        root.look-reset-hovered = false;
+                        root.mark-used();
+                        root.reset(CameraReset.look);
+                    }
+                }
+            }
+        }
+
+        Caption {
+            text: "FRAME";
+            height: 26px;
+            vertical-alignment: bottom;
+            opacity: root.faded;
+            animate opacity { duration: OverlayStyle.idle-fade; }
+        }
+
+        frame-row := HorizontalLayout {
+            alignment: center;
+            padding-top: 4px;
+
+            Rectangle {
+                width: 46px;
+                height: 46px;
+                opacity: root.lit-frame ? 1 : root.faded;
+                animate opacity { duration: OverlayStyle.idle-fade; }
+
+                frame := Joystick {
+                    square: true;
+                    lit: root.lit-frame;
+                    pressed => {
+                        root.mark-used();
+                        root.used("frame");
+                    }
+                    moved(x, y, seconds) => {
+                        root.mark-used();
+                        root.stick(CameraStick.frame, x, y, seconds);
+                    }
+                }
+
+                if root.frame-modified : frame-reset := ResetBadge {
+                    x: parent.width - 2px;
+                    y: -4px;
+                    changed hovered => {
+                        root.frame-reset-hovered = self.hovered;
+                    }
+                    clicked => {
+                        root.frame-reset-hovered = false;
+                        root.mark-used();
+                        root.reset(CameraReset.frame);
+                    }
+                }
+            }
+        }
+
+        footer := VerticalLayout {
+            padding-top: 8px;
+            opacity: root.faded;
+            animate opacity { duration: OverlayStyle.idle-fade; }
+
+            Rectangle {
+                height: 1px;
+                background: root.idle ? transparent : OverlayStyle.border;
+            }
+
+            HorizontalLayout {
+                padding-top: 3px;
+                spacing: 6px;
+                alignment: center;
+
+                help-button := OverlayButton {
+                    icon: @image-url("../icons/help.svg");
+                    clicked => { root.show-shortcuts(); }
+                }
+
+                hide-button := OverlayButton {
+                    icon: @image-url("../icons/eye.svg");
+                    icon-width: 16px;
+                    icon-height: 12px;
+                    clicked => { root.hide-overlays(); }
+                }
+            }
+        }
+    }
+}

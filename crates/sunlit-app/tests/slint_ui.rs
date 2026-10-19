@@ -2644,3 +2644,172 @@ fn test_the_loading_line_shows_the_engines_status_and_only_while_there_is_one() 
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The camera panel over the preview
+// ---------------------------------------------------------------------------
+
+/// The one element with this id, which the panel always shows.
+fn the_element(window: &MainWindow, id: &str) -> ElementHandle {
+    let found: Vec<_> = ElementHandle::find_by_element_id(window, id).collect();
+    assert_eq!(found.len(), 1, "expected exactly one '{id}'");
+    found.into_iter().next().expect("one element")
+}
+
+/// A point inside an element, as fractions of its size from its top left.
+fn point_in(element: &ElementHandle, fx: f32, fy: f32) -> slint::LogicalPosition {
+    let at = element.absolute_position();
+    let size = element.size();
+    slint::LogicalPosition::new(at.x + size.width * fx, at.y + size.height * fy)
+}
+
+/// Press the left button at `position` and keep it down.
+fn hold_at(window: &MainWindow, position: slint::LogicalPosition) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let window = window.window();
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+}
+
+/// Let the left button go at `position`.
+fn release_at(window: &MainWindow, position: slint::LogicalPosition) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+}
+
+/// Let mock time pass in frame-sized steps, so every timer fires along the
+/// way rather than once at the end.
+fn let_pass(milliseconds: u64) {
+    for _ in 0..milliseconds.div_ceil(16) {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(16));
+    }
+}
+
+/// N eases the roll back to north up rather than jumping, and gets there.
+#[test]
+fn test_north_puts_the_roll_back_to_zero_once_the_ease_has_passed() {
+    let (window, sent) = wired_window();
+    let mut orientation = window.get_camera_orientation();
+    orientation.tilt = 120.0;
+    window.set_camera_orientation(orientation);
+
+    press_at(
+        &window,
+        point_in(&the_element(&window, "RollRing::north-touch"), 0.5, 0.5),
+    );
+    let_pass(48);
+    let midway = window.get_camera_orientation().tilt;
+    assert!(
+        midway > 0.0 && midway < 120.0,
+        "after a moment the roll is on its way, at {midway}"
+    );
+    let_pass(400);
+    approx::assert_relative_eq!(window.get_camera_orientation().tilt, 0.0);
+    assert!(
+        !window.get_camera_easing(),
+        "the ease timer stops once it is there"
+    );
+    approx::assert_relative_eq!(last_pushed(&sent).camera.tilt_deg, 0.0);
+}
+
+/// Holding the orbit joystick up and to the right, clear of the arrows, keeps
+/// the camera traveling east, and in the Sun-fixed mode it moves the time of
+/// day instead and leaves the longitude alone.
+#[test]
+fn test_a_held_orbit_joystick_travels_east_in_either_mode() {
+    for sun_fixed in [false, true] {
+        let (window, _sent) = wired_window();
+        window.set_camera_position(CameraPositionSettings {
+            longitude: 10.0,
+            sun_fixed,
+            solar_time: 6.0,
+            ..window.get_camera_position()
+        });
+        let stick = the_element(&window, "CameraPanel::orbit");
+        let push = point_in(&stick, 0.72, 0.3);
+        hold_at(&window, push);
+        let mut readings = Vec::new();
+        for _ in 0..5 {
+            let_pass(48);
+            let position = window.get_camera_position();
+            readings.push(if sun_fixed {
+                position.solar_time
+            } else {
+                position.longitude
+            });
+            if sun_fixed {
+                approx::assert_relative_eq!(position.longitude, 10.0);
+            }
+        }
+        release_at(&window, push);
+        assert!(
+            readings.windows(2).all(|pair| pair[1] > pair[0]),
+            "sun_fixed = {sun_fixed}: the camera did not keep traveling east: {readings:?}"
+        );
+        let settled = window.get_camera_position();
+        let_pass(100);
+        assert_eq!(
+            window.get_camera_position(),
+            settled,
+            "the camera stops when the knob is let go"
+        );
+    }
+}
+
+/// The look and frame ↺ badges are in the tree exactly while their values
+/// differ from the defaults, and a click on one brings them back.
+#[test]
+fn test_the_look_and_frame_resets_show_while_modified_and_clear_it() {
+    let (window, _sent) = wired_window();
+    let badges = |window: &MainWindow| {
+        (
+            ElementHandle::find_by_element_id(window, "CameraPanel::look-reset").count(),
+            ElementHandle::find_by_element_id(window, "CameraPanel::frame-reset").count(),
+        )
+    };
+    assert_eq!(badges(&window), (0, 0), "nothing to reset at the defaults");
+
+    let defaults = window.get_defaults();
+    let mut orientation = window.get_camera_orientation();
+    orientation.pitch = defaults.camera_orientation.pitch + 12.0;
+    window.set_camera_orientation(orientation);
+    assert_eq!(badges(&window), (1, 0));
+    let mut framing = window.get_framing();
+    framing.offset_x = defaults.framing.offset_x - 0.4;
+    window.set_framing(framing);
+    assert_eq!(badges(&window), (1, 1));
+
+    for id in ["CameraPanel::look-reset", "CameraPanel::frame-reset"] {
+        press_at(&window, point_in(&the_element(&window, id), 0.5, 0.5));
+        let_pass(400);
+    }
+    assert_eq!(window.get_camera_orientation(), defaults.camera_orientation);
+    assert_eq!(window.get_framing(), defaults.framing);
+    assert_eq!(badges(&window), (0, 0));
+}
+
+/// The zoom slider takes the value under the pointer, except near the mark,
+/// where it snaps to the default.
+#[test]
+fn test_the_zoom_slider_snaps_to_the_mark() {
+    let (window, sent) = wired_window();
+    let default = window.get_defaults().camera_position.zoom;
+    let slider = the_element(&window, "CameraPanel::zoom-slider");
+    let height = slider.size().height;
+    let at = |zoom: f32| point_in(&slider, 0.5, (4.0 + zoom * (height - 8.0)) / height);
+
+    press_at(&window, at(0.9));
+    let far = window.get_camera_position().zoom;
+    approx::assert_relative_eq!(far, 0.9, epsilon = 0.02);
+    press_at(&window, at(default + 0.02));
+    approx::assert_relative_eq!(window.get_camera_position().zoom, default);
+    approx::assert_relative_eq!(last_pushed(&sent).camera.zoom, default);
+}

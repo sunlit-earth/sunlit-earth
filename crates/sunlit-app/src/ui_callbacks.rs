@@ -2,15 +2,16 @@
 
 use slint::ComponentHandle;
 
+use crate::camera_controls::{self, EaseField};
 use crate::displays;
 use crate::engine_client::EngineLink;
 use crate::mouse_math;
 use crate::{
-    AtmosphereSettings, CameraOrientationSettings, CameraPositionSettings, CelestialSettings,
-    CloudCoverSettings, CloudSettings, ColorCorrectionSettings, ColorText, DateTimeSettings,
-    FramingSettings, HazeSettings, LightingSettings, MainWindow, MoonSettings, NightglowSettings,
-    ParsedColor, RayleighSettings, SceneSettings, SkySettings, StarSettings, SunSettings,
-    SunriseBandSettings, TextureColorSettings,
+    AtmosphereSettings, CameraOrientationSettings, CameraPositionSettings, CameraReset,
+    CameraStick, CelestialSettings, CloudCoverSettings, CloudSettings, ColorCorrectionSettings,
+    ColorText, DateTimeSettings, FramingSettings, HazeSettings, LightingSettings, MainWindow,
+    MoonSettings, NightglowSettings, ParsedColor, RayleighSettings, SceneSettings, SkySettings,
+    StarSettings, SunSettings, SunriseBandSettings, TextureColorSettings,
 };
 use sunlit_core::color::Rgb8;
 use sunlit_core::config::{self, AppConfig};
@@ -96,24 +97,15 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
         // The Sun-fixed mode turns the globe through the longitude its time of
         // day stands for, so the drag keeps its gain, its tilt correction and
         // its wrap, and a later time is a drag to the east.
-        let held = if position.sun_fixed {
-            camera::held_longitude(position.solar_time)
-        } else {
-            position.longitude
-        };
         let (longitude, latitude) = mouse_math::apply_globe_drag_at(
-            held,
+            held_longitude_of(&position),
             position.latitude,
             win.get_camera_orientation().tilt,
             dx,
             dy,
             gain,
         );
-        if position.sun_fixed {
-            position.solar_time = camera::solar_time_of_held(longitude);
-        } else {
-            position.longitude = longitude;
-        }
+        set_held_longitude(&mut position, longitude);
         position.latitude = latitude;
         win.set_camera_position(position);
         engine.push_params(&win);
@@ -176,11 +168,268 @@ pub fn apply_preset(window: &MainWindow, preset: &CameraParams) {
     });
 }
 
+/// The longitude the globe drag and the orbit controls move: the camera's
+/// own, or in the Sun-fixed mode the one its time of day stands for.
+fn held_longitude_of(position: &CameraPositionSettings) -> f32 {
+    if position.sun_fixed {
+        camera::held_longitude(position.solar_time)
+    } else {
+        position.longitude
+    }
+}
+
+/// Write a held longitude back to whichever field the mode reads.
+fn set_held_longitude(position: &mut CameraPositionSettings, longitude: f32) {
+    if position.sun_fixed {
+        position.solar_time = camera::solar_time_of_held(longitude);
+    } else {
+        position.longitude = longitude;
+    }
+}
+
+/// Where an eased camera value stands in the window now.
+fn ease_value(window: &MainWindow, field: EaseField) -> f32 {
+    let position = window.get_camera_position();
+    let orientation = window.get_camera_orientation();
+    let framing = window.get_framing();
+    match field {
+        EaseField::Longitude => held_longitude_of(&position),
+        EaseField::Latitude => position.latitude,
+        EaseField::Zoom => position.zoom,
+        EaseField::Tilt => orientation.tilt,
+        EaseField::Yaw => orientation.yaw,
+        EaseField::Pitch => orientation.pitch,
+        EaseField::OffsetX => framing.offset_x,
+        EaseField::OffsetY => framing.offset_y,
+    }
+}
+
+/// Put an eased camera value into the window.
+fn set_ease_value(window: &MainWindow, field: EaseField, value: f32) {
+    match field {
+        EaseField::Longitude | EaseField::Latitude | EaseField::Zoom => {
+            let mut position = window.get_camera_position();
+            match field {
+                EaseField::Longitude => set_held_longitude(&mut position, value),
+                EaseField::Latitude => position.latitude = value,
+                _ => position.zoom = value,
+            }
+            window.set_camera_position(position);
+        }
+        EaseField::Tilt | EaseField::Yaw | EaseField::Pitch => {
+            let mut orientation = window.get_camera_orientation();
+            match field {
+                EaseField::Tilt => orientation.tilt = value,
+                EaseField::Yaw => orientation.yaw = value,
+                _ => orientation.pitch = value,
+            }
+            window.set_camera_orientation(orientation);
+        }
+        EaseField::OffsetX | EaseField::OffsetY => {
+            let mut framing = window.get_framing();
+            if field == EaseField::OffsetX {
+                framing.offset_x = value;
+            } else {
+                framing.offset_y = value;
+            }
+            window.set_framing(framing);
+        }
+    }
+}
+
+type SharedEases = std::rc::Rc<std::cell::RefCell<camera_controls::Eases>>;
+
+/// Start easing camera values toward their targets and let the ease timer run.
+fn ease_to(window: &MainWindow, eases: &SharedEases, targets: &[(EaseField, f32)]) {
+    let mut eases = eases.borrow_mut();
+    for &(field, target) in targets {
+        eases.start(field, ease_value(window, field), target);
+    }
+    window.set_camera_easing(eases.is_running());
+}
+
+/// Stop easing camera values that a control has taken over.
+fn cancel_eases(eases: &SharedEases, fields: &[EaseField]) {
+    let mut eases = eases.borrow_mut();
+    for &field in fields {
+        eases.cancel(field);
+    }
+}
+
+/// Move the camera by one report of a stick on the panel or of held keys.
+fn apply_camera_stick(
+    window: &MainWindow,
+    eases: &SharedEases,
+    stick: CameraStick,
+    x: f32,
+    y: f32,
+    seconds: f32,
+) {
+    match stick {
+        CameraStick::Orbit => {
+            cancel_eases(eases, &[EaseField::Longitude, EaseField::Latitude]);
+            let mut position = window.get_camera_position();
+            let (longitude, latitude) = camera_controls::orbit_by_stick(
+                held_longitude_of(&position),
+                position.latitude,
+                window.get_camera_orientation().tilt,
+                position.zoom,
+                x,
+                y,
+                seconds,
+            );
+            set_held_longitude(&mut position, longitude);
+            position.latitude = latitude;
+            window.set_camera_position(position);
+        }
+        CameraStick::Look => {
+            cancel_eases(eases, &[EaseField::Yaw, EaseField::Pitch]);
+            let mut orientation = window.get_camera_orientation();
+            (orientation.yaw, orientation.pitch) =
+                camera_controls::look_by_stick(orientation.yaw, orientation.pitch, x, y, seconds);
+            window.set_camera_orientation(orientation);
+        }
+        CameraStick::Frame => {
+            cancel_eases(eases, &[EaseField::OffsetX, EaseField::OffsetY]);
+            let mut framing = window.get_framing();
+            (framing.offset_x, framing.offset_y) =
+                camera_controls::frame_by_stick(framing.offset_x, framing.offset_y, x, y, seconds);
+            window.set_framing(framing);
+        }
+    }
+}
+
+/// Where a ↺ or the N on the camera panel takes the values it resets: north
+/// up, or the defaults.
+fn reset_targets(defaults: &SceneSettings, which: CameraReset) -> Vec<(EaseField, f32)> {
+    match which {
+        CameraReset::North => vec![(EaseField::Tilt, 0.0)],
+        CameraReset::Look => vec![
+            (EaseField::Yaw, defaults.camera_orientation.yaw),
+            (EaseField::Pitch, defaults.camera_orientation.pitch),
+        ],
+        CameraReset::Frame => vec![
+            (EaseField::OffsetX, defaults.framing.offset_x),
+            (EaseField::OffsetY, defaults.framing.offset_y),
+        ],
+    }
+}
+
+/// Register the camera panel over the preview: the three sticks, the orbit
+/// arrows, the roll ring and its N, the zoom buttons, the ↺ badges, and the
+/// timer that carries the eases.
+///
+/// The sticks and the held keys report the seconds since their previous
+/// report, so the camera moves by the time that passed rather than by the
+/// number of ticks.
+fn register_camera_panel(window: &MainWindow, link: &EngineLink) {
+    let eases = SharedEases::default();
+
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    let stick_eases = std::rc::Rc::clone(&eases);
+    window.on_camera_stick(move |stick, x, y, seconds| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        apply_camera_stick(&win, &stick_eases, stick, x, y, seconds);
+        engine.push_params(&win);
+    });
+
+    let window_weak = window.as_weak();
+    let step_eases = std::rc::Rc::clone(&eases);
+    window.on_camera_orbit_step(move |right, up| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let position = win.get_camera_position();
+        let (longitude, latitude) = camera_controls::orbit_step(
+            held_longitude_of(&position),
+            position.latitude,
+            win.get_camera_orientation().tilt,
+            right,
+            up,
+        );
+        ease_to(
+            &win,
+            &step_eases,
+            &[
+                (EaseField::Longitude, longitude),
+                (EaseField::Latitude, latitude),
+            ],
+        );
+    });
+
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    let roll_eases = std::rc::Rc::clone(&eases);
+    window.on_camera_roll(move |degrees| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        cancel_eases(&roll_eases, &[EaseField::Tilt]);
+        let mut orientation = win.get_camera_orientation();
+        orientation.tilt = camera_controls::roll_by(orientation.tilt, degrees);
+        win.set_camera_orientation(orientation);
+        engine.push_params(&win);
+    });
+
+    let window_weak = window.as_weak();
+    let reset_eases = std::rc::Rc::clone(&eases);
+    window.on_camera_reset(move |which| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let targets = reset_targets(&win.get_defaults(), which);
+        ease_to(&win, &reset_eases, &targets);
+    });
+
+    let window_weak = window.as_weak();
+    let zoom_step_eases = std::rc::Rc::clone(&eases);
+    window.on_camera_zoom_step(move |direction| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let target = camera_controls::zoom_step(win.get_camera_position().zoom, direction);
+        ease_to(&win, &zoom_step_eases, &[(EaseField::Zoom, target)]);
+    });
+
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    let zoom_rate_eases = std::rc::Rc::clone(&eases);
+    window.on_camera_zoom_rate(move |direction, seconds| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        cancel_eases(&zoom_rate_eases, &[EaseField::Zoom]);
+        let mut position = win.get_camera_position();
+        position.zoom = camera_controls::zoom_by_rate(position.zoom, direction, seconds);
+        win.set_camera_position(position);
+        engine.push_params(&win);
+    });
+
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    window.on_camera_ease_tick(move |seconds| {
+        let Some(win) = window_weak.upgrade() else {
+            return;
+        };
+        let values = eases.borrow_mut().advance(seconds);
+        for (field, value) in values {
+            set_ease_value(&win, field, value);
+        }
+        win.set_camera_easing(eases.borrow().is_running());
+        engine.push_params(&win);
+    });
+}
+
 /// Register mouse interaction callbacks: globe drag (left), frame drag
 /// (right), orient drag (middle), tilt drag (left and right together), scroll
-/// zoom, and preset application.
+/// zoom, and preset application, and the camera panel's controls that do the
+/// same.
 pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
     register_globe_drag(window, link);
+    register_camera_panel(window, link);
 
     let window_weak = window.as_weak();
     let engine = link.clone();

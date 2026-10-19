@@ -1898,11 +1898,7 @@ export component MainWindow inherits Window {
         property <duration> shuttle-delay: 400ms;
         property <duration> shuttle-repeat: 200ms;
 
-        function release-keys() {
-            image-container.key-left = false;
-            image-container.key-right = false;
-            image-container.key-up = false;
-            image-container.key-down = false;
+        function release-keys-held-by-text() {
             image-container.key-w = false;
             image-container.key-a = false;
             image-container.key-s = false;
@@ -1911,13 +1907,21 @@ export component MainWindow inherits Window {
             image-container.key-minus = false;
             image-container.key-q = false;
             image-container.key-e = false;
+            image-container.key-shuttle = 0;
+        }
+
+        function release-keys() {
+            image-container.release-keys-held-by-text();
+            image-container.key-left = false;
+            image-container.key-right = false;
+            image-container.key-up = false;
+            image-container.key-down = false;
             image-container.key-shift = false;
             image-container.key-control = false;
             image-container.key-altgr = false;
             image-container.left-control-down = false;
             image-container.right-control-down = false;
             image-container.alt-down = false;
-            image-container.key-shuttle = 0;
         }
 
         // The skip a key asks for: 1 forward, 2 forward by the bigger step,
@@ -1983,6 +1987,11 @@ export component MainWindow inherits Window {
         // the preview's, so the others go on to the window. Ctrl, Alt and
         // the Windows key decide only whether a press is the preview's: a
         // release ends what the key held whatever is down with it.
+        //
+        // Alt, AltGr, and Ctrl with Alt, which Windows takes for AltGr, let
+        // go of the keys held by their text when they go down: under them
+        // many layouts give those keys' releases no text, and Slint drops a
+        // key event without text, so the release would never come.
         function track-key(event: KeyEvent, down: bool) -> bool {
             if down && !image-container.any-key-held {
                 image-container.key-tick = animation-tick();
@@ -1994,6 +2003,9 @@ export component MainWindow inherits Window {
                 return false;
             }
             if event.text == Key.Control || event.text == Key.ControlR {
+                if down && (image-container.alt-down || event.modifiers.alt) {
+                    image-container.release-keys-held-by-text();
+                }
                 image-container.key-control = down;
                 if event.text == Key.Control {
                     image-container.left-control-down = down;
@@ -2003,11 +2015,17 @@ export component MainWindow inherits Window {
                 return false;
             }
             if event.text == Key.Alt {
+                if down {
+                    image-container.release-keys-held-by-text();
+                }
                 image-container.alt-down = down;
                 return false;
             }
             // Slint counts AltGr in no modifier of a key event.
             if event.text == Key.AltGr {
+                if down {
+                    image-container.release-keys-held-by-text();
+                }
                 image-container.key-altgr = down;
                 return false;
             }
@@ -2094,11 +2112,11 @@ export component MainWindow inherits Window {
                     root.time-skip(image-container.skip-of(event) > 0, abs(image-container.skip-of(event)) > 1);
                 }
             } else {
-                // Shift, Alt or AltGr pressed or let go since a held key's
-                // press can change the text its release gives, as Shift turns
-                // - into _ and AltGr turns q into @, so a release nothing
-                // matches lets go of the keys held by text that went down
-                // under other modifiers than those down now.
+                // Shift pressed or let go since a held key's press, or Alt
+                // or AltGr let go since a press under them, can change the
+                // text its release gives, as Shift turns - into _, so a
+                // release nothing matches lets go of the keys held by text
+                // that went down under other modifiers than those down now.
                 if !down && event.text != Key.Meta && event.text != Key.MetaR {
                     image-container.let-go-of-keys-pressed-under-other-modifiers(modifiers);
                 }

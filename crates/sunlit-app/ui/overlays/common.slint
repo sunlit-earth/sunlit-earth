@@ -136,7 +136,7 @@ export global OverlayHints {
             return { title: "Center the frame", body: "Both offsets back to their defaults." };
         }
         if id == "help" {
-            return { title: "Mouse and keyboard", body: "Every gesture and shortcut on one sheet.", keys: help-keys() };
+            return { title: "Mouse and keyboard", body: "Every gesture and shortcut on one sheet.", keys: is-macos ? help-keys() : ["F1", "or", "Ctrl", "?"] };
         }
         if id == "hide" {
             return { title: "Hide controls", body: "Clear the preview to judge the composition.", keys: ["H"] };
@@ -161,12 +161,12 @@ export global OverlayHints {
         if id == "ruler" {
             return {
                 title: "Speed",
-                body: "Backward on the left, forward on the right, one dot per speed, the slowest next to play. Click a dot or drag along the ruler to run at that speed. J and L step slower or faster; hold to keep going.",
-                keys: ["J", "K", "L"],
+                body: "Backward on the left, forward on the right, one dot per speed, the slowest next to play. Click a dot or drag along the ruler to run at that speed. J and L step slower or faster; hold to keep going. R turns the direction.",
+                keys: ["J", "K", "L", "R"],
             };
         }
         if id == "rate" {
-            return { title: speed == "" ? "Speed" : "Speed: " + speed, body: "Click for every speed in both directions. J and L step slower or faster; hold to keep going. R turns the direction.", keys: ["J", "K", "L"] };
+            return { title: speed == "" ? "Speed" : "Speed: " + speed, body: "Click for every speed in both directions. J and L step slower or faster; hold to keep going. R turns the direction.", keys: ["J", "K", "L", "R"] };
         }
         if id == "drive-time" {
             return {

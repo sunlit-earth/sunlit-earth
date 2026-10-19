@@ -3928,6 +3928,159 @@ fn test_a_hints_gesture_and_keys_stay_inside_it() {
     }
 }
 
+/// The keys each hinted control's action has, in the hint's own spelling,
+/// with `SHIFT` and `MOD` standing for the platform's names; "or" between
+/// keys is left out.
+const HINT_KEYS: [(&str, &[&str]); 18] = [
+    ("orbit", &["←↑↓→", "WASD"]),
+    ("look", &["SHIFT", "←↑↓→", "WASD"]),
+    ("frame", &["MOD", "←↑↓→", "WASD"]),
+    ("roll", &["Q", "E"]),
+    ("north", &["N"]),
+    ("zoom", &["+", "−"]),
+    ("zoom-in", &["+"]),
+    ("zoom-out", &["−"]),
+    ("hide", &["H"]),
+    ("show", &["H"]),
+    ("skip-back", &[","]),
+    ("skip-forward", &["."]),
+    ("play", &["Space"]),
+    ("ruler", &["J", "K", "L", "R"]),
+    ("rate", &["J", "K", "L", "R"]),
+    ("drive-time", &["T"]),
+    ("drive-date", &["G"]),
+    ("now", &["0"]),
+];
+
+/// The hinted controls no key does the same as: the resets, exact entry, the
+/// zone, the state pill while live (not clickable) or in Preview (whose click
+/// ends the excursion, which no key does alone), the pin and the tracks.
+const HINTS_WITHOUT_KEYS: [&str; 11] = [
+    "look-reset",
+    "frame-reset",
+    "pick-date",
+    "pick-time",
+    "zone",
+    "live",
+    "preview",
+    "pin",
+    "day-track",
+    "day-track-sun-fixed",
+    "year-track",
+];
+
+/// Every hint id a `.slint` expression picks, read from the source between
+/// `marker` and the `""` that ends the choice.
+fn hint_ids_in(source: &str, marker: &str) -> Vec<String> {
+    let start = source
+        .find(marker)
+        .expect("the hint choice is in the source");
+    let rest = &source[start + marker.len()..];
+    let choice = &rest[..rest.find("\"\";").expect("the choice ends in \"\"")];
+    choice
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every hint a control can show carries the keys that do what the control
+/// does, in both platforms' names, and every id the overlays can pick is
+/// classified here, so a new control states its keys or that it has none.
+#[test]
+fn test_every_hint_names_the_keys_of_its_control() {
+    use slint::Model as _;
+
+    let mut used = Vec::new();
+    for (source, marker) in [
+        (
+            include_str!("../ui/overlays/camera-panel.slint"),
+            "out property <string> hovered-hint:",
+        ),
+        (
+            include_str!("../ui/overlays/time-bar.slint"),
+            "out property <string> hovered-hint:",
+        ),
+        (
+            include_str!("../ui/main.slint"),
+            "property <string> hint-id:",
+        ),
+    ] {
+        used.extend(hint_ids_in(source, marker));
+    }
+    let classified: Vec<&str> = HINT_KEYS
+        .iter()
+        .map(|(id, _)| *id)
+        .chain(HINTS_WITHOUT_KEYS)
+        .chain(["help"])
+        .collect();
+    for id in &used {
+        assert!(
+            classified.contains(&id.as_str()),
+            "the hint {id} is in neither HINT_KEYS nor HINTS_WITHOUT_KEYS"
+        );
+    }
+    for id in &classified {
+        assert!(
+            used.iter().any(|used| used == id),
+            "no control picks the hint {id}"
+        );
+    }
+
+    for macos in [false, true] {
+        let (window, _sent) = wired_window();
+        let hints = window.global::<sunlit_earth::OverlayHints>();
+        hints.set_is_macos(macos);
+        let (shift, modifier) = if macos {
+            ("⇧", "⌘")
+        } else {
+            ("Shift", "Ctrl")
+        };
+        let keys_of = |id: &str| {
+            let content = hints.invoke_content(id.into());
+            assert!(!content.title.is_empty(), "the hint {id} has no title");
+            content
+                .keys
+                .iter()
+                .map(|key: slint::SharedString| key.to_string())
+                .filter(|key| key != "or")
+                .collect::<Vec<_>>()
+        };
+        for (id, keys) in HINT_KEYS {
+            let wanted: Vec<&str> = keys
+                .iter()
+                .map(|key| match *key {
+                    "SHIFT" => shift,
+                    "MOD" => modifier,
+                    key => key,
+                })
+                .collect();
+            assert_eq!(keys_of(id), wanted, "the hint {id} (macOS: {macos})");
+        }
+        for id in HINTS_WITHOUT_KEYS {
+            assert!(
+                keys_of(id).is_empty(),
+                "the hint {id} (macOS: {macos}) names keys; move it to HINT_KEYS"
+            );
+        }
+        let help = if macos {
+            vec!["⌘", "?"]
+        } else {
+            vec!["F1", "Ctrl", "?"]
+        };
+        assert_eq!(keys_of("help"), help, "the help hint (macOS: {macos})");
+        for id in ["skip-back", "skip-forward"] {
+            let body = hints.invoke_content(id.into()).body;
+            assert!(
+                body.contains(&format!("With {shift}, ")),
+                "the hint {id} (macOS: {macos}) does not name {shift} for the bigger step"
+            );
+        }
+    }
+}
+
 /// A gesture too long for the room beside the keys wraps, and the hint grows
 /// to hold every line of it.
 #[test]

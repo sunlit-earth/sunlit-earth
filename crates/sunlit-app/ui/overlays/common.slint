@@ -172,12 +172,14 @@ export global OverlayHints {
             return {
                 title: "Play runs the time",
                 body: "The clock runs, from real time to 6 hours a second, and the date follows. Day and night sweep across the globe.",
+                keys: ["T"],
             };
         }
         if id == "drive-date" {
             return {
                 title: "Play runs the date",
                 body: "The date runs, from a day to 3 months a second, and the time of day stays, in UTC: the local clock moves an hour at a summer time change. The terminator swings through the seasons.",
+                keys: ["G"],
             };
         }
         if id == "pick-date" {

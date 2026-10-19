@@ -1984,6 +1984,10 @@ export component MainWindow inherits Window {
                 if down && !event.repeat {
                     root.time-pause();
                 }
+            } else if event.text.to-lowercase() == "t" || event.text.to-lowercase() == "g" {
+                if down && !event.repeat {
+                    root.time-kind(event.text.to-lowercase() == "g");
+                }
             } else if event.text.to-lowercase() == "r" {
                 if down && !event.repeat {
                     root.time-reverse();

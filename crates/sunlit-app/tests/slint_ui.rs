@@ -3772,6 +3772,38 @@ fn test_holding_l_keeps_shuttling_until_let_go_or_the_fastest() {
     );
 }
 
+/// G makes play run the date and T the time, as the radio labels do: paused
+/// the bar switches its ladder, and running play goes on in the new kind.
+#[test]
+fn test_t_and_g_pick_what_play_runs() {
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    tap(&window, "g");
+    assert!(window.get_time_bar().date_kind, "G picks the date");
+    tap(&window, "t");
+    assert!(!window.get_time_bar().date_kind, "T picks the time");
+    assert_eq!(excursion_commands(&sent).0, [], "paused, nothing plays");
+
+    sunlit_earth::time_bar::excursion_changed(
+        &window,
+        Some(ExcursionState {
+            running: true,
+            rate: 60,
+            kind: ExcursionKind::Clock,
+        }),
+    );
+    tap(&window, "G");
+    let rate = i32::try_from(ExcursionKind::Date.default_rate()).expect("a rate");
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [ExcursionCommand::Play {
+            rate,
+            kind: ExcursionKind::Date
+        }],
+        "running, play goes on through the dates"
+    );
+}
+
 /// The left, top, right and bottom edges of an element in the window.
 fn edges(element: &ElementHandle) -> [f32; 4] {
     let at = element.absolute_position();

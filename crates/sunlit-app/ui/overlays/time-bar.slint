@@ -302,6 +302,8 @@ export component TimeBar inherits Rectangle {
     in property <bool> pointer-in;
     // How wide the bar may grow.
     in property <length> room;
+    // The most speeds either kind of play has.
+    in property <int> longest-ladder;
 
     // The control under the pointer, by its hint id, and the middle of that
     // control in the bar's coordinates.
@@ -364,15 +366,18 @@ export component TimeBar inherits Rectangle {
     property <bool> picker-open;
     property <length> left-column: 12px;
     property <length> middle-column: 70px;
-    property <length> right-column: root.width - 26px - 12px - 142px;
-    property <length> middle-width: root.right-column - 10px - root.middle-column;
+    property <length> beside-tracks: root.middle-column + 10px + 142px + 12px + 26px;
+    property <length> middle-width: root.width - root.beside-tracks;
+    property <length> right-column: root.middle-column + root.middle-width + 10px;
     // The speed readout starts at the left column. Where the transport at
     // full size, centered over the tracks, would run into the widest readout
     // of the ladder's speeds, the readout folds to its arrow and the rulers'
     // dots pack closer, down to `min-pitch`, keeping the row inside the
-    // tracks' column. Below the bar width at which even that pitch is too
-    // wide, the row spills past the column on both sides.
+    // tracks' column. The open bar is never narrower than the row of the
+    // longest ladder needs at that pitch, whichever kind is shown, and a
+    // preview narrower than that cuts its edges off.
     property <length> transport-fixed: 2 * 28px + 44px + 4 * 6px;
+    property <length> narrowest: root.beside-tracks + root.transport-fixed + 2 * (6px + root.longest-ladder * root.min-pitch);
     property <length> full-row: root.transport-fixed + 2 * (6px + root.ladder.length * 11px);
     property <length> readout-width: widest-readout.preferred-width + 16px;
     property <length> readout-height: readout-lines.preferred-height + 8px;
@@ -409,7 +414,7 @@ export component TimeBar inherits Rectangle {
         triggered => { root.tick(); }
     }
 
-    width: root.open ? min(800px, root.room) : pill-row.preferred-width;
+    width: root.open ? max(root.narrowest, min(800px, root.room)) : pill-row.preferred-width;
     height: root.open ? 124px : 30px;
     border-radius: root.open ? 14px : 15px;
     border-width: 1px;

@@ -3757,6 +3757,170 @@ fn test_the_transport_stays_over_the_tracks_and_clear_of_the_readout() {
     }
 }
 
+/// The open bar's parts by id or label, those the preview does not cut away
+/// entirely, with their left and right edges measured from the bar's left.
+fn bar_parts(window: &MainWindow) -> Vec<(String, f32, f32)> {
+    let bar_left = edges(&the_element(window, "MainWindow::time-bar"))[0];
+    let mut parts = Vec::new();
+    for id in [
+        "TimeBar::skip-back",
+        "TimeBar::backward",
+        "TimeBar::forward",
+        "TimeBar::skip-forward",
+        "TimeBar::speed-readout",
+        "TimeBar::day-track",
+        "TimeBar::year-track",
+    ] {
+        if let Some(part) = ElementHandle::find_by_element_id(window, id).next() {
+            let [left, _, right, _] = edges(&part);
+            parts.push((id.to_owned(), left - bar_left, right - bar_left));
+        }
+    }
+    for label in ["Play", "TIME", "DATE", "Now", "Time", "Date"] {
+        if let Some(part) = ElementHandle::find_by_accessible_label(window, label)
+            .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+        {
+            let [left, _, right, _] = edges(&part);
+            parts.push((label.to_owned(), left - bar_left, right - bar_left));
+        }
+    }
+    parts
+}
+
+/// A window at the default panel whose bar holds the compact transport with
+/// the time's twelve speeds, and narrower ones down to the app's minimum.
+const NARROWEST_BAR_WINDOW: u32 = 952;
+const NARROWER_WINDOWS: [u32; 6] = [520, 600, 700, 800, 900, 951];
+
+/// The open bar is never narrower than the bar that holds the compact
+/// transport, whichever kind of play it shows: in a narrower preview it keeps
+/// that width and that layout, centered on the preview, and the preview cuts
+/// its edges.
+#[test]
+fn test_a_narrow_preview_cuts_the_bar_rather_than_squeezing_it() {
+    for date in [false, true] {
+        let (window, _sent) = wired_window();
+        window.set_time_bar_pinned(true);
+        window.invoke_time_kind(date);
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(NARROWEST_BAR_WINDOW, 5000));
+        let bar_width = the_element(&window, "MainWindow::time-bar").size().width;
+        let layout = bar_parts(&window);
+        assert_eq!(layout.len(), 13, "the whole bar shows at the narrowest");
+        for width in NARROWER_WINDOWS {
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            let what = format!("{width} px window, date: {date}");
+            let [bar_left, _, bar_right, _] = edges(&the_element(&window, "MainWindow::time-bar"));
+            let [preview_left, _, preview_right, _] =
+                edges(&the_element(&window, "MainWindow::image-container"));
+            approx::assert_abs_diff_eq!(bar_right - bar_left, bar_width, epsilon = 0.5);
+            approx::assert_abs_diff_eq!(
+                f32::midpoint(bar_left, bar_right),
+                f32::midpoint(preview_left, preview_right),
+                epsilon = 0.5
+            );
+            let shown = bar_parts(&window);
+            assert!(
+                shown.iter().any(|(name, _, _)| name == "Play"),
+                "{what}: play is cut away"
+            );
+            for (name, left, right) in shown {
+                let (_, at_left, at_right) = layout
+                    .iter()
+                    .find(|(id, _, _)| *id == name)
+                    .expect("a part of the bar");
+                assert!(
+                    (left - at_left).abs() < 0.5 && (right - at_right).abs() < 0.5,
+                    "{what}: {name} stands at {left}..{right} in the bar, not {at_left}..{at_right}"
+                );
+            }
+        }
+    }
+}
+
+/// Where the preview cuts the bar, open or folded, a strip at each of its
+/// edges over the bar fades the controls out; where the bar fits there is none.
+#[test]
+fn test_the_cut_edges_of_the_bar_fade_out() {
+    let (window, _sent) = wired_window();
+    let check = |what: &str| -> bool {
+        let [bar_left, bar_top, bar_right, bar_bottom] =
+            edges(&the_element(&window, "MainWindow::time-bar"));
+        let [preview_left, _, preview_right, _] =
+            edges(&the_element(&window, "MainWindow::image-container"));
+        let cut = bar_right - bar_left > preview_right - preview_left + 0.5;
+        let fades: Vec<_> = ["MainWindow::bar-fade-left", "MainWindow::bar-fade-right"]
+            .iter()
+            .flat_map(|id| ElementHandle::find_by_element_id(&window, id))
+            .collect();
+        if !cut {
+            assert!(fades.is_empty(), "{what}: a bar that fits does not fade");
+            return false;
+        }
+        assert_eq!(fades.len(), 2, "{what}: a cut bar fades at both edges");
+        let [left, right] = [edges(&fades[0]), edges(&fades[1])];
+        approx::assert_abs_diff_eq!(left[0], preview_left, epsilon = 0.5);
+        approx::assert_abs_diff_eq!(right[2], preview_right, epsilon = 0.5);
+        for fade in [left, right] {
+            approx::assert_abs_diff_eq!(fade[1], bar_top, epsilon = 0.5);
+            approx::assert_abs_diff_eq!(fade[3], bar_bottom, epsilon = 0.5);
+            assert!(fade[2] - fade[0] < 0.25 * (preview_right - preview_left));
+        }
+        true
+    };
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(520, 5000));
+    check("the folded pill at 520 px");
+    window.set_time_bar_pinned(true);
+    for width in [520, 700, 900] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        assert!(check(&format!("{width} px")), "{width} px: the bar is cut");
+    }
+    for width in [NARROWEST_BAR_WINDOW, 1000, 1400] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        assert!(!check(&format!("{width} px")), "{width} px: the bar fits");
+    }
+}
+
+/// The part of the bar the preview cuts away takes no clicks: a press on the
+/// sidebar where the day track runs under it leaves the time setting alone,
+/// and a press on the track's visible part does not.
+#[test]
+fn test_the_cut_part_of_the_bar_takes_no_clicks() {
+    let (window, sent) = wired_window();
+    window.set_time_bar_pinned(true);
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(520, 5000));
+    let track = edges(&the_element(&window, "TimeBar::day-track"));
+    let preview_left = edges(&the_element(&window, "MainWindow::image-container"))[0];
+    assert!(
+        track[0] < preview_left - 10.0,
+        "the track runs under the sidebar"
+    );
+    let y = f32::midpoint(track[1], track[3]);
+    let _ = excursion_commands(&sent);
+
+    press_at(&window, slint::LogicalPosition::new(preview_left - 5.0, y));
+    assert!(
+        excursion_commands(&sent).1.is_none(),
+        "a press beside the preview reached the track"
+    );
+    press_at(&window, slint::LogicalPosition::new(preview_left + 5.0, y));
+    assert!(
+        excursion_commands(&sent).1.is_some(),
+        "a press on the track's visible part sets the time"
+    );
+}
+
 /// In the app's default window the rulers are packed closer than at full
 /// size, and a press on each dot still runs at that dot's speed.
 #[test]

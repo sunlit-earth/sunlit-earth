@@ -283,6 +283,7 @@ export component MainWindow inherits Window {
     // date track's marks were placed for.
     in property <TimeBarView> time-bar;
     in property <[int]> time-ladder;
+    in property <int> time-longest-ladder;
     in property <[RateChoice]> time-rates;
     in property <[SeasonMark]> time-seasons;
     in property <[float]> time-month-ticks;
@@ -1818,6 +1819,7 @@ export component MainWindow inherits Window {
         width: root.width - self.x;
         height: root.height;
         background: black;
+        clip: true;
 
         Image {
             source: rendered-image;
@@ -2246,6 +2248,7 @@ export component MainWindow inherits Window {
             visible: !root.overlays-hidden;
             view: root.time-bar;
             ladder: root.time-ladder;
+            longest-ladder: root.time-longest-ladder;
             rates: root.time-rates;
             seasons: root.time-seasons;
             month-ticks: root.time-month-ticks;
@@ -2264,6 +2267,25 @@ export component MainWindow inherits Window {
             exact-time(hour, minute) => { root.time-exact-time(hour, minute); }
             tick => { root.time-tick(); }
             date-at(x) => { return root.time-date-at(x); }
+        }
+
+        // A bar wider than the preview fades out where its edges are cut.
+        if time-bar.visible && time-bar.width > image-container.width : Rectangle {
+            y: time-bar.y;
+            height: time-bar.height;
+            opacity: time-bar.opacity;
+
+            bar-fade-left := Rectangle {
+                x: 0;
+                width: 28px;
+                background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0.9) 0%, OverlayStyle.panel.with-alpha(0) 100%);
+            }
+
+            bar-fade-right := Rectangle {
+                x: parent.width - self.width;
+                width: 28px;
+                background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0) 0%, OverlayStyle.panel.with-alpha(0.9) 100%);
+            }
         }
 
         // The hover hint of whichever overlay control the pointer rests on,
@@ -2293,9 +2315,10 @@ export component MainWindow inherits Window {
 
         if image-container.shown-hint != "" : hint := OverlayHint {
             content: OverlayHints.content(image-container.shown-hint);
+            width: min(250px, image-container.width - 12px);
             x: image-container.hint-over-bar
                 ? clamp(time-bar.x + time-bar.hovered-x - self.width / 2, 6px, parent.width - self.width - 6px)
-                : camera-panel.x - self.width - 12px;
+                : max(6px, camera-panel.x - self.width - 12px);
             y: image-container.hint-over-bar
                 ? max(6px, time-bar.y - self.height - 8px)
                 : clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);

@@ -655,6 +655,11 @@ pub fn frame_shown(window: &MainWindow, instant: OffsetDateTime) {
 
 /// Wire the time bar's callbacks.
 pub fn register(window: &MainWindow, link: &EngineLink) {
+    let longest = ExcursionKind::Clock
+        .ladder()
+        .len()
+        .max(ExcursionKind::Date.ladder().len());
+    window.set_time_longest_ladder(i32::try_from(longest).unwrap_or(i32::MAX));
     register_transport(window, link);
     register_setting(window, link);
     register_labels(window);

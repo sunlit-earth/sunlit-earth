@@ -1,0 +1,699 @@
+// The building blocks of the controls drawn over the preview.
+//
+// They are made of primitives rather than std-widgets, so they look the same
+// on every platform, and they keep one dark translucent look whatever the
+// sidebar's palette is, because they sit on black space. Nothing here turns
+// with `transform-rotation`: the software renderer ignores it, so whatever
+// follows the roll is placed with computed coordinates instead.
+
+export global OverlayStyle {
+    out property <color> panel: #101216ad;
+    out property <color> solid: #16181d;
+    out property <color> border: #ffffff1c;
+    out property <color> fg: #eceef1;
+    out property <color> dim: #9ba1a9;
+    out property <color> faint: #ffffff29;
+    out property <color> accent: #4cc2ff;
+    out property <color> accent-soft: #4cc2ff38;
+    out property <color> accent-glow: #4cc2ff8c;
+    out property <color> sun: #ffc44d;
+    out property <color> live: #ff5a5a;
+    out property <color> north: #ff6b5e;
+    out property <color> knob: #dfe3e8;
+    out property <color> tip-background: #0d0f12;
+    out property <color> tip-border: #3b4048;
+    // How far an idle control fades, and how long fading in and out takes.
+    out property <float> idle-opacity: 0.3;
+    out property <duration> idle-fade: 400ms;
+}
+
+// The text of one control's hover hint: what it is, what it does, and the
+// mouse gesture and keys that do the same.
+export struct HintContent {
+    title: string,
+    body: string,
+    // "left", "right", "both", "middle", "wheel", or empty for none.
+    mouse: string,
+    gesture: string,
+    keys: [string],
+}
+
+// Every hover hint by the control's id, in the platform's names for the
+// modifier keys.
+export global OverlayHints {
+    in property <bool> is-macos;
+
+    out property <string> mod-key: is-macos ? "⌘" : "Ctrl";
+    out property <string> shift-key: is-macos ? "⇧" : "Shift";
+
+    public pure function help-keys() -> [string] {
+        if is-macos {
+            return ["⌘", "?"];
+        }
+        return ["F1"];
+    }
+
+    public pure function content(id: string) -> HintContent {
+        if id == "orbit" {
+            return {
+                title: "Orbit",
+                body: "Push the knob and hold: the camera travels over the globe the way you push, faster the farther. The arrows step 10°.",
+                mouse: "left",
+                gesture: "Drag the globe with the left button",
+                keys: ["←", "↑", "↓", "→"],
+            };
+        }
+        if id == "roll" {
+            return {
+                title: "Roll",
+                body: "Drag around the ring to turn the picture about its center.",
+                mouse: "both",
+                gesture: "Drag with left and right held",
+                keys: ["Q", "E"],
+            };
+        }
+        if id == "north" {
+            return { title: "North up", body: "Turn the picture back so that north points up.", keys: ["N"] };
+        }
+        if id == "zoom" {
+            return {
+                title: "Zoom",
+                body: "Near at the top, far at the bottom. The mark is the default, and the thumb snaps to it.",
+                mouse: "wheel",
+                gesture: "Scroll the mouse wheel",
+                keys: ["+", "−"],
+            };
+        }
+        if id == "zoom-in" {
+            return {
+                title: "Zoom in",
+                body: "Click for a step, hold to keep going.",
+                mouse: "wheel",
+                gesture: "Scroll the mouse wheel",
+                keys: ["+"],
+            };
+        }
+        if id == "zoom-out" {
+            return {
+                title: "Zoom out",
+                body: "Click for a step, hold to keep going.",
+                mouse: "wheel",
+                gesture: "Scroll the mouse wheel",
+                keys: ["−"],
+            };
+        }
+        if id == "look" {
+            return {
+                title: "Look",
+                body: "Aim the camera away from the Earth's center. The view swings the way you push; the globe slides the other way.",
+                mouse: "middle",
+                gesture: "Drag with the middle button",
+                keys: [shift-key, "←↑↓→"],
+            };
+        }
+        if id == "look-reset" {
+            return { title: "Look straight at the Earth", body: "Yaw and pitch back to their defaults." };
+        }
+        if id == "frame" {
+            return {
+                title: "Move the frame",
+                body: "Moves the camera across the picture the way you push, without turning it, so the Earth slides the other way and ends up off center.",
+                mouse: "right",
+                gesture: "Drag with the right button (the globe follows the hand)",
+                keys: [mod-key, "←↑↓→"],
+            };
+        }
+        if id == "frame-reset" {
+            return { title: "Center the frame", body: "Both offsets back to their defaults." };
+        }
+        if id == "help" {
+            return { title: "Mouse and keyboard", body: "Every gesture and shortcut on one sheet.", keys: help-keys() };
+        }
+        if id == "hide" {
+            return { title: "Hide controls", body: "Clear the preview to judge the composition.", keys: ["H"] };
+        }
+        if id == "show" {
+            return { title: "Show controls", keys: ["H"] };
+        }
+        return { title: "" };
+    }
+}
+
+// The mouse with the button a gesture uses lit, or the wheel.
+export component MouseGlyph inherits Image {
+    in property <string> which;
+
+    height: 18px;
+    width: which == "wheel" ? 20px : 14px;
+    source: which == "left" ? @image-url("../icons/mouse-left.svg")
+        : which == "right" ? @image-url("../icons/mouse-right.svg")
+        : which == "both" ? @image-url("../icons/mouse-both.svg")
+        : which == "middle" ? @image-url("../icons/mouse-middle.svg")
+        : @image-url("../icons/mouse-wheel.svg");
+}
+
+// One key as it is printed on the keyboard.
+export component KeyCap inherits Rectangle {
+    in property <string> text;
+
+    min-width: 18px;
+    preferred-width: max(18px, label.preferred-width + 10px);
+    height: 18px;
+    border-radius: 4px;
+    background: #4a5059;
+
+    Rectangle {
+        y: 0;
+        height: parent.height - 1px;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: #4a5059;
+        background: #1d2026;
+
+        label := Text {
+            text: root.text;
+            color: #e7eaee;
+            font-size: 11px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The hover hint of the overlays. One of these sits in the overlay layer, and
+// the control under the pointer decides what it says and where it stands.
+export component OverlayHint inherits Rectangle {
+    in property <HintContent> content;
+
+    width: 250px;
+    height: body.preferred-height;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: OverlayStyle.tip-border;
+    background: OverlayStyle.tip-background;
+    drop-shadow-blur: 18px;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-color: #00000080;
+
+    body := VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 2px;
+
+        Text {
+            text: root.content.title;
+            color: OverlayStyle.fg;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        if root.content.body != "" : Text {
+            text: root.content.body;
+            color: #c3c8cf;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        if root.content.mouse != "" || root.content.keys.length > 0 : VerticalLayout {
+            padding-top: 6px;
+            spacing: 6px;
+
+            Rectangle {
+                height: 1px;
+                background: #2a2e35;
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                if root.content.mouse != "" : MouseGlyph {
+                    which: root.content.mouse;
+                }
+
+                Text {
+                    text: root.content.gesture;
+                    color: #dfe3e8;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                for key in root.content.keys : KeyCap {
+                    text: key;
+                }
+            }
+        }
+    }
+}
+
+// The one-line tip that names a mouse gesture the first time its control is
+// used.
+export component GestureTip inherits Rectangle {
+    in property <string> mouse;
+    in property <string> text;
+
+    width: row.preferred-width;
+    height: 30px;
+    border-radius: self.height / 2;
+    border-width: 1px;
+    border-color: OverlayStyle.border;
+    background: OverlayStyle.panel;
+
+    row := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        alignment: center;
+
+        Text {
+            text: "Tip";
+            color: OverlayStyle.dim;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+
+        MouseGlyph {
+            y: 6px;
+            which: root.mouse;
+        }
+
+        Text {
+            text: root.text;
+            color: OverlayStyle.fg;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A round button over the preview: a 24 px square with an icon.
+export component OverlayButton inherits Rectangle {
+    in property <image> icon;
+    in property <length> icon-width: 14px;
+    in property <length> icon-height: 14px;
+    in property <bool> on;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    background: touch.has-hover ? OverlayStyle.faint : transparent;
+
+    Image {
+        width: root.icon-width;
+        height: root.icon-height;
+        source: root.icon;
+        colorize: root.on ? OverlayStyle.accent : touch.has-hover ? OverlayStyle.fg : OverlayStyle.dim;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// The ↺ that puts a control's values back to their defaults, shown while one
+// of them differs.
+export component ResetBadge inherits Rectangle {
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: OverlayStyle.border;
+    background: touch.has-hover ? #24303a : OverlayStyle.solid;
+
+    Image {
+        width: 11px;
+        height: 11px;
+        source: @image-url("../icons/reset.svg");
+        colorize: OverlayStyle.accent;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A rate control: the knob's deflection sets a speed for as long as it is
+// held, and the knob springs back on release.
+//
+// `moved` reports the deflection, right and up positive within the unit disc,
+// and the time since the previous report, measured on the animation clock so
+// a late tick moves the camera further rather than slower.
+export component Joystick inherits Rectangle {
+    in property <bool> square;
+    // The reverse highlight: the gesture that does the same is in progress.
+    in property <bool> lit;
+    out property <bool> held: touch.pressed;
+    out property <bool> hovered: touch.has-hover;
+    out property <float> deflection-x;
+    out property <float> deflection-y;
+    callback pressed();
+    callback moved(float, float, float);
+    callback released();
+
+    property <length> travel: self.width / 2 - 7px;
+    property <duration> last-tick;
+
+    width: 46px;
+    height: 46px;
+    border-radius: root.square ? 10px : self.width / 2;
+    background: @radial-gradient(circle, #ffffff1a 0%, #ffffff08 70%);
+    border-width: root.lit ? 2px : 1px;
+    border-color: root.lit ? OverlayStyle.accent : OverlayStyle.border;
+    drop-shadow-blur: root.lit ? 14px : 0px;
+    drop-shadow-color: OverlayStyle.accent-glow;
+
+    function set-from(x: length, y: length) {
+        let dx = (x - root.width / 2) / root.travel;
+        let dy = (root.height / 2 - y) / root.travel;
+        let length = sqrt(dx * dx + dy * dy);
+        if length > 1 {
+            root.deflection-x = dx / length;
+            root.deflection-y = dy / length;
+        } else {
+            root.deflection-x = dx;
+            root.deflection-y = dy;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: self.pressed ? grabbing : grab;
+
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.last-tick = animation-tick();
+                root.set-from(self.mouse-x, self.mouse-y);
+                root.pressed();
+            }
+        }
+
+        moved => {
+            if self.pressed {
+                root.set-from(self.mouse-x, self.mouse-y);
+            }
+        }
+
+        changed pressed => {
+            if !self.pressed {
+                root.deflection-x = 0;
+                root.deflection-y = 0;
+                root.released();
+            }
+        }
+    }
+
+    Rectangle {
+        x: (root.width - self.width) / 2 + root.deflection-x * root.travel;
+        y: (root.height - self.height) / 2 - root.deflection-y * root.travel;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: root.held ? white : OverlayStyle.knob;
+        drop-shadow-blur: 4px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #00000099;
+
+        animate x, y {
+            duration: root.held ? 0ms : 180ms;
+            easing: cubic-bezier(0.3, 1.6, 0.5, 1);
+        }
+    }
+
+    @children
+
+    Timer {
+        interval: 16ms;
+        running: root.held;
+        triggered => {
+            let now = animation-tick();
+            root.moved(root.deflection-x, root.deflection-y, (now - root.last-tick) / 1s);
+            root.last-tick = now;
+        }
+    }
+}
+
+// A chevron inside the orbit joystick that steps the camera.
+export component StepArrow inherits Rectangle {
+    in property <image> icon;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    background: touch.has-hover ? OverlayStyle.faint : transparent;
+
+    Image {
+        width: 8px;
+        height: 8px;
+        source: root.icon;
+        colorize: touch.has-hover ? OverlayStyle.fg : OverlayStyle.dim;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A button that steps once on press and runs while held: after 350 ms the
+// hold reports each tick with the time since the previous one.
+export component HoldButton inherits Rectangle {
+    in property <string> text;
+    out property <bool> held: touch.pressed;
+    out property <bool> hovered: touch.has-hover;
+    callback step();
+    callback run(float);
+
+    property <duration> pressed-at;
+    property <duration> last-tick;
+
+    width: 26px;
+    height: 24px;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: OverlayStyle.border;
+    background: touch.pressed ? OverlayStyle.accent-soft : touch.has-hover ? OverlayStyle.faint : #ffffff0d;
+
+    Text {
+        text: root.text;
+        color: OverlayStyle.fg;
+        font-size: 16px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        accessible-role: button;
+        accessible-label: root.text;
+
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.pressed-at = animation-tick();
+                root.last-tick = root.pressed-at + 350ms;
+                root.step();
+            }
+        }
+    }
+
+    Timer {
+        interval: 16ms;
+        running: touch.pressed;
+        triggered => {
+            let now = animation-tick();
+            if now > root.last-tick {
+                root.run((now - root.last-tick) / 1s);
+                root.last-tick = now;
+            }
+        }
+    }
+}
+
+// The compass ring: ticks every 30° and an N that turn with the roll, a drag
+// around it that rolls the picture, and a click on the N that puts north up.
+// Its children sit in the middle.
+export component RollRing inherits Rectangle {
+    // The roll in degrees, positive clockwise.
+    in property <float> tilt;
+    in property <bool> lit;
+    out property <bool> held: touch.pressed;
+    out property <bool> ring-hovered: touch.has-hover;
+    out property <bool> north-hovered: north-touch.has-hover;
+    callback pressed();
+    // How far to turn the picture, in degrees, positive clockwise.
+    callback rolled(float);
+    callback north();
+
+    property <length> middle: self.width / 2;
+    property <angle> last-angle;
+
+    width: 78px;
+    height: 78px;
+
+    function angle-at(x: length, y: length) -> angle {
+        return atan2((x - root.middle) / 1px, (root.middle - y) / 1px);
+    }
+
+    Rectangle {
+        border-radius: root.width / 2;
+        border-width: 9px;
+        border-color: root.lit ? OverlayStyle.accent-soft
+            : touch.has-hover || touch.pressed ? #ffffff1f : #ffffff12;
+        drop-shadow-blur: root.lit ? 14px : 0px;
+        drop-shadow-color: OverlayStyle.accent-glow;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: ew-resize;
+
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.last-angle = root.angle-at(self.mouse-x, self.mouse-y);
+                root.pressed();
+            }
+        }
+
+        moved => {
+            if self.pressed {
+                let now = root.angle-at(self.mouse-x, self.mouse-y);
+                let turn = mod((now - root.last-angle) / 1deg + 540, 360) - 180;
+                root.last-angle = now;
+                root.rolled(-turn);
+            }
+        }
+    }
+
+    for i in 11 : Path {
+        property <angle> at: (i + 1) * 30deg - root.tilt * 1deg;
+        property <bool> long: mod(i + 1, 3) == 0;
+        property <float> inner: root.middle / 1px - (self.long ? 9.5 : 7.5);
+        property <float> outer: root.middle / 1px - 3;
+        width: root.width;
+        height: root.height;
+        viewbox-width: root.width / 1px;
+        viewbox-height: root.height / 1px;
+        stroke: self.long ? #ffffff73 : #ffffff38;
+        stroke-width: self.long ? 1.4px : 1px;
+
+        MoveTo {
+            x: root.middle / 1px + parent.inner * sin(parent.at);
+            y: root.middle / 1px - parent.inner * cos(parent.at);
+        }
+
+        LineTo {
+            x: root.middle / 1px + parent.outer * sin(parent.at);
+            y: root.middle / 1px - parent.outer * cos(parent.at);
+        }
+    }
+
+    @children
+
+    Rectangle {
+        property <angle> at: -root.tilt * 1deg;
+        property <length> radius: root.middle - 5.5px;
+        x: root.middle + self.radius * sin(self.at) - self.width / 2;
+        y: root.middle - self.radius * cos(self.at) - self.height / 2;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        border-width: 1px;
+        border-color: #ff6b5e8c;
+        background: north-touch.has-hover ? #3a2220 : OverlayStyle.solid;
+
+        Text {
+            text: "N";
+            color: OverlayStyle.north;
+            font-size: 10px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        north-touch := TouchArea {
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "North up";
+            clicked => { root.north(); }
+        }
+    }
+}
+
+// The vertical zoom slider: near at the top, far at the bottom, with a mark
+// at the default.
+export component VZoomSlider inherits Rectangle {
+    in-out property <float> value;
+    in property <float> mark;
+    out property <bool> held: touch.pressed;
+    out property <bool> hovered: touch.has-hover;
+    callback pressed();
+    callback changed();
+
+    width: 26px;
+    height: 74px;
+
+    function set-from(y: length) {
+        root.value = clamp((y - 4px) / (root.height - 8px), 0, 1);
+        root.changed();
+    }
+
+    Rectangle {
+        x: 12px;
+        y: 4px;
+        width: 2px;
+        height: root.height - 8px;
+        border-radius: 1px;
+        background: #ffffff2e;
+    }
+
+    Rectangle {
+        x: 5px;
+        y: 4px + root.mark * (root.height - 8px) - 1px;
+        width: 16px;
+        height: 2px;
+        border-radius: 1px;
+        background: #ffffff99;
+    }
+
+    Rectangle {
+        x: 6px;
+        y: 4px + root.value * (root.height - 8px) - 7px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: OverlayStyle.knob;
+        drop-shadow-blur: 3px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #00000099;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: ns-resize;
+        accessible-role: slider;
+        accessible-label: "Zoom";
+        accessible-value: round((1 - root.value) * 100) + "%";
+
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.pressed();
+                root.set-from(self.mouse-y);
+            }
+        }
+
+        moved => {
+            if self.pressed {
+                root.set-from(self.mouse-y);
+            }
+        }
+    }
+}

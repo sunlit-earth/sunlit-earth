@@ -17,18 +17,6 @@ mod window_geometry;
 use migrate::{CONFIG_VERSION, Migrated, migrate};
 pub use window_geometry::{save_window_geometry, validated_window_geometry};
 
-/// How much the app is allowed to spend on looking good.
-///
-/// The point of the tiers is that the cheap one is the default while
-/// developing and testing: an 8x MSAA 4K preview is not what anyone wants on
-/// every `cargo run`, and it used to be exactly what they got. Release builds
-/// still default to the full-quality path.
-///
-/// The tier does not choose the cloud image variant; [`TEXTURE_RESOLUTIONS`]
-/// does, along with the rest of the texture memory. The cloud overlay is the
-/// largest texture the app holds, so it belongs with the setting that says how
-/// much texture memory to spend rather than with the one that says how much
-/// work a frame is allowed to be.
 /// The zone the window shows times in. A setting of the window: the time
 /// setting itself is an instant and has no zone.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +29,18 @@ pub enum TimeZoneChoice {
     Utc,
 }
 
+/// How much the app is allowed to spend on looking good.
+///
+/// The point of the tiers is that the cheap one is the default while
+/// developing and testing: an 8x MSAA 4K preview is not what anyone wants on
+/// every `cargo run`, and it used to be exactly what they got. Release builds
+/// still default to the full-quality path.
+///
+/// The tier does not choose the cloud image variant; [`TEXTURE_RESOLUTIONS`]
+/// does, along with the rest of the texture memory. The cloud overlay is the
+/// largest texture the app holds, so it belongs with the setting that says how
+/// much texture memory to spend rather than with the one that says how much
+/// work a frame is allowed to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum QualityTier {

@@ -604,14 +604,14 @@ export component HoldButton inherits Rectangle {
 // around it that rolls the picture, and a click on the N that puts north up.
 // Its children sit in the middle.
 export component RollRing inherits Rectangle {
-    // The roll in degrees, positive clockwise.
+    // The roll in degrees, positive counterclockwise on screen.
     in property <float> tilt;
     in property <bool> lit;
     out property <bool> held: touch.pressed;
     out property <bool> ring-hovered: touch.has-hover;
     out property <bool> north-hovered: north-touch.has-hover;
     callback pressed();
-    // How far to turn the picture, in degrees, positive clockwise.
+    // How far to turn the picture, in degrees, positive counterclockwise.
     callback rolled(float);
     callback north();
 

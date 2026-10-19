@@ -174,7 +174,7 @@ pub fn zoom_by_rate(zoom: f32, direction: i32, seconds: f32) -> f32 {
 /// Roll the picture.
 ///
 /// :param tilt: the roll in degrees
-/// :param degrees: how far to turn it, positive clockwise on screen
+/// :param degrees: how far to turn it, positive counterclockwise on screen
 /// :returns: the new roll, wrapped into `[-180, 180)`
 #[must_use]
 pub fn roll_by(tilt: f32, degrees: f32) -> f32 {

@@ -5,8 +5,9 @@
 //! Blue Marble layer in NASA's Web World Wind, so the surface changes at the
 //! middle of a month rather than at its start: from the 16th of a 31 day month
 //! at noon, the 16th of a 30 day month at midnight, and the 15th of February, at
-//! noon in a leap year. The date is the one the Sun is computed for, the custom
-//! date or the live clock, through [`CivilTime`].
+//! noon in a leap year. The date is the one the Sun is computed for, the
+//! instant being drawn: the time setting's, fixed or live, or the preview's
+//! during an excursion, through [`CivilTime`].
 
 use super::datetime;
 use super::scene_time::SceneTime;
@@ -16,12 +17,17 @@ const SECONDS_PER_DAY: f64 = 86_400.0;
 /// How near a hand-over the date has to be for the month across it to be read
 /// ahead, in seconds: a day.
 ///
-/// The custom date moves only when a slider does, by a day a step of the day
-/// slider and by less than a day along the hour slider, so within a day of a
-/// hand-over the next step of either can cross it, in either direction. The
-/// live clock moves at a second a second and only forward, and a day is far
-/// more than it needs: the engine draws at least every two minutes while the
-/// date is live, and the tiles of a view take seconds at the most to be read.
+/// The live clock moves at a second a second and only forward, and a day is
+/// far more than it needs: the engine draws at least every two minutes while
+/// the date is live, and the tiles of a view take seconds at the most to be
+/// read. A fixed time and an excursion move either way. A step of the day
+/// slider is a day, so within a day of a hand-over the next step can cross
+/// it, and a Clock run at its fastest, six hours a second, spends four
+/// seconds on the last day. A track, exact entry or a skip can jump past
+/// the window, and a Date run spends a seventh of a second on its last day
+/// at a week a second and less at the faster rates, which is no time to read
+/// tiles in: those draw the new month's floor until its tiles land, as any
+/// change of month the read-ahead did not see coming does.
 pub const PREFETCH_WINDOW: f64 = SECONDS_PER_DAY;
 
 /// A calendar date and time of day in UTC, as the Sun and the month both read
@@ -274,7 +280,7 @@ mod tests {
     }
 
     /// Within a day of a hand-over the month across it is read ahead: the
-    /// next one's for either clock, the last one's for the custom date alone,
+    /// next one's for either clock, the last one's for a fixed time alone,
     /// around the whole year and across its end.
     #[test]
     fn the_month_across_a_hand_over_within_a_day_is_read_ahead() {

@@ -179,6 +179,7 @@ fn init_ui(
 
     ui_callbacks::register_change_callbacks(window, link);
     ui_callbacks::register_mouse_callbacks(window, link);
+    crate::time_bar::register(window, link);
     ui_callbacks::register_action_callbacks(window, link, screens);
     ui_callbacks::register_display_callbacks(window, link, screens);
 }

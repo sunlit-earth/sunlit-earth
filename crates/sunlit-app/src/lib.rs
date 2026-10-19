@@ -5,6 +5,7 @@ pub mod engine_client;
 pub mod ipc;
 pub mod mouse_math;
 pub mod session_end;
+pub mod time_bar;
 pub mod tray;
 pub mod ui_callbacks;
 

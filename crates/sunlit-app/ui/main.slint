@@ -3,12 +3,14 @@ import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, Se
 import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } from "overlays/common.slint";
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
+import { TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
 export { TrayIcon } from "tray.slint";
 export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
 export { OverlayHints } from "overlays/common.slint";
+export { TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 // The settings behind the Advanced section, one struct per group, nested the
 // way the panel nests its subsections. The nesting is the one statement of
@@ -273,6 +275,44 @@ export component MainWindow inherits Window {
     in-out property <bool> overlays-hidden;
     // The sheet of every gesture and shortcut, which F1 or Ctrl + ? opens.
     in-out property <bool> shortcut-sheet-open;
+
+    // The time bar. Rust writes what it shows; the transport's callbacks act
+    // on the excursion and the tracks', exact entry's and Now's on the time
+    // setting. The last three properties are Rust's memory of the last
+    // frame's instant, of what the shading was drawn for and of the year the
+    // date track's marks were placed for.
+    in property <TimeBarView> time-bar;
+    in property <[int]> time-ladder;
+    in property <[RateChoice]> time-rates;
+    in property <[SeasonMark]> time-seasons;
+    in property <[float]> time-month-ticks;
+    in property <image> time-shading;
+    in-out property <bool> time-bar-pinned;
+    in-out property <string> time-frame-instant;
+    in-out property <string> time-shading-key;
+    in-out property <string> time-year-key;
+    callback time-toggle-play();
+    callback time-pause();
+    callback time-rate(int);
+    // J and L: -1 and 1.
+    callback time-shuttle(int);
+    callback time-reverse();
+    // Forward or back, and the bigger step.
+    callback time-skip(bool, bool);
+    // Play runs the date rather than the clock.
+    callback time-kind(bool);
+    callback time-now();
+    callback time-end();
+    // A track was pressed or dragged: the date track or the time track, and
+    // where along it from 0 to 1.
+    callback time-track(bool, float);
+    callback time-exact-date(int, int, int);
+    callback time-exact-time(int, int);
+    callback time-zone-toggled();
+    // A second passed while live.
+    callback time-tick();
+    // The date at a place along the date track, "18 Oct".
+    pure callback time-date-at(float) -> string;
 
     callback load-defaults();
     callback reset();

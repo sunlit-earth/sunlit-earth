@@ -1,0 +1,52 @@
+// The time bar at the bottom of the preview: the time on screen, playback,
+// and the time setting's tracks.
+
+// What the bar shows, written whole by Rust from the time setting, the
+// excursion the engine reports and the instant of the last frame.
+export struct TimeBarView {
+    // The setting is live time and there is no excursion.
+    live: bool,
+    excursion: bool,
+    running: bool,
+    // The rate play runs at, signed: multiples of real time, or days a
+    // second when play runs the date.
+    rate: int,
+    date-kind: bool,
+    // The folded pill's state: "LIVE", the offset from now, "▶ 60×" or
+    // "Preview".
+    state-text: string,
+    pill-text: string,
+    zone-text: string,
+    time-text: string,
+    // ":07" while live, empty otherwise.
+    seconds-text: string,
+    date-text: string,
+    offset-text: string,
+    // "300×" or "1 week/s", and what it means.
+    speed-text: string,
+    speed-note: string,
+    // Where the handles stand, from 0 to 1 along the displayed day and year.
+    day-fraction: float,
+    year-fraction: float,
+    // The camera is fixed toward the Sun, so the time track is drawn plain.
+    sun-fixed: bool,
+    // The instant on screen in the displayed zone, for exact entry.
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+}
+
+// One speed of the speed list, signed.
+export struct RateChoice {
+    rate: int,
+    label: string,
+    note: string,
+}
+
+// An equinox or a solstice on the date track.
+export struct SeasonMark {
+    fraction: float,
+    label: string,
+}

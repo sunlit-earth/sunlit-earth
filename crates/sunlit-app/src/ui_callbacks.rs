@@ -819,6 +819,7 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
 
     window.set_auto_refresh_enabled(config.auto_refresh_enabled);
     window.set_overlays_hidden(config.overlays_hidden);
+    window.set_time_bar_pinned(config.time_bar_pinned);
     #[expect(
         clippy::cast_precision_loss,
         reason = "an interval in minutes is far inside the f32 mantissa"
@@ -1100,7 +1101,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
 /// The instant the group holds is the setting, so a push reads back exactly
 /// what was written; the sliders only show it. A group whose instant is
 /// missing, which nothing writes, falls back to its sliders in UTC.
-fn scene_time_of(settings: &DateTimeSettings) -> SceneTime {
+pub(crate) fn scene_time_of(settings: &DateTimeSettings) -> SceneTime {
     if !settings.use_custom {
         return SceneTime::Live;
     }
@@ -1208,7 +1209,7 @@ fn datetime_settings(
 }
 
 /// Fix the time setting at `at` and show it in the group's sliders.
-fn set_fixed_time(window: &MainWindow, at: time::OffsetDateTime) {
+pub(crate) fn set_fixed_time(window: &MainWindow, at: time::OffsetDateTime) {
     let utc = window.get_time_zone_utc();
     window.set_datetime(datetime_settings(SceneTime::fixed(at), |at| {
         display_offset(utc, at)
@@ -1271,6 +1272,7 @@ pub fn read_config_from_window_onto(
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
         auto_refresh_interval_minutes: slider_u32(window.get_auto_refresh_interval()),
         overlays_hidden: window.get_overlays_hidden(),
+        time_bar_pinned: window.get_time_bar_pinned(),
         time_zone: if window.get_time_zone_utc() {
             config::TimeZoneChoice::Utc
         } else {
@@ -1298,7 +1300,7 @@ pub(crate) fn update_solar_time_label(window: &MainWindow) {
 
 /// Update the Time and Day labels and the Day slider's range from the
 /// group's instant, in the displayed zone: "16:23 UTC+2", "Sun 18 Oct".
-fn update_datetime_labels(window: &MainWindow) {
+pub(crate) fn update_datetime_labels(window: &MainWindow) {
     let settings = window.get_datetime();
     let SceneTime::Fixed(at) = scene_time_of(&settings) else {
         return;

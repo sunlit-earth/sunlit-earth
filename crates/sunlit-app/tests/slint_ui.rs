@@ -1894,6 +1894,7 @@ fn wired_window() -> (
     ui_callbacks::register_mouse_callbacks(&window, &link);
     ui_callbacks::register_change_callbacks(&window, &link);
     ui_callbacks::register_action_callbacks(&window, &link, &screens);
+    sunlit_earth::time_bar::register(&window, &link);
     (window, sent)
 }
 

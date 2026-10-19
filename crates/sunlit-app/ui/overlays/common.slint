@@ -42,6 +42,8 @@ export struct HintContent {
 // modifier keys.
 export global OverlayHints {
     in property <bool> is-macos;
+    // What the time setting reads, for the Preview state's hint.
+    in property <string> wallpaper-time;
 
     out property <string> mod-key: is-macos ? "⌘" : "Ctrl";
     out property <string> shift-key: is-macos ? "⇧" : "Shift";

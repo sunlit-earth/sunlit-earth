@@ -21,6 +21,16 @@ component SheetHeading inherits Text {
     letter-spacing: 0.7px;
 }
 
+// What a row of the sheet does, beside its gesture or keys. The rows place it
+// by hand: a box layout in a repeated row measures wrapping text at its
+// one-line width and would keep the row one line high.
+component SheetText inherits Text {
+    color: OverlayStyle.fg;
+    font-size: 12px;
+    wrap: word-wrap;
+    vertical-alignment: center;
+}
+
 export component ShortcutSheet inherits Rectangle {
     callback close();
 
@@ -107,25 +117,18 @@ export component ShortcutSheet inherits Rectangle {
                         text: "MOUSE ON THE GLOBE";
                     }
 
-                    for gesture in root.gestures : HorizontalLayout {
-                        spacing: 8px;
-                        height: 24px;
+                    for gesture in root.gestures : Rectangle {
+                        height: max(24px, gesture-text.height + 6px);
 
-                        HorizontalLayout {
-                            width: 96px;
-                            alignment: start;
-
-                            MouseGlyph {
-                                y: 3px;
-                                which: gesture.mouse;
-                            }
+                        MouseGlyph {
+                            x: 0;
+                            which: gesture.mouse;
                         }
 
-                        Text {
+                        gesture-text := SheetText {
+                            x: 104px;
+                            width: parent.width - 104px;
                             text: gesture.text;
-                            color: OverlayStyle.fg;
-                            font-size: 12px;
-                            vertical-alignment: center;
                         }
                     }
                 }
@@ -139,27 +142,24 @@ export component ShortcutSheet inherits Rectangle {
                         text: "KEYBOARD";
                     }
 
-                    for entry in root.keys : HorizontalLayout {
-                        spacing: 8px;
-                        height: 24px;
+                    for entry in root.keys : Rectangle {
+                        height: max(24px, entry-text.height + 6px);
 
-                        HorizontalLayout {
-                            width: 96px;
+                        keys := HorizontalLayout {
+                            x: 0;
+                            width: self.preferred-width;
+                            height: 18px;
                             spacing: 3px;
-                            alignment: start;
-                            padding-top: 3px;
-                            padding-bottom: 3px;
 
                             for key in entry.keys : KeyCap {
                                 text: key;
                             }
                         }
 
-                        Text {
+                        entry-text := SheetText {
+                            x: max(104px, keys.width + 8px);
+                            width: parent.width - self.x;
                             text: entry.text;
-                            color: OverlayStyle.fg;
-                            font-size: 12px;
-                            vertical-alignment: center;
                         }
                     }
                 }

@@ -323,11 +323,11 @@ fn to_another_month(rig: &Rig) -> usize {
 /// The same, with `params` the scene to move.
 fn to_another_month_from(rig: &Rig, params: &SceneParams) -> usize {
     let mut other = *params;
-    other.datetime.custom_day_of_year = 260;
-    let month = sunlit_core::scene::month::month_in_force(&other.datetime, rig.clock.now_utc());
+    other.time = crate::harness::on_day(other.time, 260);
+    let month = sunlit_core::scene::month::month_in_force(&other.time, rig.clock.now_utc());
     assert_ne!(
         month,
-        sunlit_core::scene::month::month_in_force(&params.datetime, rig.clock.now_utc()),
+        sunlit_core::scene::month::month_in_force(&params.time, rig.clock.now_utc()),
         "the premise: another month"
     );
     rig.harness
@@ -436,7 +436,7 @@ fn the_tile_wait_is_not_renewed_by_the_packs_of_other_months() {
                 sunlit_core::assets::cube_layout::CubeTextures::resolve(&dir.join("textures"));
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let month = sunlit_core::scene::month::month_in_force(
-                &view().datetime,
+                &view().time,
                 time::OffsetDateTime::UNIX_EPOCH,
             );
             for kind in [PackKind::Mask, PackKind::Day(month), PackKind::Night] {
@@ -575,7 +575,7 @@ fn a_live_month_change_during_a_tile_wait_asks_for_the_new_months_tiles() {
     let before_noon = time::OffsetDateTime::UNIX_EPOCH
         + time::Duration::seconds(15 * 86_400 + 11 * 3600 + 59 * 60 + 58);
     let mut params = view();
-    params.datetime.use_custom = false;
+    params.time = sunlit_core::scene::scene_time::SceneTime::Live;
     let rig = rig_at(
         "engine_ready_live_month",
         &params,
@@ -789,7 +789,7 @@ fn the_tiles_of_a_waiting_publish_come_first() {
     let owed = ask_with_the_gate_shut(&rig, &before);
 
     let params = view();
-    let month = sunlit_core::scene::month::month_in_force(&params.datetime, rig.clock.now_utc());
+    let month = sunlit_core::scene::month::month_in_force(&params.time, rig.clock.now_utc());
     let pack = Pack::open(&tiles::pack_path(
         &rig.dir.join("cache"),
         PackKind::Day(month),

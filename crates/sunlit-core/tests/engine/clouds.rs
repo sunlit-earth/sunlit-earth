@@ -11,6 +11,7 @@ use sunlit_core::assets::tiles::{self, BuildGate, PackKind};
 use sunlit_core::engine::clock::MockClock;
 use sunlit_core::engine::{EngineCommand, EngineEvent};
 use sunlit_core::params::SceneParams;
+use sunlit_core::scene::scene_time::{SceneTime, instant_of_override};
 
 use crate::clouds_variant::wait_for_cloud_size;
 use crate::cube::CubeFixture;
@@ -66,10 +67,7 @@ fn cloud_case_params(texture_index: i32, longitude: f32, hour: f32) -> ScenePara
         },
         ..SceneParams::default()
     };
-    params.datetime.use_custom = true;
-    params.datetime.custom_hour = hour;
-    params.datetime.custom_day_of_year = 80;
-    params.datetime.custom_year = 2026;
+    params.time = SceneTime::fixed(instant_of_override(hour, 80, 2026));
     params
 }
 

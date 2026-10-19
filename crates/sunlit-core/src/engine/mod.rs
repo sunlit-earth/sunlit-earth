@@ -253,7 +253,7 @@ impl Engine {
         });
 
         let now = clock.elapsed();
-        let month = crate::scene::month::month_in_force(&params.datetime, clock.now_utc());
+        let month = crate::scene::month::month_in_force(&params.time, clock.now_utc());
         let cpu_adapter = gpu.device_type == wgpu::DeviceType::Cpu;
         let formats = SurfaceFormats::for_adapter(
             gpu.device
@@ -621,7 +621,7 @@ impl Engine {
         // Live time keeps moving even when nothing else changes, so the
         // terminator and the sky have to be recomputed on a schedule of their
         // own.
-        if self.sky.due(now) && !self.params.datetime.use_custom {
+        if self.sky.due(now) && self.params.time.is_live() {
             self.dirty = true;
         }
 
@@ -709,7 +709,7 @@ impl Engine {
 
     /// The astronomy state for the current parameters and clock reading.
     fn sky_state(&self) -> SkyState {
-        sky::compute_sky_state_at(&self.params.datetime, self.clock.now_utc())
+        sky::compute_sky_state_at(&self.params.time, self.clock.now_utc())
     }
 
     /// Derive the month in force from the date, as the sky state is, and move
@@ -726,7 +726,7 @@ impl Engine {
         let Some(surface) = &mut self.surface else {
             return;
         };
-        let (date, now) = (&self.params.datetime, self.clock.now_utc());
+        let (date, now) = (&self.params.time, self.clock.now_utc());
         let month = crate::scene::month::month_in_force(date, now);
         let ahead = crate::scene::month::month_ahead(date, now);
         if surface.set_month(month, ahead, &mut self.renderer) {
@@ -1122,7 +1122,7 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 /// [`SKY_INTERVAL`]. A hidden preview has nobody to show a frame to, and an
 /// Earth-fixed camera or an overridden instant does not move with the turn.
 fn sky_interval(params: &SceneParams, preview_height: u32, shown: bool) -> Duration {
-    if !shown || !params.sun_fixed || params.datetime.use_custom {
+    if !shown || !params.sun_fixed || !params.time.is_live() {
         return SKY_INTERVAL;
     }
     let camera = &params.camera;
@@ -1211,7 +1211,7 @@ mod tests {
             ..SceneParams::default()
         };
         params.camera.zoom = zoom;
-        params.datetime.use_custom = false;
+        params.time = crate::scene::scene_time::SceneTime::Live;
         params
     }
 
@@ -1255,7 +1255,8 @@ mod tests {
         };
         assert_eq!(sky_interval(&earth, 1080, true), SKY_INTERVAL);
         let mut overridden = live;
-        overridden.datetime.use_custom = true;
+        overridden.time =
+            crate::scene::scene_time::SceneTime::fixed(time::OffsetDateTime::UNIX_EPOCH);
         assert_eq!(sky_interval(&overridden, 1080, true), SKY_INTERVAL);
         assert_eq!(sky_interval(&live, 0, true), SKY_INTERVAL);
     }

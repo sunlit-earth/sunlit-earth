@@ -19,8 +19,8 @@ use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
 use sunlit_core::scene::camera::{self, CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
+use sunlit_core::scene::scene_time::{SceneTime, instant_of_override};
 use sunlit_core::scene::sky::{self, SkyState};
-use sunlit_core::scene::sun::DateTimeInput;
 
 /// A Slint index as a position in the list it selects from.
 ///
@@ -116,7 +116,7 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
 /// it is on, the system clock's otherwise. The engine draws within a tick of
 /// this, which is a fifth of a thousandth of a degree of the Earth's turn.
 fn sky_now(window: &MainWindow) -> SkyState {
-    sky::compute_sky_state(&datetime_input(&window.get_datetime()))
+    sky::compute_sky_state(&scene_time_of(&window.get_datetime()))
 }
 
 /// Carry the view across a switch of the camera mode: the value the mode now
@@ -849,12 +849,7 @@ pub fn scene_settings(params: &SceneParams) -> SceneSettings {
             offset_x: cam.offset_x,
             offset_y: cam.offset_y,
         },
-        datetime: DateTimeSettings {
-            use_custom: params.datetime.use_custom,
-            hour: params.datetime.custom_hour,
-            day_of_year: f32::from(params.datetime.custom_day_of_year),
-            year_index: (params.datetime.custom_year - datetime::base_year()).clamp(0, 20),
-        },
+        datetime: datetime_settings(params.time),
         clouds: CloudSettings {
             enabled: params.clouds_enabled,
             opacity: params.cloud_opacity,
@@ -1083,7 +1078,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         day_saturation: color.day.saturation,
         night_gamma: gamma_slider_to_value(color.night.gamma),
         night_saturation: color.night.saturation,
-        datetime: datetime_input(&date_time),
+        time: scene_time_of(&date_time),
     }
 }
 
@@ -1092,12 +1087,37 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
 /// This is the thin UI-reading layer; the engine turns the result into a
 /// `scene::sky::SkyState` once per frame, which is where the sun direction,
 /// the sky rotation and the planets all come from.
-fn datetime_input(settings: &DateTimeSettings) -> DateTimeInput {
-    DateTimeInput {
-        use_custom: settings.use_custom,
-        custom_hour: settings.hour,
-        custom_day_of_year: slider_u16(settings.day_of_year),
-        custom_year: settings.year_index + datetime::base_year(),
+fn scene_time_of(settings: &DateTimeSettings) -> SceneTime {
+    if settings.use_custom {
+        SceneTime::fixed(instant_of_override(
+            settings.hour,
+            slider_u16(settings.day_of_year),
+            settings.year_index + datetime::base_year(),
+        ))
+    } else {
+        SceneTime::Live
+    }
+}
+
+/// The time setting as the Date / Time group's switch and sliders, in UTC.
+/// Live time leaves the sliders at noon on the first of January.
+fn datetime_settings(scene_time: SceneTime) -> DateTimeSettings {
+    let base_year = datetime::base_year();
+    match scene_time {
+        SceneTime::Live => DateTimeSettings {
+            use_custom: false,
+            hour: 12.0,
+            day_of_year: 1.0,
+            year_index: (time::OffsetDateTime::now_utc().year() - base_year).clamp(0, 20),
+        },
+        SceneTime::Fixed(at) => DateTimeSettings {
+            use_custom: true,
+            hour: f32::from(at.hour())
+                + f32::from(at.minute()) / 60.0
+                + f32::from(at.second()) / 3600.0,
+            day_of_year: f32::from(at.ordinal()),
+            year_index: (at.year() - base_year).clamp(0, 20),
+        },
     }
 }
 

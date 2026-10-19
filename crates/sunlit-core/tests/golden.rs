@@ -229,10 +229,9 @@ fn base_params() -> SceneParams {
         night_ocean_color: Rgb8::from(test_support::EARTH_FIXTURE_OCEAN[1]),
         ..SceneParams::default()
     };
-    params.datetime.use_custom = true;
-    params.datetime.custom_hour = 12.0;
-    params.datetime.custom_day_of_year = 172;
-    params.datetime.custom_year = 2026;
+    params.time = sunlit_core::scene::scene_time::SceneTime::fixed(
+        time::macros::datetime!(2026-06-21 12:00 UTC),
+    );
     params
 }
 
@@ -432,7 +431,9 @@ fn golden_nightglow() {
     // only sun-dependent thing left in a texture-free golden is the atmosphere.
     // Cranking it is what makes this case differ from `default` at all.
     let mut params = base_params();
-    params.datetime.custom_hour = 0.0;
+    params.time = sunlit_core::scene::scene_time::SceneTime::fixed(
+        time::macros::datetime!(2026-06-21 00:00 UTC),
+    );
     params.rayleigh_intensity = 3.0;
     params.nightglow_intensity = 2.0;
     params.nightglow_falloff = 4.0;
@@ -770,8 +771,9 @@ fn golden_moon_crescent() {
         moon_size: 8.0,
         ..base
     };
-    params.datetime.custom_day_of_year = 199;
-    params.datetime.custom_hour = 16.0;
+    params.time = sunlit_core::scene::scene_time::SceneTime::fixed(
+        time::macros::datetime!(2026-07-18 16:00 UTC),
+    );
     check_golden_in("moon_crescent", &params, MOON_WINDOW);
 }
 
@@ -902,7 +904,9 @@ fn polar_params(latitude: f32, day_of_year: u16) -> SceneParams {
         star_intensity: 0.0,
         ..base
     };
-    params.datetime.custom_day_of_year = day_of_year;
+    params.time = sunlit_core::scene::scene_time::SceneTime::fixed(
+        sunlit_core::scene::scene_time::instant_of_override(12.0, day_of_year, 2026),
+    );
     params
 }
 
@@ -995,7 +999,7 @@ fn a_sun_fixed_render_matches_the_earth_fixed_render_beneath_it() {
         solar_time: 16.5,
         ..base_params()
     };
-    let sun = sunlit_core::scene::sky::compute_sky_state(&sun_fixed.datetime).sun_direction;
+    let sun = sunlit_core::scene::sky::compute_sky_state(&sun_fixed.time).sun_direction;
     let longitude = sunlit_core::scene::camera::longitude_of(sun_fixed.solar_time, sun);
     let beneath = SceneParams {
         sun_fixed: false,

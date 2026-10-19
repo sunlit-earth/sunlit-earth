@@ -10,7 +10,8 @@ use astronomy_engine_bindings::{
 };
 use glam::{Mat3, Vec3};
 
-use super::sun::{DateTimeInput, make_time};
+use super::scene_time::SceneTime;
+use super::sun::make_time;
 
 /// A naked eye planet rendered by the sky sprite pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,13 +62,18 @@ const PLANETS: [(PlanetKind, astro_body_t); 5] = [
 ];
 
 /// Compute all astronomy inputs for a scene at an injected UTC time.
-pub fn compute_sky_state_at(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> SkyState {
-    compute_sky_state_from_time(time_for_input(dt, now_utc))
+pub fn compute_sky_state_at(scene_time: &SceneTime, now_utc: time::OffsetDateTime) -> SkyState {
+    compute_sky_state_for(scene_time.instant(now_utc))
+}
+
+/// Compute all astronomy inputs for one instant.
+pub fn compute_sky_state_for(at: time::OffsetDateTime) -> SkyState {
+    compute_sky_state_from_time(time_for_instant(at))
 }
 
 /// Compute all astronomy inputs for a scene using the current UTC time.
-pub fn compute_sky_state(dt: &DateTimeInput) -> SkyState {
-    compute_sky_state_at(dt, time::OffsetDateTime::now_utc())
+pub fn compute_sky_state(scene_time: &SceneTime) -> SkyState {
+    compute_sky_state_at(scene_time, time::OffsetDateTime::now_utc())
 }
 
 /// Compute the sky state from an Astronomy Engine time value.
@@ -210,8 +216,8 @@ fn body_magnitude(body: astro_body_t, time: astro_time_t) -> f32 {
     f32_of(illumination.mag)
 }
 
-fn time_for_input(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> astro_time_t {
-    let at = super::month::CivilTime::of(dt, now_utc);
+fn time_for_instant(at: time::OffsetDateTime) -> astro_time_t {
+    let at = super::month::CivilTime::of(at);
     make_time(
         at.year,
         i32::from(at.month),
@@ -289,31 +295,13 @@ mod tests {
         assert!(jupiter.direction.angle_between(expected_world).to_degrees() < 0.05);
     }
 
-    /// A custom date and time selects the instant the widgets name.
+    /// A fixed time selects the instant it names, the fraction of its second
+    /// included.
     #[test]
-    fn a_custom_datetime_selects_the_instant_it_names() {
-        let dt = DateTimeInput {
-            use_custom: true,
-            custom_hour: 12.0,
-            // June 21 in a non-leap year.
-            custom_day_of_year: 172,
-            custom_year: 2025,
-        };
-        let selected = compute_sky_state_at(&dt, time::OffsetDateTime::UNIX_EPOCH);
-        let expected = compute_sky_state_from_time(make_time(2025, 6, 21, 12, 0, 0.0));
-        assert_eq!(selected, expected);
-    }
-
-    #[test]
-    fn a_custom_day_of_year_of_zero_is_clamped_to_january_first() {
-        let dt = DateTimeInput {
-            use_custom: true,
-            custom_hour: 12.0,
-            custom_day_of_year: 0,
-            custom_year: 2025,
-        };
-        let selected = compute_sky_state_at(&dt, time::OffsetDateTime::UNIX_EPOCH);
-        let expected = compute_sky_state_from_time(make_time(2025, 1, 1, 12, 0, 0.0));
+    fn a_fixed_time_selects_the_instant_it_names() {
+        let fixed = SceneTime::fixed(time::macros::datetime!(2025-06-21 12:00:30.5 UTC));
+        let selected = compute_sky_state_at(&fixed, time::OffsetDateTime::UNIX_EPOCH);
+        let expected = compute_sky_state_from_time(make_time(2025, 6, 21, 12, 0, 30.5));
         assert_eq!(selected, expected);
     }
 
@@ -321,14 +309,8 @@ mod tests {
     /// the soak test rotate the Earth for fourteen simulated days.
     #[test]
     fn live_time_follows_the_injected_now() {
-        let dt = DateTimeInput {
-            use_custom: false,
-            custom_hour: 0.0,
-            custom_day_of_year: 1,
-            custom_year: 2025,
-        };
         let now = time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
-        let selected = compute_sky_state_at(&dt, now);
+        let selected = compute_sky_state_at(&SceneTime::Live, now);
         let expected = compute_sky_state_from_time(make_time(
             now.year(),
             i32::from(u8::from(now.month())),

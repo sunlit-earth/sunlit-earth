@@ -23,7 +23,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["image", "rayon"] }
 dds = { version = "0.2", default-features = false }
 astronomy-engine-bindings = "2.1"
-time = { version = "0.3", features = ["std"] }
+time = { version = "0.3", features = ["std", "local-offset", "formatting", "parsing", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

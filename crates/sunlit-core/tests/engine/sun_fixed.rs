@@ -31,7 +31,7 @@ fn one_pixel(params: &SceneParams, height: u32) -> Duration {
 
 /// `params` at the passing instant rather than the pinned one.
 fn live(mut params: SceneParams) -> SceneParams {
-    params.datetime.use_custom = false;
+    params.time = sunlit_core::scene::scene_time::SceneTime::Live;
     params
 }
 
@@ -127,7 +127,7 @@ fn the_wanted_tiles_follow_the_turn_and_only_a_hand_on_the_time_is_a_drag() {
 
     // What is wanted is what an Earth-fixed camera at the longitude the time
     // of day puts beneath the camera now wants, at the same instant.
-    let sky = sky::compute_sky_state_at(&sun_fixed.datetime, clock.now_utc());
+    let sky = sky::compute_sky_state_at(&sun_fixed.time, clock.now_utc());
     let beneath = SceneParams {
         sun_fixed: false,
         camera: CameraParams {

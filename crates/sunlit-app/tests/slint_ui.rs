@@ -1902,9 +1902,7 @@ fn wired_window() -> (
 /// The camera the window's scene is drawn with at the instant it names.
 fn resolved(window: &MainWindow) -> sunlit_core::scene::camera::CameraParams {
     let params = ui_callbacks::read_params_from_window(window, &AA_COUNTS);
-    params.camera_at(&sunlit_core::scene::sky::compute_sky_state(
-        &params.datetime,
-    ))
+    params.camera_at(&sunlit_core::scene::sky::compute_sky_state(&params.time))
 }
 
 /// `a` minus `b` in degrees of longitude, the short way round.

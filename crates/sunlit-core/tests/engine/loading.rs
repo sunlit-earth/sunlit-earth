@@ -138,7 +138,7 @@ fn a_first_run_names_each_pack_it_prepares_and_counts_the_months() {
             texture_index: 3,
             ..test_params()
         };
-        params.datetime.custom_day_of_year = 69;
+        params.time = crate::harness::on_day(params.time, 69);
         config.params = params;
     });
 

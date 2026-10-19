@@ -1,6 +1,7 @@
 //! The Moon.
 
 use sunlit_core::params::SceneParams;
+use sunlit_core::scene::scene_time::SceneTime;
 
 use crate::groups::{FRAME, plain, sky};
 use crate::harness::{gpu, test_params};
@@ -15,8 +16,7 @@ use crate::support;
 /// the one the moon golden uses.
 fn moon_params() -> SceneParams {
     let mut params = test_params();
-    params.datetime.custom_day_of_year = 172;
-    params.datetime.custom_hour = 21.0;
+    params.time = SceneTime::fixed(time::macros::datetime!(2026-06-21 21:00 UTC));
     params.camera.longitude = 160.0;
     params.camera.latitude = 0.0;
     params.camera.zoom = 0.45;
@@ -187,10 +187,10 @@ fn illuminated_fraction(doy: u16, hour: i32) -> f32 {
 /// the parameters instead of being assumed.
 pub(crate) fn sky_for(params: &SceneParams) -> sunlit_core::scene::sky::SkyState {
     assert!(
-        params.datetime.use_custom,
-        "the placement helpers only answer for a pinned datetime"
+        !params.time.is_live(),
+        "the placement helpers only answer for a pinned time"
     );
-    sunlit_core::scene::sky::compute_sky_state(&params.datetime)
+    sunlit_core::scene::sky::compute_sky_state(&params.time)
 }
 
 /// The camera `params` describes, as far as the placement needs it.
@@ -332,8 +332,11 @@ fn the_lit_fraction_tracks_the_ephemeris_at_three_phases() {
     let viewport = glam::Vec2::new(WIDTH as f32, HEIGHT as f32);
     for (doy, hour) in INSTANTS {
         let mut at = params;
-        at.datetime.custom_day_of_year = doy;
-        at.datetime.custom_hour = f32::from(u16::try_from(hour).expect("a small hour"));
+        at.time = SceneTime::fixed(sunlit_core::scene::scene_time::instant_of_override(
+            f32::from(u16::try_from(hour).expect("a small hour")),
+            doy,
+            2026,
+        ));
         let pixels = harness.picture(&at, (WIDTH, HEIGHT));
 
         let disc = moon_disc(&at, viewport);
@@ -371,8 +374,7 @@ fn the_lit_limb_faces_the_sun() {
     let harness = sky(&gpu);
     let mut params = moon_params();
     params.moon_earthshine = 0.0;
-    params.datetime.custom_day_of_year = 199;
-    params.datetime.custom_hour = 16.0;
+    params.time = SceneTime::fixed(time::macros::datetime!(2026-07-18 16:00 UTC));
     let pixels = harness.picture(&params, (WIDTH, HEIGHT));
 
     #[allow(clippy::cast_precision_loss)]
@@ -424,9 +426,7 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
     let harness = sky(&gpu);
     let mut params = moon_params();
     params.sun_glow = 1.0;
-    params.datetime.custom_year = 2024;
-    params.datetime.custom_day_of_year = 99;
-    params.datetime.custom_hour = 18.0 + 17.0 / 60.0;
+    params.time = SceneTime::fixed(time::macros::datetime!(2024-04-08 18:17 UTC));
 
     // The eye on the night side, swung `OFF_AXIS` out of the Earth-Sun line, so
     // the Sun sits that far from the view axis and the Moon almost with it.

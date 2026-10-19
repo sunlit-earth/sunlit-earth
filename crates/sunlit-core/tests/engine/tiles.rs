@@ -377,7 +377,7 @@ const PATCH_PIXELS: usize = 64;
 fn march_over(center: (f64, f64), zoom: f32) -> SceneParams {
     #[expect(clippy::cast_possible_truncation, reason = "degrees")]
     let mut params = day_over(center.1 as f32, center.0 as f32, zoom);
-    params.datetime.custom_day_of_year = 60;
+    params.time = crate::harness::on_day(params.time, 60);
     params.atmo_enabled = false;
     params
 }

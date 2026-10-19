@@ -8,8 +8,8 @@
 //! noon in a leap year. The date is the one the Sun is computed for, the custom
 //! date or the live clock, through [`CivilTime`].
 
-use super::datetime::{self, hour_float_to_hms};
-use super::sun::DateTimeInput;
+use super::datetime;
+use super::scene_time::SceneTime;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
@@ -39,30 +39,17 @@ pub(crate) struct CivilTime {
 }
 
 impl CivilTime {
-    /// The instant `dt` names: the custom date when it is in use, the live
-    /// clock's reading otherwise.
-    pub(crate) fn of(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> Self {
-        if dt.use_custom {
-            let doy = dt.custom_day_of_year.max(1);
-            let (month, day) = datetime::day_of_year_to_month_day(doy, dt.custom_year);
-            let (hour, minute, second) = hour_float_to_hms(dt.custom_hour);
-            Self {
-                year: dt.custom_year,
-                month,
-                day,
-                hour,
-                minute,
-                second,
-            }
-        } else {
-            Self {
-                year: now_utc.year(),
-                month: u8::from(now_utc.month()),
-                day: now_utc.day(),
-                hour: i32::from(now_utc.hour()),
-                minute: i32::from(now_utc.minute()),
-                second: f64::from(now_utc.second()),
-            }
+    /// An instant's date and time of day in UTC, the fraction of its second
+    /// kept.
+    pub(crate) fn of(at: time::OffsetDateTime) -> Self {
+        let at = at.to_offset(time::UtcOffset::UTC);
+        Self {
+            year: at.year(),
+            month: u8::from(at.month()),
+            day: at.day(),
+            hour: i32::from(at.hour()),
+            minute: i32::from(at.minute()),
+            second: f64::from(at.second()) + f64::from(at.nanosecond()) / 1e9,
         }
     }
 }
@@ -163,21 +150,26 @@ pub(crate) fn month_across(at: &CivilTime, both_ways: bool) -> Option<usize> {
 
 /// The month in force for the scene's date, January 0.
 #[must_use]
-pub fn month_in_force(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> usize {
-    month_index(&CivilTime::of(dt, now_utc))
+pub fn month_in_force(scene_time: &SceneTime, now_utc: time::OffsetDateTime) -> usize {
+    month_index(&CivilTime::of(scene_time.instant(now_utc)))
 }
 
 /// The month whose tiles are read ahead for the scene's date, January 0: the
 /// one across a hand-over within [`PREFETCH_WINDOW`], ahead of the live clock,
-/// which only goes forward, and either side of the custom date, which a slider
+/// which only goes forward, and either side of a fixed time, which a slider
 /// moves both ways.
 #[must_use]
-pub fn month_ahead(dt: &DateTimeInput, now_utc: time::OffsetDateTime) -> Option<usize> {
-    month_across(&CivilTime::of(dt, now_utc), dt.use_custom)
+pub fn month_ahead(scene_time: &SceneTime, now_utc: time::OffsetDateTime) -> Option<usize> {
+    month_across(
+        &CivilTime::of(scene_time.instant(now_utc)),
+        !scene_time.is_live(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use time::macros::datetime;
+
     use super::*;
 
     fn at(year: i32, month: u8, day: u8, hour: i32, minute: i32, second: f64) -> CivilTime {
@@ -307,16 +299,11 @@ mod tests {
         }
     }
 
-    /// The live clock reads ahead only forward, the custom date both ways.
+    /// The live clock reads ahead only forward, a fixed time both ways.
     #[test]
     fn the_scene_date_names_the_month_read_ahead() {
         let after = hand_over(2026, 9) + time::Duration::hours(3);
-        let live = DateTimeInput {
-            use_custom: false,
-            custom_hour: 12.0,
-            custom_day_of_year: 1,
-            custom_year: 2026,
-        };
+        let live = SceneTime::Live;
         assert_eq!(month_ahead(&live, after), None);
         assert_eq!(
             month_ahead(&live, hand_over(2026, 9) - time::Duration::hours(3)),
@@ -325,38 +312,22 @@ mod tests {
 
         // September 16th at 03:00, three hours past the hand-over at
         // midnight into the 16th of September's 30 days.
-        let custom = DateTimeInput {
-            use_custom: true,
-            custom_hour: 3.0,
-            custom_day_of_year: 259,
-            custom_year: 2026,
-        };
+        let custom = SceneTime::fixed(datetime!(2026-09-16 03:00 UTC));
         assert_eq!(month_in_force(&custom, after), 9, "October's");
         assert_eq!(month_ahead(&custom, after), Some(8), "September across it");
     }
 
-    /// The custom date and the live clock are read the way the Sun reads them.
+    /// A fixed time and the live clock are read the way the Sun reads them.
     #[test]
     fn the_scene_date_names_the_month() {
-        let custom = DateTimeInput {
-            use_custom: true,
-            custom_hour: 12.0,
-            custom_day_of_year: 160,
-            custom_year: 2026,
-        };
+        let custom = SceneTime::fixed(datetime!(2026-06-09 12:00 UTC));
         let never = time::OffsetDateTime::UNIX_EPOCH;
         assert_eq!(month_in_force(&custom, never), 5, "June 9 is June's");
 
-        let solstice = DateTimeInput {
-            custom_day_of_year: 172,
-            ..custom
-        };
+        let solstice = SceneTime::fixed(datetime!(2026-06-21 12:00 UTC));
         assert_eq!(month_in_force(&solstice, never), 6, "June 21 is July's");
 
-        let live = DateTimeInput {
-            use_custom: false,
-            ..custom
-        };
+        let live = SceneTime::Live;
         let now = time::Date::from_calendar_date(2026, time::Month::September, 30)
             .and_then(|date| date.with_hms(10, 0, 0))
             .expect("a date")

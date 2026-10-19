@@ -3,10 +3,7 @@ longitude = 11.0
 latitude = 48.0
 zoom = 0.35
 texture_index = 3
-use_custom_datetime = true
-custom_hour = 17.0
-custom_day_of_year = 172
-custom_year = 2026
+scene_time = "2026-06-21T17:00:00Z"
 cloud_opacity = 0.0
 # Off for the same reason the clouds are: this case samples the globe and its
 # four corners by color, and a layer that paints the whole sky puts a value

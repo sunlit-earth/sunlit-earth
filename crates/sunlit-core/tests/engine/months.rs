@@ -84,10 +84,7 @@ fn hand_over(year: i32, month: u8) -> time::OffsetDateTime {
 /// `params` with the custom date at `at`.
 fn on(params: &SceneParams, at: time::OffsetDateTime) -> SceneParams {
     let mut params = *params;
-    params.datetime.use_custom = true;
-    params.datetime.custom_year = at.year();
-    params.datetime.custom_day_of_year = at.ordinal();
-    params.datetime.custom_hour = f32::from(at.hour()) + f32::from(at.minute()) / 60.0;
+    params.time = sunlit_core::scene::scene_time::SceneTime::fixed(at);
     params
 }
 
@@ -480,8 +477,8 @@ fn a_sweep_of_the_custom_date_across_the_year_shows_each_month_its_own_tiles() {
 
     let step = |at: time::OffsetDateTime, crossing: bool| {
         let params = on(&view(), at);
-        let month = month_in_force(&params.datetime, clock.now_utc());
-        let ahead = month_ahead(&params.datetime, clock.now_utc());
+        let month = month_in_force(&params.time, clock.now_utc());
+        let ahead = month_ahead(&params.time, clock.now_utc());
         let label = format!("{at}");
         harness.settle_at(&params);
         let report = tile_report(&harness);
@@ -515,15 +512,15 @@ fn a_sweep_of_the_custom_date_across_the_year_shows_each_month_its_own_tiles() {
         harness
             .engine
             .send(EngineCommand::SetTextureResolution(8192));
-        let datetime = on(&view(), at).datetime;
-        let month = month_in_force(&datetime, clock.now_utc());
+        let scene_time = on(&view(), at).time;
+        let month = month_in_force(&scene_time, clock.now_utc());
         let back = settled(&harness, "at 8192 again", |r| {
             r.epoch > none.epoch && r.named.iter().any(|id| id.pack == PackKind::Day(month))
         });
         assert_month(
             &back,
             month,
-            month_ahead(&datetime, clock.now_utc()),
+            month_ahead(&scene_time, clock.now_utc()),
             "at 8192 again",
         );
     };
@@ -604,7 +601,7 @@ fn the_live_clock_reads_the_next_month_ahead_and_crosses_without_a_wait() {
     let (clock_for_config, gate_for_config, sink_for_config) =
         (Arc::clone(&clock), gate.clone(), Arc::clone(&sink));
     let mut params = view();
-    params.datetime.use_custom = false;
+    params.time = sunlit_core::scene::scene_time::SceneTime::Live;
     let harness = start(&dir, |config| {
         config.every_floor = Some(true);
         config.clock = clock_for_config;

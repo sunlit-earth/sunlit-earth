@@ -17,6 +17,7 @@ use sunlit_core::engine::EngineEvent;
 use sunlit_core::engine::EngineHandle;
 use sunlit_core::engine::clock::MockClock;
 use sunlit_core::params::SceneParams;
+use sunlit_core::scene::scene_time::SceneTime;
 
 static GPU_SERIAL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -61,11 +62,18 @@ pub(crate) fn test_params() -> SceneParams {
         cloud_opacity_night: 0.0,
         ..SceneParams::default()
     };
-    params.datetime.use_custom = true;
-    params.datetime.custom_hour = 12.0;
-    params.datetime.custom_day_of_year = 80;
-    params.datetime.custom_year = 2026;
+    params.time = SceneTime::fixed(time::macros::datetime!(2026-03-21 12:00 UTC));
     params
+}
+
+/// The pinned time of `time` moved to `day_of_year` of its year, the time of
+/// day kept.
+pub(crate) fn on_day(time: SceneTime, day_of_year: u16) -> SceneTime {
+    let SceneTime::Fixed(at) = time else {
+        panic!("a pinned time");
+    };
+    let date = time::Date::from_ordinal_date(at.year(), day_of_year).expect("a day of the year");
+    SceneTime::fixed(at.replace_date(date))
 }
 
 pub(crate) struct Harness {

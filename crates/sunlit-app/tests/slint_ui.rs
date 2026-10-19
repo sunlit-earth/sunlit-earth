@@ -4175,6 +4175,272 @@ fn test_alt_or_altgr_pressed_during_a_shuttle_hold_stops_stepping() {
     }
 }
 
+/// A held key let go after Shift changed its text into another key of the
+/// preview's stops what it moved: where = is Shift + 0, as on German, Spanish
+/// and Nordic layouts, = comes up as 0, and where - and = share a key, as on
+/// Japanese and Dutch ones, each comes up as the other.
+#[test]
+fn test_a_held_key_let_go_as_another_key_of_the_preview_stops_the_camera() {
+    use slint::platform::Key;
+
+    for (shift_at_press, pressed, released) in
+        [(true, "=", "0"), (false, "-", "="), (true, "=", "-")]
+    {
+        let what = if shift_at_press {
+            format!("{pressed:?} pressed under Shift, let go as {released:?} after it")
+        } else {
+            format!("{pressed:?} held, let go as {released:?} under Shift")
+        };
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        if shift_at_press {
+            key_down(&window, Key::Shift);
+        }
+        key_down(&window, pressed);
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press zooms");
+        if shift_at_press {
+            key_up(&window, Key::Shift);
+            key_up(&window, released);
+        } else {
+            key_down(&window, Key::Shift);
+            key_up(&window, released);
+            key_up(&window, Key::Shift);
+        }
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the zoom goes on");
+        release_every_modifier(&window);
+    }
+}
+
+/// K and 0 pause and go back to the time setting, nothing held or with W
+/// held under the same modifiers, which keeps moving.
+#[test]
+fn test_keys_that_hold_nothing_do_their_job_and_leave_a_held_key_at_work() {
+    for hold in [None, Some("w")] {
+        let what = format!("with {hold:?} held");
+        let (window, sent) = wired_window();
+        click_the_globe(&window);
+        running_at(&window, 60);
+        let _ = excursion_commands(&sent);
+        if let Some(key) = hold {
+            key_down(&window, key);
+            let_pass(50);
+        }
+        tap(&window, "k");
+        tap(&window, "0");
+        assert_eq!(
+            excursion_commands(&sent).0,
+            [ExcursionCommand::Pause, ExcursionCommand::End],
+            "{what}: K pauses and 0 goes back to the setting"
+        );
+        if let Some(key) = hold {
+            let moving = camera(&window);
+            let_pass(100);
+            assert_ne!(camera(&window), moving, "{what}: the orbit stops");
+            key_up(&window, key);
+        }
+    }
+}
+
+/// A held key goes on through a tap of another held key under Shift, let go
+/// before or after Shift.
+#[test]
+fn test_a_tap_under_shift_leaves_a_key_held_without_it_at_work() {
+    use slint::platform::Key;
+
+    for (released, shift_first) in [("A", false), ("a", true)] {
+        let what = format!("Shift + A let go as {released:?}, Shift first: {shift_first}");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        key_down(&window, "w");
+        let_pass(50);
+        key_down(&window, Key::Shift);
+        key_down(&window, "A");
+        let_pass(20);
+        if shift_first {
+            key_up(&window, Key::Shift);
+            key_up(&window, released);
+        } else {
+            key_up(&window, released);
+            key_up(&window, Key::Shift);
+        }
+        let moving = camera(&window);
+        let_pass(100);
+        assert_ne!(camera(&window), moving, "{what}: W stops");
+        key_up(&window, "w");
+        release_every_modifier(&window);
+    }
+}
+
+/// A held key goes on through a + typed under the Shift it went down with
+/// and let go as = after Shift, as the US layout gives them.
+#[test]
+fn test_a_release_that_ends_its_own_key_leaves_another_held_key_at_work() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    key_down(&window, Key::Shift);
+    key_down(&window, "W");
+    key_down(&window, "+");
+    let_pass(50);
+    key_up(&window, Key::Shift);
+    key_up(&window, "=");
+    let moving = camera(&window);
+    let_pass(100);
+    assert_ne!(camera(&window), moving, "W stops");
+    key_up(&window, "w");
+    release_every_modifier(&window);
+}
+
+/// A key's repeated presses keep it held while it holds, and do not take up
+/// again a hold that Alt or `AltGr` ended while the key stayed down.
+#[test]
+fn test_a_repeated_press_keeps_a_hold_but_does_not_take_up_an_ended_one() {
+    use slint::platform::WindowEvent;
+
+    for (before, pressed) in HOLD_ENDING_PRESSES {
+        let held: &[&str] = if before.is_empty() {
+            &["w", "a", "s", "d", "+", "=", "-", "q", "e"]
+        } else {
+            &["w", "a", "s", "d"]
+        };
+        for &key in held {
+            let what = format!("{key:?} held with {before:?} down, then {pressed:?}");
+            let (window, _sent) = wired_window();
+            click_the_globe(&window);
+            for &modifier in before {
+                key_down(&window, modifier);
+            }
+            key_down(&window, key);
+            let_pass(50);
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressRepeated { text: key.into() });
+            let moving = camera(&window);
+            let_pass(50);
+            assert_ne!(camera(&window), moving, "{what}: a repeat stops the camera");
+            for &modifier in pressed {
+                key_down(&window, modifier);
+            }
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressRepeated { text: key.into() });
+            let stopped = camera(&window);
+            let_pass(300);
+            assert_eq!(camera(&window), stopped, "{what}: a repeat moves it again");
+            key_up(&window, key);
+            release_every_modifier(&window);
+        }
+    }
+}
+
+/// A repeated press of J or L does not take up again a hold that Alt or
+/// `AltGr` ended while the key stayed down.
+#[test]
+fn test_a_repeated_shuttle_press_does_not_take_up_an_ended_hold() {
+    use slint::platform::WindowEvent;
+
+    let ladder = clock_ladder();
+    for (_, pressed) in HOLD_ENDING_PRESSES
+        .iter()
+        .filter(|(before, _)| before.is_empty())
+    {
+        for key in ["j", "l"] {
+            let what = format!("{key} held, then {pressed:?}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, key);
+            for &modifier in *pressed {
+                key_down(&window, modifier);
+            }
+            let _ = excursion_commands(&sent);
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressRepeated { text: key.into() });
+            let_pass(1500);
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: a repeat steps again"
+            );
+            key_up(&window, key);
+            release_every_modifier(&window);
+        }
+    }
+}
+
+/// An arrow goes on through Alt, `AltGr` and Ctrl with Alt, whose presses
+/// end the keys held by their text, and stops when let go.
+#[test]
+fn test_an_arrow_held_through_alt_or_altgr_moves_on_until_let_go() {
+    use slint::platform::Key;
+
+    for (before, pressed) in HOLD_ENDING_PRESSES {
+        for arrow in [
+            Key::LeftArrow,
+            Key::RightArrow,
+            Key::UpArrow,
+            Key::DownArrow,
+        ] {
+            let what = format!("{arrow:?} held with {before:?} down, then {pressed:?}");
+            let (window, _sent) = wired_window();
+            click_the_globe(&window);
+            for &modifier in before {
+                key_down(&window, modifier);
+            }
+            key_down(&window, arrow);
+            let_pass(50);
+            for &modifier in pressed {
+                key_down(&window, modifier);
+            }
+            let moving = camera(&window);
+            let_pass(100);
+            assert_ne!(camera(&window), moving, "{what}: the arrow stops");
+            key_up(&window, arrow);
+            let stopped = camera(&window);
+            let_pass(300);
+            assert_eq!(
+                camera(&window),
+                stopped,
+                "{what}: it goes on after the arrow is let go"
+            );
+            release_every_modifier(&window);
+        }
+    }
+}
+
+/// Shift or Ctrl pressed during a J or L hold leaves it stepping.
+#[test]
+fn test_shift_or_ctrl_pressed_during_a_shuttle_hold_leaves_it_stepping() {
+    use slint::platform::Key;
+
+    let ladder = clock_ladder();
+    for key in ["j", "l"] {
+        for modifier in [Key::Shift, Key::ShiftR, Key::Control, Key::ControlR] {
+            let what = format!("{key} held, then {modifier:?}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, key);
+            let _ = excursion_commands(&sent);
+            key_down(&window, modifier);
+            let_pass(700);
+            assert_ne!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: the stepping stops"
+            );
+            key_up(&window, key);
+            release_every_modifier(&window);
+        }
+    }
+}
+
 /// Shift or Ctrl pressed while W is held turns the orbit into the look or
 /// the frame and stops nothing.
 #[test]

@@ -1983,6 +1983,26 @@ export component MainWindow inherits Window {
             }
         }
 
+        // Whether a release with this text lets go of a key the preview holds.
+        function lets-go-of-a-held-key(event: KeyEvent) -> bool {
+            let text = event.text.to-lowercase();
+            return text == Key.LeftArrow ? image-container.key-left
+                : text == Key.RightArrow ? image-container.key-right
+                : text == Key.UpArrow ? image-container.key-up
+                : text == Key.DownArrow ? image-container.key-down
+                : text == "w" ? image-container.key-w
+                : text == "a" ? image-container.key-a
+                : text == "s" ? image-container.key-s
+                : text == "d" ? image-container.key-d
+                : text == "+" || text == "=" ? image-container.key-plus
+                : text == "-" ? image-container.key-minus
+                : text == "q" ? image-container.key-q
+                : text == "e" ? image-container.key-e
+                : text == "j" ? image-container.key-shuttle == -1
+                : text == "l" ? image-container.key-shuttle == 1
+                : false;
+        }
+
         // Track a key going down or up. Returns whether the key is one of
         // the preview's, so the others go on to the window. Ctrl, Alt and
         // the Windows key decide only whether a press is the preview's: a
@@ -1991,7 +2011,9 @@ export component MainWindow inherits Window {
         // Alt, AltGr, and Ctrl with Alt, which Windows takes for AltGr, let
         // go of the keys held by their text when they go down: under them
         // many layouts give those keys' releases no text, and Slint drops a
-        // key event without text, so the release would never come.
+        // key event without text, so the release would never come. A key's
+        // repeated presses hold nothing again: the key stays stopped until
+        // it is let go and pressed anew.
         function track-key(event: KeyEvent, down: bool) -> bool {
             if down && !image-container.any-key-held {
                 image-container.key-tick = animation-tick();
@@ -2030,6 +2052,15 @@ export component MainWindow inherits Window {
                 return false;
             }
             let modifiers = image-container.modifiers-of(event);
+            // Shift pressed or let go since a held key's press, or Alt or
+            // AltGr let go since a press under them, can change the text its
+            // release gives, as Shift turns - into _ and 0 into = on many
+            // layouts, so a release that lets go of nothing lets go of the
+            // keys held by text that went down under other modifiers than
+            // those down now.
+            if !down && event.text != Key.Meta && event.text != Key.MetaR && !image-container.lets-go-of-a-held-key(event) {
+                image-container.let-go-of-keys-pressed-under-other-modifiers(modifiers);
+            }
             if event.text == Key.LeftArrow {
                 image-container.key-left = down;
             } else if event.text == Key.RightArrow {
@@ -2039,31 +2070,47 @@ export component MainWindow inherits Window {
             } else if event.text == Key.DownArrow {
                 image-container.key-down = down;
             } else if event.text.to-lowercase() == "w" {
-                image-container.key-w = down;
-                image-container.w-under = modifiers;
+                if !event.repeat {
+                    image-container.key-w = down;
+                    image-container.w-under = modifiers;
+                }
             } else if event.text.to-lowercase() == "a" {
-                image-container.key-a = down;
-                image-container.a-under = modifiers;
+                if !event.repeat {
+                    image-container.key-a = down;
+                    image-container.a-under = modifiers;
+                }
             } else if event.text.to-lowercase() == "s" {
-                image-container.key-s = down;
-                image-container.s-under = modifiers;
+                if !event.repeat {
+                    image-container.key-s = down;
+                    image-container.s-under = modifiers;
+                }
             } else if event.text.to-lowercase() == "d" {
-                image-container.key-d = down;
-                image-container.d-under = modifiers;
+                if !event.repeat {
+                    image-container.key-d = down;
+                    image-container.d-under = modifiers;
+                }
             } else if down && (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
                 return false;
             } else if event.text == "+" || event.text == "=" {
-                image-container.key-plus = down;
-                image-container.plus-under = modifiers;
+                if !event.repeat {
+                    image-container.key-plus = down;
+                    image-container.plus-under = modifiers;
+                }
             } else if event.text == "-" {
-                image-container.key-minus = down;
-                image-container.minus-under = modifiers;
+                if !event.repeat {
+                    image-container.key-minus = down;
+                    image-container.minus-under = modifiers;
+                }
             } else if event.text.to-lowercase() == "q" {
-                image-container.key-q = down;
-                image-container.q-under = modifiers;
+                if !event.repeat {
+                    image-container.key-q = down;
+                    image-container.q-under = modifiers;
+                }
             } else if event.text.to-lowercase() == "e" {
-                image-container.key-e = down;
-                image-container.e-under = modifiers;
+                if !event.repeat {
+                    image-container.key-e = down;
+                    image-container.e-under = modifiers;
+                }
             } else if event.text.to-lowercase() == "h" {
                 if down && !event.repeat {
                     root.overlays-hidden = !root.overlays-hidden;
@@ -2112,14 +2159,6 @@ export component MainWindow inherits Window {
                     root.time-skip(image-container.skip-of(event) > 0, abs(image-container.skip-of(event)) > 1);
                 }
             } else {
-                // Shift pressed or let go since a held key's press, or Alt
-                // or AltGr let go since a press under them, can change the
-                // text its release gives, as Shift turns - into _, so a
-                // release nothing matches lets go of the keys held by text
-                // that went down under other modifiers than those down now.
-                if !down && event.text != Key.Meta && event.text != Key.MetaR {
-                    image-container.let-go-of-keys-pressed-under-other-modifiers(modifiers);
-                }
                 return false;
             }
             return true;

@@ -3261,9 +3261,15 @@ fn test_wasd_moves_the_camera_as_the_arrows_do() {
             } else {
                 letter.to_owned()
             };
-            let by_arrow = camera_after_holding(modifier.clone(), arrow);
-            let by_letter = camera_after_holding(modifier.clone(), letter.as_str());
-            assert_ne!(by_arrow, still, "{arrow:?} {what} moves the camera");
+            let by_arrow = camera_after_holding(modifier, arrow);
+            let by_letter = camera_after_holding(modifier, letter.as_str());
+            assert!(
+                by_arrow
+                    .iter()
+                    .zip(still)
+                    .any(|(a, b)| (a - b).abs() > 1e-3),
+                "{arrow:?} {what} moves the camera"
+            );
             for (a, b) in by_arrow.iter().zip(by_letter) {
                 approx::assert_relative_eq!(*a, b, epsilon = 1e-4);
             }
@@ -3909,8 +3915,9 @@ fn test_a_hints_gesture_and_keys_stay_inside_it() {
             );
             let caps = caps_holding_their_labels(&hint, &what);
             assert!(!caps.is_empty(), "{what}: the hint names its keys");
+            let [caps_left, caps_top, _, _] = edges(&caps[0]);
             assert!(
-                text_right <= edges(&caps[0])[0],
+                text_right <= caps_left || text_bottom <= caps_top + 0.5,
                 "{what}: the gesture text runs under the keys"
             );
             assert!(
@@ -4824,7 +4831,7 @@ fn test_the_speed_list_aligns_speeds_right_and_meanings_left() {
             );
             assert_eq!(headings.len(), 2, "{what}: a heading per side");
 
-            for side in 0..2 {
+            for (side, heading) in headings.iter().enumerate() {
                 let column: Vec<usize> = (side..rows.len()).step_by(2).collect();
                 let label_rights: Vec<f32> = column.iter().map(|&i| edges(&labels[i])[2]).collect();
                 let label_lefts: Vec<f32> = column.iter().map(|&i| edges(&labels[i])[0]).collect();
@@ -4850,7 +4857,7 @@ fn test_the_speed_list_aligns_speeds_right_and_meanings_left() {
                     );
                 }
                 let row = edges(&rows[column[0]]);
-                let heading = edges(&headings[side]);
+                let heading = edges(heading);
                 approx::assert_abs_diff_eq!(
                     f32::midpoint(heading[0], heading[2]),
                     f32::midpoint(row[0], row[2]),

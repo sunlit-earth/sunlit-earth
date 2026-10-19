@@ -249,7 +249,7 @@ export component KeyCap inherits Rectangle {
     in property <length> size: 18px;
     property <bool> word: root.text == "or";
 
-    min-width: root.word ? label.preferred-width + 4px : max(root.size, label.preferred-width + root.size * 10 / 18);
+    min-width: root.word ? label.preferred-width + 8px : max(root.size, label.preferred-width + root.size * 10 / 18);
     preferred-width: self.min-width;
     height: root.size;
     border-radius: 4px;

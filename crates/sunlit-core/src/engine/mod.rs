@@ -881,7 +881,9 @@ impl Engine {
     /// The wanted set is computed under the preview's sky whichever is drawn,
     /// so an export during an excursion neither moves the preview's output
     /// in it nor shows the motion observer the setting's camera and Sun
-    /// between two of the excursion's.
+    /// between two of the excursion's. Its month and Blend mode's Sun are the
+    /// setting's while outputs wait, which `month_instant` and `want_tiles`
+    /// decide.
     fn draw(&mut self, at: time::OffsetDateTime, preview: bool) -> (RenderOutcome, SkyState) {
         self.sync_month(self.month_instant(at));
         self.mark_busy();

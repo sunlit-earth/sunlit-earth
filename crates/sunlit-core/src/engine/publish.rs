@@ -235,6 +235,11 @@ impl Engine {
         self.tiles_awaited_since = None;
         self.reexport = false;
         self.wallpaper_shots.clear();
+        if self.excursion.is_some() {
+            // The wanted set took the setting's month and Sun while the shots
+            // waited, and the preview's come back only with a draw.
+            self.dirty = true;
+        }
         self.published |= result.is_ok();
         match &result {
             Err(e) => error!(error = %e, "wallpaper update failed"),

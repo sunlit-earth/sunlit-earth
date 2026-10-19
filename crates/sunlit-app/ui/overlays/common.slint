@@ -236,8 +236,8 @@ export component MouseGlyph inherits Image {
 export component KeyCap inherits Rectangle {
     in property <string> text;
 
-    min-width: 18px;
-    preferred-width: max(18px, label.preferred-width + 10px);
+    min-width: max(18px, label.preferred-width + 10px);
+    preferred-width: self.min-width;
     height: 18px;
     border-radius: 4px;
     background: #4a5059;
@@ -282,7 +282,7 @@ export component OverlayHint inherits Rectangle {
         padding-bottom: 8px;
         spacing: 2px;
 
-        Text {
+        title := Text {
             text: root.content.title;
             color: OverlayStyle.fg;
             font-size: 12px;
@@ -305,24 +305,40 @@ export component OverlayHint inherits Rectangle {
                 background: #2a2e35;
             }
 
-            HorizontalLayout {
-                spacing: 6px;
+            // Placed by hand: a box layout in a conditional measures its
+            // wrapping text at the row's one-line width, so the row would
+            // keep one line's height while the text wraps to two.
+            gesture-row := Rectangle {
+                property <length> lead: root.content.mouse == "" ? 0px : glyph.width + 6px;
+                property <length> trail: root.content.keys.length == 0 ? 0px : keys.width + 6px;
 
-                if root.content.mouse != "" : MouseGlyph {
+                height: max(18px, gesture.height);
+
+                glyph := MouseGlyph {
+                    x: 0;
+                    visible: root.content.mouse != "";
                     which: root.content.mouse;
                 }
 
-                Text {
+                gesture := Text {
+                    x: parent.lead;
+                    width: parent.width - parent.lead - parent.trail;
                     text: root.content.gesture;
                     color: #dfe3e8;
                     font-size: 12px;
                     wrap: word-wrap;
                     vertical-alignment: center;
-                    horizontal-stretch: 1;
                 }
 
-                for key in root.content.keys : KeyCap {
-                    text: key;
+                keys := HorizontalLayout {
+                    x: parent.width - self.width;
+                    width: self.preferred-width;
+                    height: 18px;
+                    spacing: 6px;
+
+                    for key in root.content.keys : KeyCap {
+                        text: key;
+                    }
                 }
             }
         }

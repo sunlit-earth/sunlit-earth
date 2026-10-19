@@ -44,6 +44,9 @@ export global OverlayHints {
     in property <bool> is-macos;
     // What the time setting reads, for the Preview state's hint.
     in property <string> wallpaper-time;
+    // The speed and what it means, "60× · 1 min/s", for the speed's hint,
+    // since a narrow bar shows the speed's arrow alone.
+    in property <string> speed;
 
     out property <string> mod-key: is-macos ? "⌘" : "Ctrl";
     out property <string> shift-key: is-macos ? "⇧" : "Shift";
@@ -159,7 +162,7 @@ export global OverlayHints {
             };
         }
         if id == "rate" {
-            return { title: "Speed", body: "Click for every speed in both directions. R turns the direction.", keys: ["J", "K", "L"] };
+            return { title: speed == "" ? "Speed" : "Speed: " + speed, body: "Click for every speed in both directions. R turns the direction.", keys: ["J", "K", "L"] };
         }
         if id == "drive-time" {
             return {

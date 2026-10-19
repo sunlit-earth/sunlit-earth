@@ -533,10 +533,10 @@ pub fn refresh(window: &MainWindow) {
     view.day = i32::from(local.day());
     view.hour = i32::from(local.hour());
     view.minute = i32::from(local.minute());
+    let hints = window.global::<OverlayHints>();
+    hints.set_speed(format!("{} · {}", view.speed_text, view.speed_note).into());
     window.set_time_bar(view);
-    window
-        .global::<OverlayHints>()
-        .set_wallpaper_time(wallpaper_text(window).into());
+    hints.set_wallpaper_time(wallpaper_text(window).into());
 
     refresh_ladder(window, transport);
     refresh_year(window, local);

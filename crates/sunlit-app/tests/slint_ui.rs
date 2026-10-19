@@ -3146,22 +3146,23 @@ fn the_labeled(window: &MainWindow, label: &str) -> ElementHandle {
     found.into_iter().next().expect("one element")
 }
 
-/// The middle of dot `slot` of a ruler, counted from its left end.
-fn ruler_dot(ruler: &ElementHandle, slot: u8) -> slint::LogicalPosition {
-    let at = ruler.absolute_position();
-    let x = at.x + 4.0 + f32::from(slot) * 11.0 + 4.5;
-    slint::LogicalPosition::new(x, at.y + ruler.size().height / 2.0)
+/// A ruler's dots from its left end.
+fn ruler_dot_elements(ruler: &ElementHandle) -> Vec<ElementHandle> {
+    let mut dots = ruler
+        .query_descendants()
+        .match_id("SpeedRuler::dot")
+        .find_all();
+    dots.sort_by(|a, b| a.absolute_position().x.total_cmp(&b.absolute_position().x));
+    dots
 }
 
-/// How many dots a ruler holds, from its width.
+/// The middle of dot `slot` of a ruler, counted from its left end.
+fn ruler_dot(ruler: &ElementHandle, slot: usize) -> slint::LogicalPosition {
+    point_in(&ruler_dot_elements(ruler)[slot], 0.5, 0.5)
+}
+
 fn ruler_dots(ruler: &ElementHandle) -> usize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a count of dots, rounded"
-    )]
-    let dots = ((ruler.size().width - 8.0 + 2.0) / 11.0).round() as usize;
-    dots
+    ruler_dot_elements(ruler).len()
 }
 
 fn paused(rate: i32) -> ExcursionState {
@@ -3606,4 +3607,129 @@ fn test_play_stands_centered_over_the_tracks() {
             epsilon = 1.5
         );
     }
+}
+
+/// Windows at the default panel from the narrowest whose bar holds the
+/// compact transport with the time's twelve speeds up to one past the widest
+/// bar.
+const BAR_WINDOWS: [u32; 7] = [952, 1000, 1050, 1100, 1150, 1200, 1400];
+
+fn overlap(a: [f32; 4], b: [f32; 4]) -> bool {
+    a[0] < b[2] - 0.5 && b[0] < a[2] - 0.5 && a[1] < b[3] - 0.5 && b[1] < a[3] - 0.5
+}
+
+/// At every bar width the transport stays inside the tracks' column, which
+/// keeps it off the clock column, clear of the speed readout and the radio
+/// labels, with play over the tracks' middle, for both kinds of play.
+#[test]
+fn test_the_transport_stays_over_the_tracks_and_clear_of_the_readout() {
+    for date in [false, true] {
+        for width in BAR_WINDOWS {
+            let (window, _sent) = wired_window();
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            open_the_bar(&window);
+            if date {
+                press_at(&window, point_in(&the_labeled(&window, "DATE"), 0.5, 0.5));
+            }
+            let what = format!("{width} px window, date: {date}");
+            let [track_left, _, track_right, _] =
+                edges(&the_element(&window, "TimeBar::day-track"));
+            let play = the_labeled(&window, "Play");
+            let mut transport: Vec<ElementHandle> = [
+                "TimeBar::skip-back",
+                "TimeBar::backward",
+                "TimeBar::forward",
+                "TimeBar::skip-forward",
+            ]
+            .iter()
+            .map(|id| the_element(&window, id))
+            .collect();
+            transport.push(play.clone());
+            let others = [
+                the_element(&window, "TimeBar::speed-readout"),
+                the_labeled(&window, "TIME"),
+                the_labeled(&window, "DATE"),
+            ];
+            for part in &transport {
+                let part = edges(part);
+                assert!(
+                    part[0] >= track_left - 0.5 && part[2] <= track_right + 0.5,
+                    "{what}: the transport runs out of the tracks' column"
+                );
+                for other in &others {
+                    assert!(
+                        !overlap(part, edges(other)),
+                        "{what}: the transport runs over {:?}",
+                        other.accessible_label()
+                    );
+                }
+            }
+            let [play_left, _, play_right, _] = edges(&play);
+            approx::assert_abs_diff_eq!(
+                f32::midpoint(play_left, play_right),
+                f32::midpoint(track_left, track_right),
+                epsilon = 1.5
+            );
+        }
+    }
+}
+
+/// In the app's default window the rulers are packed closer than at full
+/// size, and a press on each dot still runs at that dot's speed.
+#[test]
+fn test_each_dot_of_a_compact_ruler_runs_at_its_own_rate() {
+    let (window, sent) = wired_window();
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1000, 5000));
+    open_the_bar(&window);
+    let ladder = ExcursionKind::Clock.ladder();
+    for (id, side) in [("TimeBar::forward", 1), ("TimeBar::backward", -1)] {
+        let ruler = the_element(&window, id);
+        let dots = ruler_dot_elements(&ruler);
+        assert_eq!(dots.len(), ladder.len());
+        let pitch = point_in(&dots[1], 0.5, 0.5).x - point_in(&dots[0], 0.5, 0.5).x;
+        assert!(pitch < 10.5, "{id}: the dots stand {pitch} px apart");
+        for slot in 0..dots.len() {
+            let _ = excursion_commands(&sent);
+            press_at(&window, ruler_dot(&ruler, slot));
+            let index = if side < 0 {
+                ladder.len() - 1 - slot
+            } else {
+                slot
+            };
+            let rate = side * i32::try_from(ladder[index]).expect("a rate");
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [ExcursionCommand::Play {
+                    rate,
+                    kind: ExcursionKind::Clock
+                }],
+                "{id}, dot {slot}"
+            );
+        }
+    }
+}
+
+/// The speed's hint names the speed, which a narrow bar shows as an arrow
+/// alone.
+#[test]
+fn test_the_speed_hint_names_the_speed() {
+    let (window, _sent) = wired_window();
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1000, 5000));
+    sunlit_earth::time_bar::refresh(&window);
+    open_the_bar(&window);
+    let hint = hint_over(&window, &the_labeled(&window, "Speed"));
+    let title = the_descendant(&hint, "OverlayHint::title")
+        .accessible_label()
+        .expect("a title");
+    let view = window.get_time_bar();
+    assert!(
+        title.contains(view.speed_text.as_str()) && title.contains(view.speed_note.as_str()),
+        "the hint says {title}"
+    );
 }

@@ -97,6 +97,9 @@ component SpeedRuler inherits Rectangle {
     // The rate the bar runs at, signed, and whether it runs.
     in property <int> rate;
     in property <bool> running;
+    // From one dot to the next: 11 px at full size, less in a narrow bar,
+    // where the dots shrink with it.
+    in property <length> pitch: 11px;
     out property <bool> hovered: touch.has-hover;
     callback picked(int);
 
@@ -107,25 +110,25 @@ component SpeedRuler inherits Rectangle {
     }
 
     function pick(x: length) {
-        let slot = max(0, min(root.count - 1, floor((x - 4px) / 11px)));
+        let slot = max(0, min(root.count - 1, floor((x - 4px) / root.pitch)));
         let rate = root.rate-at(slot);
         if !(root.running && rate == root.rate) {
             root.picked(rate);
         }
     }
 
-    width: 8px + self.count * 9px + max(0, self.count - 1) * 2px;
+    width: 6px + self.count * self.pitch;
     height: 30px;
     border-radius: 15px;
     background: #ffffff0d;
 
-    for slot in root.count : Rectangle {
+    for slot in root.count : dot := Rectangle {
         property <int> index: root.side < 0 ? root.count - 1 - slot : slot;
         property <int> value: root.side * root.ladder[self.index];
         property <bool> on: root.running && self.value == root.rate;
         property <bool> lit: root.running && (self.value < 0) == (root.rate < 0) && abs(self.value) < abs(root.rate);
-        property <length> size: 4px + self.index * 6px / max(1, root.count - 1);
-        x: 4px + slot * 11px + (9px - self.size) / 2;
+        property <length> size: (4px + self.index * 6px / max(1, root.count - 1)) * root.pitch / 11px;
+        x: 4px + slot * root.pitch + (root.pitch - 2px - self.size) / 2;
         y: (root.height - self.size) / 2;
         width: self.size;
         height: self.size;
@@ -319,7 +322,7 @@ export component TimeBar inherits Rectangle {
         : "";
     out property <length> hovered-x: hovered-hint == "pin" ? root.width - 17px
         : hovered-hint == "drive-time" || hovered-hint == "drive-date" ? root.left-column + 24px
-        : hovered-hint == "rate" ? root.middle-column + 60px
+        : hovered-hint == "rate" ? speed-readout.x + speed-readout.width / 2
         : hovered-hint == "pick-time" || hovered-hint == "zone" || hovered-hint == "pick-date" || hovered-hint == "preview" || hovered-hint == "live" || hovered-hint == "now" ? root.right-column + 70px
         : root.middle-column + root.middle-width / 2;
     out property <bool> hovered: background-touch.has-hover || root.rates-hovered || self.hovered-hint != "";
@@ -363,6 +366,17 @@ export component TimeBar inherits Rectangle {
     property <length> middle-column: 70px;
     property <length> right-column: root.width - 26px - 12px - 142px;
     property <length> middle-width: root.right-column - 10px - root.middle-column;
+    // Where the transport at full size, centered over the tracks, would run
+    // into the speed readout, the readout folds to its arrow in the left
+    // column and the rulers' dots pack closer, down to `min-pitch`, keeping
+    // the row inside the tracks' column. Below the bar width at which even
+    // that pitch is too wide, the row spills past the column on both sides.
+    property <length> transport-fixed: 2 * 28px + 44px + 4 * 6px;
+    property <length> full-row: root.transport-fixed + 2 * (6px + root.ladder.length * 11px);
+    property <bool> compact: (root.middle-width - root.full-row) / 2 < speed-column.preferred-width + 16px + 6px;
+    property <length> min-pitch: 7px;
+    property <length> pitch: !root.compact ? 11px
+        : max(root.min-pitch, min(11px, ((root.middle-width - root.transport-fixed) / 2 - 6px) / max(1, root.ladder.length)));
     property <color> state-color: root.view.excursion ? OverlayStyle.accent
         : root.view.live ? OverlayStyle.fg
         : OverlayStyle.sun;
@@ -457,60 +471,73 @@ export component TimeBar inherits Rectangle {
         }
     }
 
-    if root.open : Rectangle {
-        // The speed and what it means; a click lists every speed.
-        Rectangle {
-            x: root.middle-column;
-            y: 8px + (44px - self.height) / 2;
-            width: speed-column.preferred-width + 16px;
-            height: speed-column.preferred-height + 8px;
-            border-radius: 8px;
-            background: speed-touch.has-hover ? OverlayStyle.faint : transparent;
+    // The speed and what it means, or in a narrow bar its arrow alone; a
+    // click lists every speed.
+    speed-readout := Rectangle {
+        x: root.compact ? root.left-column + 10px : root.middle-column;
+        y: 8px + (44px - self.height) / 2;
+        width: root.compact ? 28px : speed-column.preferred-width + 16px;
+        height: root.compact ? 28px : speed-column.preferred-height + 8px;
+        border-radius: 8px;
+        visible: root.open;
+        background: speed-touch.has-hover ? OverlayStyle.faint : transparent;
 
-            speed-column := VerticalLayout {
-                padding-left: 8px;
-                padding-top: 4px;
+        speed-column := VerticalLayout {
+            visible: !root.compact;
+            padding-left: 8px;
+            padding-top: 4px;
 
-                HorizontalLayout {
-                    spacing: 4px;
+            HorizontalLayout {
+                spacing: 4px;
 
-                    VerticalLayout {
-                        alignment: center;
+                VerticalLayout {
+                    alignment: center;
 
-                        Glyph {
-                            width: 9px;
-                            height: 9px;
-                            viewbox-width: 10;
-                            viewbox-height: 10;
-                            commands: root.view.rate < 0 ? "M8 1V9L2 5Z" : "M2 1V9L8 5Z";
-                            tint: root.view.running ? OverlayStyle.fg : OverlayStyle.dim;
-                        }
-                    }
-
-                    speed-text := Text {
-                        text: root.view.speed-text;
-                        color: root.view.running ? OverlayStyle.fg : OverlayStyle.dim;
-                        font-size: 15px;
-                        font-weight: 600;
+                    Glyph {
+                        width: 9px;
+                        height: 9px;
+                        viewbox-width: 10;
+                        viewbox-height: 10;
+                        commands: root.view.rate < 0 ? "M8 1V9L2 5Z" : "M2 1V9L8 5Z";
+                        tint: root.view.running ? OverlayStyle.fg : OverlayStyle.dim;
                     }
                 }
 
-                Text {
-                    text: root.view.speed-note;
-                    color: OverlayStyle.dim;
-                    font-size: 11px;
+                speed-text := Text {
+                    text: root.view.speed-text;
+                    color: root.view.running ? OverlayStyle.fg : OverlayStyle.dim;
+                    font-size: 15px;
+                    font-weight: 600;
                 }
             }
 
-            speed-touch := TouchArea {
-                mouse-cursor: pointer;
-                accessible-role: button;
-                accessible-label: "Speed";
-                clicked => { root.rates-open = !root.rates-open; }
-                changed has-hover => { root.speed-hovered = self.has-hover; }
+            Text {
+                text: root.view.speed-note;
+                color: OverlayStyle.dim;
+                font-size: 11px;
             }
         }
 
+        if root.compact : Glyph {
+            width: 9px;
+            height: 9px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            commands: root.view.rate < 0 ? "M8 1V9L2 5Z" : "M2 1V9L8 5Z";
+            tint: root.view.running ? OverlayStyle.fg : OverlayStyle.dim;
+        }
+
+        speed-touch := TouchArea {
+            enabled: root.open;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Speed";
+            clicked => { root.rates-open = !root.rates-open; }
+            changed has-hover => { root.speed-hovered = self.has-hover; }
+        }
+    }
+
+    if root.open : Rectangle {
         // Skip, the rulers and play, centered over the tracks.
         HorizontalLayout {
             x: root.middle-column + (root.middle-width - self.preferred-width) / 2;
@@ -546,6 +573,7 @@ export component TimeBar inherits Rectangle {
                     ladder: root.ladder;
                     rate: root.view.rate;
                     running: root.view.running;
+                    pitch: root.pitch;
                     picked(rate) => { root.rate-picked(rate); }
                     changed hovered => { root.ruler-hovered = self.hovered || forward.hovered; }
                 }
@@ -592,6 +620,7 @@ export component TimeBar inherits Rectangle {
                     ladder: root.ladder;
                     rate: root.view.rate;
                     running: root.view.running;
+                    pitch: root.pitch;
                     picked(rate) => { root.rate-picked(rate); }
                     changed hovered => { root.ruler-hovered = self.hovered || backward.hovered; }
                 }
@@ -960,7 +989,7 @@ export component TimeBar inherits Rectangle {
 
     // Every speed in both directions, above the speed readout.
     if root.rates-open && root.open : Rectangle {
-        x: root.middle-column;
+        x: speed-readout.x;
         y: -self.height - 8px;
         width: 2 * 128px + 12px;
         height: 12px + 18px + ceil(root.rates.length / 2) * 22px;

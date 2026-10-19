@@ -10,8 +10,9 @@ use crate::{
     AtmosphereSettings, CameraOrientationSettings, CameraPositionSettings, CameraReset,
     CameraStick, CelestialSettings, CloudCoverSettings, CloudSettings, ColorCorrectionSettings,
     ColorText, DateTimeSettings, FramingSettings, HazeSettings, LightingSettings, MainWindow,
-    MoonSettings, NightglowSettings, OverlayHints, ParsedColor, RayleighSettings, SceneSettings,
-    SkySettings, StarSettings, SunSettings, SunriseBandSettings, TextureColorSettings,
+    MoonSettings, NightglowSettings, OverlayHints, OverlayStyle, ParsedColor, RayleighSettings,
+    SceneSettings, SkySettings, StarSettings, SunSettings, SunriseBandSettings,
+    TextureColorSettings,
 };
 use sunlit_core::color::Rgb8;
 use sunlit_core::config::{self, AppConfig};
@@ -360,6 +361,9 @@ fn register_camera_panel(window: &MainWindow, link: &EngineLink) {
     window
         .global::<OverlayHints>()
         .set_is_macos(cfg!(target_os = "macos"));
+    window
+        .global::<OverlayStyle>()
+        .set_grab_cursors(!cfg!(target_os = "windows"));
     let eases = SharedEases::default();
 
     let window_weak = window.as_weak();

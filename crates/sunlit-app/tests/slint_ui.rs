@@ -2807,6 +2807,68 @@ fn test_a_drag_from_the_n_rolls_like_one_on_the_ring() {
     approx::assert_abs_diff_eq!(from_north, from_ring, epsilon = 0.01);
 }
 
+/// The cursor the window shows, as Slint names it.
+fn cursor(window: &MainWindow) -> String {
+    let adapter = i_slint_core::window::WindowInner::from_pub(window.window()).window_adapter();
+    let testing = adapter
+        .internal(i_slint_core::InternalToken)
+        .and_then(|internal| {
+            (internal as &dyn std::any::Any)
+                .downcast_ref::<i_slint_backend_testing::testing_backend::TestingWindow>()
+        })
+        .expect("a window of the testing backend");
+    format!("{:?}", testing.mouse_cursor())
+}
+
+/// The ring, its N and the three sticks show the open hand under the pointer
+/// and the closed one while held where the platform draws hands for them,
+/// and the pointing hand where it does not.
+#[test]
+fn test_the_draggable_camera_controls_show_a_hand() {
+    for hands in [true, false] {
+        let (window, _sent) = wired_window();
+        window
+            .global::<sunlit_earth::OverlayStyle>()
+            .set_grab_cursors(hands);
+        let (hover, held) = if hands {
+            ("BuiltIn(Grab)", "BuiltIn(Grabbing)")
+        } else {
+            ("BuiltIn(Pointer)", "BuiltIn(Pointer)")
+        };
+        let ring = the_element(&window, "CameraPanel::ring");
+        let places = [
+            ("the ring", point_in(&ring, 0.06, 0.5)),
+            ("the N", ring_and_north(&window).1),
+            (
+                "the orbit stick",
+                point_in(&the_element(&window, "CameraPanel::orbit"), 0.5, 0.5),
+            ),
+            (
+                "the look stick",
+                point_in(&the_element(&window, "CameraPanel::look"), 0.5, 0.5),
+            ),
+            (
+                "the frame stick",
+                point_in(&the_element(&window, "CameraPanel::frame"), 0.5, 0.5),
+            ),
+        ];
+        for (what, at) in places {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at });
+            assert_eq!(cursor(&window), hover, "{what} under the pointer");
+            hold_at(&window, at);
+            let nudged = slint::LogicalPosition::new(at.x, at.y + 1.0);
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: nudged });
+            assert_eq!(cursor(&window), held, "{what} held");
+            release_at(&window, nudged);
+            let_pass(400);
+        }
+    }
+}
+
 /// Holding the orbit joystick up and to the right, clear of the arrows, keeps
 /// the camera traveling east, and in the Sun-fixed mode it moves the time of
 /// day instead and leaves the longitude alone.

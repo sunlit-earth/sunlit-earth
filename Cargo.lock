@@ -5509,6 +5509,7 @@ dependencies = [
  "embed-resource",
  "glam 0.30.10",
  "i-slint-backend-testing",
+ "i-slint-core",
  "image",
  "interprocess",
  "log",

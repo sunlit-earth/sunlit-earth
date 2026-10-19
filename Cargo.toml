@@ -79,6 +79,7 @@ approx = "0.5"
 proptest = "1"
 serial_test = "3"
 i-slint-backend-testing = "=1.18.1"
+i-slint-core = { version = "=1.18.1", default-features = false }
 regex-lite = "0.1"
 
 [workspace.lints.clippy]

@@ -25,6 +25,10 @@ export global OverlayStyle {
     // How far an idle control fades, and how long fading in and out takes.
     out property <float> idle-opacity: 0.3;
     out property <duration> idle-fade: 400ms;
+    // Whether the draggable camera controls show the open hand and, while
+    // held, the closed one. Windows draws both as the four-way move arrow,
+    // so the app turns this off there and they show the pointing hand.
+    in property <bool> grab-cursors: true;
 }
 
 // The text of one control's hover hint: what it is, what it does, and the
@@ -496,7 +500,7 @@ export component Joystick inherits Rectangle {
     }
 
     touch := TouchArea {
-        mouse-cursor: self.pressed ? grabbing : grab;
+        mouse-cursor: !OverlayStyle.grab-cursors ? pointer : self.pressed ? grabbing : grab;
 
         pointer-event(event) => {
             if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
@@ -678,7 +682,7 @@ export component RollRing inherits Rectangle {
     }
 
     touch := TouchArea {
-        mouse-cursor: ew-resize;
+        mouse-cursor: !OverlayStyle.grab-cursors ? pointer : self.pressed ? grabbing : grab;
 
         pointer-event(event) => {
             if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
@@ -741,7 +745,7 @@ export component RollRing inherits Rectangle {
         }
 
         north-touch := TouchArea {
-            mouse-cursor: root.north-rolling ? ew-resize : pointer;
+            mouse-cursor: !OverlayStyle.grab-cursors ? pointer : self.pressed ? grabbing : grab;
             accessible-role: button;
             accessible-label: "North up";
 

@@ -59,18 +59,56 @@ export component ShortcutSheet inherits Rectangle {
         { keys: OverlayHints.help-keys(), text: "This sheet" },
     ];
 
+    // The keys and the mouse glyphs are bigger than a hint's.
+    property <length> glyph-size: 22px;
+    // Between a row's glyph or keys and its text.
+    property <length> gap: 10px;
+    // The widest glyph and the widest row of keys, measured out of sight.
+    property <length> mouse-width: mouse-sizer.preferred-width;
+    property <length> keys-width: keys-sizer.preferred-width;
+
     background: #0000008c;
 
     TouchArea {
         clicked => { root.close(); }
     }
 
+    Rectangle {
+        visible: false;
+        width: 0px;
+        height: 0px;
+
+        mouse-sizer := VerticalLayout {
+            width: self.preferred-width;
+            height: self.preferred-height;
+
+            for gesture in root.gestures : MouseGlyph {
+                which: gesture.mouse;
+                size: root.glyph-size;
+            }
+        }
+
+        keys-sizer := VerticalLayout {
+            width: self.preferred-width;
+            height: self.preferred-height;
+
+            for entry in root.keys : HorizontalLayout {
+                spacing: 3px;
+
+                for key in entry.keys : KeyCap {
+                    text: key;
+                    size: root.glyph-size;
+                }
+            }
+        }
+    }
+
     // Two equal columns where each leaves its descriptions at least 110 px
-    // beside the 104 px of gesture or keys, otherwise the keyboard below the
-    // mouse; a card taller than the room scrolls.
+    // beside its glyphs or keys, otherwise the keyboard below the mouse; a
+    // card taller than the room scrolls.
     card := Rectangle {
         property <length> inner: self.width - 44px;
-        property <bool> two-columns: (self.inner - 26px) / 2 >= 214px;
+        property <bool> two-columns: (self.inner - 26px) / 2 >= max(root.mouse-width, root.keys-width) + root.gap + 110px;
         property <length> column: self.two-columns ? (self.inner - 26px) / 2 : self.inner;
 
         x: (parent.width - self.width) / 2;
@@ -98,36 +136,11 @@ export component ShortcutSheet inherits Rectangle {
                 padding-right: 22px;
                 spacing: 10px;
 
-                // The platform beside the title, or under it where both do
-                // not fit on one line.
-                Rectangle {
-                    property <bool> one-line: heading.preferred-width + 10px + platform.preferred-width <= card.inner;
-
-                    height: self.one-line ? max(heading.preferred-height, platform.preferred-height)
-                        : heading.preferred-height + 2px + platform.preferred-height;
-
-                    heading := Text {
-                        x: 0;
-                        y: 0;
-                        width: self.preferred-width;
-                        height: parent.one-line ? parent.height : self.preferred-height;
-                        text: "Mouse and keyboard";
-                        color: OverlayStyle.fg;
-                        font-size: 15px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-
-                    platform := Text {
-                        x: parent.one-line ? heading.width + 10px : 0;
-                        y: parent.one-line ? 0 : heading.height + 2px;
-                        width: self.preferred-width;
-                        height: parent.one-line ? parent.height : self.preferred-height;
-                        text: OverlayHints.is-macos ? "macOS" : "Windows and Linux";
-                        color: OverlayStyle.dim;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                    }
+                Text {
+                    text: "Mouse and keyboard";
+                    color: OverlayStyle.fg;
+                    font-size: 15px;
+                    font-weight: 600;
                 }
 
                 Rectangle {
@@ -147,16 +160,17 @@ export component ShortcutSheet inherits Rectangle {
                         }
 
                         for gesture in root.gestures : Rectangle {
-                            height: max(24px, gesture-text.height + 6px);
+                            height: max(root.glyph-size + 2px, gesture-text.height + 4px);
 
                             MouseGlyph {
-                                x: 0;
+                                x: (root.mouse-width - self.width) / 2;
                                 which: gesture.mouse;
+                                size: root.glyph-size;
                             }
 
                             gesture-text := SheetText {
-                                x: 104px;
-                                width: parent.width - 104px;
+                                x: root.mouse-width + root.gap;
+                                width: parent.width - self.x;
                                 text: gesture.text;
                             }
                         }
@@ -174,21 +188,22 @@ export component ShortcutSheet inherits Rectangle {
                         }
 
                         for entry in root.keys : Rectangle {
-                            height: max(24px, entry-text.height + 6px);
+                            height: max(root.glyph-size + 2px, entry-text.height + 4px);
 
                             keys := HorizontalLayout {
-                                x: 0;
+                                x: root.keys-width - self.width;
                                 width: self.preferred-width;
-                                height: 18px;
+                                height: root.glyph-size;
                                 spacing: 3px;
 
                                 for key in entry.keys : KeyCap {
                                     text: key;
+                                    size: root.glyph-size;
                                 }
                             }
 
                             entry-text := SheetText {
-                                x: max(104px, keys.width + 8px);
+                                x: root.keys-width + root.gap;
                                 width: parent.width - self.x;
                                 text: entry.text;
                             }

@@ -228,12 +228,13 @@ export global OverlayHints {
     }
 }
 
-// The mouse with the button a gesture uses lit, or the wheel.
+// The mouse with the button a gesture uses lit, or the wheel, `size` tall.
 export component MouseGlyph inherits Image {
     in property <string> which;
+    in property <length> size: 18px;
 
-    height: 18px;
-    width: which == "wheel" ? 20px : 14px;
+    height: root.size;
+    width: root.size * (root.which == "wheel" ? 20 : 14) / 18;
     source: which == "left" ? @image-url("../icons/mouse-left.svg")
         : which == "right" ? @image-url("../icons/mouse-right.svg")
         : which == "both" ? @image-url("../icons/mouse-both.svg")

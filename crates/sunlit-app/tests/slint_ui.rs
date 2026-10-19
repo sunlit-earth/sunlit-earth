@@ -4020,7 +4020,12 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
 
             let content = edges(&the_element(&window, "ShortcutSheet::card-layout"));
             if (width, height) == (1000, 600) || (width, height) == (800, 700) {
-                assert!(content[3] <= bottom + 0.5, "{what}: the card scrolls");
+                assert!(
+                    content[3] <= bottom + 0.5,
+                    "{what}: the card scrolls, {} over {}",
+                    content[3],
+                    bottom
+                );
             }
 
             // The testing backend leaves out what is scrolled out of sight,
@@ -4037,7 +4042,7 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
                 .find_all();
             assert_eq!(
                 texts.len(),
-                18,
+                20,
                 "{what}: the sheet lists every gesture and key"
             );
             for text in &texts {
@@ -4058,6 +4063,104 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
                 );
             }
             caps_holding_their_labels(&card, &what);
+        }
+    }
+}
+
+/// The left and right edges of each row's elements in `column`, top to
+/// bottom, the rows told apart by their vertical middles.
+fn row_spans(column: &ElementHandle, component: &str) -> Vec<(f32, f32)> {
+    let mut rows: Vec<(f32, f32, f32)> = Vec::new();
+    for element in column
+        .query_descendants()
+        .match_inherits(component)
+        .find_all()
+    {
+        let [left, top, right, bottom] = edges(&element);
+        let middle = f32::midpoint(top, bottom);
+        match rows.iter_mut().find(|row| (row.0 - middle).abs() < 1.0) {
+            Some(row) => {
+                row.1 = row.1.min(left);
+                row.2 = row.2.max(right);
+            }
+            None => rows.push((middle, left, right)),
+        }
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.into_iter()
+        .map(|(_, left, right)| (left, right))
+        .collect()
+}
+
+/// The sheet's descriptions start a small gap after the widest mouse glyph
+/// and the widest row of keys, the keys stand flush right against that gap
+/// and the descriptions flush left after it; the glyphs and the caps are
+/// at least 22 px tall, and the sheet names no platform.
+#[test]
+fn test_the_shortcut_sheet_aligns_its_keys_against_their_descriptions() {
+    for macos in [false, true] {
+        for width in [1000, 520] {
+            let what = format!("{width} px (macOS: {macos})");
+            let window = create_window();
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            window
+                .global::<sunlit_earth::OverlayHints>()
+                .set_is_macos(macos);
+            window.set_shortcut_sheet_open(true);
+
+            for platform in ["Windows and Linux", "macOS"] {
+                assert_eq!(
+                    ElementHandle::find_by_accessible_label(&window, platform).count(),
+                    0,
+                    "{what}: the sheet names {platform:?}"
+                );
+            }
+
+            let mouse = the_element(&window, "ShortcutSheet::mouse-column");
+            let glyphs = row_spans(&mouse, "MouseGlyph");
+            let gestures = row_spans(&mouse, "SheetText");
+            assert_eq!(glyphs.len(), gestures.len(), "{what}: a glyph per gesture");
+            let widest_glyph = glyphs.iter().map(|g| g.1).fold(f32::MIN, f32::max);
+            for (text_left, _) in &gestures {
+                let gap = text_left - widest_glyph;
+                assert!(
+                    (4.0..=12.0).contains(&gap),
+                    "{what}: a gesture's text stands {gap} px after the widest glyph"
+                );
+            }
+
+            let keyboard = the_element(&window, "ShortcutSheet::keys-column");
+            let keys = row_spans(&keyboard, "KeyCap");
+            let texts = row_spans(&keyboard, "SheetText");
+            assert_eq!(keys.len(), texts.len(), "{what}: keys for each description");
+            let right = keys[0].1;
+            let text_left = texts[0].0;
+            for ((_, keys_right), (left, _)) in keys.iter().zip(&texts) {
+                approx::assert_abs_diff_eq!(*keys_right, right, epsilon = 0.5);
+                approx::assert_abs_diff_eq!(*left, text_left, epsilon = 0.5);
+            }
+            let gap = text_left - right;
+            assert!(
+                (4.0..=12.0).contains(&gap),
+                "{what}: the descriptions stand {gap} px after the keys"
+            );
+
+            let card = the_element(&window, "ShortcutSheet::card");
+            for (component, smallest) in [("MouseGlyph", 22.0), ("KeyCap", 22.0)] {
+                for element in card
+                    .query_descendants()
+                    .match_inherits(component)
+                    .find_all()
+                {
+                    assert!(
+                        element.size().height >= smallest - 0.5,
+                        "{what}: a {component} {} px tall",
+                        element.size().height
+                    );
+                }
+            }
         }
     }
 }

@@ -2865,6 +2865,66 @@ fn test_f1_opens_the_shortcut_sheet_and_escape_closes_it() {
     assert_eq!(sheets(&window), 0, "a click outside the card closes it");
 }
 
+/// The sheet opened with the panel's ? button closes on Esc though a sidebar
+/// control had the keyboard.
+#[test]
+fn test_escape_closes_the_sheet_the_help_button_opened() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    let sheets = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "MainWindow::shortcut-sheet").count()
+    };
+    let slider = slider_of(&the_element(&window, "MainWindow::latitude-slider"));
+    press_at(&window, point_in(&slider, 0.5, 0.5));
+    press_at(
+        &window,
+        point_in(&the_element(&window, "CameraPanel::help-button"), 0.5, 0.5),
+    );
+    assert_eq!(sheets(&window), 1, "the ? button opens the sheet");
+    tap(&window, Key::Escape);
+    assert_eq!(sheets(&window), 0, "Esc closes it");
+}
+
+/// A bare click on the globe and the keys teach nothing about the mouse, so
+/// the first use of the orbit control still names its gesture; a drag of the
+/// globe that moved does, and then the control shows no tip.
+#[test]
+fn test_only_a_mouse_gesture_that_moved_counts_as_used() {
+    use slint::platform::{Key, PointerEventButton, WindowEvent};
+
+    let tips = |window: &MainWindow| all_of(window, "GestureTip").len();
+    let step = |window: &MainWindow| {
+        press_at(
+            window,
+            point_in(&the_element(window, "CameraPanel::right-arrow"), 0.5, 0.5),
+        );
+    };
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    tap(&window, Key::RightArrow);
+    step(&window);
+    assert_eq!(tips(&window), 1, "the tip names the left drag");
+
+    let (window, _sent) = wired_window();
+    let size = window.window().size().to_logical(1.0);
+    let from = slint::LogicalPosition::new(size.width - 300.0, size.height / 2.0);
+    let to = slint::LogicalPosition::new(from.x + 40.0, from.y);
+    hold_at(&window, from);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: to });
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position: to,
+            button: PointerEventButton::Left,
+        });
+    step(&window);
+    assert_eq!(tips(&window), 0, "the left drag was used already");
+}
+
 /// H hides the overlays and shows them again, the corner button brings them
 /// back too, and the choice is saved with the window's settings.
 #[test]
@@ -2928,6 +2988,52 @@ fn test_held_arrows_orbit_and_with_shift_look() {
         turned,
         "Shift leaves the orbit alone"
     );
+}
+
+/// Leaving the Sun-fixed mode while an orbit step eases the time of day ends
+/// the ease: the longitude the switch converted stays, rather than taking
+/// the rest of the eased time of day as degrees.
+#[test]
+fn test_the_sun_fixed_switch_ends_an_orbit_ease() {
+    let (window, _sent) = wired_window();
+    window.set_camera_position(CameraPositionSettings {
+        longitude: 10.0,
+        sun_fixed: true,
+        solar_time: 6.0,
+        ..window.get_camera_position()
+    });
+    window.invoke_camera_orbit_step(1, 0);
+    let_pass(48);
+    assert!(
+        window.get_camera_position().solar_time > 6.0,
+        "the premise: the step is on its way"
+    );
+    the_button(&window, "Fixed toward the Sun").invoke_accessible_default_action();
+    let switched = window.get_camera_position();
+    assert!(!switched.sun_fixed);
+    let_pass(400);
+    assert_eq!(window.get_camera_position(), switched);
+    assert!(!window.get_camera_easing());
+}
+
+/// A drag of the globe while an orbit step eases ends the ease, and the
+/// camera stays where the drag put it.
+#[test]
+fn test_a_globe_drag_ends_an_orbit_ease() {
+    let (window, _sent) = wired_window();
+    set_longitude(&window, 10.0);
+    window.invoke_camera_orbit_step(1, 0);
+    let_pass(48);
+    assert!(
+        window.get_camera_position().longitude > 10.0,
+        "the premise: the step is on its way"
+    );
+    window.invoke_mouse_drag_globe_begin();
+    window.invoke_mouse_drag_globe(120.0, 0.0);
+    let dragged = window.get_camera_position();
+    let_pass(400);
+    assert_eq!(window.get_camera_position(), dragged);
+    assert!(!window.get_camera_easing());
 }
 
 // ---------------------------------------------------------------------------

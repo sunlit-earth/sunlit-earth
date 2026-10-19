@@ -220,6 +220,9 @@ struct Run {
     from: f32,
     to: f32,
     elapsed: f32,
+    /// What the window held for the field when the run last looked: where
+    /// it started, then what each of its writes left there.
+    left: f32,
 }
 
 /// The camera values on their way to a target: N, the ↺ badges, the orbit
@@ -250,12 +253,32 @@ impl Eases {
             from,
             to,
             elapsed: 0.0,
+            left: from,
         });
     }
 
     /// Stop easing a field, for when something else has taken it over.
     pub fn cancel(&mut self, field: EaseField) {
         self.runs.retain(|run| run.field != field);
+    }
+
+    /// Stop easing every field that no longer holds what its run left in
+    /// it: something else wrote it since, and the run would overwrite that.
+    ///
+    /// :param current: where each field stands in the window now
+    pub fn release_taken(&mut self, current: impl Fn(EaseField) -> f32) {
+        self.runs
+            .retain(|run| current(run.field).to_bits() == run.left.to_bits());
+    }
+
+    /// Note what the window holds for a field after a run wrote it.
+    ///
+    /// :param field: the field written
+    /// :param value: what the window holds for it now
+    pub fn left(&mut self, field: EaseField, value: f32) {
+        for run in self.runs.iter_mut().filter(|run| run.field == field) {
+            run.left = value;
+        }
     }
 
     /// Whether any field is still on its way.
@@ -462,5 +485,30 @@ mod tests {
         eases.start(EaseField::Pitch, 5.0, 0.0);
         eases.cancel(EaseField::Pitch);
         assert!(!eases.is_running());
+    }
+
+    #[test]
+    fn a_field_written_by_something_else_is_released_and_the_others_run_on() {
+        let mut eases = Eases::default();
+        eases.start(EaseField::Longitude, 10.0, 40.0);
+        eases.start(EaseField::Latitude, 0.0, 20.0);
+        eases.release_taken(|field| match field {
+            EaseField::Longitude => 10.0,
+            _ => 0.0,
+        });
+        let values = eases.advance(0.016);
+        assert_eq!(values.len(), 2, "nothing else wrote either field");
+        for &(field, value) in &values {
+            eases.left(field, value);
+        }
+
+        let latitude = values[1].1;
+        eases.release_taken(|field| match field {
+            EaseField::Longitude => -75.0,
+            _ => latitude,
+        });
+        let values = eases.advance(0.016);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].0, EaseField::Latitude);
     }
 }

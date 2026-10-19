@@ -237,23 +237,57 @@ fn set_ease_value(window: &MainWindow, field: EaseField, value: f32) {
     }
 }
 
-type SharedEases = std::rc::Rc<std::cell::RefCell<camera_controls::Eases>>;
+/// The eases in progress, and which field the held longitude stood for when
+/// its ease started.
+#[derive(Default)]
+struct CameraEases {
+    runs: camera_controls::Eases,
+    sun_fixed: bool,
+}
+
+type SharedEases = std::rc::Rc<std::cell::RefCell<CameraEases>>;
 
 /// Start easing camera values toward their targets and let the ease timer run.
 fn ease_to(window: &MainWindow, eases: &SharedEases, targets: &[(EaseField, f32)]) {
     let mut eases = eases.borrow_mut();
     for &(field, target) in targets {
-        eases.start(field, ease_value(window, field), target);
+        if field == EaseField::Longitude {
+            eases.sun_fixed = window.get_camera_position().sun_fixed;
+        }
+        eases.runs.start(field, ease_value(window, field), target);
     }
-    window.set_camera_easing(eases.is_running());
+    window.set_camera_easing(eases.runs.is_running());
 }
 
 /// Stop easing camera values that a control has taken over.
 fn cancel_eases(eases: &SharedEases, fields: &[EaseField]) {
     let mut eases = eases.borrow_mut();
     for &field in fields {
-        eases.cancel(field);
+        eases.runs.cancel(field);
     }
+}
+
+/// Move the eases on by a tick and write where they are, after letting go
+/// of every field something else wrote since the last tick: a drag, the
+/// wheel, a sidebar slider, a preset, or the Sun-fixed switch, which also
+/// changes what the held longitude means.
+fn advance_eases(window: &MainWindow, eases: &SharedEases, seconds: f32) {
+    let values = {
+        let mut eases = eases.borrow_mut();
+        if window.get_camera_position().sun_fixed != eases.sun_fixed {
+            eases.runs.cancel(EaseField::Longitude);
+        }
+        eases.runs.release_taken(|field| ease_value(window, field));
+        eases.runs.advance(seconds)
+    };
+    for &(field, value) in &values {
+        set_ease_value(window, field, value);
+    }
+    let mut eases = eases.borrow_mut();
+    for &(field, _) in &values {
+        eases.runs.left(field, ease_value(window, field));
+    }
+    window.set_camera_easing(eases.runs.is_running());
 }
 
 /// Move the camera by one report of a stick on the panel or of held keys.
@@ -417,11 +451,7 @@ fn register_camera_panel(window: &MainWindow, link: &EngineLink) {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
-        let values = eases.borrow_mut().advance(seconds);
-        for (field, value) in values {
-            set_ease_value(&win, field, value);
-        }
-        win.set_camera_easing(eases.borrow().is_running());
+        advance_eases(&win, &eases, seconds);
         engine.push_params(&win);
     });
 }

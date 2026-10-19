@@ -1983,11 +1983,7 @@ export component MainWindow inherits Window {
             }
 
             key-pressed(event) => {
-                if image-container.track-key(event, true) {
-                    image-container.note-gesture(image-container.key-gesture);
-                    return accept;
-                }
-                return reject;
+                return image-container.track-key(event, true) ? accept : reject;
             }
 
             key-released(event) => {
@@ -2051,7 +2047,6 @@ export component MainWindow inherits Window {
                     image-container.last-mouse-x = self.mouse-x;
                     image-container.last-mouse-y = self.mouse-y;
                 }
-                image-container.note-gesture(image-container.gesture);
             }
 
             moved => {
@@ -2075,6 +2070,9 @@ export component MainWindow inherits Window {
                         (self.mouse-x - image-container.last-mouse-x) / 1px,
                         (self.mouse-y - image-container.last-mouse-y) / 1px
                     );
+                }
+                if self.mouse-x != image-container.last-mouse-x || self.mouse-y != image-container.last-mouse-y {
+                    image-container.note-gesture(image-container.gesture);
                 }
                 image-container.last-mouse-x = self.mouse-x;
                 image-container.last-mouse-y = self.mouse-y;
@@ -2218,7 +2216,10 @@ export component MainWindow inherits Window {
             zoom-rate(direction, seconds) => { root.camera-zoom-rate(direction, seconds); }
             zoom-changed => { root.sliders-changed(); }
             used(control) => { image-container.teach(control); }
-            show-shortcuts => { root.shortcut-sheet-open = true; }
+            show-shortcuts => {
+                root.shortcut-sheet-open = true;
+                preview-keys.focus();
+            }
             hide-overlays => { root.overlays-hidden = true; }
         }
 

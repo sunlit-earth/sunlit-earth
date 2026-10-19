@@ -3556,37 +3556,118 @@ fn test_a_wrapping_gesture_keeps_its_hint_around_it() {
     }
 }
 
-/// Every description on the shortcut sheet stays on the card in a narrow
-/// window, wrapping where it must, and every key cap holds its label.
+// A wrapping `Text` in the sheet's description font, whose minimum width is
+// the width of the longest word of what it holds.
+slint::slint! {
+    export component WordProbe inherits Window {
+        in property <string> body;
+        out property <length> longest-word: probe.min-width;
+        probe := Text {
+            text: root.body;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+/// Window sizes from the app's narrowest at the default height up to a wide
+/// one, with the default 1000 by 600 among them.
+const SHEET_WINDOWS: [(u32, u32); 6] = [
+    (520, 600),
+    (700, 600),
+    (800, 700),
+    (900, 600),
+    (1000, 600),
+    (1400, 900),
+];
+
+/// The shortcut sheet fits its window, two equal columns side by side where
+/// there is room and one under the other where not, and every description
+/// stays on the card without a word broken inside, every key cap holding its
+/// label. In the default window and at 800 by 700 the whole card shows
+/// without scrolling.
 #[test]
 fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
+    init();
+    let probe = WordProbe::new().expect("a probe");
     for macos in [false, true] {
-        let window = create_window();
-        window
-            .window()
-            .set_size(slint::PhysicalSize::new(800, 5000));
-        window
-            .global::<sunlit_earth::OverlayHints>()
-            .set_is_macos(macos);
-        window.set_shortcut_sheet_open(true);
-        let card = the_element(&window, "ShortcutSheet::card");
-        let [left, _, right, bottom] = edges(&card);
-        let texts = card
-            .query_descendants()
-            .match_inherits("SheetText")
-            .find_all();
-        assert!(texts.len() > 10, "the sheet lists its gestures and keys");
-        for text in &texts {
-            let [text_left, _, text_right, text_bottom] = edges(text);
+        for (width, height) in SHEET_WINDOWS {
+            let what = format!("{width} by {height} (macOS: {macos})");
+            let window = create_window();
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, height));
+            window
+                .global::<sunlit_earth::OverlayHints>()
+                .set_is_macos(macos);
+            window.set_shortcut_sheet_open(true);
+            let card = the_element(&window, "ShortcutSheet::card");
+            let [left, top, right, bottom] = edges(&card);
+            #[expect(clippy::cast_precision_loss, reason = "a window size")]
+            let (window_width, window_height) = (width as f32, height as f32);
             assert!(
-                text_left >= left + 22.0 - 0.5
-                    && text_right <= right - 22.0 + 0.5
-                    && text_bottom <= bottom,
-                "{:?} (macOS: {macos}) runs off the card",
-                text.accessible_label()
+                left >= window_width - window.get_viewport_width() - 0.5
+                    && right <= window_width + 0.5
+                    && top >= -0.5
+                    && bottom <= window_height + 0.5,
+                "{what}: the card runs out of the preview"
             );
+
+            let mouse = edges(&the_element(&window, "ShortcutSheet::mouse-column"));
+            let keys = edges(&the_element(&window, "ShortcutSheet::keys-column"));
+            approx::assert_abs_diff_eq!(mouse[2] - mouse[0], keys[2] - keys[0], epsilon = 0.5);
+            assert!(
+                keys[0] >= mouse[2] + 26.0 - 0.5 || keys[1] >= mouse[3] - 0.5,
+                "{what}: the columns overlap"
+            );
+            if width >= 1000 {
+                assert!(
+                    keys[0] > mouse[2],
+                    "{what}: the columns stand one under the other"
+                );
+            }
+
+            let content = edges(&the_element(&window, "ShortcutSheet::card-layout"));
+            if (width, height) == (1000, 600) || (width, height) == (800, 700) {
+                assert!(content[3] <= bottom + 0.5, "{what}: the card scrolls");
+            }
+
+            // The testing backend leaves out what is scrolled out of sight,
+            // and the text's widths do not depend on the height.
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            let card = the_element(&window, "ShortcutSheet::card");
+            let [left, _, right, _] = edges(&card);
+            let content = edges(&the_element(&window, "ShortcutSheet::card-layout"));
+            let texts = card
+                .query_descendants()
+                .match_inherits("SheetText")
+                .find_all();
+            assert_eq!(
+                texts.len(),
+                18,
+                "{what}: the sheet lists every gesture and key"
+            );
+            for text in &texts {
+                let label = text.accessible_label().expect("a description");
+                let [text_left, _, text_right, text_bottom] = edges(text);
+                assert!(
+                    text_left >= left + 22.0 - 0.5
+                        && text_right <= right - 22.0 + 0.5
+                        && text_bottom <= content[3],
+                    "{what}: {label:?} runs off the card"
+                );
+                probe.set_body(label.clone());
+                assert!(
+                    text_right - text_left >= probe.get_longest_word() - 0.5,
+                    "{what}: {label:?} has {} px for a word {} px wide",
+                    text_right - text_left,
+                    probe.get_longest_word()
+                );
+            }
+            caps_holding_their_labels(&card, &what);
         }
-        caps_holding_their_labels(&card, &format!("the sheet (macOS: {macos})"));
     }
 }
 

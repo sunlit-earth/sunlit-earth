@@ -268,7 +268,7 @@ None yet.
 
 The user settled the questions of the first draft on 2026-10-18: the drags on the globe stay as they are, the bar has no year stepper, the sidebar keeps its Date / Time group (decision 8), playback never reaches the wallpaper and pauses when the window closes (decision 6), and the bar's edits are the time setting (decisions 5 and 7).
 
-Two proposals from the rebase onto the Sun-fixed camera, to confirm:
+Two proposals from the rebase onto the Sun-fixed camera, confirmed by the user on 2026-10-18:
 
 1. The time track is drawn plain in the Sun-fixed mode (decision 7), since its shading would be one color all day.
 2. A mode switch or a preset during an excursion converts at the time setting's instant, not at the instant the preview shows (decision 6), so the wallpaper gets the view the click asked for and the preview may not.

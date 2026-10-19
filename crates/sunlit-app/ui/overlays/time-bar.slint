@@ -514,6 +514,7 @@ export component TimeBar inherits Rectangle {
         // Skip, the rulers and play, centered over the tracks.
         HorizontalLayout {
             x: root.middle-column + (root.middle-width - self.preferred-width) / 2;
+            width: self.preferred-width;
             y: 8px;
             height: 44px;
             spacing: 6px;

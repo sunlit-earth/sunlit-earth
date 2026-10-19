@@ -1879,22 +1879,20 @@ fn wired_window() -> (
 ) {
     let window = create_window();
     window.set_advanced_open(true);
+    window.set_time_zone_utc(true);
     window.set_datetime(DateTimeSettings {
         use_custom: true,
+        instant: "2026-04-30T09:15:00Z".into(),
         hour: 9.25,
         day_of_year: 120.0,
-        year_index: 1,
+        year: 2026,
     });
     let (sender, sent) = crossbeam_channel::unbounded();
     let link =
         sunlit_earth::engine_client::EngineLink::new(sender, vec!["None".to_owned()], vec![1]);
     let screens = sunlit_earth::displays::shared_monitors();
     ui_callbacks::register_mouse_callbacks(&window, &link);
-    ui_callbacks::register_change_callbacks(
-        &window,
-        sunlit_core::scene::datetime::base_year(),
-        &link,
-    );
+    ui_callbacks::register_change_callbacks(&window, &link);
     ui_callbacks::register_action_callbacks(&window, &link, &screens);
     (window, sent)
 }
@@ -2928,5 +2926,72 @@ fn test_held_arrows_orbit_and_with_shift_look() {
         window.get_camera_position(),
         turned,
         "Shift leaves the orbit alone"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The Date / Time group on the time setting
+// ---------------------------------------------------------------------------
+
+/// A slider of the group moved: the instant is read from the three in the
+/// displayed zone, pushed as the time setting, and the labels name the zone.
+#[test]
+fn test_the_date_time_sliders_set_the_instant_in_the_displayed_zone() {
+    use sunlit_core::scene::scene_time::SceneTime;
+    use time::macros::datetime;
+
+    let (window, sent) = wired_window();
+    let mut settings = window.get_datetime();
+    settings.hour = 10.5;
+    settings.year = 2024;
+    settings.day_of_year = 60.0;
+    window.set_datetime(settings);
+    window.invoke_datetime_edited();
+
+    let pushed = last_pushed(&sent).time;
+    assert_eq!(pushed, SceneTime::fixed(datetime!(2024-02-29 10:30 UTC)));
+    assert_eq!(
+        window.get_datetime().instant.as_str(),
+        "2024-02-29T10:30:00Z"
+    );
+    assert_eq!(window.get_hour_label().as_str(), "10:30 UTC");
+    assert_eq!(window.get_day_label().as_str(), "Thu 29 Feb");
+    assert_eq!(window.get_max_day_of_year(), 366);
+
+    let saved = ui_callbacks::read_config_from_window_onto(
+        &window,
+        &AA_COUNTS,
+        &AppConfig::default(),
+        false,
+    );
+    assert_eq!(saved.scene_time, pushed);
+    assert_eq!(saved.time_zone, sunlit_core::config::TimeZoneChoice::Utc);
+}
+
+/// The override off is live time, and turning it on fixes the instant it was
+/// turned on at.
+#[test]
+fn test_the_override_fixes_now_and_off_is_live() {
+    use sunlit_core::scene::scene_time::SceneTime;
+
+    let (window, sent) = wired_window();
+    let mut settings = window.get_datetime();
+    settings.use_custom = false;
+    window.set_datetime(settings);
+    window.invoke_sliders_changed();
+    assert_eq!(last_pushed(&sent).time, SceneTime::Live);
+
+    let before = time::OffsetDateTime::now_utc();
+    let mut settings = window.get_datetime();
+    settings.use_custom = true;
+    window.set_datetime(settings);
+    window.invoke_datetime_override_toggled();
+    let SceneTime::Fixed(at) = last_pushed(&sent).time else {
+        panic!("the override fixes a time");
+    };
+    let after = time::OffsetDateTime::now_utc();
+    assert!(
+        before - time::Duration::seconds(1) <= at && at <= after,
+        "{at} is not the moment the override went on"
     );
 }

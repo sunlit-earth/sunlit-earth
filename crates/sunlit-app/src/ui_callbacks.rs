@@ -19,7 +19,7 @@ use sunlit_core::engine::EngineCommand;
 use sunlit_core::params::{SceneParams, gamma_slider_to_value, gamma_value_to_slider};
 use sunlit_core::scene::camera::{self, CameraParams, PRESETS};
 use sunlit_core::scene::datetime;
-use sunlit_core::scene::scene_time::{SceneTime, instant_of_override};
+use sunlit_core::scene::scene_time::SceneTime;
 use sunlit_core::scene::sky::{self, SkyState};
 
 /// A Slint index as a position in the list it selects from.
@@ -505,12 +505,12 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
 
 /// Register slider and combo box change callbacks. Each one pushes the whole
 /// scene to the engine, which decides whether anything actually changed.
-pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &EngineLink) {
+pub fn register_change_callbacks(window: &MainWindow, link: &EngineLink) {
     let window_weak = window.as_weak();
     let engine = link.clone();
     window.on_sliders_changed(move || {
         if let Some(win) = window_weak.upgrade() {
-            update_datetime_labels(&win, base_year);
+            update_datetime_labels(&win);
             engine.push_params(&win);
         }
     });
@@ -519,19 +519,26 @@ pub fn register_change_callbacks(window: &MainWindow, base_year: i32, link: &Eng
     let engine = link.clone();
     window.on_datetime_override_toggled(move || {
         if let Some(win) = window_weak.upgrade() {
-            let date_time = win.get_datetime();
-            if date_time.use_custom {
+            if win.get_datetime().use_custom {
                 let now = time::OffsetDateTime::now_utc();
-                win.set_datetime(DateTimeSettings {
-                    hour: f32::from(now.hour())
-                        + f32::from(now.minute()) / 60.0
-                        + f32::from(now.second()) / 3600.0,
-                    day_of_year: f32::from(now.ordinal()),
-                    year_index: now.year() - base_year,
-                    ..date_time
-                });
+                set_fixed_time(&win, now.replace_nanosecond(0).unwrap_or(now));
             }
-            update_datetime_labels(&win, base_year);
+            update_datetime_labels(&win);
+            engine.push_params(&win);
+        }
+    });
+
+    let window_weak = window.as_weak();
+    let engine = link.clone();
+    window.on_datetime_edited(move || {
+        if let Some(win) = window_weak.upgrade() {
+            let settings = win.get_datetime();
+            let utc = win.get_time_zone_utc();
+            let at = instant_of_sliders(settings.hour, settings.day_of_year, settings.year, |at| {
+                display_offset(utc, at)
+            });
+            set_fixed_time(&win, at);
+            update_datetime_labels(&win);
             engine.push_params(&win);
         }
     });
@@ -806,6 +813,7 @@ pub fn register_color_text(window: &MainWindow) {
 /// place in the app or in `main.slint` states a default.
 pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     window.set_defaults(scene_settings(&SceneParams::default()));
+    window.set_time_zone_utc(config.time_zone == config::TimeZoneChoice::Utc);
     apply_params_to_window(window, &SceneParams::from_config(config));
     update_solar_time_label(window);
 
@@ -817,7 +825,7 @@ pub fn apply_config_to_window(window: &MainWindow, config: &AppConfig) {
     )]
     window.set_auto_refresh_interval(config.auto_refresh_interval_minutes as f32);
 
-    update_datetime_labels(window, datetime::base_year());
+    update_datetime_labels(window);
 }
 
 /// The scene as the window holds it: one struct per group of the Advanced
@@ -849,7 +857,7 @@ pub fn scene_settings(params: &SceneParams) -> SceneSettings {
             offset_x: cam.offset_x,
             offset_y: cam.offset_y,
         },
-        datetime: datetime_settings(params.time),
+        datetime: datetime_settings(params.time, |_| time::UtcOffset::UTC),
         clouds: CloudSettings {
             enabled: params.clouds_enabled,
             opacity: params.cloud_opacity,
@@ -965,6 +973,7 @@ pub fn apply_params_to_window(window: &MainWindow, params: &SceneParams) {
     window.set_camera_orientation(camera_orientation);
     window.set_framing(framing);
     window.set_datetime(date_time);
+    refresh_datetime_sliders(window);
     window.set_clouds(clouds);
     window.set_celestial(celestial);
     window.set_atmosphere(atmosphere);
@@ -1087,38 +1096,132 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
 /// This is the thin UI-reading layer; the engine turns the result into a
 /// `scene::sky::SkyState` once per frame, which is where the sun direction,
 /// the sky rotation and the planets all come from.
+///
+/// The instant the group holds is the setting, so a push reads back exactly
+/// what was written; the sliders only show it. A group whose instant is
+/// missing, which nothing writes, falls back to its sliders in UTC.
 fn scene_time_of(settings: &DateTimeSettings) -> SceneTime {
-    if settings.use_custom {
-        SceneTime::fixed(instant_of_override(
+    if !settings.use_custom {
+        return SceneTime::Live;
+    }
+    match SceneTime::from_config_string(&settings.instant) {
+        Some(fixed @ SceneTime::Fixed(_)) => fixed,
+        _ => SceneTime::fixed(instant_of_sliders(
             settings.hour,
-            slider_u16(settings.day_of_year),
-            settings.year_index + datetime::base_year(),
-        ))
-    } else {
-        SceneTime::Live
+            settings.day_of_year,
+            settings.year,
+            |_| time::UtcOffset::UTC,
+        )),
     }
 }
 
-/// The time setting as the Date / Time group's switch and sliders, in UTC.
-/// Live time leaves the sliders at noon on the first of January.
-fn datetime_settings(scene_time: SceneTime) -> DateTimeSettings {
-    let base_year = datetime::base_year();
+/// The offset the window shows `at` in: UTC, or the system's offset in force
+/// at that instant, summer time included. A system that cannot say shows UTC.
+#[must_use]
+pub fn display_offset(utc: bool, at: time::OffsetDateTime) -> time::UtcOffset {
+    if utc {
+        time::UtcOffset::UTC
+    } else {
+        time::UtcOffset::local_offset_at(at).unwrap_or(time::UtcOffset::UTC)
+    }
+}
+
+/// An instant as the Date / Time group's Time, Day and Year, in the zone
+/// `offset_at` gives for it.
+#[must_use]
+pub fn sliders_of(
+    at: time::OffsetDateTime,
+    offset_at: impl Fn(time::OffsetDateTime) -> time::UtcOffset,
+) -> (f32, f32, i32) {
+    let local = at.to_offset(offset_at(at));
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "nanoseconds of one second, far inside the mantissa"
+    )]
+    let second = f32::from(local.second()) + local.nanosecond() as f32 / 1e9;
+    let hour = f32::from(local.hour()) + f32::from(local.minute()) / 60.0 + second / 3600.0;
+    (hour, f32::from(local.ordinal()), local.year())
+}
+
+/// The instant the Date / Time group's Time, Day and Year name, read in the
+/// zone `offset_at` gives, to the second.
+///
+/// The year is held to 1900 to 2100 and the day to the year's own. A wall
+/// time that a summer time change repeats is its first occurrence, and one
+/// the change skips is read with the offset before it, which lands after
+/// the gap.
+#[must_use]
+pub fn instant_of_sliders(
+    hour: f32,
+    day_of_year: f32,
+    year: i32,
+    offset_at: impl Fn(time::OffsetDateTime) -> time::UtcOffset,
+) -> time::OffsetDateTime {
+    let year = year.clamp(1900, 2100);
+    let day = slider_u16(day_of_year).clamp(1, datetime::days_in_year(year));
+    let date = time::Date::from_ordinal_date(year, day).unwrap_or(time::Date::MIN);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "seconds of one day, rounded"
+    )]
+    let seconds = (f64::from(hour.clamp(0.0, 24.0)) * 3600.0)
+        .round()
+        .min(86_399.0) as i64;
+    let wall = date.midnight() + time::Duration::seconds(seconds);
+    let before = wall.assume_offset(offset_at(wall.assume_utc() - time::Duration::days(1)));
+    let after = wall.assume_offset(offset_at(wall.assume_utc() + time::Duration::days(1)));
+    let valid = |at: &time::OffsetDateTime| offset_at(*at) == at.offset();
+    let at = [before, after]
+        .into_iter()
+        .filter(valid)
+        .min()
+        .unwrap_or(before);
+    sunlit_core::scene::scene_time::clamp_instant(at)
+}
+
+/// The time setting as the Date / Time group holds it: the switch, the
+/// instant, and the sliders in the zone `offset_at` gives. Live time leaves
+/// the sliders at noon on the first of January of this year.
+fn datetime_settings(
+    scene_time: SceneTime,
+    offset_at: impl Fn(time::OffsetDateTime) -> time::UtcOffset,
+) -> DateTimeSettings {
     match scene_time {
         SceneTime::Live => DateTimeSettings {
             use_custom: false,
+            instant: slint::SharedString::new(),
             hour: 12.0,
             day_of_year: 1.0,
-            year_index: (time::OffsetDateTime::now_utc().year() - base_year).clamp(0, 20),
+            year: time::OffsetDateTime::now_utc().year(),
         },
-        SceneTime::Fixed(at) => DateTimeSettings {
-            use_custom: true,
-            hour: f32::from(at.hour())
-                + f32::from(at.minute()) / 60.0
-                + f32::from(at.second()) / 3600.0,
-            day_of_year: f32::from(at.ordinal()),
-            year_index: (at.year() - base_year).clamp(0, 20),
-        },
+        SceneTime::Fixed(at) => {
+            let (hour, day_of_year, year) = sliders_of(at, offset_at);
+            DateTimeSettings {
+                use_custom: true,
+                instant: scene_time.to_config_string().into(),
+                hour,
+                day_of_year,
+                year,
+            }
+        }
     }
+}
+
+/// Fix the time setting at `at` and show it in the group's sliders.
+fn set_fixed_time(window: &MainWindow, at: time::OffsetDateTime) {
+    let utc = window.get_time_zone_utc();
+    window.set_datetime(datetime_settings(SceneTime::fixed(at), |at| {
+        display_offset(utc, at)
+    }));
+}
+
+/// Show the group's instant in its sliders in the displayed zone, after the
+/// instant or the zone changed.
+pub(crate) fn refresh_datetime_sliders(window: &MainWindow) {
+    if let SceneTime::Fixed(at) = scene_time_of(&window.get_datetime()) {
+        set_fixed_time(window, at);
+    }
+    update_datetime_labels(window);
 }
 
 /// Read all persisted settings from the window's current UI state.
@@ -1168,6 +1271,11 @@ pub fn read_config_from_window_onto(
         auto_refresh_enabled: window.get_auto_refresh_enabled(),
         auto_refresh_interval_minutes: slider_u32(window.get_auto_refresh_interval()),
         overlays_hidden: window.get_overlays_hidden(),
+        time_zone: if window.get_time_zone_utc() {
+            config::TimeZoneChoice::Utc
+        } else {
+            config::TimeZoneChoice::Local
+        },
         texture_resolution,
         display_mode: displays::mode_from_window(window),
         anchor_monitor: displays::anchor_to_store(window, &stored.anchor_monitor),
@@ -1188,24 +1296,136 @@ pub(crate) fn update_solar_time_label(window: &MainWindow) {
     window.set_solar_time_label(datetime::hour_label(solar_time).into());
 }
 
-/// Update the hour label, day label, and max-day-of-year on the window
-/// based on the current datetime slider values.
-fn update_datetime_labels(window: &MainWindow, base_year: i32) {
-    let date_time = window.get_datetime();
-    window.set_hour_label(datetime::hour_label(date_time.hour).into());
+/// Update the Time and Day labels and the Day slider's range from the
+/// group's instant, in the displayed zone: "16:23 UTC+2", "Sun 18 Oct".
+fn update_datetime_labels(window: &MainWindow) {
+    let settings = window.get_datetime();
+    let SceneTime::Fixed(at) = scene_time_of(&settings) else {
+        return;
+    };
+    let local = at.to_offset(display_offset(window.get_time_zone_utc(), at));
+    window.set_hour_label(
+        format!(
+            "{} {}",
+            datetime::hour_label(settings.hour),
+            datetime::zone_label(local.offset())
+        )
+        .into(),
+    );
+    window.set_day_label(datetime::day_label(local.date()).into());
+    window.set_max_day_of_year(i32::from(datetime::days_in_year(local.year())));
+}
 
-    let year = date_time.year_index + base_year;
-    let max_doy = datetime::days_in_year(year);
-    window.set_max_day_of_year(i32::from(max_doy));
+#[cfg(test)]
+mod tests {
+    use time::macros::{datetime, offset};
+    use time::{OffsetDateTime, UtcOffset};
 
-    // Clamp day-of-year if it exceeds the new max (e.g. leap -> non-leap)
-    let day_of_year = date_time.day_of_year.min(f32::from(max_doy));
-    let doy = slider_u16(day_of_year).max(1);
-    window.set_day_label(datetime::month_day_label(doy, year).into());
-    if day_of_year < date_time.day_of_year {
-        window.set_datetime(DateTimeSettings {
-            day_of_year,
-            ..date_time
-        });
+    use super::*;
+
+    /// Central European time as the system would answer it: UTC+2 from 01:00
+    /// UTC on the last Sunday of March to 01:00 UTC on the last Sunday of
+    /// October, in 2024 and 2026, and UTC+1 otherwise.
+    fn berlin(at: OffsetDateTime) -> UtcOffset {
+        let summers = [
+            (
+                datetime!(2024-03-31 01:00 UTC),
+                datetime!(2024-10-27 01:00 UTC),
+            ),
+            (
+                datetime!(2026-03-29 01:00 UTC),
+                datetime!(2026-10-25 01:00 UTC),
+            ),
+        ];
+        if summers.iter().any(|(from, to)| *from <= at && at < *to) {
+            offset!(+2)
+        } else {
+            offset!(+1)
+        }
+    }
+
+    fn utc(_: OffsetDateTime) -> UtcOffset {
+        UtcOffset::UTC
+    }
+
+    /// Instants across a leap day and on either side of both summer time
+    /// changes come back from the sliders as they went in, in either zone.
+    #[test]
+    fn the_sliders_round_trip_an_instant_in_local_time_and_utc() {
+        for at in [
+            datetime!(2024-02-29 23:30 UTC),
+            datetime!(2024-03-01 00:15 UTC),
+            datetime!(2024-12-31 23:59 UTC),
+            datetime!(2026-03-29 00:59 UTC),
+            datetime!(2026-03-29 01:00 UTC),
+            datetime!(2026-10-25 00:00 UTC),
+            datetime!(2026-10-25 02:00 UTC),
+            datetime!(2026-10-18 14:23:45 UTC),
+        ] {
+            for (name, zone) in [
+                ("berlin", berlin as fn(OffsetDateTime) -> UtcOffset),
+                ("utc", utc),
+            ] {
+                let (hour, day, year) = sliders_of(at, zone);
+                assert_eq!(
+                    instant_of_sliders(hour, day, year, zone),
+                    at,
+                    "{at} in {name}"
+                );
+            }
+        }
+    }
+
+    /// The sliders read in the zone: the last half hour of 2024 in UTC is the
+    /// first of 2025 in Berlin, and summer time moves the hour by two.
+    #[test]
+    fn the_sliders_read_the_instant_in_the_displayed_zone() {
+        let (hour, day, year) = sliders_of(datetime!(2024-12-31 23:30 UTC), berlin);
+        assert_eq!((day, year), (1.0, 2025));
+        approx::assert_relative_eq!(hour, 0.5);
+        let (hour, _, _) = sliders_of(datetime!(2026-07-01 12:00 UTC), berlin);
+        approx::assert_relative_eq!(hour, 14.0);
+        let (hour, day, year) = sliders_of(datetime!(2024-02-29 12:00 UTC), utc);
+        assert_eq!((day, year), (60.0, 2024));
+        approx::assert_relative_eq!(hour, 12.0);
+    }
+
+    /// The hour the autumn change repeats reads as its first occurrence, and
+    /// the hour the spring change skips lands after the gap.
+    #[test]
+    fn a_wall_time_a_summer_time_change_repeats_or_skips_has_one_instant() {
+        let day = |at: OffsetDateTime| f32::from(at.ordinal());
+        assert_eq!(
+            instant_of_sliders(2.5, day(datetime!(2026-10-25 00:00 UTC)), 2026, berlin),
+            datetime!(2026-10-25 00:30 UTC)
+        );
+        assert_eq!(
+            instant_of_sliders(2.5, day(datetime!(2026-03-29 00:00 UTC)), 2026, berlin),
+            datetime!(2026-03-29 01:30 UTC)
+        );
+    }
+
+    /// A day past the year's last and a year past 2100 are held to the range.
+    #[test]
+    fn the_sliders_hold_the_day_and_the_year_to_their_range() {
+        assert_eq!(
+            instant_of_sliders(0.0, 366.0, 2025, utc),
+            datetime!(2025-12-31 00:00 UTC)
+        );
+        assert_eq!(
+            instant_of_sliders(12.0, 1.0, 2300, utc),
+            datetime!(2100-01-01 12:00 UTC)
+        );
+    }
+
+    /// The group holds the instant itself, so what it pushes is exactly what
+    /// was written, whatever the sliders' rounding.
+    #[test]
+    fn the_group_reads_back_exactly_the_instant_it_holds() {
+        let at = datetime!(2026-10-18 14:23:45.123 UTC);
+        let settings = datetime_settings(SceneTime::fixed(at), berlin);
+        assert_eq!(scene_time_of(&settings), SceneTime::Fixed(at));
+        let live = datetime_settings(SceneTime::Live, berlin);
+        assert_eq!(scene_time_of(&live), SceneTime::Live);
     }
 }

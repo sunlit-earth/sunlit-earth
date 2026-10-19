@@ -1,16 +1,3 @@
-/// Return the base year for the year `ComboBox` (current year - 10).
-pub fn base_year() -> i32 {
-    time::OffsetDateTime::now_utc().year() - 10
-}
-
-/// Return the (start, end) year range for the year `ComboBox`.
-///
-/// The range is current year +/- 10, yielding 21 entries.
-pub fn year_range() -> (i32, i32) {
-    let current = time::OffsetDateTime::now_utc().year();
-    (current - 10, current + 10)
-}
-
 /// Check whether a given year is a leap year.
 ///
 /// A year is a leap year if it is divisible by 4, except for century
@@ -64,17 +51,6 @@ const MONTH_NAMES: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// Format a day-of-year as a "Mon DD" label (e.g. "Mar 17").
-///
-/// :param doy: Day of the year, 1-based.
-/// :param year: Calendar year (used for leap year detection).
-/// :returns: Formatted string like "Jan 1", "Feb 29", "Dec 31".
-pub fn month_day_label(doy: u16, year: i32) -> String {
-    let (month, day) = day_of_year_to_month_day(doy, year);
-    let name = MONTH_NAMES[(month - 1) as usize];
-    format!("{name} {day}")
-}
-
 /// Decompose a fractional hour (0.0 .. 24.0) into (hour, minute).
 ///
 /// :param h: Fractional hour, e.g. 14.5 means 14:30.
@@ -103,6 +79,40 @@ pub(crate) fn hour_float_to_hm(h: f32) -> (u8, u8) {
 pub fn hour_label(h: f32) -> String {
     let (hour, minute) = hour_float_to_hm(h);
     format!("{hour:02}:{minute:02}")
+}
+
+/// A zone as the window names it, from its offset: "UTC", "UTC+2",
+/// "UTC+5:30", "UTC−3". The system gives no names without a time zone
+/// database, so the offset is the name.
+#[must_use]
+pub fn zone_label(offset: time::UtcOffset) -> String {
+    if offset == time::UtcOffset::UTC {
+        return "UTC".to_owned();
+    }
+    let sign = if offset.is_negative() {
+        '\u{2212}'
+    } else {
+        '+'
+    };
+    let hours = offset.whole_hours().unsigned_abs();
+    let minutes = offset.minutes_past_hour().unsigned_abs();
+    if minutes == 0 {
+        format!("UTC{sign}{hours}")
+    } else {
+        format!("UTC{sign}{hours}:{minutes:02}")
+    }
+}
+
+/// A date as the window shows it beside a slider: "Sun 18 Oct".
+#[must_use]
+pub fn day_label(date: time::Date) -> String {
+    const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    format!(
+        "{} {} {}",
+        WEEKDAYS[usize::from(date.weekday().number_days_from_monday())],
+        date.day(),
+        MONTH_NAMES[usize::from(u8::from(date.month()) - 1)]
+    )
 }
 
 /// Decompose a fractional hour into (hour, minute, second) with types
@@ -138,15 +148,6 @@ mod tests {
     use approx::assert_relative_eq;
 
     use super::*;
-
-    #[test]
-    fn the_year_combo_box_is_centred_on_the_current_year() {
-        let current = time::OffsetDateTime::now_utc().year();
-        let (start, end) = year_range();
-        assert_eq!(start, current - 10);
-        assert_eq!(end, current + 10);
-        assert_eq!(base_year(), start);
-    }
 
     #[test]
     fn leap_years_are_the_ones_the_calendar_says() {
@@ -185,15 +186,21 @@ mod tests {
     }
 
     #[test]
-    fn the_label_names_the_month_and_drops_the_leading_zero() {
-        for (doy, year, expected) in [
-            (1, 2025, "Jan 1"),
-            (76, 2025, "Mar 17"),
-            (60, 2024, "Feb 29"),
-            (365, 2025, "Dec 31"),
-        ] {
-            assert_eq!(month_day_label(doy, year), expected, "day {doy} of {year}");
-        }
+    fn the_day_label_names_the_weekday_the_day_and_the_month() {
+        use time::macros::date;
+        assert_eq!(day_label(date!(2026 - 10 - 18)), "Sun 18 Oct");
+        assert_eq!(day_label(date!(2024 - 02 - 29)), "Thu 29 Feb");
+        assert_eq!(day_label(date!(2026 - 01 - 05)), "Mon 5 Jan");
+    }
+
+    #[test]
+    fn a_zone_is_named_by_its_offset() {
+        use time::macros::offset;
+        assert_eq!(zone_label(offset!(UTC)), "UTC");
+        assert_eq!(zone_label(offset!(+2)), "UTC+2");
+        assert_eq!(zone_label(offset!(+5:30)), "UTC+5:30");
+        assert_eq!(zone_label(offset!(-3)), "UTC\u{2212}3");
+        assert_eq!(zone_label(offset!(-9:30)), "UTC\u{2212}9:30");
     }
 
     #[test]

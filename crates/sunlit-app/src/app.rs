@@ -15,7 +15,6 @@ use sunlit_core::config::{self, AppConfig, QualityTier};
 use sunlit_core::display;
 use sunlit_core::engine::{self, EngineCommand, EngineHandle};
 use sunlit_core::renderer;
-use sunlit_core::scene::datetime;
 
 use crate::MainWindow;
 use crate::cli::{Cli, Commands, Mode, TrayStart};
@@ -156,12 +155,6 @@ fn init_ui(
         resolution_labels,
     )));
 
-    let (base_year, end_year) = datetime::year_range();
-    let year_labels: Vec<slint::SharedString> = (base_year..=end_year)
-        .map(|y| slint::SharedString::from(y.to_string()))
-        .collect();
-    window.set_year_options(slint::ModelRc::new(slint::VecModel::from(year_labels)));
-
     // The query the settings window starts from. The engine re-queries on every
     // publish and announces a layout that moved, which is what replaces this
     // list; `None` is a platform with no way to ask and leaves the group with
@@ -184,7 +177,7 @@ fn init_ui(
 
     displays::set_monitors(screens, monitors);
 
-    ui_callbacks::register_change_callbacks(window, base_year, link);
+    ui_callbacks::register_change_callbacks(window, link);
     ui_callbacks::register_mouse_callbacks(window, link);
     ui_callbacks::register_action_callbacks(window, link, screens);
     ui_callbacks::register_display_callbacks(window, link, screens);

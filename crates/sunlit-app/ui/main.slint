@@ -1,4 +1,4 @@
-import { Slider, Button, Palette, ScrollView } from "std-widgets.slint";
+import { Slider, Button, Palette, ScrollView, SpinBox } from "std-widgets.slint";
 import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, SettingCombo, SettingHeading, SettingGroup } from "widgets.slint";
 import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } from "overlays/common.slint";
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
@@ -35,11 +35,16 @@ export struct FramingSettings {
     offset-y: float,
 }
 
+// The time setting: live time, or the instant `instant` names in RFC 3339 in
+// UTC, which is what the setting is. The three below show that instant in the
+// displayed zone; Rust writes them from it, and an edit of one goes back to
+// Rust through `datetime-edited`, which writes the instant.
 export struct DateTimeSettings {
     use-custom: bool,
+    instant: string,
     hour: float,
     day-of-year: float,
-    year-index: int,
+    year: int,
 }
 
 export struct HazeSettings {
@@ -230,7 +235,11 @@ export component MainWindow inherits Window {
     callback texture-changed();
     callback texture-resolution-changed();
     callback set-wallpaper();
-    in property <[string]> year-options;
+    // Whether times are shown in UTC rather than in the system's zone.
+    in-out property <bool> time-zone-utc;
+    // A slider or the year of the Date / Time group moved: the instant is
+    // written from the three in the displayed zone.
+    callback datetime-edited();
     in property <string> hour-label;
     in property <string> day-label;
     // The Time of day row's reading, formatted in Rust as the hour label is.
@@ -817,7 +826,7 @@ export component MainWindow inherits Window {
 
                                 SettingCheck {
                                     text: "Override date/time";
-                                    hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were, and stops the Earth turning under a camera fixed toward the Sun.";
+                                    hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were, and stops the Earth turning under a camera fixed toward the Sun. The wallpaper keeps this time while the preview plays.";
                                     checked <=> root.datetime.use-custom;
                                     toggled => { root.datetime-override-toggled(); }
                                 }
@@ -827,15 +836,16 @@ export component MainWindow inherits Window {
                                     spacing: 4px;
 
                                     custom-hour-slider := SettingRow {
-                                        label: "Hour";
-                                        hint: "Time of day in UTC, which is what decides the longitude the Sun stands over, and so the side of the Earth a camera fixed toward the Sun looks at.";
+                                        label: "Time";
+                                        hint: "Time of day in the zone shown, which is what decides the longitude the Sun stands over, and so the side of the Earth a camera fixed toward the Sun looks at.";
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 23.99;
                                         value <=> root.datetime.hour;
                                         resettable: false;
                                         value-text: root.hour-label;
-                                        changed => { root.sliders-changed(); }
+                                        value-width: 80px;
+                                        changed => { root.datetime-edited(); }
                                     }
 
                                     custom-day-slider := SettingRow {
@@ -847,16 +857,30 @@ export component MainWindow inherits Window {
                                         value <=> root.datetime.day-of-year;
                                         resettable: false;
                                         value-text: root.day-label;
-                                        changed => { root.sliders-changed(); }
+                                        value-width: 80px;
+                                        changed => { root.datetime-edited(); }
                                     }
 
-                                    SettingCombo {
-                                        label: "Year";
-                                        hint: "Which year that day belongs to. The Sun barely notices; the Moon and the planets do.";
-                                        indent: 8px;
-                                        model: root.year-options;
-                                        current-index <=> root.datetime.year-index;
-                                        selected => { root.sliders-changed(); }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        padding-left: 8px;
+
+                                        Text {
+                                            text: "Year";
+                                            width: 88px - 8px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        year-spinbox := SpinBox {
+                                            minimum: 1900;
+                                            maximum: 2100;
+                                            value <=> root.datetime.year;
+                                            horizontal-stretch: 1;
+                                            edited => { root.datetime-edited(); }
+                                            Tooltip {
+                                                Hint { text: "Which year that day belongs to, from 1900 to 2100. The Sun barely notices; the Moon and the planets do."; }
+                                            }
+                                        }
                                     }
                                 }
                             }

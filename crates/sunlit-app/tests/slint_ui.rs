@@ -4275,6 +4275,38 @@ fn test_a_tap_under_shift_leaves_a_key_held_without_it_at_work() {
     }
 }
 
+/// A held key goes on through a tap of an arrow or of Q under Shift, whose
+/// release ends the key it pressed and judges nothing else.
+#[test]
+fn test_a_tap_of_an_arrow_or_q_under_shift_leaves_a_key_held_without_it_at_work() {
+    use slint::platform::Key;
+
+    let taps: [(&str, slint::SharedString, slint::SharedString); 6] = [
+        ("left", Key::LeftArrow.into(), Key::LeftArrow.into()),
+        ("right", Key::RightArrow.into(), Key::RightArrow.into()),
+        ("up", Key::UpArrow.into(), Key::UpArrow.into()),
+        ("down", Key::DownArrow.into(), Key::DownArrow.into()),
+        ("Q", "Q".into(), "Q".into()),
+        ("Q let go as q", "Q".into(), "q".into()),
+    ];
+    for (name, pressed, released) in taps {
+        let what = format!("Shift + {name} tapped");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        key_down(&window, "w");
+        let_pass(50);
+        key_down(&window, Key::Shift);
+        key_down(&window, pressed);
+        let_pass(20);
+        key_up(&window, released);
+        let moving = camera(&window);
+        let_pass(100);
+        assert_ne!(camera(&window), moving, "{what}: W stops");
+        key_up(&window, "w");
+        release_every_modifier(&window);
+    }
+}
+
 /// A held key goes on through a + typed under the Shift it went down with
 /// and let go as = after Shift, as the US layout gives them.
 #[test]

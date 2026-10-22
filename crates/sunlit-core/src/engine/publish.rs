@@ -155,16 +155,13 @@ impl Engine {
         // minutes on its packs does not spend the cloud budget on them. The
         // tiles the renders want are read in the meantime, since the shots
         // are in the wanted set from the moment they are planned.
-        let clouds_missing = self.clouds_pending();
-        if clouds_missing && !exiting && !self.clouds_waited_out(now) {
-            if !self.wallpaper_owed {
-                info!("wallpaper update deferred until the cloud layer has settled");
-            }
+        if self.clouds_pending() && !exiting && !self.clouds_waited_out(now) {
             self.wallpaper_owed = true;
             self.want_now();
             return;
         }
         // Draws, and with it computes the wanted set with the plan's renders.
+        // A map that landed since the hold was judged is drawn by it.
         self.prepare_export();
         let missing = self.shots_pending();
         if missing && exiting {
@@ -187,7 +184,7 @@ impl Engine {
             );
         }
 
-        if clouds_missing {
+        if self.clouds_pending() {
             if exiting {
                 warn!(
                     "the cloud layer has not settled as the engine stops; the wallpaper goes out \
@@ -225,9 +222,13 @@ impl Engine {
 
     /// Whether the wallpaper owed has waited [`CLOUD_WAIT`] for the cloud layer
     /// by `now`. The wait starts the first time this asks with the cubes
-    /// resident.
+    /// resident, and the log says the update is deferred at that moment, once
+    /// per wait.
     fn clouds_waited_out(&mut self, now: Duration) -> bool {
-        let since = *self.clouds_awaited_since.get_or_insert(now);
+        let since = *self.clouds_awaited_since.get_or_insert_with(|| {
+            info!("wallpaper update deferred until the cloud layer has settled");
+            now
+        });
         now.saturating_sub(since) >= CLOUD_WAIT
     }
 

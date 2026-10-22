@@ -36,7 +36,7 @@ The wait does not apply on the exit path: `publish_wallpaper_at_exit` has no tic
 
 ### 3. Placement inside `publish`
 
-After `check_supported` and `plan_wallpaper`, beside the `cubes_pending` hold, so a platform that cannot set a wallpaper still reports that at once and does not wait. The early return at the top of `publish`, which `tick` comes back through every 50 ms, learns the clouds as a third reason to wait, so the debt stands without re-asking the sink. The log line when the debt is first taken follows the existing ones ("wallpaper update deferred until the cloud layer has settled"), `info!`, once.
+After `check_supported` and `plan_wallpaper`, beside the `cubes_pending` hold, so a platform that cannot set a wallpaper still reports that at once and does not wait. The early return at the top of `publish`, which `tick` comes back through every 50 ms, learns the clouds as a third reason to wait, so the debt stands without re-asking the sink. The log line "wallpaper update deferred until the cloud layer has settled" is an `info!` emitted from `clouds_waited_out` at the moment it starts the count, so it fires once per cloud wait whichever hold took the debt first (departure 1).
 
 The cube hold stays first: the cloud wait is judged only when no cube is pending, and its clock starts then, so a first run that spends minutes building packs does not spend the cloud budget on them.
 
@@ -95,8 +95,10 @@ cargo test
 
 ## Departures
 
-None yet.
+1. **The deferral is logged where the cloud wait starts, not where the debt is first taken.** Decision 3 had the log line follow the cube and tile holds, emitted when `wallpaper_owed` goes from false to true. When the cube hold takes the debt first, `wallpaper_owed` is already true by the time the cubes are resident and the cloud hold is first judged, so the line was never emitted for a wallpaper that waited for cubes and then for clouds, which is exactly the startup case. The count of the wait is the event the line announces and it starts once per wait, so `clouds_waited_out` now logs when its `get_or_insert_with` inserts, and the conditional `info!` on the main path is gone.
 
 ## Validation rounds
 
-None yet.
+Round 1, range a056129..109c76c: 0 major, 5 minor, all fixed in 4d88093 (the code and the tests: the two resets of the wait's start now have cases that fail without them, the failed first poll case fails without the hold, the warning is judged after the export is prepared, the deferral is logged where the wait starts) and 1046fc6 (rendering.md no longer says the clouds never delay a wallpaper, and testing.md describes the new cases). The mutation checks were run against each: removing the clear in `report_wallpaper` fails `a_second_wallpaper_waits_for_the_clouds_as_long_as_the_first`, removing the clear in the cube hold fails `a_cube_that_is_not_resident_starts_the_cloud_wait_over`, forcing `clouds_pending` false and removing `!self.clouds_settled` each fail `a_wallpaper_does_not_wait_on_a_first_poll_that_failed`.
+
+Open item the validator observed: `run_displays` waits for `CloudsSettled` in `headless.rs` and the engine's publish can then wait up to `CLOUD_WAIT` again, so the worst case for `displays --out` with a map that never arrives is about 120 s, inside `RENDER_TEXTURE_TIMEOUT`. Left as is on purpose.

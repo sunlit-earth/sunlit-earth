@@ -1353,20 +1353,24 @@ mod tests {
 
     #[test]
     fn preview_size_below_the_cap_comes_back_as_asked() {
-        for size in [(1, 1), (300, 200), (1023, 641), (1280, 777)] {
-            assert_eq!(preview_target_size(size, QualityTier::Low), size);
+        for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
+            let widest = tier.max_preview_width().min(3841);
+            for size in [(1, 1), (widest / 3, 200), (widest - 1, 641), (widest, 2161)] {
+                assert_eq!(preview_target_size(size, tier), size, "{tier:?}");
+            }
         }
-        assert_eq!(
-            preview_target_size((3841, 2161), QualityTier::High),
-            (3841, 2161)
-        );
     }
 
     #[test]
     fn preview_size_above_the_cap_keeps_the_aspect_at_the_caps_width() {
         for tier in [QualityTier::Low, QualityTier::Medium] {
             let cap = tier.max_preview_width();
-            for (rw, rh) in [(3840, 2160), (2561, 1439), (5000, 917), (cap + 1, 3)] {
+            for (rw, rh) in [
+                (cap * 3, cap * 2 - 1),
+                (cap + 641, 1439),
+                (cap * 4, 917),
+                (cap + 1, 3),
+            ] {
                 let (w, h) = preview_target_size((rw, rh), tier);
                 assert_eq!(w, cap, "{rw}x{rh} at {tier:?}");
                 let ideal = f64::from(rh) * f64::from(cap) / f64::from(rw);
@@ -1395,7 +1399,7 @@ mod tests {
         let high = preview_target_size((3840, 2160), QualityTier::High);
         assert!(low.0 < medium.0);
         assert!(medium.0 < high.0);
-        assert_eq!(high, (3840, 2160));
+        assert_eq!(high.0, QualityTier::High.max_preview_width().min(3840));
     }
 
     fn sun_fixed_live(zoom: f32) -> SceneParams {

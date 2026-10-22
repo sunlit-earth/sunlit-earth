@@ -120,3 +120,5 @@ Steps 1 to 5, on the tree of 473f076, 2026-10-22, on the Windows 11 host:
 - `cargo xtask e2e --target windows`: 18 passed, 0 failed, in 532.80 s, 638 s for the guest. The layout change, the setter line and the plasmashell cases skipped themselves, as they do off Linux and off KDE.
 - `cargo xtask e2e --target linux` (KDE Plasma, X11): 17 passed, 0 failed, in 468.79 s, 535 s for the guest; the session end case is Windows only. The hidden window memory case grew by 16.5 MiB against its 40 MiB limit.
 - `cargo xtask vm down all` afterwards; `vm status` shows no overlays and no run state.
+
+Validation round 1, on e6071d1..a811b9d: no majors, four minors, all fixed. The doc comments on `EngineConfig::preview_size` and `EngineCommand::SetPreviewSize` still said quantized; `docs/testing.md` still named the harness's old 512 x 288 preview; the `preview_target_size` tests wrote the tier caps down as numbers, and now derive their sizes from `max_preview_width`; and `start_viewport_timer`'s doc comment left out the tier cap.

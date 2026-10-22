@@ -290,9 +290,9 @@ impl ViewportSettle {
 ///
 /// Slint has no size-changed callback we can bind from Rust here, and polling
 /// a pair of properties every 200 ms is far cheaper than any alternative. The
-/// engine draws at exactly the size it is sent, so a window resize or a
-/// splitter drag sends one command after the movement stops, rather than one
-/// per poll while it moves.
+/// engine draws at the size it is sent, capped only by the quality tier, so a
+/// window resize or a splitter drag sends one command after the movement
+/// stops, rather than one per poll while it moves.
 fn start_viewport_timer(window: &MainWindow, link: &EngineLink) -> slint::Timer {
     let timer = slint::Timer::default();
     let window_weak = window.as_weak();

@@ -19,7 +19,7 @@ pub enum EngineCommand {
     /// Replace the scene parameters. Coalesced: only the newest survives a
     /// backlog, because intermediate drag positions are not worth rendering.
     UpdateParams(Box<SceneParams>),
-    /// Resize the preview target. Quantized by the engine.
+    /// Resize the preview target, capped in width by the quality tier.
     SetPreviewSize(u32, u32),
     /// Turn preview frames on or off. Off saves the readback when nothing is
     /// looking (the window is hidden, or the client is the render subcommand).

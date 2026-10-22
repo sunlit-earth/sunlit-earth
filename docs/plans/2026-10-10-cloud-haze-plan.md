@@ -142,9 +142,9 @@ The engine gains `EngineEvent::CloudsSettled { drawn: bool }`, sent once per eng
 
 `run_render` waits for the event after `TexturesReady`, and `run_displays` before it sends `RenderWallpaperNow`, whose publish already holds for the textures. Both waits are bounded by a timeout of their own, 60 s, which covers an 8192 x 4096 download of about 5 MB on a slow link and its decode in a debug build. A timeout or `drawn: false` logs a warning naming why and exports without clouds, as today. Neither waits when no cloud is drawn: with `SUNLIT_EARTH_NO_CLOUDS` set there is no cloud source, and with `clouds_enabled` off or both opacities at zero `draws_clouds` is false; in either case the event never comes, so the wait is skipped rather than timed out.
 
-The app's own publishes do not change. The engine keeps treating the clouds as an overlay a wallpaper does not wait for, because a session publishes again within the hour and a session offline would otherwise never publish.
+The app's own publishes were first left alone, the engine treating the clouds as an overlay a wallpaper does not wait for. That left the first wallpaper of a run without clouds whenever the tile cache was warm, and [2026-10-22-wallpaper-waits-for-clouds-plan.md](2026-10-22-wallpaper-waits-for-clouds-plan.md) reversed it: the engine's publish gate now holds a wallpaper until `CloudsSettled` has gone out, for `CLOUD_WAIT` (60 s on the injected clock) at the most, and only for that first answer, so a session offline for hours still publishes on schedule. The running app still ignores the event itself.
 
-Not chosen: making the clouds part of `TexturesReady`. That event gates every publish of the running app, which the paragraph above keeps as it is.
+Not chosen: making the clouds part of `TexturesReady`. The cube hold has no bound, and a cloud layer that never answers must not hold a wallpaper for good, so the cloud wait is a separate, bounded hold in `Engine::publish`.
 
 ### 11. Not chosen
 

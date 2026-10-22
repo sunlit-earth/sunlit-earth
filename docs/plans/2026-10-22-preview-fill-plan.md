@@ -112,4 +112,11 @@ None yet.
 
 ## Validation Record
 
-Nothing yet.
+Steps 1 to 5, on the tree of 473f076, 2026-10-22, on the Windows 11 host:
+
+- `cargo fmt --check`: clean.
+- `cargo clippy --all-targets`: no warnings.
+- `cargo test`: every target passed, among them the engine target's 138 cases, the golden target's 25 with no reference changed, render_pipeline's 51, the soak, `sunlit-earth`'s 122 unit tests with the five `ViewportSettle` cases, and `slint_ui`'s 132.
+- `cargo xtask e2e --target windows`: 18 passed, 0 failed, in 532.80 s, 638 s for the guest. The layout change, the setter line and the plasmashell cases skipped themselves, as they do off Linux and off KDE.
+- `cargo xtask e2e --target linux` (KDE Plasma, X11): 17 passed, 0 failed, in 468.79 s, 535 s for the guest; the session end case is Windows only. The hidden window memory case grew by 16.5 MiB against its 40 MiB limit.
+- `cargo xtask vm down all` afterwards; `vm status` shows no overlays and no run state.

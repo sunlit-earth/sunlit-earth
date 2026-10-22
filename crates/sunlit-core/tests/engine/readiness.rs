@@ -32,7 +32,7 @@ const SCREEN: (u32, u32) = (1920, 1080);
 /// One of the engine's ticks on the mock clock.
 const TICK: Duration = Duration::from_millis(50);
 
-/// Over Africa, at the zoom where the harness's 512 x 288 preview wants the
+/// Over Africa, at the zoom where the harness's 512 x 256 preview wants the
 /// coarser tiled level alone and a 1920 x 1080 screen the finer one nearly
 /// everywhere: 30 tiles against 20 and 142.
 fn view() -> SceneParams {

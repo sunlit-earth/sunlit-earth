@@ -17,8 +17,8 @@ use crate::support;
 use crate::test_support::{self, ScratchDir};
 use crate::textures::blend_params;
 
-/// The size the preview quantizes to for every group here, and the size the
-/// cases that read pixels export at.
+/// The preview's size for every group here, and the size the cases that read
+/// pixels export at.
 pub(crate) const FRAME: (u32, u32) = (512, 256);
 
 /// `test_params` with the Moon and the Milky Way switched back on.

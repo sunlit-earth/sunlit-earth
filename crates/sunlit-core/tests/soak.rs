@@ -374,7 +374,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
     // sun-position schedule is exercised too.
     params.time = sunlit_core::scene::scene_time::SceneTime::Live;
 
-    let mut config = EngineConfig::headless((512, 288));
+    let mut config = EngineConfig::headless((512, 256));
     config.params = params;
     // Nothing is looking at the preview: this is the hidden-window scenario.
     config.preview_enabled = false;

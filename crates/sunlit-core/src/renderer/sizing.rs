@@ -1,13 +1,8 @@
-//! How large a frame is drawn, and with how many samples.
+//! How many samples a frame is drawn with.
 //!
 //! Policy the settings window and the engine ask for before any GPU object
 //! exists: which anti-aliasing options an adapter and a quality tier leave on
-//! offer, which sample count a request resolves to, and the granularity a
-//! viewport is quantized to.
-
-/// Render dimensions are rounded to this granularity to avoid
-/// creating new GPU textures on every pixel change during resize.
-const SIZE_GRANULARITY: u32 = 64;
+//! offer and which sample count a request resolves to.
 
 /// Build the anti-aliasing option labels and the sample count behind each.
 ///
@@ -54,16 +49,6 @@ pub(crate) fn resolve_sample_count(requested: u32, supported: &[u32], max_sample
         .max()
         .or_else(|| allowed.iter().copied().min())
         .unwrap_or(1)
-}
-
-/// Quantize width and height down to a multiple of `SIZE_GRANULARITY`, never
-/// below one granularity unit in either dimension. Down rather than to the
-/// nearest, so a render target above that floor is never larger than what was
-/// asked for; below it, one granularity unit is the smallest target there is.
-pub(crate) fn quantize_to_granularity(w: u32, h: u32) -> (u32, u32) {
-    let qw = (w / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
-    let qh = (h / SIZE_GRANULARITY).max(1) * SIZE_GRANULARITY;
-    (qw, qh)
 }
 
 #[cfg(test)]
@@ -175,41 +160,6 @@ mod tests {
                          (requested {requested}, cap {cap})"
                     );
                 }
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // quantize_to_granularity
-    // -----------------------------------------------------------------------
-
-    /// Each dimension comes back as the largest whole number of granules that
-    /// fits in it, and never zero. Stated as the property rather than as
-    /// numbers, because the granularity is a constant the renderer may change.
-    #[test]
-    fn quantization_floors_each_dimension_to_a_whole_granule() {
-        let granule = SIZE_GRANULARITY;
-        for (width, height) in [
-            (0, 0),
-            (granule - 1, granule - 1),
-            (granule, granule),
-            (granule + 1, granule + 1),
-            (granule * 2, granule * 2),
-            (granule * 2 + 1, granule * 3 + 8),
-            (1920, 1080),
-        ] {
-            let (quantized_width, quantized_height) = quantize_to_granularity(width, height);
-            for (requested, quantized) in [(width, quantized_width), (height, quantized_height)] {
-                assert_eq!(quantized % granule, 0, "{requested} is not whole granules");
-                assert!(quantized >= granule, "{requested} quantized to nothing");
-                assert!(
-                    quantized <= requested.max(granule),
-                    "{requested} quantized up to {quantized}"
-                );
-                assert!(
-                    quantized + granule > requested,
-                    "{requested} quantized to {quantized}, a whole granule short"
-                );
             }
         }
     }

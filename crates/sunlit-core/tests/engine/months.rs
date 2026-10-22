@@ -596,7 +596,7 @@ fn the_live_clock_reads_the_next_month_ahead_and_crosses_without_a_wait() {
     let april = hand_over(2026, 4);
     let clock = Arc::new(MockClock::new(april - time::Duration::hours(2)));
     let gate = TileGate::default();
-    // The harness's preview is 512 x 256 once its size is quantized.
+    // The size of the harness's preview.
     let sink = Arc::new(RecordingSink::new(vec![screen("only", 0, 512, 256, true)]));
     let (clock_for_config, gate_for_config, sink_for_config) =
         (Arc::clone(&clock), gate.clone(), Arc::clone(&sink));

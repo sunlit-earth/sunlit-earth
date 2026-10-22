@@ -21,7 +21,7 @@ pub use sizing::build_aa_options;
 pub use slots::{SlotLayout, TEXTURE_LABELS};
 pub use surface::surface_sampler_descriptor;
 
-pub(crate) use sizing::{quantize_to_granularity, resolve_sample_count};
+pub(crate) use sizing::resolve_sample_count;
 pub(crate) use surface::{SurfaceFormats, SurfaceLayer};
 
 use std::path::PathBuf;
@@ -181,8 +181,8 @@ impl Renderer {
         self.last_state.is_some()
     }
 
-    /// Resize the offscreen targets. The caller is expected to have quantized
-    /// the size already; identical sizes are a no-op.
+    /// Resize the offscreen targets to `width` by `height`, neither of which
+    /// may be zero. Identical sizes are a no-op.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         if width == self.render_width && height == self.render_height {
             return;

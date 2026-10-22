@@ -10,8 +10,8 @@
 use crate::color::Rgb8;
 use crate::config::AppConfig;
 use crate::scene::camera::{CameraParams, held_longitude, longitude_of};
+use crate::scene::scene_time::SceneTime;
 use crate::scene::sky::SkyState;
-use crate::scene::sun::DateTimeInput;
 
 /// Radius of the cloud shell, just above the surface.
 pub(crate) const CLOUD_SPHERE_RADIUS: f32 = 1.0015;
@@ -34,7 +34,7 @@ const GAMMA_MAX: f32 = 3.0;
 
 /// Everything that determines the rendered image, except the frame's
 /// resolution and sky state (both derived: resolution from the target, sky
-/// state from the clock plus `datetime`).
+/// state from the clock plus `time`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -152,8 +152,9 @@ pub struct SceneParams {
     pub night_gamma: f32,
     pub night_saturation: f32,
 
-    /// Which instant to render for: live UTC, or a user-chosen date and time.
-    pub datetime: DateTimeInput,
+    /// The time setting: live time, or one instant. The wallpaper and every
+    /// export draw at it; the preview leaves it only during an excursion.
+    pub time: SceneTime,
 }
 
 impl Default for SceneParams {
@@ -237,17 +238,7 @@ impl SceneParams {
             day_saturation: config.day_saturation,
             night_gamma: config.night_gamma,
             night_saturation: config.night_saturation,
-            datetime: DateTimeInput {
-                use_custom: config.use_custom_datetime,
-                custom_hour: config.custom_hour,
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a day of the year, which the window and the file both keep inside one"
-                )]
-                custom_day_of_year: config.custom_day_of_year as u16,
-                custom_year: config.custom_year,
-            },
+            time: config.scene_time,
         }
     }
 
@@ -323,10 +314,7 @@ impl SceneParams {
         config.day_saturation = self.day_saturation;
         config.night_gamma = self.night_gamma;
         config.night_saturation = self.night_saturation;
-        config.use_custom_datetime = self.datetime.use_custom;
-        config.custom_hour = self.datetime.custom_hour;
-        config.custom_day_of_year = f32::from(self.datetime.custom_day_of_year);
-        config.custom_year = self.datetime.custom_year;
+        config.scene_time = self.time;
     }
 
     /// The camera in the Earth-fixed world frame, at the instant of `sky`.
@@ -436,8 +424,8 @@ macro_rules! scene_digest {
     ) => {
         /// Dirty-check snapshot of a `SceneParams`.
         ///
-        /// `datetime` is deliberately absent: the derived sky state is compared
-        /// separately, so a live UTC render changes even though `datetime` does not.
+        /// `time` is deliberately absent: the derived sky state is compared
+        /// separately, so a live render changes even though `time` does not.
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub(crate) struct ParamsDigest {
             pub camera: CameraParams,
@@ -634,12 +622,11 @@ scene_digest! {
     }
     absent {
         // The instant to render for. The digest compares the sun direction it
-        // derives instead, so a live UTC render changes while `datetime` does
-        // not.
-        datetime,
+        // derives instead, so a live render changes while `time` does not.
+        time,
         // The time of day, which places the camera only together with the
         // instant, so the frame key compares the camera it resolves for the
-        // reason `datetime` is absent. In the Sun-fixed mode it also reaches
+        // reason `time` is absent. In the Sun-fixed mode it also reaches
         // the held camera the digest copies; the Earth-fixed mode does not read
         // it at all, which is why the table cannot have a row for it.
         solar_time,
@@ -865,13 +852,10 @@ mod tests {
     }
 
     #[test]
-    fn datetime_is_not_part_of_the_digest() {
+    fn the_time_is_not_part_of_the_digest() {
         let a = params();
         let b = SceneParams {
-            datetime: DateTimeInput {
-                custom_hour: 3.0,
-                ..a.datetime
-            },
+            time: SceneTime::fixed(time::macros::datetime!(2026-01-01 03:00 UTC)),
             ..a
         };
         assert_ne!(a, b, "the params themselves differ");

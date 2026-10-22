@@ -1,9 +1,16 @@
-import { Slider, Button, Palette, ScrollView } from "std-widgets.slint";
+import { Slider, Button, Palette, ScrollView, SpinBox } from "std-widgets.slint";
 import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, SettingCombo, SettingHeading, SettingGroup } from "widgets.slint";
+import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } from "overlays/common.slint";
+import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
+import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
+import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
 export { TrayIcon } from "tray.slint";
+export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
+export { OverlayHints, OverlayStyle } from "overlays/common.slint";
+export { TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 // The settings behind the Advanced section, one struct per group, nested the
 // way the panel nests its subsections. The nesting is the one statement of
@@ -30,11 +37,16 @@ export struct FramingSettings {
     offset-y: float,
 }
 
+// The time setting: live time, or the instant `instant` names in RFC 3339 in
+// UTC, which is what the setting is. The three below show that instant in the
+// displayed zone; Rust writes them from it, and an edit of one goes back to
+// Rust through `datetime-edited`, which writes the instant.
 export struct DateTimeSettings {
     use-custom: bool,
+    instant: string,
     hour: float,
     day-of-year: float,
-    year-index: int,
+    year: int,
 }
 
 export struct HazeSettings {
@@ -162,6 +174,7 @@ export struct SceneSettings {
 }
 
 export component MainWindow inherits Window {
+    forward-focus: preview-keys;
     title: "Sunlit Earth " + root.version;
     // The SVG master rather than a baked raster: Slint asks for the icon at 64
     // logical pixels times the scale factor, so a vector source lands exactly
@@ -224,7 +237,11 @@ export component MainWindow inherits Window {
     callback texture-changed();
     callback texture-resolution-changed();
     callback set-wallpaper();
-    in property <[string]> year-options;
+    // Whether times are shown in UTC rather than in the system's zone.
+    in-out property <bool> time-zone-utc;
+    // A slider or the year of the Date / Time group moved: the instant is
+    // written from the three in the displayed zone.
+    callback datetime-edited();
     in property <string> hour-label;
     in property <string> day-label;
     // The Time of day row's reading, formatted in Rust as the hour label is.
@@ -238,6 +255,67 @@ export component MainWindow inherits Window {
     callback mouse-drag-tilt(float, float);
     callback mouse-scroll(float);
     callback apply-preset(int);
+
+    // The camera panel over the preview. A stick reports its deflection,
+    // right and up positive, and the seconds since its previous report; the
+    // steps, the resets and the zoom buttons ease toward their target, and
+    // Rust keeps `camera-easing` set while one is on its way so the ease
+    // timer reports the seconds that pass.
+    callback camera-stick(CameraStick, float, float, float);
+    callback camera-orbit-step(int, int);
+    callback camera-roll(float);
+    callback camera-reset(CameraReset);
+    callback camera-zoom-step(int);
+    callback camera-zoom-rate(int, float);
+    callback camera-ease-tick(float);
+    in property <bool> camera-easing;
+    // Whether the camera panel and the time bar are hidden behind the button
+    // that brings them back, which H toggles. Saved with the window's other
+    // settings.
+    in-out property <bool> overlays-hidden;
+    // The sheet of every gesture and shortcut, which F1 or Ctrl + ? opens.
+    in-out property <bool> shortcut-sheet-open;
+
+    // The time bar. Rust writes what it shows; the transport's callbacks act
+    // on the excursion and the tracks', exact entry's and Now's on the time
+    // setting. The last three properties are Rust's memory of the last
+    // frame's instant, of what the shading was drawn for and of the year the
+    // date track's marks were placed for.
+    in property <TimeBarView> time-bar;
+    in property <[int]> time-ladder;
+    in property <int> time-longest-ladder;
+    in property <[RateChoice]> time-rates;
+    in property <[SeasonMark]> time-seasons;
+    in property <[float]> time-month-ticks;
+    in property <image> time-shading;
+    in-out property <bool> time-bar-pinned;
+    in-out property <string> time-frame-instant;
+    in-out property <string> time-shading-key;
+    in-out property <string> time-year-key;
+    callback time-toggle-play();
+    callback time-pause();
+    callback time-rate(int);
+    // J and L: -1 and 1. Returns whether the step changed the speed or
+    // whether play runs.
+    callback time-shuttle(int) -> bool;
+    callback time-reverse();
+    // Forward or back, and the bigger step.
+    callback time-skip(bool, bool);
+    // Play runs the date rather than the clock.
+    callback time-kind(bool);
+    callback time-now();
+    callback time-end();
+    // A track was pressed or dragged: the date track or the time track, and
+    // where along it from 0 to 1.
+    callback time-track(bool, float);
+    callback time-exact-date(int, int, int);
+    callback time-exact-time(int, int);
+    callback time-zone-toggled();
+    // A second passed while live.
+    callback time-tick();
+    // The date at a place along the date track, "18 Oct".
+    pure callback time-date-at(float) -> string;
+
     callback load-defaults();
     callback reset();
     callback datetime-override-toggled();
@@ -278,6 +356,13 @@ export component MainWindow inherits Window {
     out property <length> panel-min-width: panel.min-width;
     out property <length> panel-x: panel.x;
     out property <length> window-min-width: root.min-width;
+    // Where the date and time pickers open, in the window. The testing
+    // backend reports a popup's elements from the popup's own origin, so a
+    // test reads the origin here.
+    out property <length> date-picker-x: image-container.x + time-bar.x + time-bar.date-picker-x;
+    out property <length> date-picker-y: image-container.y + time-bar.y + time-bar.date-picker-y;
+    out property <length> time-picker-x: image-container.x + time-bar.x + time-bar.time-picker-x;
+    out property <length> time-picker-y: image-container.y + time-bar.y + time-bar.time-picker-y;
 
     // What the splitter drag stores, and what the window opens at. The
     // sidebar's real width is this held between the panel's own floor and
@@ -790,7 +875,7 @@ export component MainWindow inherits Window {
 
                                 SettingCheck {
                                     text: "Override date/time";
-                                    hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were, and stops the Earth turning under a camera fixed toward the Sun.";
+                                    hint: "Render a chosen instant instead of the passing one, which freezes the Sun, the Moon and the stars where they were, and stops the Earth turning under a camera fixed toward the Sun. The wallpaper keeps this time while the preview plays.";
                                     checked <=> root.datetime.use-custom;
                                     toggled => { root.datetime-override-toggled(); }
                                 }
@@ -800,15 +885,16 @@ export component MainWindow inherits Window {
                                     spacing: 4px;
 
                                     custom-hour-slider := SettingRow {
-                                        label: "Hour";
-                                        hint: "Time of day in UTC, which is what decides the longitude the Sun stands over, and so the side of the Earth a camera fixed toward the Sun looks at.";
+                                        label: "Time";
+                                        hint: "Time of day in the zone shown, which is what decides the longitude the Sun stands over, and so the side of the Earth a camera fixed toward the Sun looks at.";
                                         indent: 8px;
                                         minimum: 0.0;
                                         maximum: 23.99;
                                         value <=> root.datetime.hour;
                                         resettable: false;
                                         value-text: root.hour-label;
-                                        changed => { root.sliders-changed(); }
+                                        value-width: 80px;
+                                        changed => { root.datetime-edited(); }
                                     }
 
                                     custom-day-slider := SettingRow {
@@ -820,16 +906,30 @@ export component MainWindow inherits Window {
                                         value <=> root.datetime.day-of-year;
                                         resettable: false;
                                         value-text: root.day-label;
-                                        changed => { root.sliders-changed(); }
+                                        value-width: 80px;
+                                        changed => { root.datetime-edited(); }
                                     }
 
-                                    SettingCombo {
-                                        label: "Year";
-                                        hint: "Which year that day belongs to. The Sun barely notices; the Moon and the planets do.";
-                                        indent: 8px;
-                                        model: root.year-options;
-                                        current-index <=> root.datetime.year-index;
-                                        selected => { root.sliders-changed(); }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        padding-left: 8px;
+
+                                        Text {
+                                            text: "Year";
+                                            width: 88px - 8px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        year-spinbox := SpinBox {
+                                            minimum: 1900;
+                                            maximum: 2100;
+                                            value <=> root.datetime.year;
+                                            horizontal-stretch: 1;
+                                            edited => { root.datetime-edited(); }
+                                            Tooltip {
+                                                Hint { text: "Which year that day belongs to, from 1900 to 2100. The Sun barely notices; the Moon and the planets do."; }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1727,6 +1827,7 @@ export component MainWindow inherits Window {
         width: root.width - self.x;
         height: root.height;
         background: black;
+        clip: true;
 
         Image {
             source: rendered-image;
@@ -1741,11 +1842,415 @@ export component MainWindow inherits Window {
         property <bool> right-held: false;
         property <bool> middle-held: false;
 
+        // The keys held down for the controls that run while held: the
+        // arrows and W A S D, + and -, Q and E, and the modifiers that turn
+        // them from orbit into look or frame.
+        property <bool> key-left;
+        property <bool> key-right;
+        property <bool> key-up;
+        property <bool> key-down;
+        property <bool> key-w;
+        property <bool> key-a;
+        property <bool> key-s;
+        property <bool> key-d;
+        property <bool> key-plus;
+        property <bool> key-minus;
+        property <bool> key-q;
+        property <bool> key-e;
+        property <bool> key-shift;
+        property <bool> key-control;
+        property <bool> key-altgr;
+        // Ctrl and Alt by their keys' own events: on Windows, Slint reports
+        // neither in the modifiers of a key whose text Ctrl + Alt changed as
+        // AltGr would.
+        property <bool> left-control-down;
+        property <bool> right-control-down;
+        property <bool> alt-down;
+        // The modifiers, as `modifiers-of` counts them, of the last press or
+        // release of each key held by its text: while it is held, its press's.
+        property <int> w-under;
+        property <int> a-under;
+        property <int> s-under;
+        property <int> d-under;
+        property <int> plus-under;
+        property <int> minus-under;
+        property <int> q-under;
+        property <int> e-under;
+        property <int> shuttle-under;
+        property <bool> held-left: self.key-left || self.key-a;
+        property <bool> held-right: self.key-right || self.key-d;
+        property <bool> held-up: self.key-up || self.key-w;
+        property <bool> held-down: self.key-down || self.key-s;
+        property <bool> arrows-held: self.held-left || self.held-right || self.held-up || self.held-down;
+        property <bool> any-key-held: self.arrows-held || self.key-plus || self.key-minus || self.key-q || self.key-e;
+        // The control the held keys work, by the name of its gesture.
+        property <string> key-gesture: self.arrows-held ? (self.key-control ? "frame" : self.key-shift ? "look" : "orbit")
+            : self.key-q || self.key-e ? "roll"
+            : self.key-plus || self.key-minus ? "zoom"
+            : "";
+        property <duration> key-tick;
+        // J or L held, -1 or 1, and 0 for neither. A press steps at once;
+        // held, the key steps again after `shuttle-delay` and then every
+        // `shuttle-repeat`, until it is let go, K, Space, 0 or R ends it, or a
+        // step changes nothing.
+        property <int> key-shuttle;
+        property <bool> shuttle-repeating;
+        property <duration> shuttle-delay: 400ms;
+        property <duration> shuttle-repeat: 200ms;
+
+        function release-keys-held-by-text() {
+            image-container.key-w = false;
+            image-container.key-a = false;
+            image-container.key-s = false;
+            image-container.key-d = false;
+            image-container.key-plus = false;
+            image-container.key-minus = false;
+            image-container.key-q = false;
+            image-container.key-e = false;
+            image-container.key-shuttle = 0;
+        }
+
+        function release-keys() {
+            image-container.release-keys-held-by-text();
+            image-container.key-left = false;
+            image-container.key-right = false;
+            image-container.key-up = false;
+            image-container.key-down = false;
+            image-container.key-shift = false;
+            image-container.key-control = false;
+            image-container.key-altgr = false;
+            image-container.left-control-down = false;
+            image-container.right-control-down = false;
+            image-container.alt-down = false;
+        }
+
+        // The skip a key asks for: 1 forward, 2 forward by the bigger step,
+        // -1 and -2 back, 0 for none. The text a key gives with Shift depends
+        // on the layout, so with Shift held the comma and period keys are
+        // read as the characters they give on the common ones.
+        function skip-of(event: KeyEvent) -> int {
+            if event.text == "," {
+                return event.modifiers.shift ? -2 : -1;
+            }
+            if event.text == "." {
+                return event.modifiers.shift ? 2 : 1;
+            }
+            if event.modifiers.shift && (event.text == "<" || event.text == ";") {
+                return -2;
+            }
+            if event.modifiers.shift && (event.text == ">" || event.text == ":") {
+                return 2;
+            }
+            return 0;
+        }
+
+        // Shift, Alt, and AltGr or Ctrl + Alt, the modifiers that change the
+        // text a key gives, as one number that differs whenever one of them
+        // does.
+        function modifiers-of(event: KeyEvent) -> int {
+            let alt = event.modifiers.alt || image-container.alt-down;
+            let control = event.modifiers.control || image-container.left-control-down || image-container.right-control-down;
+            return (event.modifiers.shift ? 1 : 0) + (alt ? 2 : 0) + (image-container.key-altgr || (control && alt) ? 4 : 0);
+        }
+
+        function let-go-of-keys-pressed-under-other-modifiers(modifiers: int) {
+            if image-container.w-under != modifiers {
+                image-container.key-w = false;
+            }
+            if image-container.a-under != modifiers {
+                image-container.key-a = false;
+            }
+            if image-container.s-under != modifiers {
+                image-container.key-s = false;
+            }
+            if image-container.d-under != modifiers {
+                image-container.key-d = false;
+            }
+            if image-container.plus-under != modifiers {
+                image-container.key-plus = false;
+            }
+            if image-container.minus-under != modifiers {
+                image-container.key-minus = false;
+            }
+            if image-container.q-under != modifiers {
+                image-container.key-q = false;
+            }
+            if image-container.e-under != modifiers {
+                image-container.key-e = false;
+            }
+            if image-container.shuttle-under != modifiers {
+                image-container.key-shuttle = 0;
+            }
+        }
+
+        // Whether a release with this text lets go of a key the preview holds.
+        function lets-go-of-a-held-key(event: KeyEvent) -> bool {
+            let text = event.text.to-lowercase();
+            return text == Key.LeftArrow ? image-container.key-left
+                : text == Key.RightArrow ? image-container.key-right
+                : text == Key.UpArrow ? image-container.key-up
+                : text == Key.DownArrow ? image-container.key-down
+                : text == "w" ? image-container.key-w
+                : text == "a" ? image-container.key-a
+                : text == "s" ? image-container.key-s
+                : text == "d" ? image-container.key-d
+                : text == "+" || text == "=" ? image-container.key-plus
+                : text == "-" ? image-container.key-minus
+                : text == "q" ? image-container.key-q
+                : text == "e" ? image-container.key-e
+                : text == "j" ? image-container.key-shuttle == -1
+                : text == "l" ? image-container.key-shuttle == 1
+                : false;
+        }
+
+        // Track a key going down or up. Returns whether the key is one of
+        // the preview's, so the others go on to the window. Ctrl, Alt and
+        // the Windows key decide only whether a press is the preview's: a
+        // release ends what the key held whatever is down with it.
+        //
+        // Alt, AltGr, and Ctrl with Alt, which Windows takes for AltGr, let
+        // go of the keys held by their text when they go down: under them
+        // many layouts give those keys' releases no text, and Slint drops a
+        // key event without text, so the release would never come. A key's
+        // repeated presses hold nothing again: the key stays stopped until
+        // it is let go and pressed anew.
+        function track-key(event: KeyEvent, down: bool) -> bool {
+            if down && !image-container.any-key-held {
+                image-container.key-tick = animation-tick();
+            }
+            image-container.key-shift = event.modifiers.shift;
+            image-container.key-control = event.modifiers.control;
+            if event.text == Key.Shift || event.text == Key.ShiftR {
+                image-container.key-shift = down;
+                return false;
+            }
+            if event.text == Key.Control || event.text == Key.ControlR {
+                if down && (image-container.alt-down || event.modifiers.alt) {
+                    image-container.release-keys-held-by-text();
+                }
+                image-container.key-control = down;
+                if event.text == Key.Control {
+                    image-container.left-control-down = down;
+                } else {
+                    image-container.right-control-down = down;
+                }
+                return false;
+            }
+            if event.text == Key.Alt {
+                if down {
+                    image-container.release-keys-held-by-text();
+                }
+                image-container.alt-down = down;
+                return false;
+            }
+            // Slint counts AltGr in no modifier of a key event.
+            if event.text == Key.AltGr {
+                if down {
+                    image-container.release-keys-held-by-text();
+                }
+                image-container.key-altgr = down;
+                return false;
+            }
+            let modifiers = image-container.modifiers-of(event);
+            // Shift pressed or let go since a held key's press, or Alt or
+            // AltGr let go since a press under them, can change the text its
+            // release gives, as Shift turns - into _ and 0 into = on many
+            // layouts, so a release that lets go of nothing lets go of the
+            // keys held by text that went down under other modifiers than
+            // those down now.
+            if !down && event.text != Key.Meta && event.text != Key.MetaR && !image-container.lets-go-of-a-held-key(event) {
+                image-container.let-go-of-keys-pressed-under-other-modifiers(modifiers);
+            }
+            if event.text == Key.LeftArrow {
+                image-container.key-left = down;
+            } else if event.text == Key.RightArrow {
+                image-container.key-right = down;
+            } else if event.text == Key.UpArrow {
+                image-container.key-up = down;
+            } else if event.text == Key.DownArrow {
+                image-container.key-down = down;
+            } else if event.text.to-lowercase() == "w" {
+                if !event.repeat {
+                    image-container.key-w = down;
+                    image-container.w-under = modifiers;
+                }
+            } else if event.text.to-lowercase() == "a" {
+                if !event.repeat {
+                    image-container.key-a = down;
+                    image-container.a-under = modifiers;
+                }
+            } else if event.text.to-lowercase() == "s" {
+                if !event.repeat {
+                    image-container.key-s = down;
+                    image-container.s-under = modifiers;
+                }
+            } else if event.text.to-lowercase() == "d" {
+                if !event.repeat {
+                    image-container.key-d = down;
+                    image-container.d-under = modifiers;
+                }
+            } else if down && (event.modifiers.control || event.modifiers.alt || event.modifiers.meta) {
+                return false;
+            } else if event.text == "+" || event.text == "=" {
+                if !event.repeat {
+                    image-container.key-plus = down;
+                    image-container.plus-under = modifiers;
+                }
+            } else if event.text == "-" {
+                if !event.repeat {
+                    image-container.key-minus = down;
+                    image-container.minus-under = modifiers;
+                }
+            } else if event.text.to-lowercase() == "q" {
+                if !event.repeat {
+                    image-container.key-q = down;
+                    image-container.q-under = modifiers;
+                }
+            } else if event.text.to-lowercase() == "e" {
+                if !event.repeat {
+                    image-container.key-e = down;
+                    image-container.e-under = modifiers;
+                }
+            } else if event.text.to-lowercase() == "h" {
+                if down && !event.repeat {
+                    root.overlays-hidden = !root.overlays-hidden;
+                }
+            } else if event.text == " " {
+                if down && !event.repeat {
+                    image-container.key-shuttle = 0;
+                    root.time-toggle-play();
+                }
+            } else if event.text.to-lowercase() == "j" || event.text.to-lowercase() == "l" {
+                let direction = event.text.to-lowercase() == "j" ? -1 : 1;
+                if !down {
+                    if image-container.key-shuttle == direction {
+                        image-container.key-shuttle = 0;
+                    }
+                } else if !event.repeat {
+                    let holding = image-container.key-shuttle != 0;
+                    image-container.shuttle-repeating = false;
+                    image-container.key-shuttle = root.time-shuttle(direction) ? direction : 0;
+                    image-container.shuttle-under = modifiers;
+                    if holding && image-container.key-shuttle != 0 {
+                        shuttle-timer.restart();
+                    }
+                }
+            } else if event.text.to-lowercase() == "k" {
+                if down && !event.repeat {
+                    image-container.key-shuttle = 0;
+                    root.time-pause();
+                }
+            } else if event.text.to-lowercase() == "t" || event.text.to-lowercase() == "g" {
+                if down && !event.repeat {
+                    root.time-kind(event.text.to-lowercase() == "g");
+                }
+            } else if event.text.to-lowercase() == "r" {
+                if down && !event.repeat {
+                    image-container.key-shuttle = 0;
+                    root.time-reverse();
+                }
+            } else if event.text == "0" {
+                if down && !event.repeat {
+                    image-container.key-shuttle = 0;
+                    root.time-now();
+                }
+            } else if image-container.skip-of(event) != 0 {
+                if down && !event.repeat {
+                    root.time-skip(image-container.skip-of(event) > 0, abs(image-container.skip-of(event)) > 1);
+                }
+            } else {
+                return false;
+            }
+            return true;
+        }
+
+        // Every shortcut of the preview. A click on the globe gives it the
+        // focus, and the window forwards its own focus here when it opens.
+        preview-keys := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            focus-on-click: false;
+
+            KeyBinding {
+                keys: @keys(N);
+                activated => { root.camera-reset(CameraReset.north); }
+            }
+
+            KeyBinding {
+                keys: @keys(F1);
+                activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
+            }
+
+            KeyBinding {
+                keys: @keys(Control + Shift? + "?");
+                activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
+            }
+
+            KeyBinding {
+                keys: @keys(Escape);
+                activated => { root.shortcut-sheet-open = false; }
+            }
+
+            key-pressed(event) => {
+                return image-container.track-key(event, true) ? accept : reject;
+            }
+
+            key-released(event) => {
+                return image-container.track-key(event, false) ? accept : reject;
+            }
+
+            focus-lost => {
+                image-container.release-keys();
+            }
+        }
+
+        Timer {
+            interval: 16ms;
+            running: image-container.any-key-held;
+            triggered => {
+                let now = animation-tick();
+                let seconds = (now - image-container.key-tick) / 1s;
+                image-container.key-tick = now;
+                if image-container.arrows-held {
+                    // The square root of the 0.6 the keys run at, since a
+                    // stick squares its deflection.
+                    let reach = 0.7746;
+                    let x = ((image-container.held-right ? 1 : 0) - (image-container.held-left ? 1 : 0)) * reach;
+                    let y = ((image-container.held-up ? 1 : 0) - (image-container.held-down ? 1 : 0)) * reach;
+                    root.camera-stick(
+                        image-container.key-control ? CameraStick.frame : image-container.key-shift ? CameraStick.look : CameraStick.orbit,
+                        x,
+                        y,
+                        seconds);
+                }
+                if image-container.key-plus != image-container.key-minus {
+                    root.camera-zoom-rate(image-container.key-plus ? 1 : -1, seconds);
+                }
+                if image-container.key-q != image-container.key-e {
+                    root.camera-roll((image-container.key-e ? 60 : -60) * seconds);
+                }
+            }
+        }
+
+        shuttle-timer := Timer {
+            interval: image-container.shuttle-repeating ? image-container.shuttle-repeat : image-container.shuttle-delay;
+            running: image-container.key-shuttle != 0;
+            triggered => {
+                image-container.shuttle-repeating = true;
+                if !root.time-shuttle(image-container.key-shuttle) {
+                    image-container.key-shuttle = 0;
+                }
+            }
+        }
+
         viewport-touch := TouchArea {
             width: parent.width;
             height: parent.height;
 
             pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    preview-keys.focus();
+                }
                 if event.button == PointerEventButton.left {
                     image-container.left-held = event.kind == PointerEventKind.down;
                     if event.kind == PointerEventKind.down {
@@ -1786,14 +2291,272 @@ export component MainWindow inherits Window {
                         (self.mouse-y - image-container.last-mouse-y) / 1px
                     );
                 }
+                if self.mouse-x != image-container.last-mouse-x || self.mouse-y != image-container.last-mouse-y {
+                    image-container.note-gesture(image-container.gesture);
+                }
                 image-container.last-mouse-x = self.mouse-x;
                 image-container.last-mouse-y = self.mouse-y;
             }
 
             scroll-event(event) => {
                 root.mouse-scroll(event.delta-y / 1px);
+                image-container.wheel-at = animation-tick();
+                image-container.wheel-turning = true;
+                image-container.note-gesture("zoom");
                 return accept;
             }
+        }
+
+        // The wheel has no held state of its own: it counts as in progress
+        // until it has been still for 350 ms.
+        property <bool> wheel-turning;
+        property <duration> wheel-at;
+        Timer {
+            interval: 50ms;
+            running: image-container.wheel-turning;
+            triggered => {
+                if animation-tick() - image-container.wheel-at >= 350ms {
+                    image-container.wheel-turning = false;
+                }
+            }
+        }
+
+        // The gesture in progress on the globe, by the name its control on
+        // the camera panel goes by.
+        property <string> gesture: self.left-held && self.right-held ? "roll"
+            : self.left-held ? "orbit"
+            : self.right-held ? "frame"
+            : self.middle-held ? "look"
+            : "";
+        // The gestures used on the globe this session, and the controls whose
+        // gesture a tip has named, so the first use of a control can tell
+        // whether its gesture is new. Nothing of it is saved.
+        property <bool> used-orbit;
+        property <bool> used-roll;
+        property <bool> used-zoom;
+        property <bool> used-look;
+        property <bool> used-frame;
+        property <bool> taught-orbit;
+        property <bool> taught-roll;
+        property <bool> taught-zoom;
+        property <bool> taught-look;
+        property <bool> taught-frame;
+        property <string> tip-mouse;
+        property <string> tip-text;
+        property <duration> tip-at;
+        property <bool> tip-shown;
+
+        function note-gesture(gesture: string) {
+            if gesture == "orbit" { image-container.used-orbit = true; }
+            if gesture == "roll" { image-container.used-roll = true; }
+            if gesture == "zoom" { image-container.used-zoom = true; }
+            if gesture == "look" { image-container.used-look = true; }
+            if gesture == "frame" { image-container.used-frame = true; }
+        }
+
+        function teach(control: string) {
+            if control == "orbit" {
+                if image-container.used-orbit || image-container.taught-orbit { return; }
+                image-container.taught-orbit = true;
+            } else if control == "roll" {
+                if image-container.used-roll || image-container.taught-roll { return; }
+                image-container.taught-roll = true;
+            } else if control == "zoom" {
+                if image-container.used-zoom || image-container.taught-zoom { return; }
+                image-container.taught-zoom = true;
+            } else if control == "look" {
+                if image-container.used-look || image-container.taught-look { return; }
+                image-container.taught-look = true;
+            } else if control == "frame" {
+                if image-container.used-frame || image-container.taught-frame { return; }
+                image-container.taught-frame = true;
+            } else {
+                return;
+            }
+            image-container.tip-mouse = control == "orbit" ? "left"
+                : control == "roll" ? "both"
+                : control == "frame" ? "right"
+                : control == "look" ? "middle"
+                : "wheel";
+            image-container.tip-text = control == "orbit" ? "Faster: drag the globe with the left button"
+                : control == "roll" ? "Or drag the globe with left and right held"
+                : control == "frame" ? "Or drag the globe with the right button"
+                : control == "look" ? "Or drag the globe with the middle button"
+                : "Or scroll the mouse wheel over the globe";
+            image-container.tip-at = animation-tick();
+            image-container.tip-shown = true;
+        }
+
+        Timer {
+            interval: 100ms;
+            running: image-container.tip-shown;
+            triggered => {
+                if animation-tick() - image-container.tip-at >= 2800ms {
+                    image-container.tip-shown = false;
+                }
+            }
+        }
+
+        Timer {
+            interval: 16ms;
+            running: root.camera-easing;
+            triggered => {
+                let now = animation-tick();
+                root.camera-ease-tick(min(now - image-container.ease-tick, 100ms) / 1s);
+                image-container.ease-tick = now;
+            }
+        }
+        property <duration> ease-tick;
+        changed ease-requested => {
+            image-container.ease-tick = animation-tick();
+        }
+        property <bool> ease-requested: root.camera-easing;
+
+        camera-panel := CameraPanel {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            tilt: root.camera-orientation.tilt;
+            zoom <=> root.camera-position.zoom;
+            default-zoom: root.defaults.camera-position.zoom;
+            look-modified: root.camera-orientation.yaw != root.defaults.camera-orientation.yaw
+                || root.camera-orientation.pitch != root.defaults.camera-orientation.pitch;
+            frame-modified: root.framing.offset-x != root.defaults.framing.offset-x
+                || root.framing.offset-y != root.defaults.framing.offset-y;
+            visible: !root.overlays-hidden;
+            lit-orbit: image-container.gesture == "orbit" || image-container.key-gesture == "orbit";
+            lit-roll: image-container.gesture == "roll" || image-container.key-q || image-container.key-e;
+            lit-zoom: image-container.wheel-turning || image-container.key-plus || image-container.key-minus;
+            lit-look: image-container.gesture == "look" || image-container.key-gesture == "look";
+            lit-frame: image-container.gesture == "frame" || image-container.key-gesture == "frame";
+            stick(which, x, y, seconds) => { root.camera-stick(which, x, y, seconds); }
+            orbit-step(right, up) => { root.camera-orbit-step(right, up); }
+            roll(degrees) => { root.camera-roll(degrees); }
+            reset(which) => { root.camera-reset(which); }
+            zoom-step(direction) => { root.camera-zoom-step(direction); }
+            zoom-rate(direction, seconds) => { root.camera-zoom-rate(direction, seconds); }
+            zoom-changed => { root.sliders-changed(); }
+            used(control) => { image-container.teach(control); }
+            show-shortcuts => {
+                root.shortcut-sheet-open = true;
+                preview-keys.focus();
+            }
+            hide-overlays => { root.overlays-hidden = true; }
+        }
+
+        show-button := OverlayButton {
+            x: parent.width - self.width - 12px;
+            y: 12px;
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: OverlayStyle.border;
+            background: self.hovered ? OverlayStyle.faint : OverlayStyle.panel;
+            visible: root.overlays-hidden;
+            icon: @image-url("icons/eye-off.svg");
+            icon-width: 16px;
+            icon-height: 12px;
+            clicked => { root.overlays-hidden = false; }
+        }
+
+        time-bar := TimeBar {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 14px;
+            room: parent.width - 24px;
+            preview-left: -self.x;
+            preview-top: -self.y;
+            preview-width: parent.width;
+            visible: !root.overlays-hidden;
+            view: root.time-bar;
+            ladder: root.time-ladder;
+            longest-ladder: root.time-longest-ladder;
+            rates: root.time-rates;
+            seasons: root.time-seasons;
+            month-ticks: root.time-month-ticks;
+            shading: root.time-shading;
+            pinned <=> root.time-bar-pinned;
+            pointer-in: viewport-touch.has-hover || camera-panel.hovered-hint != "" || self.hovered;
+            toggle-play => { root.time-toggle-play(); }
+            rate-picked(rate) => { root.time-rate(rate); }
+            skip(forward, big) => { root.time-skip(forward, big); }
+            kind-picked(date) => { root.time-kind(date); }
+            now => { root.time-now(); }
+            end-excursion => { root.time-end(); }
+            zone => { root.time-zone-toggled(); }
+            track(year, x) => { root.time-track(year, x); }
+            exact-date(year, month, day) => { root.time-exact-date(year, month, day); }
+            exact-time(hour, minute) => { root.time-exact-time(hour, minute); }
+            tick => { root.time-tick(); }
+            date-at(x) => { return root.time-date-at(x); }
+        }
+
+        // A bar wider than the preview fades out where its edges are cut.
+        if time-bar.visible && time-bar.width > image-container.width : Rectangle {
+            y: time-bar.y;
+            height: time-bar.height;
+            opacity: time-bar.opacity;
+
+            bar-fade-left := Rectangle {
+                x: 0;
+                width: 28px;
+                background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0.9) 0%, OverlayStyle.panel.with-alpha(0) 100%);
+            }
+
+            bar-fade-right := Rectangle {
+                x: parent.width - self.width;
+                width: 28px;
+                background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0) 0%, OverlayStyle.panel.with-alpha(0.9) 100%);
+            }
+        }
+
+        // The hover hint of whichever overlay control the pointer rests on,
+        // after 450 ms: left of the camera panel for its controls, above the
+        // time bar for the bar's.
+        property <string> hint-id: root.shortcut-sheet-open ? ""
+            : root.overlays-hidden ? (show-button.hovered ? "show" : "")
+            : camera-panel.any-held ? ""
+            : camera-panel.hovered-hint != "" ? camera-panel.hovered-hint
+            : time-bar.hovered-hint;
+        property <bool> hint-over-bar: !root.overlays-hidden && camera-panel.hovered-hint == "" && time-bar.hovered-hint != "";
+        property <string> shown-hint;
+        property <duration> hint-since;
+        changed hint-id => {
+            image-container.shown-hint = "";
+            image-container.hint-since = animation-tick();
+        }
+        Timer {
+            interval: 50ms;
+            running: image-container.hint-id != "" && image-container.shown-hint != image-container.hint-id;
+            triggered => {
+                if animation-tick() - image-container.hint-since >= 450ms {
+                    image-container.shown-hint = image-container.hint-id;
+                }
+            }
+        }
+
+        if image-container.shown-hint != "" : hint := OverlayHint {
+            content: OverlayHints.content(image-container.shown-hint);
+            width: min(250px, image-container.width - 12px);
+            x: image-container.hint-over-bar
+                ? clamp(time-bar.x + time-bar.hovered-x - self.width / 2, 6px, parent.width - self.width - 6px)
+                : max(6px, camera-panel.x - self.width - 12px);
+            y: image-container.hint-over-bar
+                ? max(6px, time-bar.y - self.height - 8px)
+                : clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
+        }
+
+        if root.shortcut-sheet-open : shortcut-sheet := ShortcutSheet {
+            width: parent.width;
+            height: parent.height;
+            close => { root.shortcut-sheet-open = false; }
+        }
+
+        if image-container.tip-shown && !root.overlays-hidden : GestureTip {
+            x: (parent.width - self.width) / 2;
+            y: 14px;
+            room: parent.width - 12px;
+            mouse: image-container.tip-mouse;
+            text: image-container.tip-text;
         }
 
         if loading-text != "" : Rectangle {

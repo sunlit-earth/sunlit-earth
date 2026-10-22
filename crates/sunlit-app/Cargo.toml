@@ -39,6 +39,7 @@ glam.workspace = true
 proptest.workspace = true
 serial_test.workspace = true
 i-slint-backend-testing.workspace = true
+i-slint-core.workspace = true
 image = { workspace = true }
 regex-lite.workspace = true
 interprocess.workspace = true

@@ -9,8 +9,8 @@
 //! of them being called twice, which is why this one was not deleted when the
 //! sky took over the frame.
 //!
-//! [`DateTimeInput`] and [`make_time`] are production plumbing and live here
-//! because this is where they started; `sky` takes both.
+//! [`make_time`] is production plumbing and lives here because this is where
+//! it started; `sky` takes it.
 
 use astronomy_engine_bindings::astro_time_t;
 #[cfg(test)]
@@ -113,24 +113,6 @@ pub fn make_time(
     unsafe {
         Astronomy_MakeTime(year, month, day, hour, minute, second)
     }
-}
-
-/// Input parameters for astronomical computations, extracted from the UI.
-///
-/// This struct captures the datetime state needed to compute time-dependent
-/// scene properties (sun direction, future moon/planet positions). It is
-/// independent of Slint — use `ui_callbacks::read_datetime_input()` to
-/// populate it from the window, or construct it directly for headless use.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DateTimeInput {
-    /// Whether the user has selected a custom date/time (vs. live UTC).
-    pub use_custom: bool,
-    /// Custom hour as a float (0.0..24.0), only used when `use_custom` is true.
-    pub custom_hour: f32,
-    /// Custom day of year (1..366), only used when `use_custom` is true.
-    pub custom_day_of_year: u16,
-    /// Custom calendar year (e.g. 2025), only used when `use_custom` is true.
-    pub custom_year: i32,
 }
 
 #[cfg(test)]

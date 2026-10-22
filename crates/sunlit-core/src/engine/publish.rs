@@ -98,7 +98,7 @@ impl Engine {
         // The month is judged before the textures are: a publish can arrive
         // in a tick with nothing dirty, after the date crossed into the next
         // month, and would otherwise find the old month's floor ready.
-        self.sync_month();
+        self.sync_month(self.setting_instant());
         let now = self.clock.elapsed();
         let cubes_pending = self.renderer.textures_pending(&self.params);
         if cubes_pending {
@@ -235,6 +235,11 @@ impl Engine {
         self.tiles_awaited_since = None;
         self.reexport = false;
         self.wallpaper_shots.clear();
+        if self.excursion.is_some() {
+            // The wanted set took the setting's month and Sun while the shots
+            // waited, and the preview's come back only with a draw.
+            self.dirty = true;
+        }
         self.published |= result.is_ok();
         match &result {
             Err(e) => error!(error = %e, "wallpaper update failed"),

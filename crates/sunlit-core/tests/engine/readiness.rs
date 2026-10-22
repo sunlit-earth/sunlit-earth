@@ -323,11 +323,11 @@ fn to_another_month(rig: &Rig) -> usize {
 /// The same, with `params` the scene to move.
 fn to_another_month_from(rig: &Rig, params: &SceneParams) -> usize {
     let mut other = *params;
-    other.datetime.custom_day_of_year = 260;
-    let month = sunlit_core::scene::month::month_in_force(&other.datetime, rig.clock.now_utc());
+    other.time = crate::harness::on_day(other.time, 260);
+    let month = sunlit_core::scene::month::month_in_force(&other.time, rig.clock.now_utc());
     assert_ne!(
         month,
-        sunlit_core::scene::month::month_in_force(&params.datetime, rig.clock.now_utc()),
+        sunlit_core::scene::month::month_in_force(&params.time, rig.clock.now_utc()),
         "the premise: another month"
     );
     rig.harness
@@ -436,7 +436,7 @@ fn the_tile_wait_is_not_renewed_by_the_packs_of_other_months() {
                 sunlit_core::assets::cube_layout::CubeTextures::resolve(&dir.join("textures"));
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let month = sunlit_core::scene::month::month_in_force(
-                &view().datetime,
+                &view().time,
                 time::OffsetDateTime::UNIX_EPOCH,
             );
             for kind in [PackKind::Mask, PackKind::Day(month), PackKind::Night] {
@@ -562,6 +562,158 @@ fn the_tile_wait_starts_over_when_the_resolution_changes() {
     assert!(rig.harness.wait_for_publish().is_ok());
 }
 
+/// A publish while the preview rests on an excursion in another month waits
+/// for the setting's month's tiles no longer than `TILE_WAIT`, whether the
+/// preview is shown or hidden, and the month in force stays the setting's
+/// while it waits rather than going back and forth with every preview frame.
+/// Once the wallpaper is made from every tile, the preview's month is back.
+fn a_publish_during_an_excursion_in_another_month(name: &str, shown: bool) {
+    use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind, TimeStep};
+
+    let _gpu = gpu();
+    let rig = rig_configured(
+        name,
+        &view(),
+        time::OffsetDateTime::UNIX_EPOCH,
+        build_every_pack,
+        |config| config.every_floor = Some(true),
+    );
+    crate::months::wait_for_every_floor(&rig.harness, Some(&rig.clock));
+    let setting = sunlit_core::scene::month::month_in_force(&view().time, rig.clock.now_utc());
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    for _ in 0..5 {
+        rig.harness
+            .engine
+            .send(EngineCommand::Excursion(ExcursionCommand::Skip(TimeStep {
+                kind: ExcursionKind::Date,
+                forward: true,
+                big: true,
+            })));
+    }
+    let away = (setting + 1) % 12;
+    settled(&rig.harness, "the excursion's month", |r| {
+        r.named.iter().any(|id| id.pack == PackKind::Day(away))
+    });
+    if !shown {
+        rig.harness
+            .engine
+            .send(EngineCommand::SetPreviewEnabled(false));
+    }
+    rig.harness.settle();
+
+    rig.gate.shut();
+    rig.harness.engine.send(EngineCommand::RenderWallpaperNow);
+    report_when(&rig.harness, "the screen's tiles join the set", |r| {
+        r.wanted.len() > before.wanted.len()
+            && r.wanted[..r.in_view]
+                .iter()
+                .any(|id| id.pack == PackKind::Day(setting) && id.key.level == finest())
+    });
+    rig.harness.settle();
+
+    let mut frames = 0;
+    for _ in 0..4 {
+        rig.harness.advance(&rig.clock, TICK);
+        let _ = rig.harness.engine.memory_report();
+        let _ = rig.harness.engine.memory_report();
+        while let Ok(event) = rig.harness.events.try_recv() {
+            frames += usize::from(matches!(event, EngineEvent::PreviewFrame { .. }));
+        }
+        crate::months::assert_month(
+            &tile_report(&rig.harness),
+            setting,
+            None,
+            "while the publish waits",
+        );
+    }
+    assert!(
+        frames <= 1,
+        "the preview was drawn {frames} times in four ticks while nothing moved"
+    );
+
+    rig.harness.advance(
+        &rig.clock,
+        TILE_WAIT.saturating_sub(TICK * 4 + Duration::from_millis(1)),
+    );
+    rig.harness.settle();
+    assert!(
+        rig.sink.publications().is_empty(),
+        "the wallpaper went out before the tile wait was over"
+    );
+    rig.harness.advance(&rig.clock, Duration::from_millis(1));
+    assert!(
+        rig.harness.wait_for_publish().is_ok(),
+        "no publish once the tile wait was over"
+    );
+    rig.gate.open();
+    assert!(rig.harness.wait_for_publish().is_ok());
+    settled(&rig.harness, "the excursion's month again", |r| {
+        r.named.iter().any(|id| id.pack == PackKind::Day(away))
+    });
+}
+
+#[test]
+fn a_publish_during_an_excursion_in_another_month_waits_no_longer_than_the_tile_wait() {
+    a_publish_during_an_excursion_in_another_month("engine_ready_excursion_shown", true);
+}
+
+#[test]
+fn a_publish_during_an_excursion_hidden_in_another_month_waits_no_longer_than_the_tile_wait() {
+    a_publish_during_an_excursion_in_another_month("engine_ready_excursion_hidden", false);
+}
+
+/// In Blend mode a wallpaper made while the preview rests twelve hours away
+/// from the setting, its Sun on the far side of the globe, waits for the day
+/// and night tiles the setting's Sun lights and darkens, and is the one the
+/// setting makes with no excursion, pixel for pixel. The excursion's publish
+/// comes first, so none of the screen's tiles are resident from the other.
+#[test]
+fn a_publish_in_blend_mode_during_an_excursion_wants_the_settings_day_and_night() {
+    use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind, TimeStep};
+
+    let _gpu = gpu();
+    let blend = SceneParams {
+        texture_index: 3,
+        ..view()
+    };
+    let rig = rig("engine_ready_excursion_blend", &blend, |_| {});
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    for _ in 0..12 {
+        rig.harness
+            .engine
+            .send(EngineCommand::Excursion(ExcursionCommand::Skip(TimeStep {
+                kind: ExcursionKind::Clock,
+                forward: true,
+                big: true,
+            })));
+    }
+    settled(&rig.harness, "the excursion's tiles", |r| {
+        r.wanted != before.wanted
+    });
+    rig.harness.settle();
+
+    assert!(rig.harness.publish().is_ok());
+    rig.harness
+        .engine
+        .send(EngineCommand::Excursion(ExcursionCommand::End));
+    rig.harness.settle();
+    assert!(rig.harness.publish().is_ok());
+    assert_eq!(
+        rig.sink.publications().len(),
+        2,
+        "the premise: neither publish was made again"
+    );
+    assert!(
+        published(&rig, 0) == published(&rig, 1),
+        "the wallpaper made during the excursion was not drawn from the tiles the setting's \
+         Sun wants"
+    );
+}
+
 /// The live clock crossing into the next month while a publish waits for its
 /// tiles asks for the new month's tiles at once, though no draw follows: the
 /// publish is what sees the change, and it returns without drawing while it
@@ -575,7 +727,7 @@ fn a_live_month_change_during_a_tile_wait_asks_for_the_new_months_tiles() {
     let before_noon = time::OffsetDateTime::UNIX_EPOCH
         + time::Duration::seconds(15 * 86_400 + 11 * 3600 + 59 * 60 + 58);
     let mut params = view();
-    params.datetime.use_custom = false;
+    params.time = sunlit_core::scene::scene_time::SceneTime::Live;
     let rig = rig_at(
         "engine_ready_live_month",
         &params,
@@ -789,7 +941,7 @@ fn the_tiles_of_a_waiting_publish_come_first() {
     let owed = ask_with_the_gate_shut(&rig, &before);
 
     let params = view();
-    let month = sunlit_core::scene::month::month_in_force(&params.datetime, rig.clock.now_utc());
+    let month = sunlit_core::scene::month::month_in_force(&params.time, rig.clock.now_utc());
     let pack = Pack::open(&tiles::pack_path(
         &rig.dir.join("cache"),
         PackKind::Day(month),
@@ -890,7 +1042,10 @@ fn a_drag_converges_to_the_one_pixel_set_within_half_a_second_of_stopping() {
         std::thread::sleep(TICK);
         let report = tile_report(&rig.harness);
         if step > 1 {
-            assert!(report.dragging, "step {step} is not a drag: {report:#?}");
+            assert!(
+                report.drag.is_some(),
+                "step {step} is not a drag: {report:#?}"
+            );
         }
         while let Ok(event) = rig.harness.events.try_recv() {
             ready_while_dragging |= step > 1 && matches!(event, EngineEvent::TexturesReady);
@@ -908,7 +1063,7 @@ fn a_drag_converges_to_the_one_pixel_set_within_half_a_second_of_stopping() {
         while let Ok(event) = rig.harness.events.try_recv() {
             ready |= matches!(event, EngineEvent::TexturesReady);
         }
-        if !report.dragging && missing(&report) == 0 {
+        if report.drag.is_none() && missing(&report) == 0 {
             break report;
         }
         assert!(

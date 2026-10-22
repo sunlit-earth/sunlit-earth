@@ -372,7 +372,7 @@ fn two_days_of_simulated_clouds_and_exports_leave_nothing_behind() {
     };
     // Live time, so every simulated hour really does rotate the Earth and the
     // sun-position schedule is exercised too.
-    params.datetime.use_custom = false;
+    params.time = sunlit_core::scene::scene_time::SceneTime::Live;
 
     let mut config = EngineConfig::headless((512, 288));
     config.params = params;

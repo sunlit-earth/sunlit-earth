@@ -1601,13 +1601,10 @@ fn the_panoramas_reconstruction_inverts_the_projection_it_sits_under() {
         ],
     });
 
-    let datetime = sunlit_core::scene::sun::DateTimeInput {
-        use_custom: true,
-        custom_hour: 7.0,
-        custom_day_of_year: 172,
-        custom_year: 2026,
-    };
-    let sky = sunlit_core::scene::sky::compute_sky_state(&datetime);
+    let pinned = sunlit_core::scene::scene_time::SceneTime::fixed(
+        time::macros::datetime!(2026-06-21 07:00 UTC),
+    );
+    let sky = sunlit_core::scene::sky::compute_sky_state(&pinned);
     let world_from_eqj = [
         sky.world_from_eqj.x_axis.extend(0.0).into(),
         sky.world_from_eqj.y_axis.extend(0.0).into(),

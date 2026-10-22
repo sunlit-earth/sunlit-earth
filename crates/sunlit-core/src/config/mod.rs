@@ -9,12 +9,25 @@ use crate::display::layout::DisplayMode;
 use tracing::warn;
 
 use crate::scene::camera::{CAMERA_FOV_MAX, CAMERA_FOV_MIN, CameraParams};
+use crate::scene::scene_time::SceneTime;
 
 mod migrate;
 mod window_geometry;
 
 use migrate::{CONFIG_VERSION, Migrated, migrate};
 pub use window_geometry::{save_window_geometry, validated_window_geometry};
+
+/// The zone the window shows times in. A setting of the window: the time
+/// setting itself is an instant and has no zone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimeZoneChoice {
+    /// The system's offset in force at each instant shown, summer time
+    /// included.
+    #[default]
+    Local,
+    Utc,
+}
 
 /// How much the app is allowed to spend on looking good.
 ///
@@ -208,8 +221,8 @@ pub struct AppConfig {
     /// value it had when the mode was last switched on.
     pub sun_fixed: bool,
     /// The local apparent solar time beneath the camera in the Sun-fixed mode,
-    /// in hours from 0 to 24. Kept apart from `custom_hour`, the override's
-    /// instant, and read only while `sun_fixed` is on.
+    /// in hours from 0 to 24. Kept apart from `scene_time`, the instant drawn,
+    /// and read only while `sun_fixed` is on.
     pub solar_time: f32,
 
     // Camera orientation
@@ -375,22 +388,25 @@ pub struct AppConfig {
     /// TOML is one thing to explain.
     pub anchor_monitor: String,
 
-    // Custom date/time override
-    pub use_custom_datetime: bool,
-    pub custom_hour: f32,
-    pub custom_day_of_year: f32,
-    pub custom_year: i32,
+    /// The time setting: `"live"`, or one instant in RFC 3339 in UTC.
+    pub scene_time: SceneTime,
+
+    // The controls over the preview
+    /// Whether the camera panel and the time bar are hidden, leaving a button
+    /// in the corner to bring them back. A setting of the window, not of what
+    /// is drawn.
+    pub overlays_hidden: bool,
+    /// The zone the window shows times in.
+    pub time_zone: TimeZoneChoice,
+    /// Whether the time bar stays open and at full strength wherever the
+    /// pointer is.
+    pub time_bar_pinned: bool,
 
     // Window geometry (None on first launch — let the OS place the window)
     pub window_x: Option<i32>,
     pub window_y: Option<i32>,
     pub window_width: Option<u32>,
     pub window_height: Option<u32>,
-}
-
-/// Default value for `custom_year` when the field is missing from config.
-fn default_custom_year() -> i32 {
-    time::OffsetDateTime::now_utc().year()
 }
 
 impl AppConfig {
@@ -496,10 +512,10 @@ impl Default for AppConfig {
             auto_refresh_interval_minutes: 5,
             display_mode: DisplayMode::default(),
             anchor_monitor: String::new(),
-            use_custom_datetime: false,
-            custom_hour: 12.0,
-            custom_day_of_year: 1.0,
-            custom_year: default_custom_year(),
+            scene_time: SceneTime::Live,
+            overlays_hidden: false,
+            time_zone: TimeZoneChoice::Local,
+            time_bar_pinned: false,
             window_x: None,
             window_y: None,
             window_width: None,
@@ -894,10 +910,10 @@ mod tests {
             anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 15,
-            use_custom_datetime: true,
-            custom_hour: 14.5,
-            custom_day_of_year: 76.0,
-            custom_year: 2030,
+            scene_time: SceneTime::fixed(time::macros::datetime!(2030-03-17 14:30 UTC)),
+            overlays_hidden: true,
+            time_zone: TimeZoneChoice::Utc,
+            time_bar_pinned: true,
             window_x: Some(100),
             window_y: Some(200),
             window_width: Some(1024),
@@ -997,16 +1013,8 @@ day_ocean_color = \"0A1E3D\"
     }
 
     #[test]
-    fn default_custom_year_is_current() {
-        let config = AppConfig::default();
-        let current_year = time::OffsetDateTime::now_utc().year();
-        assert_eq!(config.custom_year, current_year);
-    }
-
-    #[test]
-    fn deserialize_explicit_zero_year_stays_zero() {
-        let config: AppConfig = toml::from_str("custom_year = 0").unwrap();
-        assert_eq!(config.custom_year, 0);
+    fn the_default_time_is_live() {
+        assert_eq!(AppConfig::default().scene_time, SceneTime::Live);
     }
 
     #[test]
@@ -1141,10 +1149,10 @@ sky_fov = 111.0
             anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 10,
-            use_custom_datetime: true,
-            custom_hour: 8.25,
-            custom_day_of_year: 200.0,
-            custom_year: 2020,
+            scene_time: SceneTime::fixed(time::macros::datetime!(2020-07-18 08:15:30.25 UTC)),
+            overlays_hidden: true,
+            time_zone: TimeZoneChoice::Utc,
+            time_bar_pinned: true,
             window_x: Some(50),
             window_y: Some(75),
             window_width: Some(800),

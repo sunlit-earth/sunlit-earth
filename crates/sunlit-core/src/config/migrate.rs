@@ -8,10 +8,12 @@
 use toml::{Table, Value};
 use tracing::{info, warn};
 
+use crate::scene::scene_time::{SceneTime, instant_of_override};
+
 /// One step from the version at its index in [`MIGRATIONS`] to the next.
 type Migration = fn(&mut Table, &mut ChangeLog);
 
-const MIGRATIONS: [Migration; 2] = [v0_to_v1, v1_to_v2];
+const MIGRATIONS: [Migration; 3] = [v0_to_v1, v1_to_v2, v2_to_v3];
 
 /// The version this build writes, and the one a file reaches after loading.
 #[expect(
@@ -62,6 +64,67 @@ fn v1_to_v2(earth: &mut Table, log: &mut ChangeLog) {
         "cloud_opacity_night",
         Value::Float(0.55),
         Value::Float(0.45),
+        log,
+    );
+}
+
+/// The keys of the date and time override that version 3 replaced.
+const OVERRIDE_KEYS: [&str; 4] = [
+    "use_custom_datetime",
+    "custom_hour",
+    "custom_day_of_year",
+    "custom_year",
+];
+
+/// The date and time override becomes the time setting, live or one instant.
+///
+/// The instant is the one the override drew, from its year, day of the year
+/// and hour in UTC exactly as they were read: the day truncated to a whole
+/// one and taken through the year's calendar, and a missing value at the
+/// default it had. Without the override the time is live, unless the file
+/// already names one and holds no override, which only a file written for
+/// this version by hand does. The four keys go.
+fn v2_to_v3(earth: &mut Table, log: &mut ChangeLog) {
+    if earth.contains_key("scene_time") && !earth.contains_key("use_custom_datetime") {
+        for key in OVERRIDE_KEYS {
+            remove_key(earth, key, log);
+        }
+        return;
+    }
+    let number = |key: &str| match earth.get(key) {
+        Some(Value::Float(value)) => Some(*value),
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "an hour, a day of the year or a year"
+        )]
+        Some(Value::Integer(value)) => Some(*value as f64),
+        _ => None,
+    };
+    let scene_time = if earth.get("use_custom_datetime") == Some(&Value::Boolean(true)) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the casts the override's values went through when it was drawn"
+        )]
+        let (hour, day_of_year, year) = (
+            number("custom_hour").unwrap_or(12.0) as f32,
+            number("custom_day_of_year").unwrap_or(1.0) as u16,
+            number("custom_year").map_or_else(
+                || time::OffsetDateTime::now_utc().year(),
+                |year| year as i32,
+            ),
+        );
+        SceneTime::fixed(instant_of_override(hour, day_of_year, year))
+    } else {
+        SceneTime::Live
+    };
+    for key in OVERRIDE_KEYS {
+        remove_key(earth, key, log);
+    }
+    override_value(
+        earth,
+        "scene_time",
+        Value::String(scene_time.to_config_string()),
         log,
     );
 }
@@ -419,10 +482,101 @@ mod tests {
             migrated
                 .changes
                 .iter()
-                .all(|c| c.from_version == 1 && c.key.starts_with("cloud_"))
+                .filter(|c| c.from_version == 1)
+                .all(|c| c.key.starts_with("cloud_"))
         );
-        let earth = doc["sunlit"]["earth"].as_table().unwrap();
-        assert_eq!(earth, &with_cloud_settings_v2(""));
+        assert!(migrated.changes.iter().all(|c| c.from_version >= 1));
+        let mut earth = doc["sunlit"]["earth"].as_table().unwrap().clone();
+        earth.remove("scene_time");
+        assert_eq!(earth, with_cloud_settings_v2(""));
+    }
+
+    // --- the time setting ---
+
+    /// Run the time step alone on the override keys given.
+    fn time_step(source: &str) -> (Table, Vec<Change>) {
+        let mut table = earth(source);
+        let changes = apply(v2_to_v3, &mut table);
+        (table, changes)
+    }
+
+    fn scene_time_of(table: &Table) -> SceneTime {
+        SceneTime::from_config_string(table["scene_time"].as_str().expect("a string"))
+            .expect("a time")
+    }
+
+    /// The override becomes the exact instant of its year, day and hour,
+    /// across a leap year's last day and with the fraction of an hour the
+    /// slider left.
+    #[test]
+    fn an_override_becomes_the_instant_it_drew() {
+        use time::macros::datetime;
+
+        for (source, expected) in [
+            (
+                "use_custom_datetime = true\ncustom_hour = 17.0\ncustom_day_of_year = 172\ncustom_year = 2026\n",
+                datetime!(2026-06-21 17:00 UTC),
+            ),
+            (
+                "use_custom_datetime = true\ncustom_hour = 23.5\ncustom_day_of_year = 366.0\ncustom_year = 2024\n",
+                datetime!(2024-12-31 23:30 UTC),
+            ),
+            (
+                "use_custom_datetime = true\ncustom_hour = 0.25\ncustom_day_of_year = 60.9\ncustom_year = 2028\n",
+                datetime!(2028-02-29 00:15 UTC),
+            ),
+        ] {
+            let (table, _) = time_step(source);
+            assert_eq!(
+                scene_time_of(&table),
+                SceneTime::fixed(expected),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_time_the_file_already_names_is_kept() {
+        let (table, changes) = time_step(
+            "scene_time = \"2026-06-21T17:00:00Z\"
+",
+        );
+        assert_eq!(
+            scene_time_of(&table),
+            SceneTime::fixed(time::macros::datetime!(2026-06-21 17:00 UTC))
+        );
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn no_override_becomes_live_time_and_the_four_keys_go() {
+        for source in [
+            "use_custom_datetime = false\ncustom_hour = 3.0\ncustom_day_of_year = 9.0\ncustom_year = 2020\n",
+            "",
+        ] {
+            let (table, changes) = time_step(source);
+            assert_eq!(scene_time_of(&table), SceneTime::Live, "{source}");
+            for key in OVERRIDE_KEYS {
+                assert!(!table.contains_key(key), "{key} is gone: {source}");
+            }
+            let removed: Vec<&str> = changes
+                .iter()
+                .filter(|change| change.to.is_none())
+                .map(|change| change.key.as_str())
+                .collect();
+            let expected: Vec<&str> = if source.is_empty() {
+                Vec::new()
+            } else {
+                OVERRIDE_KEYS.to_vec()
+            };
+            assert_eq!(removed, expected, "every removal is logged");
+            assert!(
+                changes
+                    .iter()
+                    .any(|change| change.key == "scene_time" && change.from.is_none()),
+                "the new key is logged"
+            );
+        }
     }
 
     // --- versions ---

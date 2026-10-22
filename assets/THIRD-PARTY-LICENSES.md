@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 526 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
+Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 528 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
 
 ## Packages
 
@@ -267,6 +267,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `num-traits 0.2.19`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-num/num-traits
 - `num_enum 0.7.5`, [BSD-3-Clause](#license-4) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/illicitonion/num_enum
 - `num_enum_derive 0.7.5`, [BSD-3-Clause](#license-4) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/illicitonion/num_enum
+- `num_threads 0.1.8`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/jhpratt/num_threads
 - `objc 0.2.7`, [MIT](#license-13), http://github.com/SSheldon/rust-objc
 - `objc-sys 0.3.5`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2 0.5.2`, [MIT](#license-13), https://github.com/madsmtm/objc2
@@ -411,6 +412,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `thread_local 1.1.9`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/Amanieu/thread_local-rs
 - `time 0.3.47`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/time-rs/time
 - `time-core 0.1.8`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/time-rs/time
+- `time-macros 0.2.27`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/time-rs/time
 - `tiny-skia 0.11.4`, [BSD-3-Clause](#license-4), https://github.com/RazrFalcon/tiny-skia
 - `tiny-skia 0.12.0`, [BSD-3-Clause](#license-4), https://github.com/linebender/tiny-skia
 - `tiny-skia-path 0.11.4`, [BSD-3-Clause](#license-4), https://github.com/RazrFalcon/tiny-skia/tree/master/path

@@ -110,7 +110,7 @@ fn a_switch_to_the_current_resolution_does_nothing() {
     let gpu = gpu();
     let harness = surface(&gpu);
     harness.settle_at(&blend_params());
-    settled(harness, "the tiles", |r| !r.dragging);
+    settled(harness, "the tiles", |r| r.drag.is_none());
     harness.settle();
 
     harness.set_texture_resolution(SURFACE_RESOLUTION);

@@ -14,7 +14,7 @@ fn wrap_longitude(lon: f32) -> f32 {
 
 /// Wrap a tilt value into the `[-180, 180)` range.
 #[must_use]
-fn wrap_angle_180(angle: f32) -> f32 {
+pub(crate) fn wrap_angle_180(angle: f32) -> f32 {
     ((angle + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
 }
 

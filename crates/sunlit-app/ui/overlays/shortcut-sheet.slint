@@ -1,0 +1,237 @@
+// The sheet of every mouse gesture and keyboard shortcut on the preview, in
+// the platform's names. F1 or Ctrl + ? (⌘? on macOS) opens it; Esc or a click
+// outside the card closes it.
+
+import { OverlayStyle, OverlayHints, MouseGlyph, KeyCap } from "common.slint";
+
+struct SheetGesture {
+    mouse: string,
+    text: string,
+}
+
+struct SheetKeys {
+    keys: [string],
+    text: string,
+}
+
+component SheetHeading inherits Text {
+    color: OverlayStyle.dim;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.7px;
+}
+
+// What a row of the sheet does, beside its gesture or keys. The rows place it
+// by hand: a box layout in a repeated row measures wrapping text at its
+// one-line width and would keep the row one line high.
+component SheetText inherits Text {
+    color: OverlayStyle.fg;
+    font-size: 12px;
+    wrap: word-wrap;
+    vertical-alignment: center;
+}
+
+export component ShortcutSheet inherits Rectangle {
+    callback close();
+
+    property <[SheetGesture]> gestures: [
+        { mouse: "left", text: "Orbit the globe" },
+        { mouse: "wheel", text: "Zoom" },
+        { mouse: "middle", text: "Look around (yaw, pitch)" },
+        { mouse: "both", text: "Roll the picture" },
+        { mouse: "right", text: "Move the frame" },
+    ];
+    property <[SheetKeys]> keys: [
+        { keys: ["←", "→", "↑", "↓"], text: "Orbit" },
+        { keys: [OverlayHints.shift-key, "←↑↓→"], text: "Look" },
+        { keys: [OverlayHints.mod-key, "←↑↓→"], text: "Move the frame" },
+        { keys: ["W", "A", "S", "D"], text: "Like the arrows, alone or with " + OverlayHints.shift-key + " or " + OverlayHints.mod-key },
+        { keys: ["+", "−"], text: "Zoom" },
+        { keys: ["Q", "E"], text: "Roll" },
+        { keys: ["N"], text: "North up" },
+        { keys: ["Space"], text: "Play / pause" },
+        { keys: ["J", "K", "L"], text: "Shuttle: back, pause, forward; again or hold for faster" },
+        { keys: ["R"], text: "Reverse direction" },
+        { keys: ["T", "G"], text: "Play runs the time / the date" },
+        { keys: [",", "."], text: "Step back / forward (" + OverlayHints.shift-key + ": bigger)" },
+        { keys: ["0"], text: "Back to now" },
+        { keys: ["H"], text: "Hide controls" },
+        { keys: OverlayHints.help-keys(), text: OverlayHints.is-macos ? "This sheet" : "This sheet, also Ctrl + ?" },
+    ];
+
+    // The keys and the mouse glyphs are bigger than a hint's.
+    property <length> glyph-size: 22px;
+    // Between a row's glyph or keys and its text.
+    property <length> gap: 10px;
+    // The widest glyph and the widest row of keys, measured out of sight.
+    property <length> mouse-width: mouse-sizer.preferred-width;
+    property <length> keys-width: keys-sizer.preferred-width;
+
+    background: #0000008c;
+
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    Rectangle {
+        visible: false;
+        width: 0px;
+        height: 0px;
+
+        mouse-sizer := VerticalLayout {
+            width: self.preferred-width;
+            height: self.preferred-height;
+
+            for gesture in root.gestures : MouseGlyph {
+                which: gesture.mouse;
+                size: root.glyph-size;
+            }
+        }
+
+        keys-sizer := VerticalLayout {
+            width: self.preferred-width;
+            height: self.preferred-height;
+
+            for entry in root.keys : HorizontalLayout {
+                spacing: 3px;
+
+                for key in entry.keys : KeyCap {
+                    text: key;
+                    size: root.glyph-size;
+                }
+            }
+        }
+    }
+
+    // Two equal columns where each leaves its descriptions at least 110 px
+    // beside its glyphs or keys, otherwise the keyboard below the mouse; a
+    // card taller than the room scrolls.
+    card := Rectangle {
+        property <length> inner: self.width - 44px;
+        property <bool> two-columns: (self.inner - 26px) / 2 >= max(root.mouse-width, root.keys-width) + root.gap + 110px;
+        property <length> column: self.two-columns ? (self.inner - 26px) / 2 : self.inner;
+
+        x: (parent.width - self.width) / 2;
+        y: max(8px, (parent.height - self.height) / 2);
+        width: min(660px, parent.width - 16px);
+        height: min(card-layout.preferred-height, parent.height - 16px);
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: OverlayStyle.border;
+        background: OverlayStyle.solid;
+        drop-shadow-blur: 22px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000073;
+
+        TouchArea { }
+
+        scroller := Flickable {
+            content-width: self.width;
+            content-height: card-layout.preferred-height;
+
+            card-layout := VerticalLayout {
+                padding-top: 18px;
+                padding-bottom: 18px;
+                padding-left: 22px;
+                padding-right: 22px;
+                spacing: 10px;
+
+                Text {
+                    text: "Mouse and keyboard";
+                    color: OverlayStyle.fg;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+
+                Rectangle {
+                    height: card.two-columns
+                        ? max(mouse-column.preferred-height, keys-column.preferred-height)
+                        : mouse-column.preferred-height + 16px + keys-column.preferred-height;
+
+                    mouse-column := VerticalLayout {
+                        x: 0;
+                        y: 0;
+                        width: card.column;
+                        height: self.preferred-height;
+                        spacing: 2px;
+
+                        SheetHeading {
+                            text: "MOUSE ON THE GLOBE";
+                        }
+
+                        for gesture in root.gestures : Rectangle {
+                            height: max(root.glyph-size + 2px, gesture-text.height + 4px);
+
+                            MouseGlyph {
+                                x: (root.mouse-width - self.width) / 2;
+                                which: gesture.mouse;
+                                size: root.glyph-size;
+                            }
+
+                            gesture-text := SheetText {
+                                x: root.mouse-width + root.gap;
+                                width: parent.width - self.x;
+                                text: gesture.text;
+                            }
+                        }
+                    }
+
+                    keys-column := VerticalLayout {
+                        x: card.two-columns ? card.column + 26px : 0;
+                        y: card.two-columns ? 0 : mouse-column.preferred-height + 16px;
+                        width: card.column;
+                        height: self.preferred-height;
+                        spacing: 2px;
+
+                        SheetHeading {
+                            text: "KEYBOARD";
+                        }
+
+                        for entry in root.keys : Rectangle {
+                            height: max(root.glyph-size + 2px, entry-text.height + 4px);
+
+                            keys := HorizontalLayout {
+                                x: root.keys-width - self.width;
+                                width: self.preferred-width;
+                                height: root.glyph-size;
+                                spacing: 3px;
+
+                                for key in entry.keys : KeyCap {
+                                    text: key;
+                                    size: root.glyph-size;
+                                }
+                            }
+
+                            entry-text := SheetText {
+                                x: root.keys-width + root.gap;
+                                width: parent.width - self.x;
+                                text: entry.text;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 1px;
+                    background: OverlayStyle.border;
+                }
+
+                Text {
+                    text: "The shortcuts act on the preview: click the globe if they do not answer.";
+                    color: OverlayStyle.dim;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if scroller.content-height > scroller.height : Rectangle {
+            x: parent.width - 6px;
+            y: 6px + (parent.height - 12px - self.height) * (-scroller.content-y) / (scroller.content-height - scroller.height);
+            width: 3px;
+            height: max(24px, (parent.height - 12px) * scroller.height / scroller.content-height);
+            border-radius: 1.5px;
+            background: #ffffff40;
+        }
+    }
+}

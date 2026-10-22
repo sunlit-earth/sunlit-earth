@@ -207,10 +207,9 @@ fn panorama_params() -> SceneParams {
         },
         ..SceneParams::default()
     };
-    params.datetime.use_custom = true;
-    params.datetime.custom_hour = 2.0;
-    params.datetime.custom_day_of_year = 172;
-    params.datetime.custom_year = 2026;
+    params.time = sunlit_core::scene::scene_time::SceneTime::fixed(
+        time::macros::datetime!(2026-06-21 02:00 UTC),
+    );
     params
 }
 

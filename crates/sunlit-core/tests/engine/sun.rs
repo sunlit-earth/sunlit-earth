@@ -24,7 +24,7 @@ use crate::harness::{Harness, gpu, test_params};
 /// move.
 fn sun_params(longitude: f32) -> SceneParams {
     let mut params = test_params();
-    params.datetime.custom_day_of_year = 172;
+    params.time = crate::harness::on_day(params.time, 172);
     params.camera.longitude = longitude;
     params.camera.latitude = 0.0;
     params.camera.zoom = 0.45;
@@ -233,7 +233,7 @@ fn the_physical_exposure_has_no_peak() {
 /// off the axis; and at 115.93 the disk's lower edge stands on the limb.
 fn horizon_params(longitude: f32) -> SceneParams {
     let mut params = test_params();
-    params.datetime.custom_day_of_year = 172;
+    params.time = crate::harness::on_day(params.time, 172);
     params.camera.longitude = longitude;
     params.camera.latitude = -23.44;
     params.camera.zoom = 0.227_047_34;

@@ -24,6 +24,7 @@ struct Frame {
     rgba: Vec<u8>,
     width: u32,
     height: u32,
+    instant: time::OffsetDateTime,
 }
 
 /// Latest-value mailbox for preview frames, plus the flag that keeps at most
@@ -143,6 +144,7 @@ impl EngineLink {
         window.set_night_gamma_value(params.night_gamma);
         crate::ui_callbacks::update_solar_time_label(window);
         self.send(EngineCommand::UpdateParams(Box::new(params)));
+        crate::time_bar::refresh(window);
     }
 }
 
@@ -166,11 +168,13 @@ pub fn event_forwarder(
             rgba,
             width,
             height,
+            instant,
         } => {
             *mailbox.slot.lock().expect("preview mailbox poisoned") = Some(Frame {
                 rgba,
                 width,
                 height,
+                instant,
             });
             // One wake-up per burst: the closure below always takes whatever is
             // parked, so queueing a second one would only duplicate work.
@@ -189,6 +193,7 @@ pub fn event_forwarder(
                     .take();
                 if let (Some(frame), Some(win)) = (parked, weak.upgrade()) {
                     win.set_rendered_image(to_image(&frame));
+                    crate::time_bar::frame_shown(&win, frame.instant);
                     if announce {
                         println!("SIGNAL:first_frame_rendered");
                     }
@@ -243,6 +248,14 @@ pub fn event_forwarder(
         // The running app publishes again within the hour whatever the clouds
         // said, so only the one-shot commands wait for them.
         EngineEvent::CloudsSettled { .. } => {}
+        EngineEvent::Excursion(state) => {
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    crate::time_bar::excursion_changed(&win, state);
+                }
+            });
+        }
     })
 }
 

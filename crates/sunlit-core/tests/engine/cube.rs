@@ -19,9 +19,10 @@ use sunlit_core::engine::wallpaper_sink::{WallpaperJob, WallpaperSink};
 use sunlit_core::engine::{EngineCommand, EngineConfig, EngineEvent};
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::camera::CameraParams;
+use sunlit_core::scene::scene_time::SceneTime;
 
 use crate::groups::FRAME;
-use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, test_params};
+use crate::harness::{Harness, TIMEOUT, gpu, has_lit_pixels, on_day, test_params};
 use crate::sinks::{RecordingSink, screen};
 use crate::test_support::{self, ScratchDir};
 use crate::tiles::settled;
@@ -61,7 +62,7 @@ fn blend_on(day_of_year: u16) -> SceneParams {
         texture_index: 3,
         ..test_params()
     };
-    params.datetime.custom_day_of_year = day_of_year;
+    params.time = on_day(params.time, day_of_year);
     params
 }
 
@@ -264,7 +265,7 @@ fn a_publish_after_the_month_turned_waits_for_the_new_floor() {
             texture_index: 3,
             ..test_params()
         };
-        config.params.datetime.use_custom = false;
+        config.params.time = SceneTime::Live;
     });
     harness.wait_for_textures("October");
     harness.settle();

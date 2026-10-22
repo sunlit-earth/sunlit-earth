@@ -28,7 +28,7 @@ use crate::renderer::{Renderer, SurfaceLayer};
 use crate::scene::camera::CameraParams;
 
 use super::loading::{Preparing, TILES_NAMED_AFTER};
-use super::tile_loader::{DragWatch, LoaderConfig, TileLoader, TileReport, View};
+use super::tile_loader::{DragWatch, LoaderConfig, TileLoader, TileReport, View, Watched};
 
 /// How long after its last frame the engine counts as busy, which is how long
 /// the transcoder's pause gate stays closed after one.
@@ -260,9 +260,18 @@ impl SurfaceFeed {
         self.tiles.want(view, renderer);
     }
 
-    /// The drag in progress with the camera at `camera` at `now`, if one is.
-    pub(super) fn drag(&mut self, camera: &CameraParams, now: Duration) -> Option<Drag> {
-        self.drag.observe(camera, now)
+    /// The motion in progress with the camera at `camera` and the Sun in
+    /// direction `sun` at `now`, which are what `watched` names, if there is
+    /// one.
+    pub(super) fn drag(
+        &mut self,
+        camera: &CameraParams,
+        sun: glam::Vec3,
+        watched: Watched,
+        now: Duration,
+    ) -> Option<Drag> {
+        self.drag.watch(watched);
+        self.drag.observe(camera, sun, now)
     }
 
     /// A tick's work ended at `now`, the frame it drew and read back

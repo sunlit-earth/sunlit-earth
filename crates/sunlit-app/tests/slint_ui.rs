@@ -1879,32 +1879,30 @@ fn wired_window() -> (
 ) {
     let window = create_window();
     window.set_advanced_open(true);
+    window.set_time_zone_utc(true);
     window.set_datetime(DateTimeSettings {
         use_custom: true,
+        instant: "2026-04-30T09:15:00Z".into(),
         hour: 9.25,
         day_of_year: 120.0,
-        year_index: 1,
+        year: 2026,
     });
     let (sender, sent) = crossbeam_channel::unbounded();
     let link =
         sunlit_earth::engine_client::EngineLink::new(sender, vec!["None".to_owned()], vec![1]);
     let screens = sunlit_earth::displays::shared_monitors();
     ui_callbacks::register_mouse_callbacks(&window, &link);
-    ui_callbacks::register_change_callbacks(
-        &window,
-        sunlit_core::scene::datetime::base_year(),
-        &link,
-    );
+    ui_callbacks::register_change_callbacks(&window, &link);
     ui_callbacks::register_action_callbacks(&window, &link, &screens);
+    sunlit_earth::time_bar::register(&window, &link);
+    release_every_modifier(&window);
     (window, sent)
 }
 
 /// The camera the window's scene is drawn with at the instant it names.
 fn resolved(window: &MainWindow) -> sunlit_core::scene::camera::CameraParams {
     let params = ui_callbacks::read_params_from_window(window, &AA_COUNTS);
-    params.camera_at(&sunlit_core::scene::sky::compute_sky_state(
-        &params.datetime,
-    ))
+    params.camera_at(&sunlit_core::scene::sky::compute_sky_state(&params.time))
 }
 
 /// `a` minus `b` in degrees of longitude, the short way round.
@@ -2642,5 +2640,3371 @@ fn test_the_loading_line_shows_the_engines_status_and_only_while_there_is_one() 
         } else {
             assert_eq!(shown, [status]);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The camera panel over the preview
+// ---------------------------------------------------------------------------
+
+/// The one element with this id, which the panel always shows.
+fn the_element(window: &MainWindow, id: &str) -> ElementHandle {
+    let found: Vec<_> = ElementHandle::find_by_element_id(window, id).collect();
+    assert_eq!(found.len(), 1, "expected exactly one '{id}'");
+    found.into_iter().next().expect("one element")
+}
+
+/// A point inside an element, as fractions of its size from its top left.
+fn point_in(element: &ElementHandle, fx: f32, fy: f32) -> slint::LogicalPosition {
+    let at = element.absolute_position();
+    let size = element.size();
+    slint::LogicalPosition::new(at.x + size.width * fx, at.y + size.height * fy)
+}
+
+/// Press the left button at `position` and keep it down.
+fn hold_at(window: &MainWindow, position: slint::LogicalPosition) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let window = window.window();
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+}
+
+/// Let the left button go at `position`.
+fn release_at(window: &MainWindow, position: slint::LogicalPosition) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+}
+
+/// Let mock time pass in frame-sized steps, so every timer fires along the
+/// way rather than once at the end.
+fn let_pass(milliseconds: u64) {
+    for _ in 0..milliseconds.div_ceil(16) {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(16));
+    }
+}
+
+/// N eases the roll back to north up rather than jumping, and gets there.
+#[test]
+fn test_north_puts_the_roll_back_to_zero_once_the_ease_has_passed() {
+    let (window, sent) = wired_window();
+    let mut orientation = window.get_camera_orientation();
+    orientation.tilt = 120.0;
+    window.set_camera_orientation(orientation);
+
+    press_at(
+        &window,
+        point_in(&the_element(&window, "RollRing::north-touch"), 0.5, 0.5),
+    );
+    let_pass(48);
+    let midway = window.get_camera_orientation().tilt;
+    assert!(
+        midway > 0.0 && midway < 120.0,
+        "after a moment the roll is on its way, at {midway}"
+    );
+    let_pass(400);
+    approx::assert_relative_eq!(window.get_camera_orientation().tilt, 0.0);
+    assert!(
+        !window.get_camera_easing(),
+        "the ease timer stops once it is there"
+    );
+    approx::assert_relative_eq!(last_pushed(&sent).camera.tilt_deg, 0.0);
+}
+
+/// Move the held pointer to `position`.
+fn drag_to(window: &MainWindow, position: slint::LogicalPosition) {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+}
+
+/// A press on the N that wanders less than a drag before it is let go is a
+/// click: it rolls nothing on the way and puts north up.
+#[test]
+fn test_a_click_on_the_n_puts_north_up_even_with_a_wobble() {
+    for wobble in [0.0, 2.0] {
+        let (window, _sent) = wired_window();
+        let mut orientation = window.get_camera_orientation();
+        orientation.tilt = 120.0;
+        window.set_camera_orientation(orientation);
+        let at = point_in(&the_element(&window, "RollRing::north-touch"), 0.5, 0.5);
+        let to = slint::LogicalPosition::new(at.x + wobble, at.y + wobble);
+
+        hold_at(&window, at);
+        drag_to(&window, to);
+        approx::assert_relative_eq!(window.get_camera_orientation().tilt, 120.0);
+        release_at(&window, to);
+        let_pass(400);
+        approx::assert_relative_eq!(window.get_camera_orientation().tilt, 0.0);
+    }
+}
+
+/// The ring's middle and the N's, in the window.
+fn ring_and_north(window: &MainWindow) -> (slint::LogicalPosition, slint::LogicalPosition) {
+    (
+        point_in(&the_element(window, "CameraPanel::ring"), 0.5, 0.5),
+        point_in(&the_element(window, "RollRing::north-touch"), 0.5, 0.5),
+    )
+}
+
+/// The roll a drag from `from` 60 degrees clockwise around `middle` makes,
+/// with the button let go where it ends.
+fn roll_of_a_drag(
+    window: &MainWindow,
+    middle: slint::LogicalPosition,
+    from: slint::LogicalPosition,
+) -> f32 {
+    let before = window.get_camera_orientation().tilt;
+    let (dx, dy) = (from.x - middle.x, from.y - middle.y);
+    let radius = dx.hypot(dy);
+    let start = dx.atan2(-dy);
+    let along = |degrees: f32| {
+        let angle = start + degrees.to_radians();
+        slint::LogicalPosition::new(
+            middle.x + radius * angle.sin(),
+            middle.y - radius * angle.cos(),
+        )
+    };
+    hold_at(window, from);
+    for step in 1..=12_u8 {
+        drag_to(window, along(f32::from(step) * 5.0));
+    }
+    release_at(window, along(60.0));
+    let_pass(400);
+    window.get_camera_orientation().tilt - before
+}
+
+/// A drag that starts on the N rolls as a drag on the ring from the same
+/// point does, and its release does not put north up.
+#[test]
+fn test_a_drag_from_the_n_rolls_like_one_on_the_ring() {
+    let (window, _sent) = wired_window();
+    let (middle, north) = ring_and_north(&window);
+    let from_north = roll_of_a_drag(&window, middle, north);
+    approx::assert_abs_diff_eq!(from_north.abs(), 60.0, epsilon = 0.5);
+    approx::assert_abs_diff_eq!(
+        window.get_camera_orientation().tilt,
+        from_north,
+        epsilon = 0.01
+    );
+
+    let (window, _sent) = wired_window();
+    let mut orientation = window.get_camera_orientation();
+    orientation.tilt = 90.0;
+    window.set_camera_orientation(orientation);
+    let (_, moved_north) = ring_and_north(&window);
+    assert!(
+        (moved_north.x - north.x).hypot(moved_north.y - north.y) > 20.0,
+        "the N is out of the way"
+    );
+    let from_ring = roll_of_a_drag(&window, middle, north);
+    approx::assert_abs_diff_eq!(from_north, from_ring, epsilon = 0.01);
+}
+
+/// The cursor the window shows, as Slint names it.
+fn cursor(window: &MainWindow) -> String {
+    let adapter = i_slint_core::window::WindowInner::from_pub(window.window()).window_adapter();
+    let testing = adapter
+        .internal(i_slint_core::InternalToken)
+        .and_then(|internal| {
+            (internal as &dyn std::any::Any)
+                .downcast_ref::<i_slint_backend_testing::testing_backend::TestingWindow>()
+        })
+        .expect("a window of the testing backend");
+    format!("{:?}", testing.mouse_cursor())
+}
+
+/// The ring, its N and the three sticks show the open hand under the pointer
+/// and the closed one while held where the platform draws hands for them,
+/// and the pointing hand where it does not.
+#[test]
+fn test_the_draggable_camera_controls_show_a_hand() {
+    for hands in [true, false] {
+        let (window, _sent) = wired_window();
+        window
+            .global::<sunlit_earth::OverlayStyle>()
+            .set_grab_cursors(hands);
+        let (hover, held) = if hands {
+            ("BuiltIn(Grab)", "BuiltIn(Grabbing)")
+        } else {
+            ("BuiltIn(Pointer)", "BuiltIn(Pointer)")
+        };
+        let ring = the_element(&window, "CameraPanel::ring");
+        let places = [
+            ("the ring", point_in(&ring, 0.06, 0.5)),
+            ("the N", ring_and_north(&window).1),
+            (
+                "the orbit stick",
+                point_in(&the_element(&window, "CameraPanel::orbit"), 0.5, 0.5),
+            ),
+            (
+                "the look stick",
+                point_in(&the_element(&window, "CameraPanel::look"), 0.5, 0.5),
+            ),
+            (
+                "the frame stick",
+                point_in(&the_element(&window, "CameraPanel::frame"), 0.5, 0.5),
+            ),
+        ];
+        for (what, at) in places {
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at });
+            assert_eq!(cursor(&window), hover, "{what} under the pointer");
+            hold_at(&window, at);
+            let nudged = slint::LogicalPosition::new(at.x, at.y + 1.0);
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: nudged });
+            assert_eq!(cursor(&window), held, "{what} held");
+            release_at(&window, nudged);
+            let_pass(400);
+        }
+    }
+}
+
+/// Holding the orbit joystick up and to the right, clear of the arrows, keeps
+/// the camera traveling east, and in the Sun-fixed mode it moves the time of
+/// day instead and leaves the longitude alone.
+#[test]
+fn test_a_held_orbit_joystick_travels_east_in_either_mode() {
+    for sun_fixed in [false, true] {
+        let (window, _sent) = wired_window();
+        window.set_camera_position(CameraPositionSettings {
+            longitude: 10.0,
+            sun_fixed,
+            solar_time: 6.0,
+            ..window.get_camera_position()
+        });
+        let stick = the_element(&window, "CameraPanel::orbit");
+        let push = point_in(&stick, 0.72, 0.3);
+        hold_at(&window, push);
+        let mut readings = Vec::new();
+        for _ in 0..5 {
+            let_pass(48);
+            let position = window.get_camera_position();
+            readings.push(if sun_fixed {
+                position.solar_time
+            } else {
+                position.longitude
+            });
+            if sun_fixed {
+                approx::assert_relative_eq!(position.longitude, 10.0);
+            }
+        }
+        release_at(&window, push);
+        assert!(
+            readings.windows(2).all(|pair| pair[1] > pair[0]),
+            "sun_fixed = {sun_fixed}: the camera did not keep traveling east: {readings:?}"
+        );
+        let settled = window.get_camera_position();
+        let_pass(100);
+        assert_eq!(
+            window.get_camera_position(),
+            settled,
+            "the camera stops when the knob is let go"
+        );
+    }
+}
+
+/// The look and frame ↺ badges are in the tree exactly while their values
+/// differ from the defaults, and a click on one brings them back.
+#[test]
+fn test_the_look_and_frame_resets_show_while_modified_and_clear_it() {
+    let (window, _sent) = wired_window();
+    let badges = |window: &MainWindow| {
+        (
+            ElementHandle::find_by_element_id(window, "CameraPanel::look-reset").count(),
+            ElementHandle::find_by_element_id(window, "CameraPanel::frame-reset").count(),
+        )
+    };
+    assert_eq!(badges(&window), (0, 0), "nothing to reset at the defaults");
+
+    let defaults = window.get_defaults();
+    let mut orientation = window.get_camera_orientation();
+    orientation.pitch = defaults.camera_orientation.pitch + 12.0;
+    window.set_camera_orientation(orientation);
+    assert_eq!(badges(&window), (1, 0));
+    let mut framing = window.get_framing();
+    framing.offset_x = defaults.framing.offset_x - 0.4;
+    window.set_framing(framing);
+    assert_eq!(badges(&window), (1, 1));
+
+    for id in ["CameraPanel::look-reset", "CameraPanel::frame-reset"] {
+        press_at(&window, point_in(&the_element(&window, id), 0.5, 0.5));
+        let_pass(400);
+    }
+    assert_eq!(window.get_camera_orientation(), defaults.camera_orientation);
+    assert_eq!(window.get_framing(), defaults.framing);
+    assert_eq!(badges(&window), (0, 0));
+}
+
+/// The zoom slider takes the value under the pointer, except near the mark,
+/// where it snaps to the default.
+#[test]
+fn test_the_zoom_slider_snaps_to_the_mark() {
+    let (window, sent) = wired_window();
+    let default = window.get_defaults().camera_position.zoom;
+    let slider = the_element(&window, "CameraPanel::zoom-slider");
+    let height = slider.size().height;
+    let at = |zoom: f32| point_in(&slider, 0.5, (4.0 + zoom * (height - 8.0)) / height);
+
+    press_at(&window, at(0.9));
+    let far = window.get_camera_position().zoom;
+    approx::assert_relative_eq!(far, 0.9, epsilon = 0.02);
+    press_at(&window, at(default + 0.02));
+    approx::assert_relative_eq!(window.get_camera_position().zoom, default);
+    approx::assert_relative_eq!(last_pushed(&sent).camera.zoom, default);
+}
+
+/// A click on the globe, which is what gives the preview's shortcuts the
+/// keyboard.
+fn click_the_globe(window: &MainWindow) {
+    let size = window.window().size().to_logical(1.0);
+    press_at(
+        window,
+        slint::LogicalPosition::new(size.width - 300.0, size.height / 2.0),
+    );
+}
+
+fn key_down(window: &MainWindow, text: impl Into<slint::SharedString>) {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.into() });
+}
+
+fn key_up(window: &MainWindow, text: impl Into<slint::SharedString>) {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: text.into() });
+}
+
+/// Let go of every modifier key. Slint keeps their state for the thread, so
+/// one a case leaves down would be down in the next case's window.
+fn release_every_modifier(window: &MainWindow) {
+    use slint::platform::Key;
+
+    for key in [
+        Key::Shift,
+        Key::ShiftR,
+        Key::Control,
+        Key::ControlR,
+        Key::Alt,
+        Key::AltGr,
+        Key::Meta,
+        Key::MetaR,
+    ] {
+        key_up(window, key);
+    }
+}
+
+fn tap(window: &MainWindow, text: impl Into<slint::SharedString>) {
+    let text = text.into();
+    key_down(window, text.clone());
+    key_up(window, text);
+}
+
+/// F1 opens the sheet and Esc closes it, and so does a click outside its
+/// card.
+#[test]
+fn test_f1_opens_the_shortcut_sheet_and_escape_closes_it() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    let sheets = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "MainWindow::shortcut-sheet").count()
+    };
+    click_the_globe(&window);
+    assert_eq!(sheets(&window), 0);
+    tap(&window, Key::F1);
+    assert_eq!(sheets(&window), 1, "F1 opens the sheet");
+    tap(&window, Key::Escape);
+    assert_eq!(sheets(&window), 0, "Esc closes it");
+
+    tap(&window, Key::F1);
+    assert_eq!(sheets(&window), 1);
+    press_at(
+        &window,
+        slint::LogicalPosition::new(window.window().size().to_logical(1.0).width - 20.0, 20.0),
+    );
+    assert_eq!(sheets(&window), 0, "a click outside the card closes it");
+}
+
+/// The sheet opened with the panel's ? button closes on Esc though a sidebar
+/// control had the keyboard.
+#[test]
+fn test_escape_closes_the_sheet_the_help_button_opened() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    let sheets = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "MainWindow::shortcut-sheet").count()
+    };
+    let slider = slider_of(&the_element(&window, "MainWindow::latitude-slider"));
+    press_at(&window, point_in(&slider, 0.5, 0.5));
+    press_at(
+        &window,
+        point_in(&the_element(&window, "CameraPanel::help-button"), 0.5, 0.5),
+    );
+    assert_eq!(sheets(&window), 1, "the ? button opens the sheet");
+    tap(&window, Key::Escape);
+    assert_eq!(sheets(&window), 0, "Esc closes it");
+}
+
+/// A bare click on the globe and the keys teach nothing about the mouse, so
+/// the first use of the orbit control still names its gesture; a drag of the
+/// globe that moved does, and then the control shows no tip.
+#[test]
+fn test_only_a_mouse_gesture_that_moved_counts_as_used() {
+    use slint::platform::{Key, PointerEventButton, WindowEvent};
+
+    let tips = |window: &MainWindow| all_of(window, "GestureTip").len();
+    let step = |window: &MainWindow| {
+        press_at(
+            window,
+            point_in(&the_element(window, "CameraPanel::right-arrow"), 0.5, 0.5),
+        );
+    };
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    tap(&window, Key::RightArrow);
+    step(&window);
+    assert_eq!(tips(&window), 1, "the tip names the left drag");
+
+    let (window, _sent) = wired_window();
+    let size = window.window().size().to_logical(1.0);
+    let from = slint::LogicalPosition::new(size.width - 300.0, size.height / 2.0);
+    let to = slint::LogicalPosition::new(from.x + 40.0, from.y);
+    hold_at(&window, from);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: to });
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position: to,
+            button: PointerEventButton::Left,
+        });
+    step(&window);
+    assert_eq!(tips(&window), 0, "the left drag was used already");
+}
+
+/// The first-use tip stays inside the preview, centered on it, and keeps its
+/// text on itself: on one line in the default window, wrapped in the
+/// narrowest one with the tip grown around the lines.
+#[test]
+fn test_the_gesture_tip_fits_the_preview() {
+    let mut line_height = None;
+    for width in [1000, 520] {
+        let (window, _sent) = wired_window();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 600));
+        press_at(
+            &window,
+            point_in(&the_element(&window, "CameraPanel::right-arrow"), 0.5, 0.5),
+        );
+        let tips = all_of(&window, "GestureTip");
+        assert_eq!(tips.len(), 1, "{width} px: the orbit control shows its tip");
+        let tip = edges(&tips[0]);
+        let preview = edges(&the_element(&window, "MainWindow::image-container"));
+        assert!(
+            tip[0] >= preview[0] && tip[2] <= preview[2],
+            "{width} px: the tip {}..{} leaves the preview {}..{}",
+            tip[0],
+            tip[2],
+            preview[0],
+            preview[2]
+        );
+        approx::assert_abs_diff_eq!(
+            f32::midpoint(tip[0], tip[2]),
+            f32::midpoint(preview[0], preview[2]),
+            epsilon = 0.5
+        );
+        for id in [
+            "GestureTip::label",
+            "GestureTip::glyph",
+            "GestureTip::message",
+        ] {
+            let part = edges(&the_element(&window, id));
+            assert!(
+                part[0] >= tip[0] && part[1] >= tip[1] && part[2] <= tip[2] && part[3] <= tip[3],
+                "{width} px: {id} at {part:?} is not on the tip at {tip:?}"
+            );
+        }
+        let message = edges(&the_element(&window, "GestureTip::message"));
+        let height = message[3] - message[1];
+        match line_height {
+            None => line_height = Some(height),
+            Some(line) => assert!(
+                height > 1.5 * line,
+                "{width} px: the text keeps one line's height, {height} px"
+            ),
+        }
+    }
+}
+
+/// H hides the overlays and shows them again, the corner button brings them
+/// back too, and the choice is saved with the window's settings.
+#[test]
+fn test_h_hides_and_shows_the_overlays() {
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    tap(&window, "h");
+    assert!(window.get_overlays_hidden(), "H hides the overlays");
+    let saved = ui_callbacks::read_config_from_window_onto(
+        &window,
+        &AA_COUNTS,
+        &AppConfig::default(),
+        false,
+    );
+    assert!(saved.overlays_hidden, "the hidden overlays are saved");
+    tap(&window, "h");
+    assert!(!window.get_overlays_hidden(), "H again shows them");
+
+    tap(&window, "h");
+    press_at(
+        &window,
+        point_in(&the_element(&window, "MainWindow::show-button"), 0.5, 0.5),
+    );
+    assert!(
+        !window.get_overlays_hidden(),
+        "the corner button shows them"
+    );
+}
+
+/// A held arrow orbits the camera for as long as it is held, and with Shift
+/// held it swings the look instead.
+#[test]
+fn test_held_arrows_orbit_and_with_shift_look() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    let start = window.get_camera_position();
+    key_down(&window, Key::RightArrow);
+    let_pass(200);
+    key_up(&window, Key::RightArrow);
+    let turned = window.get_camera_position();
+    assert!(
+        turned.longitude > start.longitude + 1.0,
+        "the right arrow travels east: {} to {}",
+        start.longitude,
+        turned.longitude
+    );
+    let_pass(100);
+    assert_eq!(window.get_camera_position(), turned, "and stops on release");
+
+    let pitch = window.get_camera_orientation().pitch;
+    key_down(&window, Key::Shift);
+    key_down(&window, Key::UpArrow);
+    let_pass(200);
+    key_up(&window, Key::UpArrow);
+    key_up(&window, Key::Shift);
+    assert!(window.get_camera_orientation().pitch > pitch + 1.0);
+    assert_eq!(
+        window.get_camera_position(),
+        turned,
+        "Shift leaves the orbit alone"
+    );
+}
+
+/// Every number of the camera the keys move.
+fn camera_numbers(window: &MainWindow) -> [f32; 7] {
+    let position = window.get_camera_position();
+    let orientation = window.get_camera_orientation();
+    let framing = window.get_framing();
+    [
+        position.longitude,
+        position.latitude,
+        orientation.tilt,
+        orientation.yaw,
+        orientation.pitch,
+        framing.offset_x,
+        framing.offset_y,
+    ]
+}
+
+/// The camera after `key` is held for a fifth of a second with `modifier`
+/// held around it, in a window of its own.
+fn camera_after_holding(
+    modifier: Option<slint::platform::Key>,
+    key: impl Into<slint::SharedString>,
+) -> [f32; 7] {
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    let key = key.into();
+    if let Some(modifier) = modifier {
+        key_down(&window, modifier);
+    }
+    key_down(&window, key.clone());
+    let_pass(200);
+    key_up(&window, key);
+    if let Some(modifier) = modifier {
+        key_up(&window, modifier);
+    }
+    let_pass(100);
+    camera_numbers(&window)
+}
+
+/// W, A, S and D move the camera exactly as the up, left, down and right
+/// arrows do, alone, with Shift (which gives the capital) and with Ctrl.
+#[test]
+fn test_wasd_moves_the_camera_as_the_arrows_do() {
+    use slint::platform::Key;
+
+    let still = {
+        let (window, _sent) = wired_window();
+        camera_numbers(&window)
+    };
+    for (modifier, what) in [
+        (None, "alone"),
+        (Some(Key::Shift), "with Shift"),
+        (Some(Key::Control), "with Ctrl"),
+    ] {
+        for (arrow, letter) in [
+            (Key::UpArrow, "w"),
+            (Key::LeftArrow, "a"),
+            (Key::DownArrow, "s"),
+            (Key::RightArrow, "d"),
+        ] {
+            let letter = if modifier == Some(Key::Shift) {
+                letter.to_uppercase()
+            } else {
+                letter.to_owned()
+            };
+            let by_arrow = camera_after_holding(modifier, arrow);
+            let by_letter = camera_after_holding(modifier, letter.as_str());
+            assert!(
+                by_arrow
+                    .iter()
+                    .zip(still)
+                    .any(|(a, b)| (a - b).abs() > 1e-3),
+                "{arrow:?} {what} moves the camera"
+            );
+            for (a, b) in by_arrow.iter().zip(by_letter) {
+                approx::assert_relative_eq!(*a, b, epsilon = 1e-4);
+            }
+        }
+    }
+}
+
+/// Leaving the Sun-fixed mode while an orbit step eases the time of day ends
+/// the ease: the longitude the switch converted stays, rather than taking
+/// the rest of the eased time of day as degrees.
+#[test]
+fn test_the_sun_fixed_switch_ends_an_orbit_ease() {
+    let (window, _sent) = wired_window();
+    window.set_camera_position(CameraPositionSettings {
+        longitude: 10.0,
+        sun_fixed: true,
+        solar_time: 6.0,
+        ..window.get_camera_position()
+    });
+    window.invoke_camera_orbit_step(1, 0);
+    let_pass(48);
+    assert!(
+        window.get_camera_position().solar_time > 6.0,
+        "the premise: the step is on its way"
+    );
+    the_button(&window, "Fixed toward the Sun").invoke_accessible_default_action();
+    let switched = window.get_camera_position();
+    assert!(!switched.sun_fixed);
+    let_pass(400);
+    assert_eq!(window.get_camera_position(), switched);
+    assert!(!window.get_camera_easing());
+}
+
+/// A drag of the globe while an orbit step eases ends the ease, and the
+/// camera stays where the drag put it.
+#[test]
+fn test_a_globe_drag_ends_an_orbit_ease() {
+    let (window, _sent) = wired_window();
+    set_longitude(&window, 10.0);
+    window.invoke_camera_orbit_step(1, 0);
+    let_pass(48);
+    assert!(
+        window.get_camera_position().longitude > 10.0,
+        "the premise: the step is on its way"
+    );
+    window.invoke_mouse_drag_globe_begin();
+    window.invoke_mouse_drag_globe(120.0, 0.0);
+    let dragged = window.get_camera_position();
+    let_pass(400);
+    assert_eq!(window.get_camera_position(), dragged);
+    assert!(!window.get_camera_easing());
+}
+
+// ---------------------------------------------------------------------------
+// The Date / Time group on the time setting
+// ---------------------------------------------------------------------------
+
+/// A slider of the group moved: the instant is read from the three in the
+/// displayed zone, pushed as the time setting, and the labels name the zone.
+#[test]
+fn test_the_date_time_sliders_set_the_instant_in_the_displayed_zone() {
+    use sunlit_core::scene::scene_time::SceneTime;
+    use time::macros::datetime;
+
+    let (window, sent) = wired_window();
+    let mut settings = window.get_datetime();
+    settings.hour = 10.5;
+    settings.year = 2024;
+    settings.day_of_year = 60.0;
+    window.set_datetime(settings);
+    window.invoke_datetime_edited();
+
+    let pushed = last_pushed(&sent).time;
+    assert_eq!(pushed, SceneTime::fixed(datetime!(2024-02-29 10:30 UTC)));
+    assert_eq!(
+        window.get_datetime().instant.as_str(),
+        "2024-02-29T10:30:00Z"
+    );
+    assert_eq!(window.get_hour_label().as_str(), "10:30 UTC");
+    assert_eq!(window.get_day_label().as_str(), "Thu 29 Feb");
+    assert_eq!(window.get_max_day_of_year(), 366);
+
+    let saved = ui_callbacks::read_config_from_window_onto(
+        &window,
+        &AA_COUNTS,
+        &AppConfig::default(),
+        false,
+    );
+    assert_eq!(saved.scene_time, pushed);
+    assert_eq!(saved.time_zone, sunlit_core::config::TimeZoneChoice::Utc);
+}
+
+/// The override off is live time, and turning it on fixes the instant it was
+/// turned on at.
+#[test]
+fn test_the_override_fixes_now_and_off_is_live() {
+    use sunlit_core::scene::scene_time::SceneTime;
+
+    let (window, sent) = wired_window();
+    let mut settings = window.get_datetime();
+    settings.use_custom = false;
+    window.set_datetime(settings);
+    window.invoke_sliders_changed();
+    assert_eq!(last_pushed(&sent).time, SceneTime::Live);
+
+    let before = time::OffsetDateTime::now_utc();
+    let mut settings = window.get_datetime();
+    settings.use_custom = true;
+    window.set_datetime(settings);
+    window.invoke_datetime_override_toggled();
+    let SceneTime::Fixed(at) = last_pushed(&sent).time else {
+        panic!("the override fixes a time");
+    };
+    let after = time::OffsetDateTime::now_utc();
+    assert!(
+        before - time::Duration::seconds(1) <= at && at <= after,
+        "{at} is not the moment the override went on"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The time bar
+// ---------------------------------------------------------------------------
+
+use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind, ExcursionState};
+
+/// The excursion commands the window sent, in order, and the last scene it
+/// pushed among them.
+fn excursion_commands(
+    sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+) -> (Vec<ExcursionCommand>, Option<SceneParams>) {
+    let mut commands = Vec::new();
+    let mut pushed = None;
+    for command in sent.try_iter() {
+        match command {
+            sunlit_core::engine::EngineCommand::Excursion(command) => commands.push(command),
+            sunlit_core::engine::EngineCommand::UpdateParams(params) => pushed = Some(*params),
+            _ => {}
+        }
+    }
+    (commands, pushed)
+}
+
+/// Rest the pointer on the folded bar, which opens it.
+fn open_the_bar(window: &MainWindow) {
+    let bar = the_element(window, "MainWindow::time-bar");
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: point_in(&bar, 0.5, 0.5),
+        });
+    assert!(bar.size().height > 100.0, "hovering the pill opens the bar");
+}
+
+/// The one button labeled `label`.
+fn the_labeled(window: &MainWindow, label: &str) -> ElementHandle {
+    let found: Vec<_> = ElementHandle::find_by_accessible_label(window, label)
+        .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
+        .collect();
+    assert_eq!(found.len(), 1, "expected exactly one '{label}'");
+    found.into_iter().next().expect("one element")
+}
+
+/// A ruler's dots from its left end.
+fn ruler_dot_elements(ruler: &ElementHandle) -> Vec<ElementHandle> {
+    let mut dots = ruler
+        .query_descendants()
+        .match_id("SpeedRuler::dot")
+        .find_all();
+    dots.sort_by(|a, b| a.absolute_position().x.total_cmp(&b.absolute_position().x));
+    dots
+}
+
+/// The middle of dot `slot` of a ruler, counted from its left end.
+fn ruler_dot(ruler: &ElementHandle, slot: usize) -> slint::LogicalPosition {
+    point_in(&ruler_dot_elements(ruler)[slot], 0.5, 0.5)
+}
+
+fn ruler_dots(ruler: &ElementHandle) -> usize {
+    ruler_dot_elements(ruler).len()
+}
+
+fn paused(rate: i32) -> ExcursionState {
+    ExcursionState {
+        running: false,
+        rate,
+        kind: ExcursionKind::Clock,
+    }
+}
+
+/// A dot of the forward ruler runs the excursion at its rate, and the time
+/// setting stays where it was.
+#[test]
+fn test_a_forward_ruler_dot_runs_at_its_rate_and_leaves_the_setting() {
+    let (window, sent) = wired_window();
+    let instant = window.get_datetime().instant;
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+
+    let forward = the_element(&window, "TimeBar::forward");
+    press_at(&window, ruler_dot(&forward, 4));
+    let rate = i32::try_from(ExcursionKind::Clock.ladder()[4]).expect("a rate");
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(
+        commands,
+        [ExcursionCommand::Play {
+            rate,
+            kind: ExcursionKind::Clock
+        }]
+    );
+    assert!(pushed.is_none(), "a speed pushed the scene");
+    assert_eq!(window.get_datetime().instant, instant);
+}
+
+/// The radio labels choose what play runs, and the rulers carry that kind's
+/// speeds; going over to the date while paused asks nothing of the engine.
+#[test]
+fn test_the_radio_labels_switch_the_rulers_ladder() {
+    let (window, sent) = wired_window();
+    open_the_bar(&window);
+    let forward = |window: &MainWindow| the_element(window, "TimeBar::forward");
+    assert_eq!(
+        ruler_dots(&forward(&window)),
+        ExcursionKind::Clock.ladder().len()
+    );
+
+    let _ = excursion_commands(&sent);
+    press_at(&window, point_in(&the_labeled(&window, "DATE"), 0.5, 0.5));
+    assert_eq!(
+        ruler_dots(&forward(&window)),
+        ExcursionKind::Date.ladder().len()
+    );
+    assert!(window.get_time_bar().date_kind);
+    assert_eq!(excursion_commands(&sent).0, []);
+
+    press_at(&window, point_in(&the_labeled(&window, "Play"), 0.5, 0.5));
+    let rate = i32::try_from(ExcursionKind::Date.default_rate()).expect("a rate");
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [ExcursionCommand::Play {
+            rate,
+            kind: ExcursionKind::Date
+        }]
+    );
+}
+
+/// A press on the time track sets the time setting to that time of the day
+/// on screen, which during an excursion is the excursion's day, and ends the
+/// excursion; a drag carries on from there.
+#[test]
+fn test_a_track_drag_sets_the_time_setting() {
+    use sunlit_core::scene::scene_time::SceneTime;
+    use time::macros::datetime;
+
+    let (window, sent) = wired_window();
+    sunlit_earth::time_bar::excursion_changed(&window, Some(paused(60)));
+    sunlit_earth::time_bar::frame_shown(&window, datetime!(2026-05-10 03:00 UTC));
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+
+    let track = the_element(&window, "TimeBar::day-track");
+    hold_at(&window, point_in(&track, 0.5, 0.5));
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(
+        pushed.expect("the press pushed the scene").time,
+        SceneTime::fixed(datetime!(2026-05-10 12:00 UTC))
+    );
+    assert_eq!(commands, [ExcursionCommand::End]);
+
+    let to = point_in(&track, 0.75, 0.5);
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: to });
+    release_at(&window, to);
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(
+        pushed.expect("the drag pushed the scene").time,
+        SceneTime::fixed(datetime!(2026-05-10 18:00 UTC))
+    );
+    assert_eq!(commands, [], "the excursion had ended already");
+}
+
+/// Now puts the time setting back to live and ends any excursion, and so
+/// does 0.
+#[test]
+fn test_now_sends_live_and_end() {
+    use sunlit_core::scene::scene_time::SceneTime;
+
+    let (window, sent) = wired_window();
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+    press_at(&window, point_in(&the_labeled(&window, "Now"), 0.5, 0.5));
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(pushed.expect("Now pushed the scene").time, SceneTime::Live);
+    assert_eq!(commands, [ExcursionCommand::End]);
+    assert!(window.get_time_bar().live);
+
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    let _ = excursion_commands(&sent);
+    tap(&window, "0");
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(pushed.expect("0 pushed the scene").time, SceneTime::Live);
+    assert_eq!(commands, [ExcursionCommand::End]);
+}
+
+/// During an excursion the clock block says Preview, and a click on it ends
+/// the excursion and leaves the time setting alone.
+#[test]
+fn test_the_preview_pill_ends_the_excursion() {
+    let (window, sent) = wired_window();
+    sunlit_earth::time_bar::excursion_changed(&window, Some(paused(60)));
+    assert_eq!(window.get_time_bar().state_text.as_str(), "Preview");
+    open_the_bar(&window);
+    let _ = excursion_commands(&sent);
+    press_at(
+        &window,
+        point_in(&the_labeled(&window, "Preview"), 0.5, 0.5),
+    );
+    let (commands, pushed) = excursion_commands(&sent);
+    assert_eq!(commands, [ExcursionCommand::End]);
+    assert!(pushed.is_none());
+}
+
+/// The bar folds 0.7 s after the pointer leaves it, unless it is pinned.
+#[test]
+fn test_the_pin_keeps_the_bar_open_with_the_pointer_outside() {
+    let (window, _sent) = wired_window();
+    let height = |window: &MainWindow| the_element(window, "MainWindow::time-bar").size().height;
+    let away = || slint::platform::WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(900.0, 300.0),
+    };
+
+    open_the_bar(&window);
+    window.window().dispatch_event(away());
+    let_pass(1000);
+    assert!(
+        height(&window) < 40.0,
+        "the bar folds once the pointer left"
+    );
+
+    open_the_bar(&window);
+    press_at(
+        &window,
+        point_in(&the_labeled(&window, "Keep open"), 0.5, 0.5),
+    );
+    assert!(window.get_time_bar_pinned());
+    window.window().dispatch_event(away());
+    let_pass(1000);
+    assert!(height(&window) > 100.0, "the pinned bar folded");
+}
+
+/// The sidebar's Date / Time group and the bar show the same instant in the
+/// same zone, before and after the zone chip switches it.
+#[test]
+fn test_the_sidebar_group_and_the_bar_show_the_same_instant() {
+    let (window, _sent) = wired_window();
+    let agree = |window: &MainWindow| {
+        let view = window.get_time_bar();
+        assert_eq!(
+            window.get_hour_label().as_str(),
+            format!("{} {}", view.time_text, view.zone_text)
+        );
+        assert!(
+            view.date_text.starts_with(window.get_day_label().as_str()),
+            "{} against {}",
+            view.date_text,
+            window.get_day_label()
+        );
+    };
+    window.invoke_sliders_changed();
+    assert_eq!(window.get_time_bar().time_text.as_str(), "09:15");
+    agree(&window);
+    window.invoke_time_zone_toggled();
+    assert!(!window.get_time_zone_utc());
+    agree(&window);
+}
+
+/// Space plays and pauses through the engine, J and L shuttle, K pauses, the
+/// comma and the period skip, with Shift by the bigger step.
+#[test]
+fn test_the_time_keys_drive_the_transport() {
+    use slint::platform::Key;
+    use sunlit_core::engine::excursion::TimeStep;
+
+    let play = |rate| ExcursionCommand::Play {
+        rate,
+        kind: ExcursionKind::Clock,
+    };
+    let step = |forward, big| {
+        ExcursionCommand::Skip(TimeStep {
+            kind: ExcursionKind::Clock,
+            forward,
+            big,
+        })
+    };
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    let _ = excursion_commands(&sent);
+    tap(&window, " ");
+    tap(&window, "l");
+    tap(&window, ",");
+    key_down(&window, Key::Shift);
+    tap(&window, ">");
+    key_up(&window, Key::Shift);
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [play(60), play(60), step(false, false), step(true, true)]
+    );
+
+    sunlit_earth::time_bar::excursion_changed(
+        &window,
+        Some(ExcursionState {
+            running: true,
+            rate: 60,
+            kind: ExcursionKind::Clock,
+        }),
+    );
+    assert_eq!(
+        window.get_time_bar().state_text.as_str(),
+        "\u{25b6} 60\u{d7}"
+    );
+    tap(&window, "l");
+    tap(&window, "k");
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [play(120), ExcursionCommand::Pause]
+    );
+}
+
+/// The rates of the commands to play, in the order they were sent.
+fn rates_played(
+    sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+) -> Vec<i32> {
+    excursion_commands(sent)
+        .0
+        .into_iter()
+        .filter_map(|command| match command {
+            ExcursionCommand::Play { rate, .. } => Some(rate),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The engine reporting play running on the clock at `rate`.
+fn running_at(window: &MainWindow, rate: i32) {
+    sunlit_earth::time_bar::excursion_changed(
+        window,
+        Some(ExcursionState {
+            running: true,
+            rate,
+            kind: ExcursionKind::Clock,
+        }),
+    );
+}
+
+/// The clock's speeds, slowest first.
+fn clock_ladder() -> Vec<i32> {
+    ExcursionKind::Clock
+        .ladder()
+        .iter()
+        .map(|&rate| i32::try_from(rate).expect("a rate"))
+        .collect()
+}
+
+/// A held L steps once at once, then again after a pause and at a steady
+/// pace after that, as further presses would, and stops when let go; held
+/// on, it stops by itself at the fastest speed, and when the window loses
+/// the keyboard.
+#[test]
+fn test_holding_l_keeps_shuttling_until_let_go_or_the_fastest() {
+    let ladder = clock_ladder();
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    running_at(&window, ladder[1]);
+    let _ = excursion_commands(&sent);
+
+    key_down(&window, "l");
+    assert_eq!(rates_played(&sent), [ladder[2]], "the press steps at once");
+    let_pass(300);
+    assert_eq!(rates_played(&sent), [], "and waits before it repeats");
+    let_pass(200);
+    assert_eq!(rates_played(&sent), [ladder[3]], "then steps again");
+    let_pass(200);
+    assert_eq!(rates_played(&sent), [ladder[4]], "and again");
+    key_up(&window, "l");
+    let_pass(1000);
+    assert_eq!(rates_played(&sent), [], "until it is let go");
+
+    running_at(&window, ladder[1]);
+    key_down(&window, "l");
+    let_pass(400 + 200 * 20);
+    let mut expected = ladder[2..].to_vec();
+    expected.push(ladder[ladder.len() - 1]);
+    assert_eq!(
+        rates_played(&sent),
+        expected,
+        "held on, it stops once a step changes nothing"
+    );
+    key_up(&window, "l");
+
+    running_at(&window, ladder[1]);
+    key_down(&window, "l");
+    let_pass(300);
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+    let_pass(1000);
+    assert_eq!(
+        rates_played(&sent),
+        [ladder[2]],
+        "and it stops when the window loses the keyboard"
+    );
+}
+
+/// The camera's position, orientation and framing.
+fn camera(
+    window: &MainWindow,
+) -> (
+    CameraPositionSettings,
+    sunlit_earth::CameraOrientationSettings,
+    FramingSettings,
+) {
+    (
+        window.get_camera_position(),
+        window.get_camera_orientation(),
+        window.get_framing(),
+    )
+}
+
+/// A held key let go while Ctrl, Alt or the Windows key (⌘ on macOS) is
+/// down stops what it moved, though those modifiers send a press of most of
+/// these keys to the window; and so does one let go after Shift or Alt
+/// changed the text it gives, as Shift turns - into _. A key held by its
+/// text has stopped at Alt's press already; an arrow stops at its release.
+#[test]
+fn test_a_held_key_let_go_under_a_modifier_stops_the_camera() {
+    use slint::SharedString;
+    use slint::platform::Key;
+
+    let held: Vec<SharedString> = vec![
+        Key::LeftArrow.into(),
+        Key::RightArrow.into(),
+        Key::UpArrow.into(),
+        Key::DownArrow.into(),
+        "w".into(),
+        "a".into(),
+        "s".into(),
+        "d".into(),
+        "q".into(),
+        "e".into(),
+        "+".into(),
+        "=".into(),
+        "-".into(),
+    ];
+    let mut cases: Vec<(SharedString, Key, SharedString)> = Vec::new();
+    for modifier in [Key::Control, Key::Alt, Key::Meta] {
+        cases.extend(held.iter().map(|key| (key.clone(), modifier, key.clone())));
+    }
+    cases.extend([
+        ("-".into(), Key::Shift, "_".into()),
+        ("+".into(), Key::Shift, "*".into()),
+        ("q".into(), Key::Alt, "œ".into()),
+    ]);
+    for (pressed, modifier, released) in cases {
+        let what = format!("{pressed:?} let go as {released:?} with {modifier:?} down");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        key_down(&window, pressed.clone());
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press moves the camera");
+        key_down(&window, modifier);
+        key_up(&window, released);
+        key_up(&window, modifier);
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+    }
+}
+
+/// A held J or L let go while a modifier is down stops stepping; under Alt,
+/// Alt's press has stopped it already.
+#[test]
+fn test_a_shuttle_key_let_go_under_a_modifier_stops_stepping() {
+    use slint::platform::Key;
+
+    let ladder = clock_ladder();
+    for key in ["j", "l"] {
+        for modifier in [Key::Control, Key::Alt, Key::Meta, Key::Shift] {
+            let what = format!("{key} let go with {modifier:?} down");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            let _ = excursion_commands(&sent);
+            key_down(&window, key);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: the press steps"
+            );
+            key_down(&window, modifier);
+            if modifier == Key::Shift {
+                key_up(&window, key.to_uppercase());
+            } else {
+                key_up(&window, key);
+            }
+            key_up(&window, modifier);
+            let_pass(1500);
+            assert_eq!(excursion_commands(&sent).0, [], "{what}: it keeps stepping");
+        }
+    }
+}
+
+/// A held key let go after `AltGr` changed the text it gives, as on a German
+/// layout `AltGr` turns q into @, e into € and + into ~, stops what it moved,
+/// with `AltGr` alone and with Ctrl held as well: `AltGr`'s press stops it
+/// before the release comes.
+#[test]
+fn test_a_held_key_let_go_under_altgr_stops_the_camera() {
+    use slint::platform::Key;
+
+    let cases: [(&str, &[Key], &str); 3] = [
+        ("q", &[Key::AltGr], "@"),
+        ("e", &[Key::Control, Key::AltGr], "€"),
+        ("+", &[Key::AltGr], "~"),
+    ];
+    for (pressed, modifiers, released) in cases {
+        let what = format!("{pressed:?} let go as {released:?} with {modifiers:?} down");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        key_down(&window, pressed);
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press moves the camera");
+        for &modifier in modifiers {
+            key_down(&window, modifier);
+        }
+        key_up(&window, released);
+        for &modifier in modifiers.iter().rev() {
+            key_up(&window, modifier);
+        }
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+    }
+}
+
+/// A held key let go after Ctrl and Alt went down and changed the text it
+/// gives as `AltGr` would, as Windows lets left Ctrl + left Alt do on a
+/// German layout or a US International one, where they turn w into å, stops
+/// what it moved, though on Windows Slint then reports neither Ctrl nor Alt
+/// in the release's modifiers; and so does one pressed under Alt alone. Alt's
+/// press, or Ctrl's joining it, stops the key before the release comes.
+#[test]
+fn test_a_held_key_let_go_under_ctrl_and_alt_as_altgr_stops_the_camera() {
+    use slint::platform::Key;
+
+    let cases: [(&[Key], &str, &[Key], &str); 4] = [
+        (&[], "q", &[Key::Control, Key::Alt], "@"),
+        (&[], "e", &[Key::Control, Key::Alt], "€"),
+        (&[], "+", &[Key::Control, Key::Alt], "~"),
+        (&[Key::Alt], "w", &[Key::Control], "å"),
+    ];
+    for (before, pressed, after, released) in cases {
+        let what = format!(
+            "{pressed:?} pressed with {before:?} down, let go as {released:?} after {after:?}"
+        );
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        for &modifier in before {
+            key_down(&window, modifier);
+        }
+        key_down(&window, pressed);
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press moves the camera");
+        for &modifier in after {
+            key_down(&window, modifier);
+        }
+        key_up(&window, released);
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+        for &modifier in before.iter().chain(after) {
+            key_up(&window, modifier);
+        }
+    }
+}
+
+/// W pressed under Ctrl and Alt moves the frame on while another key comes
+/// up under the same Ctrl and Alt, and stops when W is let go.
+#[test]
+fn test_a_release_under_the_same_ctrl_and_alt_leaves_a_held_key_at_work() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    key_down(&window, Key::Control);
+    key_down(&window, Key::Alt);
+    key_down(&window, "w");
+    let_pass(50);
+    tap(&window, "x");
+    let tapped = camera(&window);
+    let_pass(100);
+    assert_ne!(camera(&window), tapped, "the frame stops while W is held");
+    key_up(&window, "w");
+    let stopped = camera(&window);
+    let_pass(300);
+    assert_eq!(
+        camera(&window),
+        stopped,
+        "the frame goes on after W is let go"
+    );
+    key_up(&window, Key::Alt);
+    key_up(&window, Key::Control);
+}
+
+/// A held J or L let go after Option, `AltGr` or Ctrl + Alt changed the text
+/// it gives, as Option turns j into ∆ on macOS and `AltGr` turns l into ł on
+/// a Polish layout, stops stepping: the modifier's press ends the hold before
+/// the release comes.
+#[test]
+fn test_a_shuttle_key_let_go_as_other_text_stops_stepping() {
+    use slint::platform::Key;
+
+    let ladder = clock_ladder();
+    let cases: [(&str, &[Key], &str); 3] = [
+        ("j", &[Key::Alt], "∆"),
+        ("l", &[Key::AltGr], "ł"),
+        ("l", &[Key::Control, Key::Alt], "ł"),
+    ];
+    for (pressed, modifiers, released) in cases {
+        let what = format!("{pressed:?} let go as {released:?} with {modifiers:?} down");
+        let (window, sent) = wired_window();
+        click_the_globe(&window);
+        running_at(&window, ladder[ladder.len() / 2]);
+        let _ = excursion_commands(&sent);
+        key_down(&window, pressed);
+        assert_eq!(
+            excursion_commands(&sent).0.len(),
+            1,
+            "{what}: the press steps"
+        );
+        for &modifier in modifiers {
+            key_down(&window, modifier);
+        }
+        key_up(&window, released);
+        let_pass(1500);
+        assert_eq!(excursion_commands(&sent).0, [], "{what}: it keeps stepping");
+        for &modifier in modifiers.iter().rev() {
+            key_up(&window, modifier);
+        }
+    }
+}
+
+/// A key pressed with Shift and let go after it, as + is Shift + 1 on a
+/// Swiss German layout and comes up as 1, stops what it moved.
+#[test]
+fn test_a_held_key_let_go_after_its_shift_stops_the_camera() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    let still = camera(&window);
+    key_down(&window, Key::Shift);
+    key_down(&window, "+");
+    let_pass(50);
+    assert_ne!(camera(&window), still, "the press zooms");
+    key_up(&window, Key::Shift);
+    key_up(&window, "1");
+    let stopped = camera(&window);
+    let_pass(300);
+    assert_eq!(camera(&window), stopped, "the zoom goes on");
+}
+
+/// Another key tapped under the Shift a held key went down with leaves the
+/// held key at work.
+#[test]
+fn test_a_tap_under_the_same_shift_leaves_a_held_key_at_work() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    key_down(&window, Key::Shift);
+    key_down(&window, "W");
+    let_pass(50);
+    tap(&window, "!");
+    let tapped = camera(&window);
+    let_pass(100);
+    assert_ne!(camera(&window), tapped, "the look stops while W is held");
+    key_up(&window, "W");
+    let stopped = camera(&window);
+    let_pass(300);
+    assert_eq!(
+        camera(&window),
+        stopped,
+        "the look goes on after W is let go"
+    );
+    key_up(&window, Key::Shift);
+}
+
+/// The modifier presses that end a hold, each after the modifiers before it:
+/// `AltGr`, Alt, and Ctrl joined by Alt or joining it, as Windows takes Ctrl +
+/// Alt for `AltGr`.
+const HOLD_ENDING_PRESSES: [(&[slint::platform::Key], &[slint::platform::Key]); 4] = {
+    use slint::platform::Key;
+    [
+        (&[], &[Key::AltGr]),
+        (&[], &[Key::Alt]),
+        (&[], &[Key::Control, Key::Alt]),
+        (&[Key::Alt], &[Key::Control]),
+    ]
+};
+
+/// A key held by its text stops when Alt or `AltGr` goes down, or Ctrl joins
+/// Alt, though its release never reaches the preview: under them many layouts
+/// make that release a dead key, as `AltGr` does with − on a Swiss German one,
+/// and Slint drops a key event that gives no text.
+#[test]
+fn test_alt_or_altgr_pressed_during_a_hold_stops_the_camera() {
+    for (before, pressed) in HOLD_ENDING_PRESSES {
+        let held: &[&str] = if before.is_empty() {
+            &["w", "a", "s", "d", "+", "=", "-", "q", "e"]
+        } else {
+            &["w", "a", "s", "d"]
+        };
+        for &key in held {
+            let what = format!("{key:?} held with {before:?} down, then {pressed:?}");
+            let (window, _sent) = wired_window();
+            click_the_globe(&window);
+            let still = camera(&window);
+            for &modifier in before {
+                key_down(&window, modifier);
+            }
+            key_down(&window, key);
+            let_pass(50);
+            assert_ne!(camera(&window), still, "{what}: the press moves the camera");
+            for &modifier in pressed {
+                key_down(&window, modifier);
+            }
+            for &modifier in before.iter().chain(pressed).rev() {
+                key_up(&window, modifier);
+            }
+            let stopped = camera(&window);
+            let_pass(300);
+            assert_eq!(camera(&window), stopped, "{what}: the camera keeps moving");
+        }
+    }
+}
+
+/// A J or L hold ends when Alt or `AltGr` goes down, or Ctrl joins Alt,
+/// though the key's release never reaches the preview, as `AltGr` makes J's
+/// a dead key on a German layout under Linux.
+#[test]
+fn test_alt_or_altgr_pressed_during_a_shuttle_hold_stops_stepping() {
+    let ladder = clock_ladder();
+    for (_, pressed) in HOLD_ENDING_PRESSES
+        .iter()
+        .filter(|(before, _)| before.is_empty())
+    {
+        for key in ["j", "l"] {
+            let what = format!("{key} held, then {pressed:?}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            let _ = excursion_commands(&sent);
+            key_down(&window, key);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: the press steps"
+            );
+            for &modifier in *pressed {
+                key_down(&window, modifier);
+            }
+            for &modifier in pressed.iter().rev() {
+                key_up(&window, modifier);
+            }
+            let_pass(1500);
+            assert_eq!(excursion_commands(&sent).0, [], "{what}: it keeps stepping");
+        }
+    }
+}
+
+/// A held key let go after Shift changed its text into another key of the
+/// preview's stops what it moved: where = is Shift + 0, as on German, Spanish
+/// and Nordic layouts, = comes up as 0, and where - and = share a key, as on
+/// Japanese and Dutch ones, each comes up as the other.
+#[test]
+fn test_a_held_key_let_go_as_another_key_of_the_preview_stops_the_camera() {
+    use slint::platform::Key;
+
+    for (shift_at_press, pressed, released) in
+        [(true, "=", "0"), (false, "-", "="), (true, "=", "-")]
+    {
+        let what = if shift_at_press {
+            format!("{pressed:?} pressed under Shift, let go as {released:?} after it")
+        } else {
+            format!("{pressed:?} held, let go as {released:?} under Shift")
+        };
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        let still = camera(&window);
+        if shift_at_press {
+            key_down(&window, Key::Shift);
+        }
+        key_down(&window, pressed);
+        let_pass(50);
+        assert_ne!(camera(&window), still, "{what}: the press zooms");
+        if shift_at_press {
+            key_up(&window, Key::Shift);
+            key_up(&window, released);
+        } else {
+            key_down(&window, Key::Shift);
+            key_up(&window, released);
+            key_up(&window, Key::Shift);
+        }
+        let stopped = camera(&window);
+        let_pass(300);
+        assert_eq!(camera(&window), stopped, "{what}: the zoom goes on");
+        release_every_modifier(&window);
+    }
+}
+
+/// K and 0 pause and go back to the time setting, nothing held or with W
+/// held under the same modifiers, which keeps moving.
+#[test]
+fn test_keys_that_hold_nothing_do_their_job_and_leave_a_held_key_at_work() {
+    for hold in [None, Some("w")] {
+        let what = format!("with {hold:?} held");
+        let (window, sent) = wired_window();
+        click_the_globe(&window);
+        running_at(&window, 60);
+        let _ = excursion_commands(&sent);
+        if let Some(key) = hold {
+            key_down(&window, key);
+            let_pass(50);
+        }
+        tap(&window, "k");
+        tap(&window, "0");
+        assert_eq!(
+            excursion_commands(&sent).0,
+            [ExcursionCommand::Pause, ExcursionCommand::End],
+            "{what}: K pauses and 0 goes back to the setting"
+        );
+        if let Some(key) = hold {
+            let moving = camera(&window);
+            let_pass(100);
+            assert_ne!(camera(&window), moving, "{what}: the orbit stops");
+            key_up(&window, key);
+        }
+    }
+}
+
+/// A held key goes on through a tap of another held key under Shift, let go
+/// before or after Shift.
+#[test]
+fn test_a_tap_under_shift_leaves_a_key_held_without_it_at_work() {
+    use slint::platform::Key;
+
+    for (released, shift_first) in [("A", false), ("a", true)] {
+        let what = format!("Shift + A let go as {released:?}, Shift first: {shift_first}");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        key_down(&window, "w");
+        let_pass(50);
+        key_down(&window, Key::Shift);
+        key_down(&window, "A");
+        let_pass(20);
+        if shift_first {
+            key_up(&window, Key::Shift);
+            key_up(&window, released);
+        } else {
+            key_up(&window, released);
+            key_up(&window, Key::Shift);
+        }
+        let moving = camera(&window);
+        let_pass(100);
+        assert_ne!(camera(&window), moving, "{what}: W stops");
+        key_up(&window, "w");
+        release_every_modifier(&window);
+    }
+}
+
+/// A held key goes on through a tap of an arrow or of Q under Shift, whose
+/// release ends the key it pressed and judges nothing else.
+#[test]
+fn test_a_tap_of_an_arrow_or_q_under_shift_leaves_a_key_held_without_it_at_work() {
+    use slint::platform::Key;
+
+    let taps: [(&str, slint::SharedString, slint::SharedString); 6] = [
+        ("left", Key::LeftArrow.into(), Key::LeftArrow.into()),
+        ("right", Key::RightArrow.into(), Key::RightArrow.into()),
+        ("up", Key::UpArrow.into(), Key::UpArrow.into()),
+        ("down", Key::DownArrow.into(), Key::DownArrow.into()),
+        ("Q", "Q".into(), "Q".into()),
+        ("Q let go as q", "Q".into(), "q".into()),
+    ];
+    for (name, pressed, released) in taps {
+        let what = format!("Shift + {name} tapped");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        key_down(&window, "w");
+        let_pass(50);
+        key_down(&window, Key::Shift);
+        key_down(&window, pressed);
+        let_pass(20);
+        key_up(&window, released);
+        let moving = camera(&window);
+        let_pass(100);
+        assert_ne!(camera(&window), moving, "{what}: W stops");
+        key_up(&window, "w");
+        release_every_modifier(&window);
+    }
+}
+
+/// A held key goes on through a + typed under the Shift it went down with
+/// and let go as = after Shift, as the US layout gives them.
+#[test]
+fn test_a_release_that_ends_its_own_key_leaves_another_held_key_at_work() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    key_down(&window, Key::Shift);
+    key_down(&window, "W");
+    key_down(&window, "+");
+    let_pass(50);
+    key_up(&window, Key::Shift);
+    key_up(&window, "=");
+    let moving = camera(&window);
+    let_pass(100);
+    assert_ne!(camera(&window), moving, "W stops");
+    key_up(&window, "w");
+    release_every_modifier(&window);
+}
+
+/// A key's repeated presses keep it held while it holds, and do not take up
+/// again a hold that Alt or `AltGr` ended while the key stayed down.
+#[test]
+fn test_a_repeated_press_keeps_a_hold_but_does_not_take_up_an_ended_one() {
+    use slint::platform::WindowEvent;
+
+    for (before, pressed) in HOLD_ENDING_PRESSES {
+        let held: &[&str] = if before.is_empty() {
+            &["w", "a", "s", "d", "+", "=", "-", "q", "e"]
+        } else {
+            &["w", "a", "s", "d"]
+        };
+        for &key in held {
+            let what = format!("{key:?} held with {before:?} down, then {pressed:?}");
+            let (window, _sent) = wired_window();
+            click_the_globe(&window);
+            for &modifier in before {
+                key_down(&window, modifier);
+            }
+            key_down(&window, key);
+            let_pass(50);
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressRepeated { text: key.into() });
+            let moving = camera(&window);
+            let_pass(50);
+            assert_ne!(camera(&window), moving, "{what}: a repeat stops the camera");
+            for &modifier in pressed {
+                key_down(&window, modifier);
+            }
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressRepeated { text: key.into() });
+            let stopped = camera(&window);
+            let_pass(300);
+            assert_eq!(camera(&window), stopped, "{what}: a repeat moves it again");
+            key_up(&window, key);
+            release_every_modifier(&window);
+        }
+    }
+}
+
+/// A repeated press of J or L does not take up again a hold that Alt or
+/// `AltGr` ended while the key stayed down.
+#[test]
+fn test_a_repeated_shuttle_press_does_not_take_up_an_ended_hold() {
+    use slint::platform::WindowEvent;
+
+    let ladder = clock_ladder();
+    for (_, pressed) in HOLD_ENDING_PRESSES
+        .iter()
+        .filter(|(before, _)| before.is_empty())
+    {
+        for key in ["j", "l"] {
+            let what = format!("{key} held, then {pressed:?}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, key);
+            for &modifier in *pressed {
+                key_down(&window, modifier);
+            }
+            let _ = excursion_commands(&sent);
+            window
+                .window()
+                .dispatch_event(WindowEvent::KeyPressRepeated { text: key.into() });
+            let_pass(1500);
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: a repeat steps again"
+            );
+            key_up(&window, key);
+            release_every_modifier(&window);
+        }
+    }
+}
+
+/// An arrow goes on through Alt, `AltGr` and Ctrl with Alt, whose presses
+/// end the keys held by their text, and stops when let go.
+#[test]
+fn test_an_arrow_held_through_alt_or_altgr_moves_on_until_let_go() {
+    use slint::platform::Key;
+
+    for (before, pressed) in HOLD_ENDING_PRESSES {
+        for arrow in [
+            Key::LeftArrow,
+            Key::RightArrow,
+            Key::UpArrow,
+            Key::DownArrow,
+        ] {
+            let what = format!("{arrow:?} held with {before:?} down, then {pressed:?}");
+            let (window, _sent) = wired_window();
+            click_the_globe(&window);
+            for &modifier in before {
+                key_down(&window, modifier);
+            }
+            key_down(&window, arrow);
+            let_pass(50);
+            for &modifier in pressed {
+                key_down(&window, modifier);
+            }
+            let moving = camera(&window);
+            let_pass(100);
+            assert_ne!(camera(&window), moving, "{what}: the arrow stops");
+            key_up(&window, arrow);
+            let stopped = camera(&window);
+            let_pass(300);
+            assert_eq!(
+                camera(&window),
+                stopped,
+                "{what}: it goes on after the arrow is let go"
+            );
+            release_every_modifier(&window);
+        }
+    }
+}
+
+/// Shift or Ctrl pressed during a J or L hold leaves it stepping.
+#[test]
+fn test_shift_or_ctrl_pressed_during_a_shuttle_hold_leaves_it_stepping() {
+    use slint::platform::Key;
+
+    let ladder = clock_ladder();
+    for key in ["j", "l"] {
+        for modifier in [Key::Shift, Key::ShiftR, Key::Control, Key::ControlR] {
+            let what = format!("{key} held, then {modifier:?}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, key);
+            let _ = excursion_commands(&sent);
+            key_down(&window, modifier);
+            let_pass(700);
+            assert_ne!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: the stepping stops"
+            );
+            key_up(&window, key);
+            release_every_modifier(&window);
+        }
+    }
+}
+
+/// Shift or Ctrl pressed while W is held turns the orbit into the look or
+/// the frame and stops nothing.
+#[test]
+fn test_shift_or_ctrl_pressed_during_a_hold_turns_it_to_look_or_frame() {
+    use slint::platform::Key;
+
+    for (modifier, look) in [(Key::Shift, true), (Key::Control, false)] {
+        let what = format!("W held, then {modifier:?}");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        key_down(&window, "w");
+        let_pass(50);
+        key_down(&window, modifier);
+        let_pass(20);
+        let orientation = window.get_camera_orientation();
+        let framing = window.get_framing();
+        let_pass(100);
+        if look {
+            assert_ne!(
+                window.get_camera_orientation(),
+                orientation,
+                "{what}: the look stops"
+            );
+        } else {
+            assert_ne!(window.get_framing(), framing, "{what}: the frame stops");
+        }
+        key_up(&window, if look { "W" } else { "w" });
+        key_up(&window, modifier);
+    }
+}
+
+/// A key held under Alt, `AltGr`, or Ctrl and Alt, and let go after one of
+/// them came up as other text than its press gave, stops what it moved; on
+/// Windows so does a + that Ctrl and Alt gave as `AltGr` would, which Slint
+/// reports under neither.
+#[test]
+fn test_a_key_held_under_alt_or_altgr_let_go_after_it_stops_the_camera() {
+    use slint::platform::Key;
+
+    let mut cases: Vec<(&[Key], &str, &[Key])> = vec![
+        (&[Key::AltGr], "-", &[Key::AltGr]),
+        (&[Key::Alt], "w", &[Key::Alt]),
+        (&[Key::Control, Key::Alt], "w", &[Key::Control]),
+        (&[Key::ControlR, Key::Alt], "w", &[Key::ControlR]),
+    ];
+    // Elsewhere Slint keeps Ctrl and Alt on that +, so its press goes to the
+    // window.
+    if cfg!(windows) {
+        cases.push((&[Key::Control, Key::Alt], "+", &[Key::Control]));
+    }
+    for (down, pressed, let_go) in cases {
+        let what = format!("{pressed:?} pressed under {down:?}, let go after {let_go:?}");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        held_under_and_let_go_after(&window, down, pressed, let_go, &what);
+        release_every_modifier(&window);
+    }
+}
+
+/// Hold `pressed` under `down`, let go of `let_go`, let `pressed` go as text
+/// no key of the preview gives, and check that the camera stops.
+fn held_under_and_let_go_after(
+    window: &MainWindow,
+    down: &[slint::platform::Key],
+    pressed: &str,
+    let_go: &[slint::platform::Key],
+    what: &str,
+) {
+    for &modifier in down {
+        key_down(window, modifier);
+    }
+    let still = camera(window);
+    key_down(window, pressed);
+    let_pass(50);
+    assert_ne!(camera(window), still, "{what}: the press moves the camera");
+    for &modifier in let_go {
+        key_up(window, modifier);
+    }
+    key_up(window, "x");
+    let stopped = camera(window);
+    let_pass(300);
+    assert_eq!(camera(window), stopped, "{what}: the camera keeps moving");
+}
+
+/// The preview forgets the Ctrl and Alt keys it saw go down when it loses
+/// the keyboard, which takes their releases with it: an Alt left down no
+/// longer ends a W hold Ctrl joins, and a Ctrl left down no longer makes a
+/// key held under the other Ctrl and Alt read as held under them both after
+/// that Ctrl comes up.
+#[test]
+fn test_the_ctrl_and_alt_keys_are_forgotten_with_the_keyboard() {
+    use slint::platform::Key;
+    use slint::platform::WindowEvent;
+
+    let lose_the_keyboard_with = |window: &MainWindow, key: Key| {
+        key_down(window, key);
+        window
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(false));
+        window
+            .window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    };
+
+    let (window, _sent) = wired_window();
+    click_the_globe(&window);
+    lose_the_keyboard_with(&window, Key::Alt);
+    key_down(&window, "w");
+    let_pass(50);
+    key_down(&window, Key::Control);
+    let_pass(20);
+    let framing = window.get_framing();
+    let_pass(100);
+    assert_ne!(
+        window.get_framing(),
+        framing,
+        "Ctrl after an Alt the preview forgot: the frame stops"
+    );
+    key_up(&window, "w");
+    release_every_modifier(&window);
+
+    for (forgotten, other) in [(Key::Control, Key::ControlR), (Key::ControlR, Key::Control)] {
+        let what = format!("W held under {other:?} and Alt with {forgotten:?} forgotten");
+        let (window, _sent) = wired_window();
+        click_the_globe(&window);
+        lose_the_keyboard_with(&window, forgotten);
+        held_under_and_let_go_after(&window, &[other, Key::Alt], "w", &[other], &what);
+        release_every_modifier(&window);
+    }
+}
+
+/// J pressed while L is held, or L while J is, takes the hold over and waits
+/// its own full delay before it repeats, however soon after the first key it
+/// came.
+#[test]
+fn test_a_shuttle_key_pressed_during_the_other_waits_its_own_delay() {
+    let ladder = clock_ladder();
+    for (first, second) in [("l", "j"), ("j", "l")] {
+        for after in [100, 300, 600] {
+            let what = format!("{second} {after} ms into a held {first}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, first);
+            let_pass(after);
+            let _ = excursion_commands(&sent);
+            key_down(&window, second);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: the press steps at once"
+            );
+            let_pass(350);
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: it repeats before its own delay"
+            );
+            let_pass(100);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: it repeats after its delay"
+            );
+            key_up(&window, second);
+            key_up(&window, first);
+        }
+    }
+}
+
+/// K, Space, 0 and R end a J or L hold before they act, so the held key
+/// does not take play up again; a new press of J or L does.
+#[test]
+fn test_k_space_0_and_r_end_a_shuttle_hold() {
+    let ladder = clock_ladder();
+    for held in ["j", "l"] {
+        for key in ["k", " ", "0", "r"] {
+            let what = format!("{key:?} during a held {held}");
+            let (window, sent) = wired_window();
+            click_the_globe(&window);
+            running_at(&window, ladder[ladder.len() / 2]);
+            key_down(&window, held);
+            let_pass(100);
+            tap(&window, key);
+            let _ = excursion_commands(&sent);
+            let_pass(1500);
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [],
+                "{what}: the held key took play up again"
+            );
+            key_up(&window, held);
+            key_down(&window, held);
+            assert_eq!(
+                excursion_commands(&sent).0.len(),
+                1,
+                "{what}: a new press steps"
+            );
+            key_up(&window, held);
+        }
+    }
+}
+
+/// G makes play run the date and T the time, as the radio labels do: paused
+/// the bar switches its ladder, and running play goes on in the new kind.
+#[test]
+fn test_t_and_g_pick_what_play_runs() {
+    let (window, sent) = wired_window();
+    click_the_globe(&window);
+    tap(&window, "g");
+    assert!(window.get_time_bar().date_kind, "G picks the date");
+    tap(&window, "t");
+    assert!(!window.get_time_bar().date_kind, "T picks the time");
+    assert_eq!(excursion_commands(&sent).0, [], "paused, nothing plays");
+
+    sunlit_earth::time_bar::excursion_changed(
+        &window,
+        Some(ExcursionState {
+            running: true,
+            rate: 60,
+            kind: ExcursionKind::Clock,
+        }),
+    );
+    tap(&window, "G");
+    let rate = i32::try_from(ExcursionKind::Date.default_rate()).expect("a rate");
+    assert_eq!(
+        excursion_commands(&sent).0,
+        [ExcursionCommand::Play {
+            rate,
+            kind: ExcursionKind::Date
+        }],
+        "running, play goes on through the dates"
+    );
+}
+
+/// The left, top, right and bottom edges of an element in the window.
+fn edges(element: &ElementHandle) -> [f32; 4] {
+    let at = element.absolute_position();
+    let size = element.size();
+    [at.x, at.y, at.x + size.width, at.y + size.height]
+}
+
+/// The one element `id` under `parent`.
+fn the_descendant(parent: &ElementHandle, id: &str) -> ElementHandle {
+    let found = parent.query_descendants().match_id(id).find_all();
+    assert_eq!(found.len(), 1, "expected exactly one '{id}'");
+    found.into_iter().next().expect("one element")
+}
+
+/// Rest the pointer on `control` until its hover hint shows, and return the
+/// hint.
+fn hint_over(window: &MainWindow, control: &ElementHandle) -> ElementHandle {
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: point_in(control, 0.5, 0.5),
+        });
+    for _ in 0..12 {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+    }
+    the_element(window, "MainWindow::hint")
+}
+
+/// Every key cap under `parent`, row by row and left to right, each wide
+/// enough for its label and clear of the next one in its row.
+fn caps_holding_their_labels(parent: &ElementHandle, what: &str) -> Vec<ElementHandle> {
+    let mut caps = parent
+        .query_descendants()
+        .match_inherits("KeyCap")
+        .find_all();
+    caps.sort_by(|a, b| {
+        let (a, b) = (a.absolute_position(), b.absolute_position());
+        a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x))
+    });
+    for cap in &caps {
+        let label = the_descendant(cap, "KeyCap::label");
+        let [cap_left, _, cap_right, _] = edges(cap);
+        let [label_left, _, label_right, _] = edges(&label);
+        assert!(
+            label_left >= cap_left + 4.0 && label_right <= cap_right - 4.0,
+            "{what}: a cap {} px wide holds a label {} px wide",
+            cap_right - cap_left,
+            label_right - label_left
+        );
+    }
+    for pair in caps.windows(2) {
+        let [_, top, right, _] = edges(&pair[0]);
+        let [next_left, next_top, _, _] = edges(&pair[1]);
+        assert!(
+            (top - next_top).abs() > 0.5 || right <= next_left,
+            "{what}: two caps overlap"
+        );
+    }
+    caps
+}
+
+/// The overlay controls whose hints carry keys, most of them a mouse gesture
+/// too.
+const HINTED_CONTROLS: [&str; 8] = [
+    "CameraPanel::orbit",
+    "CameraPanel::zoom-in",
+    "CameraPanel::zoom-slider",
+    "CameraPanel::zoom-out",
+    "CameraPanel::look",
+    "CameraPanel::frame",
+    "CameraPanel::help-button",
+    "CameraPanel::hide-button",
+];
+
+/// Every hint's gesture and keys stay inside its border in both platforms'
+/// key names: the keys keep their width on one line at the right, and the
+/// gesture text takes the room left beside them.
+#[test]
+fn test_a_hints_gesture_and_keys_stay_inside_it() {
+    for macos in [false, true] {
+        let (window, _sent) = wired_window();
+        window
+            .global::<sunlit_earth::OverlayHints>()
+            .set_is_macos(macos);
+        for id in HINTED_CONTROLS {
+            let what = format!("{id} (macOS: {macos})");
+            let hint = hint_over(&window, &the_element(&window, id));
+            let [left, top, right, bottom] = edges(&hint);
+            let row = the_descendant(&hint, "OverlayHint::gesture-row");
+            let [row_left, row_top, row_right, row_bottom] = edges(&row);
+            assert!(
+                row_left >= left + 10.0 - 0.5
+                    && row_right <= right - 10.0 + 0.5
+                    && row_top >= top
+                    && row_bottom <= bottom - 8.0 + 0.5,
+                "{what}: the gesture row runs out of the hint"
+            );
+            let gesture = the_descendant(&hint, "OverlayHint::gesture");
+            let [_, text_top, text_right, text_bottom] = edges(&gesture);
+            assert!(
+                text_top >= row_top - 0.5 && text_bottom <= row_bottom + 0.5,
+                "{what}: the gesture text spills out of its row"
+            );
+            let caps = caps_holding_their_labels(&hint, &what);
+            assert!(!caps.is_empty(), "{what}: the hint names its keys");
+            let [caps_left, caps_top, _, _] = edges(&caps[0]);
+            assert!(
+                text_right <= caps_left || text_bottom <= caps_top + 0.5,
+                "{what}: the gesture text runs under the keys"
+            );
+            assert!(
+                edges(&caps[caps.len() - 1])[2] <= row_right + 0.5,
+                "{what}: the keys run out of the row"
+            );
+        }
+    }
+}
+
+/// The keys each hinted control's action has, in the hint's own spelling,
+/// with `SHIFT` and `MOD` standing for the platform's names; "or" between
+/// keys is left out.
+const HINT_KEYS: [(&str, &[&str]); 18] = [
+    ("orbit", &["←↑↓→", "WASD"]),
+    ("look", &["SHIFT", "←↑↓→", "WASD"]),
+    ("frame", &["MOD", "←↑↓→", "WASD"]),
+    ("roll", &["Q", "E"]),
+    ("north", &["N"]),
+    ("zoom", &["+", "−"]),
+    ("zoom-in", &["+"]),
+    ("zoom-out", &["−"]),
+    ("hide", &["H"]),
+    ("show", &["H"]),
+    ("skip-back", &[","]),
+    ("skip-forward", &["."]),
+    ("play", &["Space"]),
+    ("ruler", &["J", "K", "L", "R"]),
+    ("rate", &["J", "K", "L", "R"]),
+    ("drive-time", &["T"]),
+    ("drive-date", &["G"]),
+    ("now", &["0"]),
+];
+
+/// The hinted controls no key does the same as: the resets, exact entry, the
+/// zone, the state pill while live (not clickable) or in Preview (whose click
+/// ends the excursion, which no key does alone), the pin and the tracks.
+const HINTS_WITHOUT_KEYS: [&str; 11] = [
+    "look-reset",
+    "frame-reset",
+    "pick-date",
+    "pick-time",
+    "zone",
+    "live",
+    "preview",
+    "pin",
+    "day-track",
+    "day-track-sun-fixed",
+    "year-track",
+];
+
+/// Every hint id a `.slint` expression picks, read from the source between
+/// `marker` and the `""` that ends the choice.
+fn hint_ids_in(source: &str, marker: &str) -> Vec<String> {
+    let start = source
+        .find(marker)
+        .expect("the hint choice is in the source");
+    let rest = &source[start + marker.len()..];
+    let choice = &rest[..rest.find("\"\";").expect("the choice ends in \"\"")];
+    choice
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every hint a control can show carries the keys that do what the control
+/// does, in both platforms' names, and every id the overlays can pick is
+/// classified here, so a new control states its keys or that it has none.
+#[test]
+fn test_every_hint_names_the_keys_of_its_control() {
+    use slint::Model as _;
+
+    let mut used = Vec::new();
+    for (source, marker) in [
+        (
+            include_str!("../ui/overlays/camera-panel.slint"),
+            "out property <string> hovered-hint:",
+        ),
+        (
+            include_str!("../ui/overlays/time-bar.slint"),
+            "out property <string> hovered-hint:",
+        ),
+        (
+            include_str!("../ui/main.slint"),
+            "property <string> hint-id:",
+        ),
+    ] {
+        used.extend(hint_ids_in(source, marker));
+    }
+    let classified: Vec<&str> = HINT_KEYS
+        .iter()
+        .map(|(id, _)| *id)
+        .chain(HINTS_WITHOUT_KEYS)
+        .chain(["help"])
+        .collect();
+    for id in &used {
+        assert!(
+            classified.contains(&id.as_str()),
+            "the hint {id} is in neither HINT_KEYS nor HINTS_WITHOUT_KEYS"
+        );
+    }
+    for id in &classified {
+        assert!(
+            used.iter().any(|used| used == id),
+            "no control picks the hint {id}"
+        );
+    }
+
+    for macos in [false, true] {
+        let (window, _sent) = wired_window();
+        let hints = window.global::<sunlit_earth::OverlayHints>();
+        hints.set_is_macos(macos);
+        let (shift, modifier) = if macos {
+            ("⇧", "⌘")
+        } else {
+            ("Shift", "Ctrl")
+        };
+        let keys_of = |id: &str| {
+            let content = hints.invoke_content(id.into());
+            assert!(!content.title.is_empty(), "the hint {id} has no title");
+            content
+                .keys
+                .iter()
+                .map(|key: slint::SharedString| key.to_string())
+                .filter(|key| key != "or")
+                .collect::<Vec<_>>()
+        };
+        for (id, keys) in HINT_KEYS {
+            let wanted: Vec<&str> = keys
+                .iter()
+                .map(|key| match *key {
+                    "SHIFT" => shift,
+                    "MOD" => modifier,
+                    key => key,
+                })
+                .collect();
+            assert_eq!(keys_of(id), wanted, "the hint {id} (macOS: {macos})");
+        }
+        for id in HINTS_WITHOUT_KEYS {
+            assert!(
+                keys_of(id).is_empty(),
+                "the hint {id} (macOS: {macos}) names keys; move it to HINT_KEYS"
+            );
+        }
+        let help = if macos {
+            vec!["⌘", "?"]
+        } else {
+            vec!["F1", "Ctrl", "?"]
+        };
+        assert_eq!(keys_of("help"), help, "the help hint (macOS: {macos})");
+        for id in ["skip-back", "skip-forward"] {
+            let body = hints.invoke_content(id.into()).body;
+            assert!(
+                body.contains(&format!("With {shift}, ")),
+                "the hint {id} (macOS: {macos}) does not name {shift} for the bigger step"
+            );
+        }
+    }
+}
+
+/// A gesture too long for the room beside the keys wraps, and the hint grows
+/// to hold every line of it.
+#[test]
+fn test_a_wrapping_gesture_keeps_its_hint_around_it() {
+    for macos in [false, true] {
+        let (window, _sent) = wired_window();
+        window
+            .global::<sunlit_earth::OverlayHints>()
+            .set_is_macos(macos);
+        for id in ["CameraPanel::orbit", "CameraPanel::frame"] {
+            let hint = hint_over(&window, &the_element(&window, id));
+            let line = the_descendant(&hint, "OverlayHint::title").size().height;
+            let gesture = the_descendant(&hint, "OverlayHint::gesture");
+            assert!(
+                gesture.size().height >= 2.0 * line - 0.5,
+                "{id} (macOS: {macos}): the gesture is {} px high, one line {line} px",
+                gesture.size().height
+            );
+            assert!(
+                edges(&gesture)[3] <= edges(&hint)[3] - 8.0 + 0.5,
+                "{id} (macOS: {macos}): the gesture runs over the hint's border"
+            );
+        }
+    }
+}
+
+// A wrapping `Text` in the sheet's description font, whose minimum width is
+// the width of the longest word of what it holds.
+slint::slint! {
+    export component WordProbe inherits Window {
+        in property <string> body;
+        out property <length> longest-word: probe.min-width;
+        probe := Text {
+            text: root.body;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+/// Window sizes from the app's narrowest at the default height up to a wide
+/// one, with the default 1000 by 600 among them.
+const SHEET_WINDOWS: [(u32, u32); 6] = [
+    (520, 600),
+    (700, 600),
+    (800, 700),
+    (900, 600),
+    (1000, 600),
+    (1400, 900),
+];
+
+/// The shortcut sheet fits its window, two equal columns side by side where
+/// there is room and one under the other where not, and every description
+/// stays on the card without a word broken inside, every key cap holding its
+/// label. In the default window and at 800 by 700 the whole card shows
+/// without scrolling.
+#[test]
+fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
+    init();
+    let probe = WordProbe::new().expect("a probe");
+    for macos in [false, true] {
+        for (width, height) in SHEET_WINDOWS {
+            let what = format!("{width} by {height} (macOS: {macos})");
+            let window = create_window();
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, height));
+            window
+                .global::<sunlit_earth::OverlayHints>()
+                .set_is_macos(macos);
+            window.set_shortcut_sheet_open(true);
+            let card = the_element(&window, "ShortcutSheet::card");
+            let [left, top, right, bottom] = edges(&card);
+            #[expect(clippy::cast_precision_loss, reason = "a window size")]
+            let (window_width, window_height) = (width as f32, height as f32);
+            assert!(
+                left >= window_width - window.get_viewport_width() - 0.5
+                    && right <= window_width + 0.5
+                    && top >= -0.5
+                    && bottom <= window_height + 0.5,
+                "{what}: the card runs out of the preview"
+            );
+
+            let mouse = edges(&the_element(&window, "ShortcutSheet::mouse-column"));
+            let keys = edges(&the_element(&window, "ShortcutSheet::keys-column"));
+            approx::assert_abs_diff_eq!(mouse[2] - mouse[0], keys[2] - keys[0], epsilon = 0.5);
+            assert!(
+                keys[0] >= mouse[2] + 26.0 - 0.5 || keys[1] >= mouse[3] - 0.5,
+                "{what}: the columns overlap"
+            );
+            if width >= 1000 {
+                assert!(
+                    keys[0] > mouse[2],
+                    "{what}: the columns stand one under the other"
+                );
+            }
+
+            let content = edges(&the_element(&window, "ShortcutSheet::card-layout"));
+            if (width, height) == (1000, 600) || (width, height) == (800, 700) {
+                assert!(
+                    content[3] <= bottom + 0.5,
+                    "{what}: the card scrolls, {} over {}",
+                    content[3],
+                    bottom
+                );
+            }
+
+            // The testing backend leaves out what is scrolled out of sight,
+            // and the text's widths do not depend on the height.
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            let card = the_element(&window, "ShortcutSheet::card");
+            let [left, _, right, _] = edges(&card);
+            let content = edges(&the_element(&window, "ShortcutSheet::card-layout"));
+            let texts = card
+                .query_descendants()
+                .match_inherits("SheetText")
+                .find_all();
+            assert_eq!(
+                texts.len(),
+                20,
+                "{what}: the sheet lists every gesture and key"
+            );
+            for text in &texts {
+                let label = text.accessible_label().expect("a description");
+                let [text_left, _, text_right, text_bottom] = edges(text);
+                assert!(
+                    text_left >= left + 22.0 - 0.5
+                        && text_right <= right - 22.0 + 0.5
+                        && text_bottom <= content[3],
+                    "{what}: {label:?} runs off the card"
+                );
+                probe.set_body(label.clone());
+                assert!(
+                    text_right - text_left >= probe.get_longest_word() - 0.5,
+                    "{what}: {label:?} has {} px for a word {} px wide",
+                    text_right - text_left,
+                    probe.get_longest_word()
+                );
+            }
+            caps_holding_their_labels(&card, &what);
+        }
+    }
+}
+
+/// The folded pill names the zone only in UTC, where its time would
+/// otherwise be taken for local time.
+#[test]
+fn test_the_folded_pill_names_utc_and_leaves_local_time_plain() {
+    let (window, _sent) = wired_window();
+    let texts = |window: &MainWindow| -> Vec<String> {
+        the_element(window, "TimeBar::pill-row")
+            .query_descendants()
+            .match_inherits("Text")
+            .find_all()
+            .iter()
+            .filter_map(ElementHandle::accessible_label)
+            .map(|label| label.to_string())
+            .collect()
+    };
+    if window.get_time_zone_utc() {
+        window.invoke_time_zone_toggled();
+    }
+    let local = texts(&window);
+    assert!(local.len() >= 2, "the pill's texts: {local:?}");
+    assert!(
+        local.iter().all(|text| !text.contains("UTC")),
+        "local time: {local:?}"
+    );
+    window.invoke_time_zone_toggled();
+    let utc = texts(&window);
+    assert!(utc.iter().any(|text| text == "UTC"), "UTC: {utc:?}");
+}
+
+/// The left and right edges of each row's elements in `column`, top to
+/// bottom, the rows told apart by their vertical middles.
+fn row_spans(column: &ElementHandle, component: &str) -> Vec<(f32, f32)> {
+    let mut rows: Vec<(f32, f32, f32)> = Vec::new();
+    for element in column
+        .query_descendants()
+        .match_inherits(component)
+        .find_all()
+    {
+        let [left, top, right, bottom] = edges(&element);
+        let middle = f32::midpoint(top, bottom);
+        match rows.iter_mut().find(|row| (row.0 - middle).abs() < 1.0) {
+            Some(row) => {
+                row.1 = row.1.min(left);
+                row.2 = row.2.max(right);
+            }
+            None => rows.push((middle, left, right)),
+        }
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.into_iter()
+        .map(|(_, left, right)| (left, right))
+        .collect()
+}
+
+/// The sheet's descriptions start a small gap after the widest mouse glyph
+/// and the widest row of keys, the keys stand flush right against that gap
+/// and the descriptions flush left after it; the glyphs and the caps are
+/// at least 22 px tall, and the sheet names no platform.
+#[test]
+fn test_the_shortcut_sheet_aligns_its_keys_against_their_descriptions() {
+    for macos in [false, true] {
+        for width in [1000, 520] {
+            let what = format!("{width} px (macOS: {macos})");
+            let window = create_window();
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            window
+                .global::<sunlit_earth::OverlayHints>()
+                .set_is_macos(macos);
+            window.set_shortcut_sheet_open(true);
+
+            for platform in ["Windows and Linux", "macOS"] {
+                assert_eq!(
+                    ElementHandle::find_by_accessible_label(&window, platform).count(),
+                    0,
+                    "{what}: the sheet names {platform:?}"
+                );
+            }
+
+            let mouse = the_element(&window, "ShortcutSheet::mouse-column");
+            let glyphs = row_spans(&mouse, "MouseGlyph");
+            let gestures = row_spans(&mouse, "SheetText");
+            assert_eq!(glyphs.len(), gestures.len(), "{what}: a glyph per gesture");
+            let widest_glyph = glyphs.iter().map(|g| g.1).fold(f32::MIN, f32::max);
+            for (text_left, _) in &gestures {
+                let gap = text_left - widest_glyph;
+                assert!(
+                    (4.0..=12.0).contains(&gap),
+                    "{what}: a gesture's text stands {gap} px after the widest glyph"
+                );
+            }
+
+            let keyboard = the_element(&window, "ShortcutSheet::keys-column");
+            let keys = row_spans(&keyboard, "KeyCap");
+            let texts = row_spans(&keyboard, "SheetText");
+            assert_eq!(keys.len(), texts.len(), "{what}: keys for each description");
+            let right = keys[0].1;
+            let text_left = texts[0].0;
+            for ((_, keys_right), (left, _)) in keys.iter().zip(&texts) {
+                approx::assert_abs_diff_eq!(*keys_right, right, epsilon = 0.5);
+                approx::assert_abs_diff_eq!(*left, text_left, epsilon = 0.5);
+            }
+            let gap = text_left - right;
+            assert!(
+                (4.0..=12.0).contains(&gap),
+                "{what}: the descriptions stand {gap} px after the keys"
+            );
+
+            let card = the_element(&window, "ShortcutSheet::card");
+            for (component, smallest) in [("MouseGlyph", 22.0), ("KeyCap", 22.0)] {
+                for element in card
+                    .query_descendants()
+                    .match_inherits(component)
+                    .find_all()
+                {
+                    assert!(
+                        element.size().height >= smallest - 0.5,
+                        "{what}: a {component} {} px tall",
+                        element.size().height
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The transport stands centered over the tracks whatever the bar's width.
+#[test]
+fn test_play_stands_centered_over_the_tracks() {
+    for width in [1400, 1000] {
+        let (window, _sent) = wired_window();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        open_the_bar(&window);
+        let [play_left, _, play_right, _] = edges(&the_labeled(&window, "Play"));
+        let [track_left, _, track_right, _] = edges(&the_element(&window, "TimeBar::day-track"));
+        approx::assert_abs_diff_eq!(
+            f32::midpoint(play_left, play_right),
+            f32::midpoint(track_left, track_right),
+            epsilon = 1.5
+        );
+    }
+}
+
+/// Windows at the default panel from the narrowest whose bar holds the
+/// compact transport with the time's twelve speeds up to one past the widest
+/// bar.
+const BAR_WINDOWS: [u32; 7] = [952, 1000, 1050, 1100, 1150, 1200, 1400];
+
+fn overlap(a: [f32; 4], b: [f32; 4]) -> bool {
+    a[0] < b[2] - 0.5 && b[0] < a[2] - 0.5 && a[1] < b[3] - 0.5 && b[1] < a[3] - 0.5
+}
+
+/// At every bar width the transport stays inside the tracks' column, which
+/// keeps it off the clock column, clear of the speed readout and the radio
+/// labels, with play over the tracks' middle, for both kinds of play.
+#[test]
+fn test_the_transport_stays_over_the_tracks_and_clear_of_the_readout() {
+    for date in [false, true] {
+        for width in BAR_WINDOWS {
+            let (window, _sent) = wired_window();
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            open_the_bar(&window);
+            if date {
+                press_at(&window, point_in(&the_labeled(&window, "DATE"), 0.5, 0.5));
+            }
+            let what = format!("{width} px window, date: {date}");
+            let [track_left, _, track_right, _] =
+                edges(&the_element(&window, "TimeBar::day-track"));
+            let play = the_labeled(&window, "Play");
+            let mut transport: Vec<ElementHandle> = [
+                "TimeBar::skip-back",
+                "TimeBar::backward",
+                "TimeBar::forward",
+                "TimeBar::skip-forward",
+            ]
+            .iter()
+            .map(|id| the_element(&window, id))
+            .collect();
+            transport.push(play.clone());
+            let others = [
+                the_element(&window, "TimeBar::speed-readout"),
+                the_labeled(&window, "TIME"),
+                the_labeled(&window, "DATE"),
+            ];
+            for part in &transport {
+                let part = edges(part);
+                assert!(
+                    part[0] >= track_left - 0.5 && part[2] <= track_right + 0.5,
+                    "{what}: the transport runs out of the tracks' column"
+                );
+                for other in &others {
+                    assert!(
+                        !overlap(part, edges(other)),
+                        "{what}: the transport runs over {:?}",
+                        other.accessible_label()
+                    );
+                }
+            }
+            let [play_left, _, play_right, _] = edges(&play);
+            approx::assert_abs_diff_eq!(
+                f32::midpoint(play_left, play_right),
+                f32::midpoint(track_left, track_right),
+                epsilon = 1.5
+            );
+        }
+    }
+}
+
+/// The open bar's parts by id or label, those the preview does not cut away
+/// entirely, with their left and right edges measured from the bar's left.
+fn bar_parts(window: &MainWindow) -> Vec<(String, f32, f32)> {
+    let bar_left = edges(&the_element(window, "MainWindow::time-bar"))[0];
+    let mut parts = Vec::new();
+    for id in [
+        "TimeBar::skip-back",
+        "TimeBar::backward",
+        "TimeBar::forward",
+        "TimeBar::skip-forward",
+        "TimeBar::speed-readout",
+        "TimeBar::day-track",
+        "TimeBar::year-track",
+    ] {
+        if let Some(part) = ElementHandle::find_by_element_id(window, id).next() {
+            let [left, _, right, _] = edges(&part);
+            parts.push((id.to_owned(), left - bar_left, right - bar_left));
+        }
+    }
+    for label in ["Play", "TIME", "DATE", "Now", "Time", "Date"] {
+        if let Some(part) = ElementHandle::find_by_accessible_label(window, label)
+            .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+        {
+            let [left, _, right, _] = edges(&part);
+            parts.push((label.to_owned(), left - bar_left, right - bar_left));
+        }
+    }
+    parts
+}
+
+/// A window at the default panel whose bar holds the compact transport with
+/// the time's twelve speeds, and narrower ones down to the app's minimum.
+const NARROWEST_BAR_WINDOW: u32 = 952;
+const NARROWER_WINDOWS: [u32; 6] = [520, 600, 700, 800, 900, 951];
+
+/// The open bar is never narrower than the bar that holds the compact
+/// transport, whichever kind of play it shows: in a narrower preview it keeps
+/// that width and that layout, centered on the preview, and the preview cuts
+/// its edges.
+#[test]
+fn test_a_narrow_preview_cuts_the_bar_rather_than_squeezing_it() {
+    for date in [false, true] {
+        let (window, _sent) = wired_window();
+        window.set_time_bar_pinned(true);
+        window.invoke_time_kind(date);
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(NARROWEST_BAR_WINDOW, 5000));
+        let bar_width = the_element(&window, "MainWindow::time-bar").size().width;
+        let layout = bar_parts(&window);
+        assert_eq!(layout.len(), 13, "the whole bar shows at the narrowest");
+        for width in NARROWER_WINDOWS {
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            let what = format!("{width} px window, date: {date}");
+            let [bar_left, _, bar_right, _] = edges(&the_element(&window, "MainWindow::time-bar"));
+            let [preview_left, _, preview_right, _] =
+                edges(&the_element(&window, "MainWindow::image-container"));
+            approx::assert_abs_diff_eq!(bar_right - bar_left, bar_width, epsilon = 0.5);
+            approx::assert_abs_diff_eq!(
+                f32::midpoint(bar_left, bar_right),
+                f32::midpoint(preview_left, preview_right),
+                epsilon = 0.5
+            );
+            let shown = bar_parts(&window);
+            assert!(
+                shown.iter().any(|(name, _, _)| name == "Play"),
+                "{what}: play is cut away"
+            );
+            for (name, left, right) in shown {
+                let (_, at_left, at_right) = layout
+                    .iter()
+                    .find(|(id, _, _)| *id == name)
+                    .expect("a part of the bar");
+                assert!(
+                    (left - at_left).abs() < 0.5 && (right - at_right).abs() < 0.5,
+                    "{what}: {name} stands at {left}..{right} in the bar, not {at_left}..{at_right}"
+                );
+            }
+        }
+    }
+}
+
+/// Where the preview cuts the bar, open or folded, a strip at each of its
+/// edges over the bar fades the controls out; where the bar fits there is none.
+#[test]
+fn test_the_cut_edges_of_the_bar_fade_out() {
+    let (window, _sent) = wired_window();
+    let check = |what: &str| -> bool {
+        let [bar_left, bar_top, bar_right, bar_bottom] =
+            edges(&the_element(&window, "MainWindow::time-bar"));
+        let [preview_left, _, preview_right, _] =
+            edges(&the_element(&window, "MainWindow::image-container"));
+        let cut = bar_right - bar_left > preview_right - preview_left + 0.5;
+        let fades: Vec<_> = ["MainWindow::bar-fade-left", "MainWindow::bar-fade-right"]
+            .iter()
+            .flat_map(|id| ElementHandle::find_by_element_id(&window, id))
+            .collect();
+        if !cut {
+            assert!(fades.is_empty(), "{what}: a bar that fits does not fade");
+            return false;
+        }
+        assert_eq!(fades.len(), 2, "{what}: a cut bar fades at both edges");
+        let [left, right] = [edges(&fades[0]), edges(&fades[1])];
+        approx::assert_abs_diff_eq!(left[0], preview_left, epsilon = 0.5);
+        approx::assert_abs_diff_eq!(right[2], preview_right, epsilon = 0.5);
+        for fade in [left, right] {
+            approx::assert_abs_diff_eq!(fade[1], bar_top, epsilon = 0.5);
+            approx::assert_abs_diff_eq!(fade[3], bar_bottom, epsilon = 0.5);
+            assert!(fade[2] - fade[0] < 0.25 * (preview_right - preview_left));
+        }
+        true
+    };
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(520, 5000));
+    check("the folded pill at 520 px");
+    window.set_time_bar_pinned(true);
+    for width in [520, 700, 900] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        assert!(check(&format!("{width} px")), "{width} px: the bar is cut");
+    }
+    for width in [NARROWEST_BAR_WINDOW, 1000, 1400] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        assert!(!check(&format!("{width} px")), "{width} px: the bar fits");
+    }
+}
+
+/// The part of the bar the preview cuts away takes no clicks: a press on the
+/// sidebar where the day track runs under it leaves the time setting alone,
+/// and a press on the track's visible part does not.
+#[test]
+fn test_the_cut_part_of_the_bar_takes_no_clicks() {
+    let (window, sent) = wired_window();
+    window.set_time_bar_pinned(true);
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(520, 5000));
+    let track = edges(&the_element(&window, "TimeBar::day-track"));
+    let preview_left = edges(&the_element(&window, "MainWindow::image-container"))[0];
+    assert!(
+        track[0] < preview_left - 10.0,
+        "the track runs under the sidebar"
+    );
+    let y = f32::midpoint(track[1], track[3]);
+    let _ = excursion_commands(&sent);
+
+    press_at(&window, slint::LogicalPosition::new(preview_left - 5.0, y));
+    assert!(
+        excursion_commands(&sent).1.is_none(),
+        "a press beside the preview reached the track"
+    );
+    press_at(&window, slint::LogicalPosition::new(preview_left + 5.0, y));
+    assert!(
+        excursion_commands(&sent).1.is_some(),
+        "a press on the track's visible part sets the time"
+    );
+}
+
+/// Where the picker `label` opens from a click on the part of its button the
+/// preview shows, as its left, top, right and bottom edges in the window, or
+/// `None` where the preview cuts the whole button away. The testing backend
+/// reports a popup's elements from the popup's own origin, so the origin comes
+/// from the window, moved inside the window the way Slint moves a popup that
+/// would leave it, and a click on the picker's Cancel button there, which
+/// closes it, proves the picker stood there.
+fn picker_edges(window: &MainWindow, label: &str) -> Option<[f32; 4]> {
+    let [preview_left, _, preview_right, _] =
+        edges(&the_element(window, "MainWindow::image-container"));
+    let [left, top, right, bottom] = edges(&the_labeled(window, label));
+    let (left, right) = (left.max(preview_left + 1.0), right.min(preview_right - 1.0));
+    if left >= right {
+        return None;
+    }
+    press_at(
+        window,
+        slint::LogicalPosition::new(f32::midpoint(left, right), f32::midpoint(top, bottom)),
+    );
+    let dialogs = all_of(window, "Dialog");
+    assert_eq!(dialogs.len(), 1, "the {label} button opens its picker");
+    let size = dialogs[0].size();
+    let (x, y) = if label == "Date" {
+        (window.get_date_picker_x(), window.get_date_picker_y())
+    } else {
+        (window.get_time_picker_x(), window.get_time_picker_y())
+    };
+    let room = window.window().size().to_logical(1.0);
+    let (x, y) = (
+        x.clamp(0.0, room.width - size.width),
+        y.clamp(0.0, room.height - size.height),
+    );
+    let cancel = point_in(&the_labeled(window, "Cancel"), 0.5, 0.5);
+    press_at(
+        window,
+        slint::LogicalPosition::new(x + cancel.x, y + cancel.y),
+    );
+    assert!(
+        all_of(window, "Dialog").is_empty(),
+        "the {label} picker was not at {x}, {y}"
+    );
+    Some([x, y, x + size.width, y + size.height])
+}
+
+/// The date and time pickers open inside the preview wherever they fit, above
+/// the bar. Where one is wider than the preview it stands against the
+/// window's right edge, so it covers no more of the side bar than its excess
+/// width.
+#[test]
+fn test_the_pickers_open_inside_the_preview() {
+    let (window, _sent) = wired_window();
+    window.set_time_bar_pinned(true);
+    let (mut opened, mut wider) = (0, 0);
+    for width in [520, 600, 700, 800, 1000] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 700));
+        let preview = edges(&the_element(&window, "MainWindow::image-container"));
+        let bar_top = edges(&the_element(&window, "MainWindow::time-bar"))[1];
+        for label in ["Date", "Time"] {
+            let what = format!("{width} px window, {label} picker");
+            let Some([left, top, right, bottom]) = picker_edges(&window, label) else {
+                continue;
+            };
+            opened += 1;
+            assert!(
+                top >= preview[1] && bottom <= bar_top,
+                "{what}: {top}..{bottom} is not between the preview's top and the bar"
+            );
+            assert!(
+                right <= preview[2] + 0.5,
+                "{what}: its right edge {right} is past the window's {}",
+                preview[2]
+            );
+            if right - left <= preview[2] - preview[0] {
+                assert!(
+                    left >= preview[0] - 0.5,
+                    "{what}: {left}..{right} reaches over the side bar left of {}",
+                    preview[0]
+                );
+            } else {
+                wider += 1;
+                approx::assert_abs_diff_eq!(right, preview[2], epsilon = 0.5);
+            }
+        }
+    }
+    assert!(opened >= 8, "only {opened} pickers opened");
+    assert!(wider > 0, "no window was narrower than a picker");
+}
+
+/// In the app's default window the rulers are packed closer than at full
+/// size, and a press on each dot still runs at that dot's speed.
+#[test]
+fn test_each_dot_of_a_compact_ruler_runs_at_its_own_rate() {
+    let (window, sent) = wired_window();
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1000, 5000));
+    open_the_bar(&window);
+    let ladder = ExcursionKind::Clock.ladder();
+    for (id, side) in [("TimeBar::forward", 1), ("TimeBar::backward", -1)] {
+        let ruler = the_element(&window, id);
+        let dots = ruler_dot_elements(&ruler);
+        assert_eq!(dots.len(), ladder.len());
+        let pitch = point_in(&dots[1], 0.5, 0.5).x - point_in(&dots[0], 0.5, 0.5).x;
+        assert!(pitch < 10.5, "{id}: the dots stand {pitch} px apart");
+        for slot in 0..dots.len() {
+            let _ = excursion_commands(&sent);
+            press_at(&window, ruler_dot(&ruler, slot));
+            let index = if side < 0 {
+                ladder.len() - 1 - slot
+            } else {
+                slot
+            };
+            let rate = side * i32::try_from(ladder[index]).expect("a rate");
+            assert_eq!(
+                excursion_commands(&sent).0,
+                [ExcursionCommand::Play {
+                    rate,
+                    kind: ExcursionKind::Clock
+                }],
+                "{id}, dot {slot}"
+            );
+        }
+    }
+}
+
+/// Every speed of `kind`'s ladder in both directions, running.
+fn running_speeds(kind: ExcursionKind) -> Vec<ExcursionState> {
+    kind.ladder()
+        .iter()
+        .map(|&rate| i32::try_from(rate).expect("a rate"))
+        .flat_map(|rate| [rate, -rate])
+        .map(|rate| ExcursionState {
+            running: true,
+            rate,
+            kind,
+        })
+        .collect()
+}
+
+/// Whether the speed readout shows the speed and what it means in words
+/// rather than its arrow alone.
+fn the_readout_speaks(window: &MainWindow) -> bool {
+    let view = window.get_time_bar();
+    let labels: Vec<String> = the_element(window, "TimeBar::speed-readout")
+        .query_descendants()
+        .find_all()
+        .iter()
+        .filter_map(|element| element.accessible_label().map(|label| label.to_string()))
+        .collect();
+    let speaks = |text: &str| labels.iter().any(|label| label == text);
+    speaks(view.speed_text.as_str()) && speaks(view.speed_note.as_str())
+}
+
+/// At the bar's full width the readout gives every speed of both kinds in
+/// words, clear of the transport.
+#[test]
+fn test_a_full_bar_names_every_speed_in_words() {
+    let (window, _sent) = wired_window();
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1400, 5000));
+    open_the_bar(&window);
+    let bar = edges(&the_element(&window, "MainWindow::time-bar"));
+    approx::assert_abs_diff_eq!(bar[2] - bar[0], 800.0, epsilon = 0.5);
+    for kind in [ExcursionKind::Clock, ExcursionKind::Date] {
+        for state in running_speeds(kind) {
+            sunlit_earth::time_bar::excursion_changed(&window, Some(state));
+            let what = format!("{} ({kind:?})", window.get_time_bar().speed_text);
+            assert!(the_readout_speaks(&window), "{what}: the readout is folded");
+            let readout = edges(&the_element(&window, "TimeBar::speed-readout"));
+            for id in [
+                "TimeBar::skip-back",
+                "TimeBar::backward",
+                "TimeBar::forward",
+                "TimeBar::skip-forward",
+            ] {
+                assert!(
+                    !overlap(readout, edges(&the_element(&window, id))),
+                    "{what}: the readout runs into {id}"
+                );
+            }
+        }
+    }
+}
+
+/// Whether the readout folds at each forward speed of `kind` in a window
+/// `width` px wide.
+fn folds_by_speed(window: &MainWindow, kind: ExcursionKind, width: u32) -> Vec<bool> {
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(width, 5000));
+    running_speeds(kind)
+        .into_iter()
+        .filter(|state| state.rate > 0)
+        .map(|state| {
+            sunlit_earth::time_bar::excursion_changed(window, Some(state));
+            !the_readout_speaks(window)
+        })
+        .collect()
+}
+
+/// Whether the readout folds depends on the bar's width and the kind of
+/// play, never on the speed: from the narrowest window that holds the compact
+/// row to the widest bar, and a pixel either side of the fold.
+#[test]
+fn test_the_readout_folds_alike_at_every_speed() {
+    let (window, _sent) = wired_window();
+    open_the_bar(&window);
+    for kind in [ExcursionKind::Clock, ExcursionKind::Date] {
+        let alike = |width: u32| {
+            let folds = folds_by_speed(&window, kind, width);
+            assert!(
+                folds.iter().all(|&folded| folded == folds[0]),
+                "{width} px window, {kind:?}: the readout folds at some speeds only: {folds:?}"
+            );
+            folds[0]
+        };
+        let mut widths: Vec<u32> = (BAR_WINDOWS[0]..1400).step_by(32).collect();
+        widths.push(1400);
+        let folded: Vec<bool> = widths.iter().map(|&width| alike(width)).collect();
+        assert!(
+            folded[0] && !folded[folded.len() - 1],
+            "{kind:?}: the readout folds in the narrowest window and speaks at the widest bar"
+        );
+        let flip = folded
+            .iter()
+            .position(|&f| !f)
+            .expect("a width that speaks");
+        let (mut narrow, mut wide) = (widths[flip - 1], widths[flip]);
+        while wide - narrow > 1 {
+            let middle = narrow.midpoint(wide);
+            if alike(middle) {
+                narrow = middle;
+            } else {
+                wide = middle;
+            }
+        }
+        assert!(
+            alike(narrow) && !alike(wide),
+            "{kind:?}: the fold sits between {narrow} and {wide} px"
+        );
+    }
+}
+
+/// The speed's hint names the speed, which a narrow bar shows as an arrow
+/// alone, and follows it while the pointer rests on the readout.
+#[test]
+fn test_the_speed_hint_names_the_speed() {
+    for width in [1000, 1400] {
+        let (window, _sent) = wired_window();
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(width, 5000));
+        sunlit_earth::time_bar::refresh(&window);
+        open_the_bar(&window);
+        let rest = point_in(&the_labeled(&window, "Speed"), 0.5, 0.5);
+        hint_over(&window, &the_labeled(&window, "Speed"));
+        let names_the_speed = |what: &str| {
+            let hints: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "MainWindow::hint").collect();
+            assert_eq!(
+                hints.len(),
+                1,
+                "{width} px window, {what}: the hint went away"
+            );
+            let title = the_descendant(&hints[0], "OverlayHint::title")
+                .accessible_label()
+                .expect("a title");
+            let view = window.get_time_bar();
+            assert!(
+                title.contains(view.speed_text.as_str())
+                    && title.contains(view.speed_note.as_str()),
+                "{width} px window, {what}: the hint says {title}"
+            );
+        };
+        names_the_speed("at the start");
+        for state in [
+            ExcursionState {
+                running: true,
+                rate: 3600,
+                kind: ExcursionKind::Clock,
+            },
+            ExcursionState {
+                running: true,
+                rate: -5,
+                kind: ExcursionKind::Clock,
+            },
+            ExcursionState {
+                running: true,
+                rate: 90,
+                kind: ExcursionKind::Date,
+            },
+        ] {
+            sunlit_earth::time_bar::excursion_changed(&window, Some(state));
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: rest });
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+            names_the_speed(&format!("{state:?}"));
+        }
+    }
+}
+
+// A key cap in a row narrower than its label asks for, beside text that would
+// take every pixel the cap gives up, and the label alone in the cap's font.
+slint::slint! {
+    import { KeyCap } from "ui/overlays/common.slint";
+    export component SqueezedCap inherits Window {
+        out property <length> cap-width: cap.width;
+        out property <length> label-width: label.preferred-width;
+        HorizontalLayout {
+            width: 24px;
+            cap := KeyCap {
+                text: "Space";
+            }
+            Text {
+                text: "Play / pause";
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+        label := Text {
+            text: "Space";
+            font-size: 11px;
+            visible: false;
+        }
+    }
+}
+
+/// A key cap squeezed by its row keeps the width its label needs.
+#[test]
+fn test_a_squeezed_key_cap_keeps_its_label_inside() {
+    init();
+    let window = SqueezedCap::new().expect("a window");
+    window.show().expect("shown");
+    assert!(
+        window.get_cap_width() >= window.get_label_width() + 10.0 - 0.5,
+        "a cap {} px wide holds a label {} px wide",
+        window.get_cap_width(),
+        window.get_label_width()
+    );
+}
+
+/// In the list of every speed, each side's speeds stand flush right and
+/// their meanings flush left, and each side's heading is centered over it,
+/// for both kinds of play and at two window widths.
+#[test]
+fn test_the_speed_list_aligns_speeds_right_and_meanings_left() {
+    for date in [false, true] {
+        for width in [1000, 1400] {
+            let what = format!("{width} px (date: {date})");
+            let (window, _sent) = wired_window();
+            window.invoke_time_kind(date);
+            window
+                .window()
+                .set_size(slint::PhysicalSize::new(width, 5000));
+            window.set_time_bar_pinned(true);
+            let_pass(500);
+            let readout = the_element(&window, "TimeBar::speed-readout");
+            press_at(&window, point_in(&readout, 0.5, 0.5));
+            let_pass(100);
+
+            let rows: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::choice-row").collect();
+            let labels: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::rate-label").collect();
+            let notes: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::rate-note").collect();
+            let headings: Vec<_> =
+                ElementHandle::find_by_element_id(&window, "TimeBar::rates-heading").collect();
+            assert!(rows.len() >= 4, "{what}: the list is open");
+            assert_eq!(
+                (labels.len(), notes.len()),
+                (rows.len(), rows.len()),
+                "{what}"
+            );
+            assert_eq!(headings.len(), 2, "{what}: a heading per side");
+
+            for (side, heading) in headings.iter().enumerate() {
+                let column: Vec<usize> = (side..rows.len()).step_by(2).collect();
+                let label_rights: Vec<f32> = column.iter().map(|&i| edges(&labels[i])[2]).collect();
+                let label_lefts: Vec<f32> = column.iter().map(|&i| edges(&labels[i])[0]).collect();
+                for right in &label_rights {
+                    approx::assert_abs_diff_eq!(*right, label_rights[0], epsilon = 0.5);
+                }
+                assert!(
+                    label_lefts
+                        .iter()
+                        .any(|left| (left - label_lefts[0]).abs() > 2.0),
+                    "{what}: the speeds of side {side} all start at one place: {label_lefts:?}"
+                );
+                for &i in &column {
+                    let note = edges(&notes[i]);
+                    approx::assert_abs_diff_eq!(
+                        note[0],
+                        edges(&notes[column[0]])[0],
+                        epsilon = 0.5
+                    );
+                    assert!(
+                        note[0] > label_rights[0],
+                        "{what}: a meaning starts before its speed ends"
+                    );
+                }
+                let row = edges(&rows[column[0]]);
+                let heading = edges(heading);
+                approx::assert_abs_diff_eq!(
+                    f32::midpoint(heading[0], heading[2]),
+                    f32::midpoint(row[0], row[2]),
+                    epsilon = 0.5
+                );
+            }
+        }
+    }
+}
+
+/// Pick another day in the open date picker, or another hour in the open
+/// time picker, and check that the picker shows it.
+fn pick_another(window: &MainWindow, label: &str) {
+    if label == "Date" {
+        let day = ["15", "16"]
+            .into_iter()
+            .map(|day| the_labeled(window, day))
+            .find(|day| day.accessible_checked() != Some(true))
+            .expect("a day not picked");
+        day.invoke_accessible_default_action();
+        assert_eq!(day.accessible_checked(), Some(true), "the day is picked");
+        return;
+    }
+    let field = || {
+        ElementHandle::find_by_accessible_label(window, "hour")
+            .next()
+            .expect("an hour field")
+            .accessible_value()
+            .expect("an hour")
+    };
+    let hour = field();
+    let other = (hour.parse::<u32>().expect("a number") + 5) % 24;
+    the_labeled(window, &format!("{other} Hours or minutes of 24"))
+        .invoke_accessible_default_action();
+    assert_eq!(field(), other.to_string(), "the hour is picked");
+}
+
+/// A click outside the date or the time picker closes it as Cancel does: a
+/// day or an hour picked in it is dropped, the time setting stays as it was,
+/// nothing reaches the engine, and the bar folds again once the pointer has
+/// left it. The same pick taken with OK changes the setting, which shows the
+/// pick is one the setting would follow.
+#[test]
+fn test_a_click_outside_a_picker_closes_it_as_cancel_does() {
+    let away = slint::LogicalPosition::new(900.0, 300.0);
+    for (label, ok) in [
+        ("Date", true),
+        ("Date", false),
+        ("Time", true),
+        ("Time", false),
+    ] {
+        let (window, sent) = wired_window();
+        let setting = window.get_datetime();
+        let _ = excursion_commands(&sent);
+        open_the_bar(&window);
+        press_at(&window, point_in(&the_labeled(&window, label), 0.5, 0.5));
+        assert_eq!(
+            all_of(&window, "Dialog").len(),
+            1,
+            "{label}: the picker opens"
+        );
+        pick_another(&window, label);
+        if ok {
+            the_labeled(&window, "OK").invoke_accessible_default_action();
+            assert_ne!(
+                window.get_datetime(),
+                setting,
+                "{label}: OK left the setting as it was"
+            );
+            continue;
+        }
+
+        press_at(&window, away);
+        let_pass(100);
+        assert!(
+            all_of(&window, "Dialog").is_empty(),
+            "{label}: a click outside closes the picker"
+        );
+        assert_eq!(
+            window.get_datetime(),
+            setting,
+            "{label}: the setting changed"
+        );
+        let (commands, pushed) = excursion_commands(&sent);
+        assert!(
+            commands.is_empty() && pushed.is_none(),
+            "{label}: the close reached the engine: {commands:?}"
+        );
+
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: away });
+        let_pass(1000);
+        assert!(
+            the_element(&window, "MainWindow::time-bar").size().height < 40.0,
+            "{label}: the bar stays open after its picker closed"
+        );
     }
 }

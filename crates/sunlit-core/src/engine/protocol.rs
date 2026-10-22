@@ -12,6 +12,8 @@ use crossbeam_channel::Sender;
 use crate::memory_report::MemoryReport;
 use crate::params::SceneParams;
 
+use super::excursion::{ExcursionCommand, ExcursionState};
+
 /// Things a client asks the engine to do.
 pub enum EngineCommand {
     /// Replace the scene parameters. Coalesced: only the newest survives a
@@ -24,6 +26,10 @@ pub enum EngineCommand {
     SetPreviewEnabled(bool),
     /// Render at the sink's native resolution and publish it now.
     RenderWallpaperNow,
+    /// Play, pause, skip or end the preview's excursion from the time
+    /// setting. Only the preview follows it; every export draws at the
+    /// setting.
+    Excursion(ExcursionCommand),
     /// Render to a PNG file at an explicit size and report back.
     RenderToFile {
         path: PathBuf,
@@ -91,7 +97,13 @@ pub enum EngineEvent {
         rgba: Vec<u8>,
         width: u32,
         height: u32,
+        /// The instant the frame shows: the excursion's while there is one,
+        /// the time setting's otherwise.
+        instant: time::OffsetDateTime,
     },
+    /// The excursion started, changed or ended: running or paused with its
+    /// rate and kind, or `None` once the preview is back at the setting.
+    Excursion(Option<ExcursionState>),
     /// Every texture the current mode needs has finished loading. Fires once
     /// per set of textures, so again after a resolution change has reloaded
     /// them.

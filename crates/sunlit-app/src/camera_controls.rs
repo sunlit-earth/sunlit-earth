@@ -39,8 +39,11 @@ const ZOOM_RATE: f32 = 0.3;
 /// How long an ease takes from its start to its target, in seconds.
 pub const EASE_SECONDS: f32 = 0.3;
 
-/// The offsets' range on either side of zero, the sidebar's.
-const OFFSET_LIMIT: f32 = 3.0;
+/// The offsets' ranges on either side of zero, the sidebar's: wider across,
+/// since the pan is in halves of the short side and a landscape picture has
+/// more of them across than down.
+pub const OFFSET_LIMIT_X: f32 = 5.5;
+pub const OFFSET_LIMIT_Y: f32 = 3.0;
 
 /// Yaw's and pitch's range on either side of zero, the sidebar's.
 const AIM_LIMIT: f32 = 90.0;
@@ -145,8 +148,8 @@ pub fn look_by_stick(yaw: f32, pitch: f32, x: f32, y: f32, seconds: f32) -> (f32
 pub fn frame_by_stick(offset_x: f32, offset_y: f32, x: f32, y: f32, seconds: f32) -> (f32, f32) {
     let (rx, ry) = stick_rate(x, y);
     (
-        (offset_x + rx * FRAME_RATE * seconds).clamp(-OFFSET_LIMIT, OFFSET_LIMIT),
-        (offset_y + ry * FRAME_RATE * seconds).clamp(-OFFSET_LIMIT, OFFSET_LIMIT),
+        (offset_x + rx * FRAME_RATE * seconds).clamp(-OFFSET_LIMIT_X, OFFSET_LIMIT_X),
+        (offset_y + ry * FRAME_RATE * seconds).clamp(-OFFSET_LIMIT_Y, OFFSET_LIMIT_Y),
     )
 }
 
@@ -421,7 +424,10 @@ mod tests {
         assert_eq!(look_by_stick(89.0, -89.0, 1.0, -1.0, 10.0), (90.0, -90.0));
         let (x, y) = frame_by_stick(0.0, 0.0, -1.0, 1.0, 0.1);
         assert!(x < 0.0 && y > 0.0);
-        assert_eq!(frame_by_stick(2.9, -2.9, 1.0, -1.0, 10.0), (3.0, -3.0));
+        assert_eq!(
+            frame_by_stick(5.4, -2.9, 1.0, -1.0, 10.0),
+            (OFFSET_LIMIT_X, -OFFSET_LIMIT_Y)
+        );
     }
 
     #[test]

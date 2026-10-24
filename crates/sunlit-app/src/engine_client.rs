@@ -24,6 +24,8 @@ struct Frame {
     rgba: Vec<u8>,
     width: u32,
     height: u32,
+    short_edge: f32,
+    screen: Option<(u32, u32)>,
     instant: time::OffsetDateTime,
 }
 
@@ -168,13 +170,16 @@ pub fn event_forwarder(
             rgba,
             width,
             height,
+            short_edge,
+            screen,
             instant,
-            ..
         } => {
             *mailbox.slot.lock().expect("preview mailbox poisoned") = Some(Frame {
                 rgba,
                 width,
                 height,
+                short_edge,
+                screen,
                 instant,
             });
             // One wake-up per burst: the closure below always takes whatever is
@@ -194,6 +199,7 @@ pub fn event_forwarder(
                     .take();
                 if let (Some(frame), Some(win)) = (parked, weak.upgrade()) {
                     win.set_rendered_image(to_image(&frame));
+                    show_framing(&win, &frame);
                     crate::time_bar::frame_shown(&win, frame.instant);
                     if announce {
                         println!("SIGNAL:first_frame_rendered");
@@ -269,4 +275,16 @@ fn to_image(frame: &Frame) -> slint::Image {
         frame.height,
     );
     slint::Image::from_rgba8(buffer)
+}
+
+/// Tell the window how the frame it now shows was framed, so the frame guides
+/// and the slow drag follow the frame on screen rather than the panel.
+fn show_framing(window: &MainWindow, frame: &Frame) {
+    let int = |value: u32| i32::try_from(value).unwrap_or(i32::MAX);
+    let (screen_width, screen_height) = frame.screen.unwrap_or((0, 0));
+    window.set_frame_width(int(frame.width));
+    window.set_frame_height(int(frame.height));
+    window.set_frame_short_edge(frame.short_edge);
+    window.set_frame_screen_width(int(screen_width));
+    window.set_frame_screen_height(int(screen_height));
 }

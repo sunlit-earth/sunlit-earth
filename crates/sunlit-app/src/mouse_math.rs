@@ -110,13 +110,17 @@ pub fn coarse_drag_gain(zoom: f32) -> f32 {
 /// image moves half a pixel per pixel of cursor near the frame's center and
 /// about one at its edge, at every camera distance.
 ///
-/// :param `sky_fov_deg`: the sky lens's field of view in degrees
-/// :param `preview_width_px`: the preview's width in logical pixels
+/// The sky setting spans the picture's short edge, so the gain is measured on
+/// the short edge as the preview displays it, whatever the panel's shape.
+///
+/// :param `sky_fov_deg`: the sky lens's field of view across the short edge, in
+///     degrees
+/// :param `short_edge_px`: the frame's short edge as displayed, in logical pixels
 /// :returns: degrees per pixel
 #[must_use]
-pub fn fine_drag_gain(sky_fov_deg: f32, preview_width_px: f32) -> f32 {
+pub fn fine_drag_gain(sky_fov_deg: f32, short_edge_px: f32) -> f32 {
     let edge = sky_lens::sky_lens_edge_radius(sky_fov_deg);
-    (2.0 * edge / preview_width_px.max(1.0)).to_degrees()
+    (2.0 * edge / short_edge_px.max(1.0)).to_degrees()
 }
 
 /// Blend the two gains by how fast the cursor is moving.
@@ -181,12 +185,14 @@ impl DragSpeed {
 /// :param zoom: normalized zoom slider value (0.0 to 1.0)
 /// :param dx: horizontal mouse delta in pixels
 /// :param dy: vertical mouse delta in pixels
-/// :returns: new `(offset_x, offset_y)` tuple, clamped to `[-3.0, 3.0]`
+/// :returns: new `(offset_x, offset_y)` tuple, each within the sidebar's range
 #[must_use]
 pub fn apply_frame_drag(offset_x: f32, offset_y: f32, zoom: f32, dx: f32, dy: f32) -> (f32, f32) {
+    use crate::camera_controls::{OFFSET_LIMIT_X, OFFSET_LIMIT_Y};
+
     let sensitivity = 0.002 * zoom_to_distance(zoom) / 8.0;
-    let new_x = (offset_x - dx * sensitivity).clamp(-3.0, 3.0);
-    let new_y = (offset_y + dy * sensitivity).clamp(-3.0, 3.0);
+    let new_x = (offset_x - dx * sensitivity).clamp(-OFFSET_LIMIT_X, OFFSET_LIMIT_X);
+    let new_y = (offset_y + dy * sensitivity).clamp(-OFFSET_LIMIT_Y, OFFSET_LIMIT_Y);
     (new_x, new_y)
 }
 
@@ -316,14 +322,20 @@ mod tests {
     /// Through `sky_lens_disc`, which is the projection the Sun's own image
     /// goes through, so what this measures is where the Sun would be drawn
     /// rather than a second spelling of the lens.
-    fn image_pixels(theta_deg: f32, sky_fov_deg: f32, width: f32) -> f32 {
-        let viewport = glam::Vec2::new(width, width * 9.0 / 16.0);
+    /// Where a direction `theta_deg` off the axis lands on a 16:9 frame whose
+    /// short edge is `short_edge` pixels, at a sky setting of `sky_fov_deg`.
+    fn image_pixels(theta_deg: f32, sky_fov_deg: f32, short_edge: f32) -> f32 {
+        let viewport = glam::Vec2::new(short_edge * 16.0 / 9.0, short_edge);
+        let horizontal = 4.0
+            * ((sky_fov_deg.to_radians() * 0.25).tan() * 16.0 / 9.0)
+                .atan()
+                .to_degrees();
         let theta = theta_deg.to_radians();
         let direction = glam::Vec3::new(theta.sin(), 0.0, -theta.cos());
         let disc = sky_lens::sky_lens_disc(
             direction,
             0.001_f32.to_radians(),
-            sky_fov_deg,
+            horizontal,
             glam::Vec2::ZERO,
             viewport,
         )
@@ -338,14 +350,26 @@ mod tests {
         // direction costs an `acos` of a cosine that is 1.0 in f32. Over four
         // degrees the lens is still linear to a part in ten thousand, so the
         // span holds one pixel for every two gains inside it.
-        let width = 1920.0;
+        let short_edge = 1080.0;
         let half_span = 2.0_f32;
-        for sky_fov in [60.0_f32, 140.0, 180.0] {
-            let gain = fine_drag_gain(sky_fov, width);
-            let span =
-                image_pixels(half_span, sky_fov, width) - image_pixels(-half_span, sky_fov, width);
+        for sky_fov in [30.0_f32, 86.0, 120.0] {
+            let gain = fine_drag_gain(sky_fov, short_edge);
+            let span = image_pixels(half_span, sky_fov, short_edge)
+                - image_pixels(-half_span, sky_fov, short_edge);
             assert_relative_eq!(span, half_span / gain, max_relative = 0.001);
         }
+    }
+
+    /// On a 16:9 panel the short edge gain is the gain the width gave before
+    /// the settings moved to the short edge, at the default sky.
+    #[test]
+    fn the_fine_gain_on_a_16_9_panel_is_the_one_the_width_gave() {
+        let width_gain = (2.0 * (140.0_f32.to_radians() * 0.25).tan() / 1920.0).to_degrees();
+        assert_relative_eq!(
+            fine_drag_gain(86.0, 1080.0),
+            width_gain,
+            max_relative = 2e-4
+        );
     }
 
     #[test]
@@ -354,8 +378,8 @@ mod tests {
         // camera, so the only thing that can make a slow drag differ between
         // two zooms is the cap against the coarse gain. Walking the whole
         // slider is what says where that cap is active.
-        for (sky_fov, capped_somewhere) in [(140.0_f32, false), (180.0, true)] {
-            let fine = fine_drag_gain(sky_fov, 1920.0);
+        for (sky_fov, capped_somewhere) in [(86.0_f32, false), (120.0, true)] {
+            let fine = fine_drag_gain(sky_fov, 1080.0);
             let mut capped = 0;
             for step in 0..=1000_u16 {
                 let coarse = coarse_drag_gain(f32::from(step) / 1000.0);
@@ -381,7 +405,7 @@ mod tests {
         // deliberate hand would otherwise turn the globe faster than a sweeping
         // one.
         let coarse = coarse_drag_gain(0.0);
-        let fine = fine_drag_gain(180.0, 1920.0);
+        let fine = fine_drag_gain(120.0, 1080.0);
         assert!(fine > coarse, "the two no longer cross at the nearest zoom");
         assert_relative_eq!(drag_gain(0.0, coarse, fine), coarse);
     }
@@ -389,7 +413,7 @@ mod tests {
     #[test]
     fn a_slow_hand_gets_the_fine_gain_and_a_sweep_the_coarse_one() {
         let coarse = coarse_drag_gain(0.5);
-        let fine = fine_drag_gain(140.0, 1920.0);
+        let fine = fine_drag_gain(86.0, 1080.0);
         assert_relative_eq!(drag_gain(0.0, coarse, fine), fine);
         assert_relative_eq!(drag_gain(FINE_DRAG_SPEED, coarse, fine), fine);
         assert_relative_eq!(drag_gain(COARSE_DRAG_SPEED, coarse, fine), coarse);
@@ -402,7 +426,7 @@ mod tests {
         // where this could fail: `fine + (coarse - fine)` rounds away from
         // `coarse` at some of them, which is why the sweeping end returns the
         // coarse gain itself.
-        let fine = fine_drag_gain(140.0, 1920.0);
+        let fine = fine_drag_gain(86.0, 1080.0);
         for step in 0..=1000_u16 {
             let zoom = f32::from(step) / 1000.0;
             let gain = drag_gain(COARSE_DRAG_SPEED, coarse_drag_gain(zoom), fine);
@@ -451,12 +475,14 @@ mod tests {
     /// Both ends of the pan clamp. The range itself is `frame_drag_always_in_range`.
     #[test]
     fn frame_drag_clamps_at_both_ends() {
+        use crate::camera_controls::{OFFSET_LIMIT_X, OFFSET_LIMIT_Y};
+
         let (x, y) = apply_frame_drag(2.9, 2.9, 0.5, -10000.0, 10000.0);
-        assert_relative_eq!(x, 3.0);
-        assert_relative_eq!(y, 3.0);
+        assert_relative_eq!(x, OFFSET_LIMIT_X);
+        assert_relative_eq!(y, OFFSET_LIMIT_Y);
         let (x, y) = apply_frame_drag(-2.9, -2.9, 0.5, 10000.0, -10000.0);
-        assert_relative_eq!(x, -3.0);
-        assert_relative_eq!(y, -3.0);
+        assert_relative_eq!(x, -OFFSET_LIMIT_X);
+        assert_relative_eq!(y, -OFFSET_LIMIT_Y);
     }
 
     #[test]
@@ -643,15 +669,19 @@ mod tests {
 
             #[test]
             fn frame_drag_always_in_range(
-                ox in -3.0f32..=3.0,
+                ox in -5.5f32..=5.5,
                 oy in -3.0f32..=3.0,
                 zoom in 0.0f32..=1.0,
                 dx in -500.0f32..500.0,
                 dy in -500.0f32..500.0,
             ) {
                 let (new_x, new_y) = apply_frame_drag(ox, oy, zoom, dx, dy);
-                prop_assert!((-3.0..=3.0).contains(&new_x), "offset_x {new_x} out of range");
-                prop_assert!((-3.0..=3.0).contains(&new_y), "offset_y {new_y} out of range");
+                let (limit_x, limit_y) = (
+                    crate::camera_controls::OFFSET_LIMIT_X,
+                    crate::camera_controls::OFFSET_LIMIT_Y,
+                );
+                prop_assert!((-limit_x..=limit_x).contains(&new_x), "offset_x {new_x} out of range");
+                prop_assert!((-limit_y..=limit_y).contains(&new_y), "offset_y {new_y} out of range");
             }
 
             #[test]

@@ -55,6 +55,7 @@ export component ShortcutSheet inherits Rectangle {
         { keys: ["T", "G"], text: "Play runs the time / the date" },
         { keys: [",", "."], text: "Step back / forward (" + OverlayHints.shift-key + ": bigger)" },
         { keys: ["0"], text: "Back to now" },
+        { keys: ["F"], text: "Frame guides" },
         { keys: ["H"], text: "Hide controls" },
         { keys: OverlayHints.help-keys(), text: OverlayHints.is-macos ? "This sheet" : "This sheet, also Ctrl + ?" },
     ];
@@ -130,8 +131,8 @@ export component ShortcutSheet inherits Rectangle {
             content-height: card-layout.preferred-height;
 
             card-layout := VerticalLayout {
-                padding-top: 18px;
-                padding-bottom: 18px;
+                padding-top: 13px;
+                padding-bottom: 13px;
                 padding-left: 22px;
                 padding-right: 22px;
                 spacing: 10px;

@@ -281,4 +281,6 @@ Step 6, on 2026-10-24 at aeb9756:
 
 Validation round 1, on b0497b4..9fdcbfd: no majors, five minors, all fixed. The sky slider's comment in `main.slint` and `docs/rendering.md` put its low end at 60 degrees across a 16:9 width, where it is 52.7; another line of `docs/rendering.md` still gave the slider as 60 to 180; a comment in the `layout.rs` canvas clamp test said a wall of eight screens where the case builds twelve; `sky_interval` measured the Sun-fixed redraw on the preview's height rather than its short edge, so a portrait anchor redrew the preview 1.78 times as often as one pixel of the turn needs, and it now takes `layout::preview_short_edge` and is retimed when the anchor changes the framing; and `display_plan.rs` rendered one picture it threw away.
 
-Step 7, the validation with the user, is the orchestrator's.
+After round 1, on 2026-10-24 at aeafc5d: `cargo xtask e2e --target linux` (KDE on X11), 17 passed, 0 failed, the suite in 441.0 s and the run in 649 s, with the same `test_set_wallpaper` read-back skip. No golden reference changed on the branch.
+
+Step 7, on 2026-10-24 at aeafc5d: the user inspected the preview, the wallpaper and CLI renders on their desktop and found them aligned.

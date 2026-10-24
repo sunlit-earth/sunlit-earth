@@ -273,4 +273,10 @@ Revert the branch's commits. A config migrated to version 4 keeps its converted 
 
 ## Validation Record
 
-None yet.
+Step 6, on 2026-10-24 at aeb9756:
+
+- `cargo xtask e2e --target windows`: 18 passed, 0 failed, the suite in 504.5 s and the run in 573 s. `test_plasmashell_survives_rapid_republishing` skipped itself, as it does outside KDE.
+- `cargo xtask e2e --target linux` (KDE on X11): 17 passed, 0 failed, the suite in 616.3 s and the run in 694 s. `test_set_wallpaper` skipped its read-back, as it does under Plasma's `dbus-send` setter.
+- `cargo xtask vm down all` afterwards: nothing left running. The WSL target directories were swept per `docs/building.md`.
+
+Step 7, the validation with the user, is the orchestrator's.

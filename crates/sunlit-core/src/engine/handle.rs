@@ -31,7 +31,7 @@ pub struct EngineConfig {
     /// One entry per file-backed texture slot, in slot order after the grid:
     /// the Moon, then the Milky Way.
     pub texture_paths: Vec<Option<PathBuf>>,
-    /// Initial preview size; quantized by the engine.
+    /// Initial preview size; capped in width by the quality tier.
     pub preview_size: (u32, u32),
     /// Whether to produce preview frames at all.
     pub preview_enabled: bool,

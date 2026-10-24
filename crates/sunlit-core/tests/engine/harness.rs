@@ -91,7 +91,7 @@ impl Harness {
     pub(crate) fn start(configure: impl FnOnce(&mut EngineConfig)) -> Self {
         let (tx, events): (Sender<EngineEvent>, Receiver<EngineEvent>) =
             crossbeam_channel::unbounded();
-        let mut config = EngineConfig::headless((512, 288));
+        let mut config = EngineConfig::headless((512, 256));
         config.params = test_params();
         config.on_event = Arc::new(move |event| {
             let _ = tx.send(event);

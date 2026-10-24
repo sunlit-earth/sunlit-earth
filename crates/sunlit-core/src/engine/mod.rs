@@ -31,8 +31,8 @@ use crate::config::QualityTier;
 use crate::params::SceneParams;
 use crate::renderer::residency::{Output, surfaces_for};
 use crate::renderer::{
-    RenderOutcome, Renderer, RendererConfig, SlotLayout, SurfaceFormats, quantize_to_granularity,
-    resolve_sample_count, surface_sampler_descriptor,
+    RenderOutcome, Renderer, RendererConfig, SlotLayout, SurfaceFormats, resolve_sample_count,
+    surface_sampler_descriptor,
 };
 use crate::scene::sky::{self, SkyState};
 
@@ -1295,18 +1295,17 @@ fn join_notes(first: String, second: String) -> String {
     }
 }
 
-/// Clamp a requested preview size to the tier's cap, preserving the aspect
-/// ratio, then quantize it to the renderer's texture granularity.
+/// Clamp a requested preview size to the tier's cap, keeping the aspect ratio
+/// as closely as whole pixels allow, and never below one pixel either way.
 fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32) {
     let (mut w, mut h) = requested;
     let max_w = quality.max_preview_width();
-    if w > max_w && w > 0 {
-        h = ((u64::from(h) * u64::from(max_w)) / u64::from(w))
-            .try_into()
-            .unwrap_or(max_w);
+    if w > max_w {
+        let scaled = (u64::from(h) * u64::from(max_w) + u64::from(w) / 2) / u64::from(w);
+        h = scaled.try_into().unwrap_or(u32::MAX);
         w = max_w;
     }
-    quantize_to_granularity(w, h)
+    (w.max(1), h.max(1))
 }
 
 /// How often the sky schedule redraws a scene drawn at live time, for a
@@ -1366,28 +1365,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preview_size_passes_through_below_the_cap() {
-        assert_eq!(
-            preview_target_size((1024, 640), QualityTier::Low),
-            quantize_to_granularity(1024, 640)
-        );
+    fn preview_size_below_the_cap_comes_back_as_asked() {
+        for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
+            let widest = tier.max_preview_width().min(3841);
+            for size in [(1, 1), (widest / 3, 200), (widest - 1, 641), (widest, 2161)] {
+                assert_eq!(preview_target_size(size, tier), size, "{tier:?}");
+            }
+        }
     }
 
-    /// A source wider than the tier's cap comes back under the cap and already
-    /// quantized. The exact granularity is `quantize_to_granularity`'s own
-    /// business and has its own tests; what matters here is that this path goes
-    /// through it, and that the tier's cap rather than a written-down width is
-    /// what bounds the result.
     #[test]
-    fn preview_size_is_capped_at_the_tiers_own_width() {
-        let (w, h) = preview_target_size((3840, 2160), QualityTier::Low);
-        let cap = QualityTier::Low.max_preview_width();
-        assert!(w <= cap, "{w} is above the tier's cap of {cap}");
-        assert_eq!(
-            (w, h),
-            quantize_to_granularity(w, h),
-            "a preview size that is not already quantized never reached the quantizer"
-        );
+    fn preview_size_above_the_cap_keeps_the_aspect_at_the_caps_width() {
+        for tier in [QualityTier::Low, QualityTier::Medium] {
+            let cap = tier.max_preview_width();
+            for (rw, rh) in [
+                (cap * 3, cap * 2 - 1),
+                (cap + 641, 1439),
+                (cap * 4, 917),
+                (cap + 1, 3),
+            ] {
+                let (w, h) = preview_target_size((rw, rh), tier);
+                assert_eq!(w, cap, "{rw}x{rh} at {tier:?}");
+                let ideal = f64::from(rh) * f64::from(cap) / f64::from(rw);
+                assert!(
+                    (f64::from(h) - ideal).abs() <= 0.5,
+                    "{rw}x{rh} at {tier:?} came back {w}x{h}, ideal height {ideal}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preview_size_is_never_zero() {
+        for tier in [QualityTier::Low, QualityTier::Medium, QualityTier::High] {
+            assert_eq!(preview_target_size((0, 0), tier), (1, 1));
+            assert_eq!(preview_target_size((0, 300), tier), (1, 300));
+            assert_eq!(preview_target_size((300, 0), tier), (300, 1));
+        }
+        assert_eq!(preview_target_size((100_000, 1), QualityTier::Low).1, 1);
     }
 
     #[test]
@@ -1397,14 +1412,7 @@ mod tests {
         let high = preview_target_size((3840, 2160), QualityTier::High);
         assert!(low.0 < medium.0);
         assert!(medium.0 < high.0);
-        assert_eq!(high, quantize_to_granularity(3840, 2160));
-    }
-
-    #[test]
-    fn preview_size_cap_preserves_the_aspect_ratio() {
-        let (w, h) = preview_target_size((2560, 1440), QualityTier::Low);
-        let ratio = f64::from(w) / f64::from(h);
-        assert!((ratio - 16.0 / 9.0).abs() < 0.05, "got {w}x{h}");
+        assert_eq!(high.0, QualityTier::High.max_preview_width().min(3840));
     }
 
     fn sun_fixed_live(zoom: f32) -> SceneParams {

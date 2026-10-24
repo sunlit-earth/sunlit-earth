@@ -48,16 +48,16 @@ fn changed_parameters_produce_a_new_frame() {
 }
 
 #[test]
-fn preview_size_changes_are_quantized_and_applied() {
+fn preview_size_changes_are_applied() {
     let gpu = gpu();
     let harness = plain(&gpu);
 
-    for (asked, quantized) in [((300, 200), (256, 192)), ((512, 288), (512, 256))] {
+    for asked in [(300, 200), (511, 287), (97, 61)] {
         harness
             .engine
             .send(EngineCommand::SetPreviewSize(asked.0, asked.1));
         let (rgba, width, height) = harness.next_frame();
-        assert_eq!((width, height), quantized, "{asked:?}");
+        assert_eq!((width, height), asked);
         assert_eq!(rgba.len(), (width as usize) * (height as usize) * 4);
     }
 }

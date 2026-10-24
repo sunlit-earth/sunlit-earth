@@ -146,3 +146,9 @@ Step 3, on the Windows desktop in this worktree at ccdcbfe, debug profile:
 - `RUSTFLAGS="-D warnings" cargo clippy --all-targets`: finished with no warnings or errors.
 - `cargo xtask bake licenses`: 528 third-party crates, 17 license texts; `git status` shows `assets/third-party.md` and `assets/THIRD-PARTY-LICENSES.md` unchanged. `the_committed_bake_matches_a_fresh_one` and `the_committed_list_names_the_shipping_crates_and_no_others` passed in the run above.
 - Rebuild after appending an unused private function, each from a settled build and reverted with `git checkout` of the file: in `crates/sunlit-app/src/displays.rs`, `cargo build` took 5.33 s and 5.14 s (the probe measured 5.5 s, today's layout 14.5 s); in `crates/sunlit-core/src/scene/sun.rs`, 7.48 s and 8.16 s (probe 7.8 to 8.5 s, today 18.9 s).
+
+Step 5:
+
+- WSL, Ubuntu 22.04, `CARGO_TARGET_DIR=$HOME/sunlit-target-sunlit-ui-crate`: `cargo build` finished in 2 min 53 s from a fresh directory; `cargo unit` passed 684 (`sunlit-core`), 180 (`sunlit-earth`), 0 (`sunlit-ui`) and 683 (xtask); `cargo test -p sunlit-earth --test slint_ui` passed 140. `cargo sweep --maxsize 8GB` then ran over every `sunlit-target-*` directory, and `--maxsize 10GB` over `~/sunlit-target`.
+- `cargo xtask e2e --target linux`: KDE Plasma on X11, 19 passed, 0 failed, the guest exiting 0 after 516 s; `cargo xtask vm down all` afterwards.
+- The `release.yml` dry run for macOS was not run: it needs the user's go-ahead.

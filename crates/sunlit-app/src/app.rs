@@ -441,6 +441,12 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
         });
     }
 
+    // Answered from here on, before the tray wait below, so a second launch
+    // during the wait completes its exchange at once. Its activation runs once
+    // the event loop does, after the deferred hide of a hidden start.
+    let _activation_thread =
+        activation.and_then(|listener| serve_activation(listener, &window, &link));
+
     // Only when starting hidden, so a launch from the app menu is not slowed.
     #[cfg(target_os = "linux")]
     if matches!(cli.mode, Mode::Tray) && matches!(cli.tray_start, TrayStart::Hidden) {
@@ -482,9 +488,6 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
             .inspect_err(|e| warn!("{e}; carrying on without IPC"))
             .ok()
     });
-
-    let _activation_thread =
-        activation.and_then(|listener| serve_activation(listener, &window, &link));
 
     let _instance = instance;
     let status = run_event_loop(&window, &link, use_tray, cli.tray_start);

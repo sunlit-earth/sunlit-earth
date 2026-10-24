@@ -68,6 +68,18 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # rust-cache hashes every installed toolchain into its key, so the
+      # image's own stable Rust would turn each image update into a cache miss.
+      # A rustup home of the job's own holds only the pinned toolchain.
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+        shell: bash
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: package-managers
@@ -79,7 +91,6 @@ jobs:
 
       - name: Write the manifests
         run: |
-          rustup toolchain install --no-self-update
           cargo xtask manifests --version "${TAG#v}" --assets assets --out manifests
 
       - uses: actions/upload-artifact@v7

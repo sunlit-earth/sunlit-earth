@@ -81,9 +81,14 @@ jobs:
         with:
           lfs: true
 
+      # rust-cache hashes every installed toolchain into its key, so the
+      # image's own stable Rust would turn each image update into a cache miss.
+      # A rustup home of the job's own holds only the pinned toolchain.
       - name: Install the pinned toolchain
         run: |
           set -euo pipefail
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
           if ! command -v rustup >/dev/null; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

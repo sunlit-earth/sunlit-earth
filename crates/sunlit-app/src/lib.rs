@@ -1,4 +1,6 @@
 pub mod about;
+pub mod activation;
+pub mod autostart;
 pub mod camera_controls;
 pub mod displays;
 pub mod engine_client;
@@ -8,6 +10,7 @@ pub mod session_end;
 pub mod time_bar;
 pub mod tray;
 pub mod ui_callbacks;
+pub mod window_state;
 
 mod app;
 mod cli;

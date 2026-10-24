@@ -81,6 +81,18 @@ cargo app -- displays --out ./plan
 
 `render` produces a single PNG without a window. `displays` prints the detected monitors, anchor, and wallpaper plan without creating a GPU device or changing the desktop. Adding `--out` renders the planned images into the chosen directory for inspection but does not apply them as wallpaper. The text output is useful in display bug reports.
 
+## Start on login
+
+"Start on login", under "Auto-refresh wallpaper" in the settings window and in the tray menu, starts Sunlit Earth hidden in the tray when you log in. It is not a setting the app stores: it writes the system's own startup entry, and reads that entry back every time it is shown, so switching it off somewhere else is what the app shows next.
+
+- **Windows**: a `SunlitEarth` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It is listed in Task Manager's Startup apps and in Settings > Apps > Startup, and switching it off there shows as off in the app, with a note saying where.
+- **Linux**: `sunlit-earth.desktop` in `~/.config/autostart` (or `$XDG_CONFIG_HOME/autostart`). Plasma's and XFCE's autostart settings, Cinnamon's Startup Applications and GNOME Tweaks can all switch it off. sway, i3 and Hyprland start nothing from that folder, so the switch is disabled there and shows the line to add to the session's config instead: `exec <path to sunlit-earth> --tray-start hidden` for sway and i3, `exec-once = <path to sunlit-earth> --tray-start hidden` for Hyprland.
+- **macOS**: a launch agent, `~/Library/LaunchAgents/earth.sunlit.SunlitEarth.plist`, which starts the app through `open`. Move the app to the Applications folder first: a copy opened straight from a downloaded zip runs from a temporary path that changes on every launch, and the switch refuses it. System Settings > Login Items lists the agent, under a name that is to be observed, and a switch-off there is not shown in the app.
+
+If the entry starts a different copy of the app, for example an installed one while you run a build from source, the switch shows on and names that copy. Turning it off and on again points it at the copy you are running. The app never changes an entry on its own.
+
+Launching the app while it already runs brings up the running app's window instead of starting a second one. If the copy you launched is another version, the window says which one is running and offers to quit it, so the next launch starts the new one.
+
 ## Several screens
 
 The Displays group appears when the session has more than one monitor. Its modes are:

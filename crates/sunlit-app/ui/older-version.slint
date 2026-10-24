@@ -1,0 +1,50 @@
+// What a launch says when an older version, which cannot be asked to show its
+// window, is already running: this copy did not start, and how to get to the
+// running one.
+
+import { Button, Palette } from "std-widgets.slint";
+
+export component OlderVersionWindow inherits Window {
+    title: "Sunlit Earth";
+    icon: @image-url("../../../assets/icon/sunlit-earth.svg");
+    background: Palette.background;
+    width: 440px;
+
+    in property <string> version;
+    callback dismiss();
+
+    property <string> tray-icon: Platform.os == OperatingSystemType.macos ? "menu bar icon" : "tray icon";
+
+    layout := VerticalLayout {
+        padding: 20px;
+        spacing: 14px;
+
+        Text {
+            text: "An older version is already running";
+            color: Palette.foreground;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        Text {
+            text: "An older version of Sunlit Earth is already running, so Sunlit Earth " + root.version + " did not start. Open the running one from its " + root.tray-icon + ", or quit it there and open Sunlit Earth again.";
+            color: Palette.foreground;
+            font-size: 12px;
+            wrap: word-wrap;
+            // Slint 1.18 measures a wrapped text's height at its preferred
+            // width, which is otherwise one unwrapped line, and the window
+            // takes its height from that.
+            preferred-width: root.width - layout.padding-left - layout.padding-right;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+
+            Button {
+                text: "Close";
+                primary: true;
+                clicked => { root.dismiss(); }
+            }
+        }
+    }
+}

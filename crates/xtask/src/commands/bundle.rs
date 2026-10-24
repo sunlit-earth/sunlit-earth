@@ -2078,9 +2078,9 @@ mod tests {
         ] {
             assert!(real.contains(value), "the template has no {value}");
         }
-        // `LSUIElement` would do nothing: winit sets the regular activation
-        // policy at startup whatever the plist says.
-        assert!(!real.contains("<key>LSUIElement</key>"), "{real}");
+        // The bundle starts with no Dock icon, so a hidden start at login never
+        // shows one; the app gives itself the icon when its window shows.
+        assert!(real.contains("<key>LSUIElement</key>\n\t<true/>"), "{real}");
 
         // A template with the placeholder taken out is a refusal, not a bundle
         // named after nothing.

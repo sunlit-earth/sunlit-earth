@@ -103,23 +103,97 @@ pub fn run() -> ExitCode {
             // and the GPU device exist. Returning from `main` rather than
             // exiting in place drops the logging guard, which is what flushes
             // the message below to stderr.
-            let instance_guard = if matches!(cli.mode, Mode::Tray) {
+            let instance = if matches!(cli.mode, Mode::Tray) {
                 let mutex_name = match &cli.ipc_socket {
                     Some(name) => format!("sunlit-earth-{name}"),
                     None => "sunlit-earth-app".to_string(),
                 };
                 match crate::tray::acquire_single_instance(&mutex_name) {
                     crate::tray::InstanceCheck::AlreadyRunning => {
-                        info!("another instance is already running, exiting");
+                        second_launch(&mutex_name, cli.tray_start);
                         return ExitCode::SUCCESS;
                     }
-                    crate::tray::InstanceCheck::Alone(guard) => guard,
+                    crate::tray::InstanceCheck::OlderVersionRunning => {
+                        older_version_running(
+                            cli.tray_start,
+                            "it holds the guard's name from before the per-user part",
+                        );
+                        return ExitCode::SUCCESS;
+                    }
+                    crate::tray::InstanceCheck::Alone(guard) => Some(Instance {
+                        name: mutex_name,
+                        _guard: guard,
+                    }),
                 }
             } else {
                 None
             };
-            run_app(cli, &config, instance_guard)
+            run_app(cli, &config, instance)
         }
+    }
+}
+
+/// The single-instance guard this run holds, and the name it holds it under.
+struct Instance {
+    name: String,
+    /// Held for the whole run: dropping it lets another instance start.
+    _guard: crate::tray::InstanceGuard,
+}
+
+/// Hand a launch that found the guard taken over to the running instance, or
+/// stay quiet when it was asked to start hidden.
+fn second_launch(instance: &str, tray_start: TrayStart) {
+    use crate::activation::SecondLaunch;
+    match crate::activation::second_launch(instance, matches!(tray_start, TrayStart::Hidden)) {
+        SecondLaunch::StayedQuiet => info!(
+            "another instance is already running and this launch asked to start hidden, so it leaves that one alone"
+        ),
+        SecondLaunch::HandedOver(pid) => {
+            info!(
+                "another instance is already running (pid {pid}), so its window was asked to show"
+            );
+        }
+        SecondLaunch::OlderVersion(e) => older_version_running(tray_start, &e),
+        SecondLaunch::Unreachable(e) => {
+            info!(
+                "another instance is already running, but it could not be asked to show its window: {e}"
+            );
+        }
+    }
+}
+
+/// Tell the user that an older version is running and this launch did not
+/// start, in a window of its own, unless it was asked to start hidden.
+///
+/// Returns once the window is closed.
+///
+/// :param `tray_start`: how this launch was asked to start
+/// :param why: what showed that the running instance is an older version
+fn older_version_running(tray_start: TrayStart, why: &str) {
+    info!(
+        "another instance is already running, an older version that cannot be asked to show its window: {why}"
+    );
+    if matches!(tray_start, TrayStart::Hidden) {
+        return;
+    }
+    let window = match crate::activation::older_version_window() {
+        Ok(window) => window,
+        Err(e) => {
+            error!("no window could be created to say so: {e}");
+            return;
+        }
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Err(e) = slint::set_xdg_app_id(APP_ID) {
+        warn!("the app id could not be set: {e}");
+    }
+    if let Err(e) = crate::window_state::show_at_startup(&window, false) {
+        error!("the window that says so could not be shown: {e}");
+        return;
+    }
+    crate::ipc::signal("older_version_notice");
+    if let Err(e) = slint::run_event_loop() {
+        error!("the event loop failed: {e}");
     }
 }
 
@@ -204,9 +278,9 @@ fn register_auto_refresh_callback(
         let enabled = win.get_auto_refresh_enabled();
         let was_enabled = prev_enabled.replace(enabled);
 
-        // Keep the tray checkmark in step with the settings window.
+        // Keep the tray's mark in step with the settings window.
         if let Some(tray) = tray.as_ref() {
-            tray.set_auto_refresh_enabled(enabled);
+            crate::tray::follow_auto_refresh(tray, enabled);
         }
 
         send_auto_refresh(&engine, &win);
@@ -316,18 +390,14 @@ fn start_viewport_timer(window: &MainWindow, link: &EngineLink) -> slint::Timer 
 /// them has something before it that it cannot be moved ahead of. Each helper's
 /// own doc says which, so a reader who wants to reorder meets the reason first.
 ///
-/// `instance_guard` holds the single-instance mutex in tray mode; it is
-/// acquired in `main` so a second instance can exit before creating a window
-/// or a GPU device.
+/// `instance` holds the single-instance mutex in tray mode; it is acquired in
+/// `main` so a second instance can exit before creating a window or a GPU
+/// device.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "run_app owns the run: the single-instance guard is dropped when it returns"
 )]
-fn run_app(
-    cli: Cli,
-    config: &AppConfig,
-    instance_guard: Option<single_instance::SingleInstance>,
-) -> ExitCode {
+fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode {
     texture_loader::register_jxl_hook();
     debug!("registered JXL decoding hook");
     sunlit_core::wgpu_init::without_validation();
@@ -340,6 +410,13 @@ fn run_app(
         info!("binding the IPC socket {name}");
         crate::ipc::bind(name)
             .inspect_err(|e| warn!("{e}; carrying on without IPC"))
+            .ok()
+    });
+    // Bound as early for the same reason, and so a second launch that comes
+    // while this one starts connects at once and waits for the answer.
+    let activation = instance.as_ref().and_then(|instance| {
+        crate::activation::bind(&instance.name)
+            .inspect_err(|e| warn!("{e}; a second launch will not reach this one"))
             .ok()
     });
 
@@ -387,6 +464,31 @@ fn run_app(
     );
     let about = crate::about::AboutController::default();
     about.register_settings_callback(&window);
+    crate::window_state::register_main_window(&window);
+    crate::window_state::register_other_window(about.visibility());
+    crate::activation::register_version_notice(&window);
+    crate::autostart::ui::register(&window);
+    {
+        let window_weak = window.as_weak();
+        let link = link.clone();
+        crate::window_state::install_reopen_handler(move || {
+            if let Some(win) = window_weak.upgrade() {
+                crate::activation::activate(&win, &link, &crate::activation::Launch::default());
+            }
+        });
+    }
+
+    // Answered from here on, before the tray wait below, so a second launch
+    // during the wait completes its exchange at once. Its activation runs once
+    // the event loop does, after the deferred hide of a hidden start.
+    let _activation_thread =
+        activation.and_then(|listener| serve_activation(listener, &window, &link));
+
+    // Only when starting hidden, so a launch from the app menu is not slowed.
+    #[cfg(target_os = "linux")]
+    if matches!(cli.mode, Mode::Tray) && matches!(cli.tray_start, TrayStart::Hidden) {
+        crate::tray::wait_for_tray_host();
+    }
 
     let tray = install_tray_and_geometry(
         &window,
@@ -395,6 +497,8 @@ fn run_app(
         config,
         matches!(cli.mode, Mode::Tray),
     );
+    // After the tray, so the first read reaches its item too.
+    crate::autostart::ui::refresh(&window);
     // A session with no tray host leaves the window as the only way to reach
     // the app, so from here on this run is a windowed one: the close button
     // ends it and the window is shown whatever `--tray-start` asked for.
@@ -422,7 +526,7 @@ fn run_app(
             .ok()
     });
 
-    let _instance_guard = instance_guard;
+    let _instance = instance;
     let status = run_event_loop(&window, &link, use_tray, cli.tray_start);
 
     tear_down(
@@ -433,6 +537,37 @@ fn run_app(
         tray,
     );
     status
+}
+
+/// Answer second launches by showing this window.
+///
+/// The activation runs from a zero timer posted to the event loop, so a launch
+/// that arrives while a hidden start is still coming up is shown after the
+/// deferred hide rather than before it.
+fn serve_activation(
+    listener: crate::activation::ActivationListener,
+    window: &MainWindow,
+    link: &EngineLink,
+) -> Option<std::thread::JoinHandle<()>> {
+    let window_weak = window.as_weak();
+    let link = link.clone();
+    listener
+        .serve(move |launch| {
+            let window_weak = window_weak.clone();
+            let link = link.clone();
+            let posted = slint::invoke_from_event_loop(move || {
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    if let Some(win) = window_weak.upgrade() {
+                        crate::activation::activate(&win, &link, &launch);
+                    }
+                });
+            });
+            if let Err(e) = posted {
+                warn!("a second launch could not reach the event loop: {e}");
+            }
+        })
+        .inspect_err(|e| warn!("{e}; a second launch will not reach this one"))
+        .ok()
 }
 
 /// What a started engine leaves the rest of the run holding.
@@ -605,9 +740,8 @@ fn register_close_handler(window: &MainWindow, link: &EngineLink, use_tray: bool
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_core::memory::log_memory_usage("after window hidden");
-            // Slint does the hiding for us, so the engine has to be told
-            // separately that nobody is looking any more.
-            engine_link.set_preview_enabled(false);
+            // Slint does the hiding for us once this answers.
+            crate::window_state::hidden(&engine_link);
             slint::CloseRequestResponse::HideWindow
         });
     } else {
@@ -698,7 +832,8 @@ fn run_event_loop(
     use_tray: bool,
     tray_start: TrayStart,
 ) -> ExitCode {
-    if let Err(e) = window.show() {
+    let hides_at_once = use_tray && matches!(tray_start, TrayStart::Hidden);
+    if let Err(e) = crate::window_state::show_at_startup(window, hides_at_once) {
         error!("the window could not be shown: {e}");
         return ExitCode::FAILURE;
     }
@@ -710,15 +845,17 @@ fn run_event_loop(
     // In tray mode with --tray-start hidden, defer the hide to a zero-duration
     // timer so it fires after the event loop is running. Hiding synchronously
     // before run_event_loop_until_quit() causes the loop to exit immediately.
-    if use_tray && matches!(tray_start, TrayStart::Hidden) {
+    if hides_at_once {
         let ww = window.as_weak();
         let engine_link = link.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {
-            if let Some(win) = ww.upgrade() {
-                debug!("hiding window for --tray-start hidden (deferred)");
-                win.hide().ok();
+            match ww.upgrade() {
+                Some(win) => {
+                    debug!("hiding window for --tray-start hidden (deferred)");
+                    crate::window_state::hide(&win, &engine_link);
+                }
+                None => crate::window_state::hidden(&engine_link),
             }
-            engine_link.set_preview_enabled(false);
             println!("SIGNAL:window_hidden_deferred");
         });
     }

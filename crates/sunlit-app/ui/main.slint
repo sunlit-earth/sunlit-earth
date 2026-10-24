@@ -3,11 +3,13 @@ import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, Se
 import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } from "overlays/common.slint";
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
+import { VersionNotice } from "overlays/version-notice.slint";
 import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
+export { OlderVersionWindow } from "older-version.slint";
 export { TrayIcon } from "tray.slint";
 export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
 export { OverlayHints, OverlayStyle } from "overlays/common.slint";
@@ -301,6 +303,24 @@ export component MainWindow inherits Window {
     in-out property <bool> overlays-hidden;
     // The sheet of every gesture and shortcut, which F1 or Ctrl + ? opens.
     in-out property <bool> shortcut-sheet-open;
+    // Shown over the preview when a launch of another version found this one
+    // running. Rust opens it and fills in the two versions.
+    in-out property <bool> version-notice-open;
+    in property <string> version-notice-running;
+    in property <string> version-notice-launched;
+    // The notice's "Quit Sunlit Earth", which ends the app like the tray's Exit.
+    callback quit-app();
+
+    // "Start on login". The platform's autostart entry is the setting, so Rust
+    // reads it and writes these; a toggle asks Rust to write the entry and
+    // read it back. The note names another copy's path, the system's own
+    // switch-off, or what to do in a session without autostart; the error is
+    // why the last write failed.
+    in-out property <bool> autostart-on;
+    in property <bool> autostart-available: true;
+    in property <string> autostart-note;
+    in property <string> autostart-error;
+    callback autostart-toggled(bool);
 
     // The time bar. Rust writes what it shows; the transport's callbacks act
     // on the excursion and the tracks', exact entry's and Now's on the time
@@ -466,6 +486,28 @@ export component MainWindow inherits Window {
                         hint: "Set the wallpaper again on a timer, so the sunlit half of the globe keeps up with the real one.";
                         checked <=> root.auto-refresh-enabled;
                         toggled => { root.auto-refresh-changed(); }
+                    }
+
+                    SettingCheck {
+                        text: "Start on login";
+                        hint: "Start Sunlit Earth hidden in the tray when you log in.";
+                        enabled: root.autostart-available;
+                        checked <=> root.autostart-on;
+                        toggled => { root.autostart-toggled(self.checked); }
+                    }
+
+                    if root.autostart-note != "" : Text {
+                        text: root.autostart-note;
+                        wrap: word-wrap;
+                        font-size: 11px;
+                        color: Palette.foreground.with-alpha(0.7);
+                    }
+
+                    if root.autostart-error != "" : Text {
+                        text: root.autostart-error;
+                        wrap: word-wrap;
+                        font-size: 11px;
+                        color: #e0533f;
                     }
 
                     if root.auto-refresh-enabled : HorizontalLayout {
@@ -2591,6 +2633,15 @@ export component MainWindow inherits Window {
             width: parent.width;
             height: parent.height;
             close => { root.shortcut-sheet-open = false; }
+        }
+
+        if root.version-notice-open : VersionNotice {
+            width: parent.width;
+            height: parent.height;
+            running: root.version-notice-running;
+            launched: root.version-notice-launched;
+            close => { root.version-notice-open = false; }
+            quit => { root.quit-app(); }
         }
 
         if image-container.tip-shown && !root.overlays-hidden : GestureTip {

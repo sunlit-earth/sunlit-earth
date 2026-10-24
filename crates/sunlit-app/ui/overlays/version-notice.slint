@@ -1,0 +1,65 @@
+// What the running instance says when a launch of another version found it
+// running: the launched copy did not start, and how to get to it.
+
+import { Button } from "std-widgets.slint";
+import { OverlayStyle } from "common.slint";
+
+export component VersionNotice inherits Rectangle {
+    in property <string> running;
+    in property <string> launched;
+    callback close();
+    callback quit();
+
+    background: #0000008c;
+
+    TouchArea { }
+
+    card := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: max(8px, (parent.height - self.height) / 2);
+        width: min(460px, parent.width - 16px);
+        height: card-layout.preferred-height;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: OverlayStyle.border;
+        background: OverlayStyle.solid;
+        drop-shadow-blur: 22px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000073;
+
+        card-layout := VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+
+            Text {
+                text: "Another version was opened";
+                color: OverlayStyle.fg;
+                font-size: 15px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: "Sunlit Earth " + root.running + " is already running, so the copy you opened (" + root.launched + ") did not start. To use " + root.launched + ", quit Sunlit Earth and open it again.";
+                color: OverlayStyle.fg;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+
+                Button {
+                    text: "Quit Sunlit Earth";
+                    clicked => { root.quit(); }
+                }
+
+                Button {
+                    text: "Close";
+                    primary: true;
+                    clicked => { root.close(); }
+                }
+            }
+        }
+    }
+}

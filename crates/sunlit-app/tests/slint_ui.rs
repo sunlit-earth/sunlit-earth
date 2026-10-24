@@ -6245,3 +6245,262 @@ fn test_a_click_outside_a_picker_closes_it_as_cancel_does() {
         );
     }
 }
+
+/// A link to an engine nobody runs, for callbacks that only send to it.
+fn idle_link() -> sunlit_earth::engine_client::EngineLink {
+    let (sender, _) = crossbeam_channel::unbounded();
+    sunlit_earth::engine_client::EngineLink::new(sender, vec!["None".to_owned()], vec![1])
+}
+
+/// The elements with this accessible label, however many there are.
+fn labelled(window: &MainWindow, label: &str) -> Vec<ElementHandle> {
+    ElementHandle::find_by_accessible_label(window, label).collect()
+}
+
+/// A second launch of the version that runs shows the window and nothing
+/// else; one of another version gets the notice, which names both and which
+/// "Close" takes away.
+#[test]
+fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
+    use sunlit_earth::activation::{Launch, activate};
+
+    let window = create_window();
+    let link = idle_link();
+    let running = env!("CARGO_PKG_VERSION");
+
+    activate(
+        &window,
+        &link,
+        &Launch {
+            version: Some(running.to_owned()),
+            ..Launch::default()
+        },
+    );
+    assert!(window.window().is_visible());
+    assert!(!window.get_version_notice_open());
+    assert!(labelled(&window, "Quit Sunlit Earth").is_empty());
+
+    let launched = "999.0.0-test";
+    activate(
+        &window,
+        &link,
+        &Launch {
+            version: Some(launched.to_owned()),
+            exe: Some("/elsewhere/sunlit-earth".to_owned()),
+            ..Launch::default()
+        },
+    );
+    assert!(window.get_version_notice_open());
+    assert_eq!(labelled(&window, "Quit Sunlit Earth").len(), 1);
+    let message: Vec<String> = ElementQuery::from_root(&window)
+        .find_all()
+        .into_iter()
+        .filter_map(|element| element.accessible_label())
+        .map(|label| label.to_string())
+        .filter(|label| label.contains(launched))
+        .collect();
+    assert!(
+        message.iter().any(|text| text.contains(running)),
+        "the notice names both versions: {message:?}"
+    );
+    assert!(
+        message.iter().all(|text| !text.contains("/elsewhere")),
+        "the launched path belongs in the log, not the notice: {message:?}"
+    );
+
+    let close = labelled(&window, "Close");
+    assert_eq!(close.len(), 1);
+    close[0].invoke_accessible_default_action();
+    assert!(!window.get_version_notice_open());
+    assert!(labelled(&window, "Quit Sunlit Earth").is_empty());
+}
+
+/// A launch beside an older version says so in a window of its own, which
+/// names this version, and "Close" hides it.
+#[test]
+fn test_the_older_version_window_names_this_version_and_close_hides_it() {
+    init();
+    let window = sunlit_earth::activation::older_version_window().unwrap();
+    window.show().unwrap();
+    assert!(window.window().is_visible());
+
+    let labels: Vec<String> = ElementQuery::from_root(&window)
+        .find_all()
+        .into_iter()
+        .filter_map(|element| element.accessible_label())
+        .map(|label| label.to_string())
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .any(|text| text.contains("older version") && text.contains(env!("CARGO_PKG_VERSION"))),
+        "the window says an older version runs and names this one: {labels:?}"
+    );
+
+    let close: Vec<ElementHandle> =
+        ElementHandle::find_by_accessible_label(&window, "Close").collect();
+    assert_eq!(close.len(), 1);
+    close[0].invoke_accessible_default_action();
+    assert!(!window.window().is_visible());
+}
+
+/// The "Start on login" check box, found by its label.
+fn start_on_login(window: &MainWindow) -> ElementHandle {
+    labelled(window, "Start on login")
+        .into_iter()
+        .find(|element| element.accessible_checkable() == Some(true))
+        .expect("the Start on login switch")
+}
+
+/// The texts on screen, by their accessible labels.
+fn texts_on_screen(window: &MainWindow) -> Vec<String> {
+    ElementQuery::from_root(window)
+        .find_all()
+        .into_iter()
+        .filter_map(|element| element.accessible_label())
+        .map(|label| label.to_string())
+        .collect()
+}
+
+/// The switch shows the entry it is given: on for this copy with nothing
+/// under it, on with the other path named, off with the system's switch-off
+/// named, and disabled with the line to add where the session has no
+/// autostart.
+#[test]
+fn test_the_start_on_login_switch_shows_the_entry_it_is_given() {
+    use std::path::PathBuf;
+    use sunlit_earth::autostart::{self, Autostart};
+
+    let window = create_window();
+
+    let this = autostart::this_exe().expect("this test's own path");
+    autostart::ui::show(&window, &Autostart::On { exe: this });
+    let switch = start_on_login(&window);
+    assert_eq!(switch.accessible_checked(), Some(true));
+    assert_eq!(switch.accessible_enabled(), Some(true));
+    assert!(window.get_autostart_note().is_empty());
+
+    let other = PathBuf::from("/somewhere/else/sunlit-earth");
+    autostart::ui::show(&window, &Autostart::On { exe: other });
+    assert_eq!(start_on_login(&window).accessible_checked(), Some(true));
+    assert!(
+        texts_on_screen(&window)
+            .iter()
+            .any(|text| text.contains("/somewhere/else/sunlit-earth")),
+        "the note names the other copy"
+    );
+
+    autostart::ui::show(
+        &window,
+        &Autostart::TurnedOffBySystem {
+            exe: PathBuf::from("/x"),
+        },
+    );
+    assert_eq!(start_on_login(&window).accessible_checked(), Some(false));
+    assert!(
+        texts_on_screen(&window)
+            .iter()
+            .any(|text| text.starts_with("Turned off in")),
+        "the note says where it was switched off"
+    );
+
+    let reason = "This session does not start apps from the autostart folder. \
+                  Add `exec /usr/bin/sunlit-earth --tray-start hidden` to its config.";
+    autostart::ui::show(
+        &window,
+        &Autostart::Unsupported {
+            reason: reason.to_owned(),
+        },
+    );
+    let switch = start_on_login(&window);
+    assert_eq!(switch.accessible_checked(), Some(false));
+    assert_eq!(switch.accessible_enabled(), Some(false));
+    assert!(
+        texts_on_screen(&window).iter().any(|text| text == reason),
+        "the exec line is on screen"
+    );
+
+    autostart::ui::show(&window, &Autostart::Off);
+    assert_eq!(start_on_login(&window).accessible_checked(), Some(false));
+    assert!(window.get_autostart_note().is_empty());
+}
+
+/// A tray icon wired to `window` the way the app wires it, with the settings
+/// window's auto-refresh change following into the tray as `app.rs` does.
+fn wired_tray(window: &MainWindow) -> sunlit_earth::TrayIcon {
+    let tray = sunlit_earth::TrayIcon::new().expect("the testing backend creates a tray icon");
+    sunlit_earth::tray::wire(
+        &tray,
+        window,
+        &idle_link(),
+        &sunlit_earth::about::AboutController::default(),
+    );
+    let window_weak = window.as_weak();
+    let tray_weak = tray.as_weak();
+    window.on_auto_refresh_changed(move || {
+        if let (Some(win), Some(tray)) = (window_weak.upgrade(), tray_weak.upgrade()) {
+            sunlit_earth::tray::follow_auto_refresh(&tray, win.get_auto_refresh_enabled());
+        }
+    });
+    tray
+}
+
+/// Slint's tray backends draw no checkmark, so the state is in the titles:
+/// the mark is there exactly when auto-refresh is on, follows the settings
+/// window, and a toggle from the tray reaches the window.
+#[test]
+fn test_the_tray_auto_refresh_title_carries_the_mark() {
+    let window = create_window();
+    window.set_auto_refresh_enabled(false);
+    let tray = wired_tray(&window);
+    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
+
+    let checkbox = labelled(&window, "Auto-refresh wallpaper")
+        .into_iter()
+        .find(|element| element.accessible_checkable() == Some(true))
+        .expect("the auto-refresh check box");
+    checkbox.invoke_accessible_default_action();
+    assert!(window.get_auto_refresh_enabled());
+    assert_eq!(tray.get_auto_refresh_title(), "✓ Auto-refresh");
+
+    tray.set_auto_refresh_enabled(false);
+    tray.invoke_auto_refresh_toggled(false);
+    assert!(
+        !window.get_auto_refresh_enabled(),
+        "the tray's toggle reached the window"
+    );
+    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
+}
+
+/// "Start on login" in the tray follows each read of the entry and is
+/// disabled where the session has no autostart.
+#[test]
+fn test_the_tray_start_on_login_item_follows_the_entry() {
+    use std::path::PathBuf;
+    use sunlit_earth::autostart::{self, Autostart};
+
+    let window = create_window();
+    let tray = wired_tray(&window);
+
+    autostart::ui::show(
+        &window,
+        &Autostart::On {
+            exe: PathBuf::from("/x/sunlit-earth"),
+        },
+    );
+    assert!(tray.get_autostart_on());
+    assert_eq!(tray.get_autostart_title(), "✓ Start on login");
+    assert!(tray.get_autostart_available());
+
+    autostart::ui::show(&window, &Autostart::Off);
+    assert_eq!(tray.get_autostart_title(), "Start on login");
+
+    autostart::ui::show(
+        &window,
+        &Autostart::Unsupported {
+            reason: "no autostart here".to_owned(),
+        },
+    );
+    assert!(!tray.get_autostart_available());
+    assert_eq!(tray.get_autostart_title(), "Start on login");
+}

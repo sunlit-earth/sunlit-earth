@@ -101,6 +101,7 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
              export SUNLIT_EARTH_BIN={app}\n\
              export SUNLIT_EARTH_E2E_FIXTURES={fixtures}\n\
              export SUNLIT_EARTH_E2E_WALLPAPER=1\n\
+             export SUNLIT_EARTH_E2E_AUTOSTART=1\n\
              {textures}\
              export RUST_BACKTRACE=1\n\
              {harness} --ignored --test-threads=1 --nocapture\n",
@@ -120,6 +121,7 @@ pub fn job_script(target: Target, paths: &GuestPaths) -> String {
              set SUNLIT_EARTH_BIN={app}\r\n\
              set SUNLIT_EARTH_E2E_FIXTURES={fixtures}\r\n\
              set SUNLIT_EARTH_E2E_WALLPAPER=1\r\n\
+             set SUNLIT_EARTH_E2E_AUTOSTART=1\r\n\
              {textures}\
              set SLINT_BACKEND={backend}\r\n\
              set RUST_BACKTRACE=1\r\n\
@@ -656,6 +658,20 @@ mod tests {
         let linux = job_script(Target::Linux, &paths(Target::Linux));
         assert!(
             linux.contains("export SUNLIT_EARTH_E2E_WALLPAPER=1"),
+            "{linux}"
+        );
+    }
+
+    #[test]
+    fn both_guest_jobs_opt_into_writing_the_login_entry() {
+        let windows = job_script(Target::Windows, &paths(Target::Windows));
+        assert!(
+            windows.contains("set SUNLIT_EARTH_E2E_AUTOSTART=1"),
+            "{windows}"
+        );
+        let linux = job_script(Target::Linux, &paths(Target::Linux));
+        assert!(
+            linux.contains("export SUNLIT_EARTH_E2E_AUTOSTART=1"),
             "{linux}"
         );
     }

@@ -75,6 +75,19 @@ impl AboutController {
         });
     }
 
+    /// Whether the About window exists and is on screen, as a question that
+    /// can be asked later and does not keep the window alive.
+    pub fn visibility(&self) -> impl Fn() -> bool + 'static {
+        let window = Rc::downgrade(&self.window);
+        move || {
+            window.upgrade().is_some_and(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .is_some_and(|about| about.window().is_visible())
+            })
+        }
+    }
+
     /// Show the existing About window, creating and populating it if needed.
     pub fn show(&self) -> Result<(), slint::PlatformError> {
         let mut slot = self.window.borrow_mut();
@@ -86,6 +99,10 @@ impl AboutController {
             window.set_license_text(LICENSE.into());
             window.set_mono_family(MONO_FAMILY.into());
             window.on_open_url(|url| open_url(&url));
+            window.window().on_close_requested(|| {
+                crate::window_state::other_window_closed();
+                slint::CloseRequestResponse::HideWindow
+            });
             *slot = Some(window);
         }
         if let Some(window) = slot.as_ref() {

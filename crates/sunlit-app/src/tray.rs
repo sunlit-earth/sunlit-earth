@@ -5,6 +5,8 @@
 //! `NSStatusItem` on macOS, `StatusNotifierItem` on Linux). What is left here
 //! is the icon bytes, the callback wiring, and the single-instance mutex.
 
+use std::time::Duration;
+
 use slint::ComponentHandle;
 use tracing::{debug, info, warn};
 
@@ -100,6 +102,76 @@ fn instance_name(name: &str) -> String {
 #[cfg(windows)]
 fn instance_name(name: &str) -> String {
     name.to_owned()
+}
+
+/// How long a hidden start on Linux waits for a tray host to appear before it
+/// decides the session has none.
+pub const TRAY_HOST_WAIT: Duration = Duration::from_secs(10);
+
+/// How often that wait asks the session bus.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const TRAY_HOST_POLL: Duration = Duration::from_millis(100);
+
+/// Ask `present` until it answers yes or `timeout` has been slept away.
+///
+/// :returns: how long it slept before the yes, or `None` for no yes at all
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn wait_for(
+    timeout: Duration,
+    poll: Duration,
+    mut present: impl FnMut() -> bool,
+    mut sleep: impl FnMut(Duration),
+) -> Option<Duration> {
+    let mut waited = Duration::ZERO;
+    loop {
+        if present() {
+            return Some(waited);
+        }
+        if waited >= timeout {
+            return None;
+        }
+        let step = poll.min(timeout.saturating_sub(waited));
+        sleep(step);
+        waited += step;
+    }
+}
+
+/// Wait up to [`TRAY_HOST_WAIT`] for `org.kde.StatusNotifierWatcher` to get
+/// an owner on the session bus.
+///
+/// At login the panel that hosts the tray and the autostart entries start at
+/// the same time, and Slint's tray gives up at once when the watcher is not
+/// there yet, which would leave a hidden start running windowed. A session
+/// that never gets a watcher, GNOME without the extension, shows the window
+/// after the wait as before.
+#[cfg(target_os = "linux")]
+pub fn wait_for_tray_host() {
+    const WATCHER: &str = "org.kde.StatusNotifierWatcher";
+    let proxy = zbus::blocking::Connection::session()
+        .and_then(|bus| zbus::blocking::fdo::DBusProxy::new(&bus));
+    let proxy = match proxy {
+        Ok(proxy) => proxy,
+        Err(e) => {
+            warn!("the session bus could not be asked for a tray host: {e}");
+            return;
+        }
+    };
+    let Ok(name) = zbus::names::BusName::try_from(WATCHER) else {
+        return;
+    };
+    let present = || proxy.name_has_owner(name.clone()).unwrap_or(false);
+    match wait_for(TRAY_HOST_WAIT, TRAY_HOST_POLL, present, std::thread::sleep) {
+        Some(Duration::ZERO) => debug!("the tray host is there"),
+        Some(waited) => info!(
+            waited_ms = waited.as_millis(),
+            "waited {} ms for the tray host",
+            waited.as_millis()
+        ),
+        None => info!(
+            "waited {} s for a tray host and none came, so this run shows its window",
+            TRAY_HOST_WAIT.as_secs()
+        ),
+    }
 }
 
 /// Create the tray icon and wire its callbacks to the window and the engine.
@@ -207,6 +279,42 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tray_host_that_is_there_is_not_waited_for() {
+        let mut slept = Duration::ZERO;
+        let waited = wait_for(TRAY_HOST_WAIT, TRAY_HOST_POLL, || true, |d| slept += d);
+        assert_eq!(waited, Some(Duration::ZERO));
+        assert_eq!(slept, Duration::ZERO);
+    }
+
+    #[test]
+    fn a_tray_host_that_comes_ends_the_wait_when_it_comes() {
+        let mut asked = 0;
+        let mut slept = Duration::ZERO;
+        let waited = wait_for(
+            TRAY_HOST_WAIT,
+            TRAY_HOST_POLL,
+            || {
+                asked += 1;
+                asked > 3
+            },
+            |d| slept += d,
+        );
+        assert_eq!(waited, Some(slept));
+        assert!(
+            slept > Duration::ZERO && slept < TRAY_HOST_WAIT,
+            "{slept:?}"
+        );
+    }
+
+    #[test]
+    fn a_tray_host_that_never_comes_is_waited_for_exactly_the_limit() {
+        let mut slept = Duration::ZERO;
+        let waited = wait_for(TRAY_HOST_WAIT, TRAY_HOST_POLL, || false, |d| slept += d);
+        assert_eq!(waited, None);
+        assert_eq!(slept, TRAY_HOST_WAIT);
+    }
 
     #[test]
     fn icon_is_32x32() {

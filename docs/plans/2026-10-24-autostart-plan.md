@@ -226,4 +226,8 @@ cargo test
 
 ## Departures
 
+1. **Step 11 was done before Step 10.** The implementer cannot run the guests or the runner, and the tray wait is implemented either way; Step 10's Linux login checks still decide whether `TRAY_HOST_WAIT` is long enough, and they now test the wait rather than its absence.
+
+2. **The tray wait asks `NameHasOwner` every 100 ms rather than waiting for `NameOwnerChanged`.** zbus's blocking signal iterator has no timeout, so waiting for the signal with one takes a thread that stays blocked on the session bus, holding its connection, for the rest of a run in which the watcher never comes (GNOME without the extension, the very case the timeout exists for). Async zbus with a timer would avoid the thread but means taking `async-io` and `futures-util` as direct dependencies, writing async code that cannot be compiled on the implementer's host. A hundred calls of a cheap method over ten seconds, on the main thread before the event loop starts and only for a hidden start, is a bounded cost with no thread and no state left behind. The decision (`wait_for` in `tray.rs`) is unit-tested with a fake sleep on every platform.
+
 ## Validation rounds

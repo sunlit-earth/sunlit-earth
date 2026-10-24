@@ -434,6 +434,12 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
         });
     }
 
+    // Only when starting hidden, so a launch from the app menu is not slowed.
+    #[cfg(target_os = "linux")]
+    if matches!(cli.mode, Mode::Tray) && matches!(cli.tray_start, TrayStart::Hidden) {
+        crate::tray::wait_for_tray_host();
+    }
+
     let tray = install_tray_and_geometry(
         &window,
         &link,

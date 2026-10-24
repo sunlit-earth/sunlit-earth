@@ -110,6 +110,28 @@ fn probe(name: &str) -> Claim {
     claim(name, &mut Vec::new())
 }
 
+/// How long a launch waits before asking for the legacy name a second time.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+const LEGACY_RECHECK: Duration = Duration::from_millis(50);
+
+/// Ask for the legacy name, and when it is held elsewhere, ask once more
+/// after [`LEGACY_RECHECK`]. An older version holds it for good, while
+/// another user's new launch holds it only for the instant of its own probe.
+///
+/// :param probe: asks for the name and lets it go again
+/// :param sleep: waits the pause between the two
+/// :returns: what the last probe found
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+fn probe_legacy(mut probe: impl FnMut() -> Claim, sleep: impl FnOnce(Duration)) -> Claim {
+    match probe() {
+        Claim::HeldElsewhere => {
+            sleep(LEGACY_RECHECK);
+            probe()
+        }
+        other => other,
+    }
+}
+
 /// Check that no other instance of Sunlit Earth is running.
 ///
 /// The name is derived from `--ipc-socket`, so it is as much the user's to get
@@ -120,7 +142,9 @@ fn probe(name: &str) -> Claim {
 /// user's part, so the old name is asked for too: an instance of an older
 /// version holds it. It is let go again at once, because the abstract name is
 /// shared by every user on the host and keeping it would turn another user's
-/// new instance away as an older version.
+/// new instance away as an older version, and a name found held is asked for
+/// once more after a pause, since another user's launch may be probing it at
+/// the same moment.
 ///
 /// :param `mutex_name`: the process-wide name this instance claims
 /// :returns: what the check found
@@ -130,7 +154,8 @@ pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
     // Older versions took the bare name on Linux; elsewhere the name is
     // unchanged and there is nothing older to look for.
     #[cfg(all(unix, not(target_os = "macos")))]
-    let legacy = (current != Claim::HeldElsewhere).then(|| probe(mutex_name));
+    let legacy = (current != Claim::HeldElsewhere)
+        .then(|| probe_legacy(|| probe(mutex_name), std::thread::sleep));
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     let legacy = None;
     match decide(current, legacy) {
@@ -404,6 +429,52 @@ mod tests {
                     "{current:?} {legacy:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_legacy_name_held_only_for_another_probe_is_free_the_second_time() {
+        let mut answers = [Claim::HeldElsewhere, Claim::Taken].into_iter();
+        let mut slept = Vec::new();
+        let found = probe_legacy(
+            || answers.next().expect("two probes at most"),
+            |d| slept.push(d),
+        );
+        assert_eq!(found, Claim::Taken);
+        assert_eq!(slept, [LEGACY_RECHECK]);
+    }
+
+    #[test]
+    fn a_legacy_name_still_held_after_the_pause_is_an_older_version() {
+        let mut probes = 0;
+        let found = probe_legacy(
+            || {
+                probes += 1;
+                Claim::HeldElsewhere
+            },
+            |_| {},
+        );
+        assert_eq!(found, Claim::HeldElsewhere);
+        assert_eq!(probes, 2);
+        assert_eq!(
+            decide(Claim::Taken, Some(found)),
+            Decision::OlderVersionRunning
+        );
+    }
+
+    #[test]
+    fn a_legacy_name_that_is_free_is_asked_for_once() {
+        for first in [Claim::Taken, Claim::Failed] {
+            let mut probes = 0;
+            let found = probe_legacy(
+                || {
+                    probes += 1;
+                    first
+                },
+                |_| panic!("no pause without a held name"),
+            );
+            assert_eq!(found, first);
+            assert_eq!(probes, 1);
         }
     }
 

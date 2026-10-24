@@ -147,9 +147,14 @@ fn wait_for(
 #[cfg(target_os = "linux")]
 pub fn wait_for_tray_host() {
     const WATCHER: &str = "org.kde.StatusNotifierWatcher";
-    let proxy = zbus::blocking::Connection::session()
-        .and_then(|bus| zbus::blocking::fdo::DBusProxy::new(&bus));
-    let proxy = match proxy {
+    let bus = match zbus::blocking::Connection::session() {
+        Ok(bus) => bus,
+        Err(e) => {
+            warn!("the session bus could not be reached to ask for a tray host: {e}");
+            return;
+        }
+    };
+    let proxy = match zbus::blocking::fdo::DBusProxy::new(&bus) {
         Ok(proxy) => proxy,
         Err(e) => {
             warn!("the session bus could not be asked for a tray host: {e}");

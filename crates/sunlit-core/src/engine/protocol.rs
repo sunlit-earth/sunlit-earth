@@ -97,6 +97,12 @@ pub enum EngineEvent {
         rgba: Vec<u8>,
         width: u32,
         height: u32,
+        /// The short edge the frame was framed on, in frame pixels: the
+        /// length the settings' fields of view and pan are measured on.
+        short_edge: f32,
+        /// The size of the anchor screen the frame was framed for, or `None`
+        /// where no screen was known.
+        screen: Option<(u32, u32)>,
         /// The instant the frame shows: the excursion's while there is one,
         /// the time setting's otherwise.
         instant: time::OffsetDateTime,

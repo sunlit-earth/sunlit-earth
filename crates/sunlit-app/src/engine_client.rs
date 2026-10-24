@@ -169,6 +169,7 @@ pub fn event_forwarder(
             width,
             height,
             instant,
+            ..
         } => {
             *mailbox.slot.lock().expect("preview mailbox poisoned") = Some(Frame {
                 rgba,

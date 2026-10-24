@@ -165,12 +165,14 @@ fn output_pixel_scale() -> f32 {
 /// what puts the frame's horizontal edge at NDC 1. Mirrored by
 /// `sky_lens_edge_radius` in `scene::sky_lens`.
 ///
-/// The upper end of the clamp is not the slider's 180. A spanned canvas derives
-/// a sky wider than the anchor screen's own, and the lens only goes singular at
-/// 360; `display::layout::SKY_FOV_MAX` is the same number and says where it
-/// comes from.
+/// Neither end of the clamp is the slider's. The slider spans the short edge and
+/// this is the horizontal lens an output derives from it: a wide output or a
+/// span derives a wider one, up to where the lens goes singular at 360, and a
+/// narrow one a narrower one, down to the tangent's zero.
+/// `display::layout::SKY_FOV_MIN` and `SKY_FOV_MAX` are the same numbers and
+/// say where they come from.
 fn sky_lens_edge_radius() -> f32 {
-    return tan(clamp(uniforms.sky_fov, 60.0, 330.0) * PI / 720.0);
+    return tan(clamp(uniforms.sky_fov, 1.0, 330.0) * PI / 720.0);
 }
 
 struct SkyLensPoint {

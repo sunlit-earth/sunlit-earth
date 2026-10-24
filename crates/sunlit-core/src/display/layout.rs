@@ -7,27 +7,28 @@
 //! only per-OS work left is filling the list in and handing the finished images
 //! back out.
 //!
-//! Two axes to keep straight, because the renderer does not use the same one for
-//! both lenses:
+//! The settings measure both fields of view across the picture's short edge
+//! and the pan in halves of it, so that every output, whether the preview, a
+//! screen or an export, is the same picture scaled until the short edges match
+//! and differs from the others only in how far it reaches along its long edge.
+//! The renderer takes each lens on its own axis instead:
 //!
 //! - The Earth lens is `Mat4::perspective_rh(fov_y, aspect, ..)`, so its scale in
 //!   pixels per unit of tan-space is `height / (2 * tan(fov / 2))` and does not
-//!   depend on the width at all. Widening a render at a fixed `camera_fov` shows
-//!   more scene to the sides at the same magnification.
+//!   depend on the width at all.
 //! - The sky lens is stereographic and anchored the other way: `sphere.wgsl`
 //!   builds its NDC as `radial * r / edge * vec2(1, aspect)`, which puts the
 //!   frame's *horizontal* edge at `tan(sky_fov / 4)`, so its scale is
 //!   `width / (2 * tan(sky_fov / 4))` and does not depend on the height.
-//!   Widening a render at a fixed `sky_fov` magnifies the sky.
+//! - The pan is in NDC, halves of the frame on each axis.
 //!
-//! That asymmetry is what decides both rules below: the contain rule is about
-//! the globe running off the sides and therefore touches only the Earth lens,
-//! and the span derivation scales the Earth lens by the canvas's height ratio
-//! and the sky lens by its width ratio.
+//! [`output_framing`] is the one translation from the first set of units to
+//! the second, and [`OutputParams`] is the proof that a render went through it.
 
 use serde::{Deserialize, Serialize};
 
 use super::Monitor;
+use crate::params::{OutputParams, SceneParams};
 
 /// How the monitors of one session relate to each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -229,40 +230,30 @@ pub fn resolve_anchor(monitors: &[Monitor], stored: Option<&str>) -> Option<Anch
     })
 }
 
-/// The framing values a render takes from the settings, before any screen is
+/// The framing values a render takes from the settings, before any output is
 /// known.
+///
+/// Every one of them is measured on the picture's short edge, so that every
+/// output is the same picture scaled until the short edges match: the two
+/// fields of view span it, and the pan is in halves of it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Framing {
-    /// Vertical field of view of the Earth lens, in degrees.
+    /// Field of view of the Earth lens across the short edge, in degrees.
     pub camera_fov: f32,
-    /// Horizontal field of view of the sky lens, in degrees.
+    /// Field of view of the sky lens across the short edge, in degrees.
     pub sky_fov: f32,
-    /// Pan, in NDC, as `SceneParams` carries it.
+    /// Pan, in halves of the short edge, as `SceneParams` carries it.
     pub offset_x: f32,
     pub offset_y: f32,
 }
 
-impl Framing {
-    /// `params` with this framing in place of its own: what the render of one
-    /// output draws, and what the wanted set of its tiles is computed from.
-    #[must_use]
-    pub fn applied_to(&self, params: &crate::params::SceneParams) -> crate::params::SceneParams {
-        let mut framed = *params;
-        framed.camera.fov_deg = self.camera_fov;
-        framed.sky_fov = self.sky_fov;
-        framed.camera.offset_x = self.offset_x;
-        framed.camera.offset_y = self.offset_y;
-        framed
-    }
-}
-
-impl From<&crate::params::SceneParams> for Framing {
+impl From<&SceneParams> for Framing {
     /// The four values a render takes from the settings, read in one place.
     ///
     /// `sunlit-earth displays` prints the plan this leads to and the engine
     /// renders it. Two readings of `SceneParams` would let the printed plan and
     /// the drawn one drift the moment a fifth field is added here.
-    fn from(params: &crate::params::SceneParams) -> Self {
+    fn from(params: &SceneParams) -> Self {
         Self {
             camera_fov: params.camera.fov_deg,
             sky_fov: params.sky_fov,
@@ -272,21 +263,71 @@ impl From<&crate::params::SceneParams> for Framing {
     }
 }
 
+/// The framing one output is rendered with, in the units the shader takes,
+/// and whether either lens could not be honored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutputFraming {
+    /// Vertical field of view of the Earth lens, in degrees.
+    pub camera_fov: f32,
+    /// Horizontal field of view of the sky lens, in degrees.
+    pub sky_fov: f32,
+    /// Pan, in the output's NDC.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    /// The derived Earth lens was wider than [`CAMERA_FOV_OUTPUT_MAX`].
+    pub camera_clamped: bool,
+    /// The derived sky lens was outside what the shader accepts, so the sky
+    /// is drawn at another scale than the other outputs draw it.
+    pub sky_clamped: bool,
+}
+
+impl OutputFraming {
+    /// `params` with this framing in place of its own: what the render of one
+    /// output draws, and what the wanted set of its tiles is computed from.
+    ///
+    /// The one way to an [`OutputParams`], which is what every render takes.
+    #[must_use]
+    pub fn applied_to(&self, params: &SceneParams) -> OutputParams {
+        let mut framed = *params;
+        framed.camera.fov_deg = self.camera_fov;
+        framed.sky_fov = self.sky_fov;
+        framed.camera.offset_x = self.offset_x;
+        framed.camera.offset_y = self.offset_y;
+        OutputParams::framed(framed)
+    }
+
+    /// Whether either lens was clamped.
+    pub fn clamped(&self) -> bool {
+        self.camera_clamped || self.sky_clamped
+    }
+}
+
 /// The widest sky the shader will accept, and the narrowest.
 ///
 /// `sphere.wgsl` clamps `sky_fov` to this range before taking the lens radius,
 /// so a derived value outside it is a value the shader silently will not honor
 /// and the derivation has to say so instead.
 ///
-/// The upper end is not the slider's. The slider stops at 180 and means the
-/// anchor screen's own field of view; this bounds the wider value a span
-/// derives from it, and what bounds that is the stereographic lens going
+/// Neither end is the slider's. The slider means the short edge; this bounds
+/// the horizontal value an output derives from it. A wide output or a span
+/// derives a wider one, and what bounds that is the stereographic lens going
 /// singular at 360 rather than anything happening at 180. What is linear in
-/// canvas pixels is `tan(sky_fov / 4)`, so the derived angle self-limits as
-/// screens are added, and 330 clears a seven-wide span at the widest slider
-/// position. `docs/rendering.md` carries the measured widths.
-pub(crate) const SKY_FOV_MIN: f32 = 60.0;
+/// output pixels is `tan(sky_fov / 4)`, so the derived angle self-limits as
+/// the output widens, and 330 clears a seven-wide span at the widest slider
+/// position. A narrow output derives a narrower one, down to 7.5 degrees for
+/// the narrowest slider position on a 1:4 preview, so the lower end's only job
+/// is keeping the tangent off zero. `docs/rendering.md` carries the measured
+/// widths.
+pub(crate) const SKY_FOV_MIN: f32 = 1.0;
 pub(crate) const SKY_FOV_MAX: f32 = 330.0;
+
+/// The widest Earth lens an output derives, in degrees.
+///
+/// Not the slider's 170: a portrait output widens the vertical lens past the
+/// setting, and a span past the anchor's. The projection goes singular at 180,
+/// and only a setting near the slider's top on a strongly portrait output comes
+/// this close.
+pub(crate) const CAMERA_FOV_OUTPUT_MAX: f32 = 179.0;
 
 /// A pixel extent as a float.
 ///
@@ -311,43 +352,87 @@ fn px_at(coordinate: i32) -> f32 {
     coordinate as f32
 }
 
-/// The Earth lens for one screen's own aspect ratio.
-///
-/// The vertical field of view is the setting, so a wider screen sees more to the
-/// sides and the globe keeps its apparent height. That breaks down on a portrait
-/// screen, where a fixed vertical field of view runs the globe off the sides, so
-/// the rule is to contain: below square, the lens is scaled until the horizontal
-/// extent is what the vertical extent would have been.
-///
-/// Only the Earth lens: the sky lens is anchored to the horizontal axis, where a
-/// portrait screen is the case that already fits.
-pub fn contain_camera_fov(camera_fov: f32, width: u32, height: u32) -> f32 {
-    if width == 0 || height == 0 || width >= height {
-        return camera_fov;
-    }
-    let half = (camera_fov.to_radians() * 0.5).tan();
-    let contained = half * px(height) / px(width);
-    (contained.atan() * 2.0).to_degrees()
+/// A perspective lens of `fov` degrees, widened or narrowed by `scale` in
+/// tan-space: the lens that shows `scale` times as far out at the same
+/// magnification.
+fn scale_perspective(fov: f32, scale: f32) -> f32 {
+    ((fov.to_radians() * 0.5).tan() * scale).atan().to_degrees() * 2.0
 }
 
-/// The framing one screen is rendered with.
-pub(crate) fn screen_framing(settings: Framing, width: u32, height: u32) -> Framing {
-    Framing {
-        camera_fov: contain_camera_fov(settings.camera_fov, width, height),
-        ..settings
+/// The stereographic counterpart of [`scale_perspective`], whose image plane
+/// is linear in `tan(fov / 4)`.
+fn scale_stereographic(fov: f32, scale: f32) -> f32 {
+    ((fov.to_radians() * 0.25).tan() * scale)
+        .atan()
+        .to_degrees()
+        * 4.0
+}
+
+/// The framing an output of `width` by `height` takes from the settings, with
+/// `short_edge` the length in that output's pixels the settings are measured
+/// on.
+///
+/// The Earth lens is vertical and the sky lens horizontal in the units the
+/// shader takes, so each is scaled from the short edge to its own axis, and
+/// the pan from halves of the short edge to the output's NDC. The principal
+/// point stays at the output's center. An output with no pixels, or no short
+/// edge, takes the settings as they are: there is nothing to draw it on.
+pub fn output_framing(
+    settings: Framing,
+    width: u32,
+    height: u32,
+    short_edge: f32,
+) -> OutputFraming {
+    if width == 0 || height == 0 || short_edge <= 0.0 {
+        return OutputFraming {
+            camera_fov: settings.camera_fov,
+            sky_fov: settings.sky_fov,
+            offset_x: settings.offset_x,
+            offset_y: settings.offset_y,
+            camera_clamped: false,
+            sky_clamped: false,
+        };
+    }
+    let (width, height) = (px(width), px(height));
+    let camera_fov = scale_perspective(settings.camera_fov, height / short_edge);
+    let sky_fov = scale_stereographic(settings.sky_fov, width / short_edge);
+    OutputFraming {
+        camera_fov: camera_fov.min(CAMERA_FOV_OUTPUT_MAX),
+        sky_fov: sky_fov.clamp(SKY_FOV_MIN, SKY_FOV_MAX),
+        offset_x: settings.offset_x * short_edge / width,
+        offset_y: settings.offset_y * short_edge / height,
+        camera_clamped: camera_fov > CAMERA_FOV_OUTPUT_MAX,
+        sky_clamped: !(SKY_FOV_MIN..=SKY_FOV_MAX).contains(&sky_fov),
     }
 }
 
-/// The framing a spanned canvas is rendered with, and what it cost.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CanvasFraming {
-    pub framing: Framing,
-    /// The derived sky lens was wider than the shader accepts.
-    ///
-    /// The globe still continues exactly across the seam; the sky is drawn at a
-    /// smaller scale than the anchor alone would have drawn it. No layout built
-    /// out of screens that fit on a desk reaches it.
-    pub sky_clamped: bool,
+/// The framing one screen, or one export, is rendered with: its short edge is
+/// the shorter of its two sides.
+///
+/// On a landscape output that is its height, so the Earth lens is the setting
+/// itself. On a portrait one it is the width, which widens the Earth lens
+/// until the horizontal extent is what the vertical one is at square: the
+/// globe is contained rather than run off the sides.
+pub fn screen_framing(settings: Framing, width: u32, height: u32) -> OutputFraming {
+    output_framing(settings, width, height, px(width.min(height)))
+}
+
+/// The short edge the preview's frame is framed on, in frame pixels.
+///
+/// The anchor screen's rectangle is as tall as the frame: the frame's height
+/// for a landscape screen, whatever the panel's shape, and the height times
+/// the screen's aspect ratio for a portrait one, so its rectangle fits the
+/// panel's height too. A panel narrower than the screen clips its sides
+/// rather than shrinking the picture. With no screen known the frame's height
+/// stands in.
+pub fn preview_short_edge(frame_height: u32, screen: Option<(u32, u32)>) -> f32 {
+    let height = px(frame_height);
+    match screen {
+        Some((width, screen_height)) if width > 0 && screen_height > 0 => {
+            height * (px(width) / px(screen_height)).min(1.0)
+        }
+        _ => height,
+    }
 }
 
 /// The framing that makes a canvas render, cropped to the anchor, the render the
@@ -356,33 +441,21 @@ pub struct CanvasFraming {
 /// A perspective projection has a constant scale in tan-space at the image
 /// plane, so the identity reduces to keeping pixels per unit of tan-space equal
 /// between the two renders and moving the principal point. Each lens is scaled
-/// on the axis it is anchored to: the Earth lens by the canvas's height ratio,
-/// the sky lens by its width ratio.
+/// on the axis the shader takes it on: the Earth lens by the canvas's height
+/// ratio, the sky lens by its width ratio.
 ///
-/// The base is the anchor's *own* framing, contain rule included, so that what
-/// the crop reproduces is the image that screen gets in every other mode.
-pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFraming {
+/// The base is the anchor's *own* framing, so that what the crop reproduces is
+/// the image that screen gets in every other mode.
+pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> OutputFraming {
     let base = screen_framing(settings, anchor.width, anchor.height);
     if anchor.is_empty() || canvas.is_empty() {
-        return CanvasFraming {
-            framing: base,
-            sky_clamped: false,
-        };
+        return base;
     }
     let (canvas_width, canvas_height) = (px(canvas.width), px(canvas.height));
     let (anchor_width, anchor_height) = (px(anchor.width), px(anchor.height));
 
-    let camera_scale = canvas_height / anchor_height;
-    let camera_fov = ((base.camera_fov.to_radians() * 0.5).tan() * camera_scale)
-        .atan()
-        .to_degrees()
-        * 2.0;
-
-    let sky_scale = canvas_width / anchor_width;
-    let sky_fov = ((base.sky_fov.to_radians() * 0.25).tan() * sky_scale)
-        .atan()
-        .to_degrees()
-        * 4.0;
+    let camera_fov = scale_perspective(base.camera_fov, canvas_height / anchor_height);
+    let sky_fov = scale_stereographic(base.sky_fov, canvas_width / anchor_width);
 
     // The anchor's center in canvas pixels, then in canvas NDC, which is where
     // the principal point has to move to.
@@ -392,18 +465,15 @@ pub fn canvas_framing(settings: Framing, anchor: Rect, canvas: Rect) -> CanvasFr
     let ndc_x = 2.0 * center_x / canvas_width - 1.0;
     let ndc_y = 1.0 - 2.0 * center_y / canvas_height;
 
-    CanvasFraming {
-        framing: Framing {
-            // The Earth lens has no shader clamp, only the projection going
-            // singular at 180 degrees, which no real layout comes near.
-            camera_fov: camera_fov.min(crate::scene::camera::CAMERA_FOV_MAX),
-            sky_fov: sky_fov.clamp(SKY_FOV_MIN, SKY_FOV_MAX),
-            // The second term carries the user's own pan, which is in the
-            // anchor's NDC, into the canvas's.
-            offset_x: -ndc_x + base.offset_x * anchor_width / canvas_width,
-            offset_y: -ndc_y + base.offset_y * anchor_height / canvas_height,
-        },
-        sky_clamped: sky_fov > SKY_FOV_MAX,
+    OutputFraming {
+        camera_fov: camera_fov.min(CAMERA_FOV_OUTPUT_MAX),
+        sky_fov: sky_fov.clamp(SKY_FOV_MIN, SKY_FOV_MAX),
+        // The second term carries the anchor's own pan, which is in the
+        // anchor's NDC, into the canvas's.
+        offset_x: -ndc_x + base.offset_x * anchor_width / canvas_width,
+        offset_y: -ndc_y + base.offset_y * anchor_height / canvas_height,
+        camera_clamped: base.camera_clamped || camera_fov > CAMERA_FOV_OUTPUT_MAX,
+        sky_clamped: base.sky_clamped || !(SKY_FOV_MIN..=SKY_FOV_MAX).contains(&sky_fov),
     }
 }
 
@@ -533,7 +603,7 @@ mod tests {
     fn settings() -> Framing {
         Framing {
             camera_fov: 20.0,
-            sky_fov: 140.0,
+            sky_fov: 86.0,
             offset_x: 0.0,
             offset_y: 0.0,
         }
@@ -702,42 +772,224 @@ mod tests {
     }
 
     #[test]
-    fn a_landscape_screen_keeps_the_lens_it_was_given() {
-        assert_relative_eq!(contain_camera_fov(20.0, 1920, 1080), 20.0);
-        // Square is the boundary and belongs to the side that changes nothing.
-        assert_relative_eq!(contain_camera_fov(20.0, 1080, 1080), 20.0);
+    fn a_landscape_output_keeps_the_earth_lens_it_was_given() {
+        for (width, height) in [(1920, 1080), (3440, 1440), (1024, 768), (1080, 1080)] {
+            let framing = screen_framing(settings(), width, height);
+            assert_relative_eq!(framing.camera_fov, settings().camera_fov, epsilon = 1e-4);
+            assert!(!framing.clamped(), "{width}x{height}: {framing:?}");
+        }
     }
 
     #[test]
-    fn a_portrait_screen_gets_the_horizontal_extent_the_vertical_one_would_have() {
-        let fov = contain_camera_fov(20.0, 1080, 1920);
-        let contained = (fov.to_radians() * 0.5).tan();
+    fn a_portrait_output_gets_the_horizontal_extent_the_vertical_one_has_at_square() {
+        let portrait = screen_framing(settings(), 1080, 1920);
+        let square = screen_framing(settings(), 1080, 1080);
+        let half = |fov: f32| (fov.to_radians() * 0.5).tan();
         let aspect = 1080.0 / 1920.0;
         assert_relative_eq!(
-            contained * aspect,
-            (20.0_f32.to_radians() * 0.5).tan(),
-            epsilon = 1e-6
+            half(portrait.camera_fov) * aspect,
+            half(square.camera_fov),
+            max_relative = 1e-5
         );
-        assert!(fov > 20.0, "containing a portrait screen widens the lens");
+        assert!(
+            portrait.camera_fov > settings().camera_fov,
+            "containing a portrait screen widens the lens"
+        );
     }
 
     #[test]
     fn the_contain_rule_is_monotonic_in_the_lens_it_is_given() {
-        let narrow = contain_camera_fov(15.0, 1080, 1920);
-        let wide = contain_camera_fov(40.0, 1080, 1920);
-        assert!(narrow < wide, "{narrow} {wide}");
-        // And a degenerate screen is left alone rather than divided by zero.
-        assert_relative_eq!(contain_camera_fov(20.0, 0, 1080), 20.0);
-        assert_relative_eq!(contain_camera_fov(20.0, 1080, 0), 20.0);
+        let lens = |camera_fov| {
+            screen_framing(
+                Framing {
+                    camera_fov,
+                    ..settings()
+                },
+                1080,
+                1920,
+            )
+            .camera_fov
+        };
+        assert!(lens(15.0) < lens(40.0));
+        // A degenerate output is left alone rather than divided by zero.
+        assert_relative_eq!(screen_framing(settings(), 0, 1080).camera_fov, 20.0);
+        assert_relative_eq!(screen_framing(settings(), 1080, 0).camera_fov, 20.0);
+    }
+
+    /// The preview's short edge: the anchor screen's rectangle as tall as the
+    /// frame, whatever shape the panel is.
+    #[test]
+    fn the_previews_short_edge_puts_the_screen_at_the_frames_height() {
+        // A landscape screen: the frame's height, in a wide panel and a narrow
+        // one alike.
+        assert_relative_eq!(preview_short_edge(600, Some((2560, 1440))), 600.0);
+        // A portrait screen: its rectangle is the frame's height tall, so its
+        // width, the short edge, is the height times its aspect ratio.
+        assert_relative_eq!(
+            preview_short_edge(600, Some((1080, 1920))),
+            600.0 * 1080.0 / 1920.0
+        );
+        assert_relative_eq!(preview_short_edge(600, None), 600.0);
+        assert_relative_eq!(preview_short_edge(600, Some((0, 1080))), 600.0);
+    }
+
+    /// Where the globe's center lands and how large it is, and where one sky
+    /// direction lands, measured from the output's center in units of its
+    /// short edge.
+    fn positions_in_short_edges(
+        settings: Framing,
+        yaw_deg: f32,
+        direction: glam::Vec3,
+        width: u32,
+        height: u32,
+        short_edge: f32,
+    ) -> [f32; 5] {
+        use crate::scene::camera::{CameraParams, OrbitalCamera};
+        use crate::scene::sky_lens::{globe_screen_circle, sky_lens_disc};
+
+        let framing = output_framing(settings, width, height, short_edge);
+        assert!(!framing.clamped(), "{width}x{height} on {short_edge}");
+        let mut params = SceneParams::default();
+        params.camera = CameraParams {
+            yaw_deg,
+            ..params.camera
+        };
+        let output = framing.applied_to(&params);
+        let camera = OrbitalCamera::from_params(&output.camera);
+        let viewport = glam::Vec2::new(width as f32, height as f32);
+        let center = viewport * 0.5;
+        let globe = globe_screen_circle(
+            camera.mvp_matrix(viewport.x / viewport.y),
+            camera.distance,
+            1.0,
+            camera.fov_deg,
+            viewport,
+        );
+        let sky = sky_lens_disc(
+            direction,
+            0.0,
+            output.sky_fov,
+            glam::Vec2::new(-output.camera.offset_x, -output.camera.offset_y),
+            viewport,
+        )
+        .expect("a direction in front of the lens has an image");
+        let globe_at = (globe.center - center) / short_edge;
+        let sky_at = (sky.center - center) / short_edge;
+        [
+            globe_at.x,
+            globe_at.y,
+            globe.radius / short_edge,
+            sky_at.x,
+            sky_at.y,
+        ]
+    }
+
+    proptest::proptest! {
+        /// Success criterion 1: any two outputs, the preview at any panel size
+        /// for any screen, a screen or an export of any size, put a sky
+        /// direction and the globe at the same place relative to their
+        /// centers in units of their short edges.
+        #[test]
+        fn every_output_is_the_same_picture_in_short_edges(
+            screen_height in 600_u32..2400,
+            screen_eighths in 4_u32..24,
+            panel_height in 200_u32..1500,
+            panel_eighths in 2_u32..32,
+            export_height in 100_u32..2000,
+            export_eighths in 2_u32..32,
+            sky_fov in 30.0_f32..120.0,
+            camera_fov in 10.0_f32..60.0,
+            offset_x in -1.0_f32..1.0,
+            offset_y in -1.0_f32..1.0,
+            yaw_deg in -20.0_f32..20.0,
+            azimuth in 0.0_f32..std::f32::consts::TAU,
+            off_axis in 0.0_f32..0.4,
+        ) {
+            // Widths in eighths of the height: screens from 1:2 to 3:1, panels
+            // and exports from 1:4 to 4:1, which keeps every lens in range.
+            let screen_width = screen_height * screen_eighths / 8;
+            let panel_width = panel_height * panel_eighths / 8;
+            let export_width = export_height * export_eighths / 8;
+            let settings = Framing { camera_fov, sky_fov, offset_x, offset_y };
+            let direction = glam::Vec3::new(
+                off_axis.sin() * azimuth.cos(),
+                off_axis.sin() * azimuth.sin(),
+                -off_axis.cos(),
+            );
+            let place = |width: u32, height: u32, short_edge: f32| {
+                positions_in_short_edges(settings, yaw_deg, direction, width, height, short_edge)
+            };
+            let screen = place(screen_width, screen_height, screen_width.min(screen_height) as f32);
+            let export = place(export_width, export_height, export_width.min(export_height) as f32);
+            let preview = place(
+                panel_width,
+                panel_height,
+                preview_short_edge(panel_height, Some((screen_width, screen_height))),
+            );
+            for (index, ((screen, export), preview)) in
+                screen.iter().zip(&export).zip(&preview).enumerate()
+            {
+                proptest::prop_assert!((screen - export).abs() < 1e-3, "{index}: {screen} {export}");
+                proptest::prop_assert!((screen - preview).abs() < 1e-3, "{index}: {screen} {preview}");
+            }
+        }
     }
 
     #[test]
-    fn the_contain_rule_leaves_the_sky_alone() {
-        // The sky lens is anchored to the horizontal axis, so a portrait screen
-        // is the case it already fits: nothing runs off the sides to correct.
-        let framing = screen_framing(settings(), 1080, 1920);
-        assert_relative_eq!(framing.sky_fov, settings().sky_fov);
-        assert!(framing.camera_fov > settings().camera_fov);
+    fn a_pan_moves_the_scene_by_the_same_share_of_the_short_edge_everywhere() {
+        let direction = glam::Vec3::new(0.2, -0.1, -0.97).normalize();
+        let panned = Framing {
+            offset_x: 0.6,
+            offset_y: -0.3,
+            ..settings()
+        };
+        for (width, height, short_edge) in [
+            (1920, 1080, 1080.0),
+            (1080, 1920, 1080.0),
+            (3440, 1440, 1440.0),
+            (400, 900, 900.0),
+        ] {
+            let still =
+                positions_in_short_edges(settings(), 0.0, direction, width, height, short_edge);
+            let moved = positions_in_short_edges(panned, 0.0, direction, width, height, short_edge);
+            // NDC y runs up and pixel y down, and the pan moves the scene the
+            // other way from its sign, as `mvp_matrix` applies it.
+            for (still, moved, shift) in [
+                (still[0], moved[0], -0.3),
+                (still[1], moved[1], -0.15),
+                (still[3], moved[3], -0.3),
+                (still[4], moved[4], -0.15),
+            ] {
+                assert_relative_eq!(moved - still, shift, epsilon = 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn a_lens_the_output_cannot_take_says_it_was_clamped() {
+        // The Earth lens: a setting at the slider's top on a strongly portrait
+        // output.
+        let tall = screen_framing(
+            Framing {
+                camera_fov: crate::scene::camera::CAMERA_FOV_MAX,
+                ..settings()
+            },
+            100,
+            2000,
+        );
+        assert!(tall.camera_clamped && !tall.sky_clamped, "{tall:?}");
+        assert_relative_eq!(tall.camera_fov, CAMERA_FOV_OUTPUT_MAX);
+
+        // The sky lens, at both ends: an output far wider than its short edge,
+        // and one far narrower.
+        let wide = output_framing(settings(), 20_000, 1000, 1000.0);
+        assert!(wide.sky_clamped && !wide.camera_clamped, "{wide:?}");
+        assert_relative_eq!(wide.sky_fov, SKY_FOV_MAX);
+        let narrow = output_framing(settings(), 2, 1000, 1000.0);
+        assert!(narrow.sky_clamped, "{narrow:?}");
+        assert_relative_eq!(narrow.sky_fov, SKY_FOV_MIN);
+
+        assert!(!screen_framing(settings(), 1920, 1080).clamped());
     }
 
     /// The invariant that gives the span mode its meaning.
@@ -750,6 +1002,7 @@ mod tests {
         let monitors = side_by_side();
         let canvas = bounds_of(&monitors).unwrap();
         let anchor = monitors[0].rect();
+        let own = screen_framing(settings(), anchor.width, anchor.height);
         // The Earth lens and the principal point. The sky lens has its own
         // case below, because the two are anchored to different axes and a
         // canvas that is wider rather than taller moves only one of them.
@@ -757,17 +1010,17 @@ mod tests {
 
         let camera_scale = |fov: f32, height: u32| height as f32 / (fov.to_radians() * 0.5).tan();
         assert_relative_eq!(
-            camera_scale(derived.framing.camera_fov, canvas.height),
-            camera_scale(settings().camera_fov, anchor.height),
+            camera_scale(derived.camera_fov, canvas.height),
+            camera_scale(own.camera_fov, anchor.height),
             max_relative = 1e-5
         );
         // These two screens are the same height, so the canvas height cancels
         // and the identity above reduces to the lens being left alone outright.
-        assert_relative_eq!(derived.framing.camera_fov, settings().camera_fov);
+        assert_relative_eq!(derived.camera_fov, own.camera_fov);
 
         // The anchor's center lands where its crop's center is.
-        assert_relative_eq!(derived.framing.offset_x, 0.5, epsilon = 1e-6);
-        assert_relative_eq!(derived.framing.offset_y, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(derived.offset_x, 0.5, epsilon = 1e-6);
+        assert_relative_eq!(derived.offset_y, 0.0, epsilon = 1e-6);
     }
 
     /// The pixels the anchor's own render puts in one unit of lens radius.
@@ -775,10 +1028,15 @@ mod tests {
         width as f32 / (fov.to_radians() * 0.25).tan()
     }
 
+    /// The horizontal sky a 1920x1080 anchor draws at these cases' settings.
+    fn anchor_sky() -> f32 {
+        screen_framing(settings(), 1920, 1080).sky_fov
+    }
+
     /// How many times the anchor's width a canvas has to be before the sky
     /// saturates, at the framing these cases use.
     fn widths_the_sky_reaches() -> f32 {
-        (SKY_FOV_MAX.to_radians() * 0.25).tan() / (settings().sky_fov.to_radians() * 0.25).tan()
+        (SKY_FOV_MAX.to_radians() * 0.25).tan() / (anchor_sky().to_radians() * 0.25).tan()
     }
 
     #[test]
@@ -794,15 +1052,15 @@ mod tests {
             let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
             assert!(!derived.sky_clamped, "{screens} screens: {derived:?}");
             assert_relative_eq!(
-                sky_scale(derived.framing.sky_fov, canvas.width),
-                sky_scale(settings().sky_fov, monitors[0].width),
+                sky_scale(derived.sky_fov, canvas.width),
+                sky_scale(anchor_sky(), monitors[0].width),
                 max_relative = 1e-5
             );
             assert!(
-                derived.framing.sky_fov > 180.0,
+                derived.sky_fov > 180.0,
                 "a canvas {screens} times the anchor's width needs a sky past the \
                  slider's own maximum, and this one derived {}",
-                derived.framing.sky_fov
+                derived.sky_fov
             );
         }
     }
@@ -814,7 +1072,7 @@ mod tests {
     )]
     fn a_canvas_wider_than_the_sky_reaches_says_the_sky_was_clamped() {
         // One screen beyond the reach, which at the default sky is a wall of
-        // twelve. Nobody has this layout; what the case is for is that the
+        // eight. Nobody has this layout; what the case is for is that the
         // derivation reports the one number it could not honor instead of
         // handing back a crop that no longer matches.
         let screens = widths_the_sky_reaches().ceil() as i32 + 1;
@@ -824,7 +1082,7 @@ mod tests {
         let canvas = bounds_of(&monitors).unwrap();
         let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
         assert!(derived.sky_clamped, "{screens} screens: {derived:?}");
-        assert_relative_eq!(derived.framing.sky_fov, SKY_FOV_MAX);
+        assert_relative_eq!(derived.sky_fov, SKY_FOV_MAX);
     }
 
     #[test]
@@ -837,7 +1095,7 @@ mod tests {
         let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
         let scale = |fov: f32, height: u32| height as f32 / (fov.to_radians() * 0.5).tan();
         assert_relative_eq!(
-            scale(derived.framing.camera_fov, canvas.height),
+            scale(derived.camera_fov, canvas.height),
             scale(settings().camera_fov, 1080),
             max_relative = 1e-5
         );
@@ -852,22 +1110,24 @@ mod tests {
             offset_y: -0.2,
             ..settings()
         };
+        let own = screen_framing(panned, 1920, 1080);
         let derived = canvas_framing(panned, monitors[1].rect(), canvas);
         // The anchor here is the right-hand screen, whose center sits at NDC
-        // +0.5, and the pan is carried in at the ratio of the two widths.
-        assert_relative_eq!(derived.framing.offset_x, -0.5 + 0.4 * 0.5, epsilon = 1e-6);
-        assert_relative_eq!(derived.framing.offset_y, -0.2, epsilon = 1e-6);
+        // +0.5, and its own pan is carried in at the ratio of the two widths.
+        assert_relative_eq!(derived.offset_x, -0.5 + own.offset_x * 0.5, epsilon = 1e-6);
+        assert_relative_eq!(derived.offset_y, own.offset_y, epsilon = 1e-6);
     }
 
     #[test]
     fn a_span_over_one_monitor_is_that_monitors_own_framing() {
         let monitors = vec![monitor("DP-1", 0, 0, 2560, 1440, true)];
         let canvas = bounds_of(&monitors).unwrap();
+        let own = screen_framing(settings(), 2560, 1440);
         let derived = canvas_framing(settings(), monitors[0].rect(), canvas);
-        assert_relative_eq!(derived.framing.camera_fov, settings().camera_fov);
-        assert_relative_eq!(derived.framing.sky_fov, settings().sky_fov);
-        assert_relative_eq!(derived.framing.offset_x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(derived.framing.offset_y, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(derived.camera_fov, own.camera_fov);
+        assert_relative_eq!(derived.sky_fov, own.sky_fov);
+        assert_relative_eq!(derived.offset_x, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(derived.offset_y, 0.0, epsilon = 1e-6);
     }
 
     #[test]

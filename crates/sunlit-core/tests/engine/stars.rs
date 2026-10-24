@@ -139,9 +139,9 @@ fn wider_sky_fov_reveals_more_catalog_directions() {
     let gpu = gpu();
     let harness = plain(&gpu);
     let mut params = test_params();
-    params.sky_fov = 60.0;
+    params.sky_fov = crate::harness::output_sky_as_setting(60.0);
     let narrow_sky = harness.picture(&params, FRAME);
-    params.sky_fov = 140.0;
+    params.sky_fov = crate::harness::output_sky_as_setting(140.0);
     let wide_sky = harness.picture(&params, FRAME);
 
     let newly_visible_pixels = narrow_sky

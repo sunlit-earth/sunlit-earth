@@ -1,8 +1,9 @@
 //! The wgpu render pipeline.
 //!
 //! `Renderer` owns every GPU object and renders offscreen into its own texture.
-//! It knows nothing about windows, event loops, or Slint: callers hand it a
-//! `SceneParams` plus a sky state and read the frame back as pixels.
+//! It knows nothing about windows, event loops, or Slint: callers hand it the
+//! `OutputParams` of one output plus a sky state and read the frame back as
+//! pixels.
 
 mod frame;
 mod gpu_setup;
@@ -32,7 +33,7 @@ use crate::assets::cloud_fetcher::NotifyFn;
 use crate::assets::mailbox::TextureMailbox;
 use crate::assets::tiles::{Geometry, Pack, PackKind};
 use crate::memory_report::{ExpectedTexture, MemoryReport};
-use crate::params::SceneParams;
+use crate::params::{OutputParams, SceneParams};
 use crate::scene::sky::{PlanetKind, SkyState};
 
 use frame::{FrameState, build_frame_state};
@@ -731,7 +732,7 @@ impl Renderer {
     /// Kicks off background loads for the overlays that are wanted whether or
     /// not the frame is skipped, so switching one on starts loading it
     /// immediately.
-    pub(crate) fn render(&mut self, params: &SceneParams, sky: &SkyState) -> RenderOutcome {
+    pub(crate) fn render(&mut self, params: &OutputParams, sky: &SkyState) -> RenderOutcome {
         if params.sample_count != self.sample_count {
             debug!(
                 sample_count = params.sample_count,
@@ -845,7 +846,7 @@ impl Renderer {
     /// of which are derived per screen.
     pub(crate) fn export_image_with(
         &self,
-        params: &SceneParams,
+        params: &OutputParams,
         target_width: u32,
         target_height: u32,
     ) -> Result<Vec<u8>, String> {
@@ -903,7 +904,7 @@ impl Renderer {
     /// that cap, and the two rewrites are staged around the export's submit.
     pub(crate) fn export_image_capped(
         &mut self,
-        params: &SceneParams,
+        params: &OutputParams,
         target_width: u32,
         target_height: u32,
         cap: Option<CellLevels>,

@@ -375,6 +375,29 @@ impl SceneParams {
     }
 }
 
+/// The scene one output draws: [`SceneParams`] with the fields of view and
+/// the pan turned from the settings' short edge units into that output's own.
+///
+/// Only [`crate::display::layout::OutputFraming::applied_to`] builds one, and
+/// every render takes one, so a render path that skips the derivation does not
+/// compile. It reads as the `SceneParams` it wraps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputParams(SceneParams);
+
+impl OutputParams {
+    pub(crate) fn framed(params: SceneParams) -> Self {
+        Self(params)
+    }
+}
+
+impl std::ops::Deref for OutputParams {
+    type Target = SceneParams;
+
+    fn deref(&self) -> &SceneParams {
+        &self.0
+    }
+}
+
 /// Quantize a float to integer thousandths.
 #[expect(
     clippy::cast_possible_truncation,

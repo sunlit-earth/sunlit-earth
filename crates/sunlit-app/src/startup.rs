@@ -130,6 +130,7 @@ pub(crate) fn engine_config(
         wallpaper: Arc::new(SystemWallpaper),
         display_mode: config.display_mode,
         anchor_monitor: config.anchor(),
+        monitors: Vec::new(),
         on_event: Arc::new(|_| {}),
         record_metrics: true,
         mailbox: None,

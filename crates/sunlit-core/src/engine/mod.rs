@@ -28,7 +28,8 @@ use crate::assets::cloud_fetcher::CloudSlots;
 use crate::assets::mailbox::TextureMailbox;
 use crate::assets::tiles::TranscoderConfig;
 use crate::config::QualityTier;
-use crate::params::SceneParams;
+use crate::display::layout::{self, Framing};
+use crate::params::{OutputParams, SceneParams};
 use crate::renderer::residency::{Output, surfaces_for};
 use crate::renderer::{
     RenderOutcome, Renderer, RendererConfig, SlotLayout, SurfaceFormats, resolve_sample_count,
@@ -178,6 +179,14 @@ struct Engine {
     /// `None` until one of the two has happened, which is what makes the first
     /// hint an announcement rather than a comparison against nothing.
     known_monitors: Option<Vec<crate::display::Monitor>>,
+    /// The last monitor list the engine saw from any source, the startup
+    /// enumeration included, which the preview's anchor screen is resolved
+    /// against. Kept apart from `known_monitors`, so the display hint
+    /// comparison and its republish rule do not depend on it.
+    preview_monitors: Vec<crate::display::Monitor>,
+    /// The anchor screen's size, which the preview is framed for (plan
+    /// decision 4), or `None` where no screen is known.
+    preview_screen: Option<(u32, u32)>,
     /// Whether the desk is holding a picture this process made. Set when a sink
     /// accepted one and never on a refusal, so a layout change cannot produce a
     /// wallpaper nobody asked for or an error out of nowhere.
@@ -188,6 +197,9 @@ struct Engine {
     /// The instant the last draw was drawn at, which the preview frame read
     /// back from it shows.
     drawn_instant: time::OffsetDateTime,
+    /// The short edge the last draw was framed on, in frame pixels, and the
+    /// anchor screen it was framed for, which the preview frame carries.
+    drawn_framing: (f32, Option<(u32, u32)>),
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
@@ -249,6 +261,7 @@ impl Engine {
             wallpaper,
             display_mode,
             anchor_monitor,
+            monitors,
             on_event,
             record_metrics,
             mailbox,
@@ -351,6 +364,7 @@ impl Engine {
             )
         });
 
+        let preview_screen = preview_screen_of(&monitors, anchor_monitor.as_deref());
         Ok(Self {
             rx,
             clock,
@@ -379,9 +393,12 @@ impl Engine {
             anchor_monitor,
             display_recheck: None,
             known_monitors: None,
+            preview_monitors: monitors,
+            preview_screen,
             published: false,
             excursion: None,
             drawn_instant,
+            drawn_framing: (0.0, None),
             dirty: true,
             textures_ready: false,
             clouds_settled: false,
@@ -479,6 +496,7 @@ impl Engine {
             EngineCommand::SetDisplayPlan { mode, anchor } => {
                 self.display_mode = mode;
                 self.anchor_monitor = anchor;
+                self.update_preview_screen();
             }
             EngineCommand::RenderToFile {
                 path,
@@ -883,6 +901,48 @@ impl Engine {
         }
     }
 
+    /// The scene the preview frame draws, and the short edge it is framed on:
+    /// the settings framed for the frame the renderer holds, after the tier's
+    /// cap, and for the anchor screen (plan decision 4).
+    fn preview_output(&self) -> (OutputParams, f32) {
+        let (width, height) = self.renderer.size();
+        let short_edge = layout::preview_short_edge(height, self.preview_screen);
+        let framing =
+            layout::output_framing(Framing::from(&self.params), width, height, short_edge);
+        (framing.applied_to(&self.params), short_edge)
+    }
+
+    /// Take a monitor list in, from a publish or from a recheck that found a
+    /// new layout, for the preview to resolve its anchor screen against.
+    pub(super) fn see_monitors(&mut self, monitors: &[crate::display::Monitor]) {
+        self.preview_monitors = monitors.to_vec();
+        self.update_preview_screen();
+    }
+
+    /// Resolve the preview's anchor screen again, and draw the preview again
+    /// when that changed its framing.
+    ///
+    /// A screen of another size but the same shape frames the preview the
+    /// same way, and so does a landscape screen standing in for none, so the
+    /// frame already drawn is the answer and goes out again saying which
+    /// screen it is for. Drawing it again would cost a frame and close the
+    /// transcoder's pause gate for nothing.
+    fn update_preview_screen(&mut self) {
+        let screen = preview_screen_of(&self.preview_monitors, self.anchor_monitor.as_deref());
+        if screen == self.preview_screen {
+            return;
+        }
+        debug!(?screen, "the preview's anchor screen changed");
+        let before = self.preview_output();
+        self.preview_screen = screen;
+        if self.preview_output() == before {
+            self.drawn_framing.1 = screen;
+            self.preview.owed = true;
+        } else {
+            self.dirty = true;
+        }
+    }
+
     /// Draw the scene as it stands, for the preview or for an export, and hand
     /// back the sky it was drawn under.
     ///
@@ -906,8 +966,10 @@ impl Engine {
         } else {
             self.want_tiles(&self.sky_state());
         }
-        let outcome = self.renderer.render(&self.params, &sky);
+        let (output, short_edge) = self.preview_output();
+        let outcome = self.renderer.render(&output, &sky);
         self.drawn_instant = at;
+        self.drawn_framing = (short_edge, self.preview_screen);
         self.note_readiness();
         (outcome, sky)
     }
@@ -982,11 +1044,12 @@ impl Engine {
             sky.sun_direction
         };
         let running = self.excursion.as_ref().is_some_and(Excursion::is_running);
+        let (preview, _) = self.preview_output();
         let Some(surface) = &mut self.surface else {
             return;
         };
         let (width, height) = self.renderer.size();
-        let mut outputs = vec![tile_output(&self.params, sky, width, height, false)];
+        let mut outputs = vec![tile_output(&preview, sky, width, height, false)];
         outputs.extend(self.wallpaper_shots.iter().map(|shot| {
             tile_output(
                 &shot.framing.applied_to(&self.params),
@@ -998,7 +1061,8 @@ impl Engine {
         }));
         outputs.extend(self.exports.iter().map(|export| {
             tile_output(
-                &self.params,
+                &layout::screen_framing(Framing::from(&self.params), export.width, export.height)
+                    .applied_to(&self.params),
                 &exports_sky,
                 export.width,
                 export.height,
@@ -1106,6 +1170,8 @@ impl Engine {
             rgba,
             width,
             height,
+            short_edge: self.drawn_framing.0,
+            screen: self.drawn_framing.1,
             instant: self.drawn_instant,
         });
         true
@@ -1197,11 +1263,11 @@ fn checked_mailbox(
 }
 
 /// One output of the wanted set: `framed` is the scene with the output's
-/// framing applied, as the render takes it (`Framing::applied_to`), and its
+/// framing applied, as the render takes it (`OutputFraming::applied_to`), and its
 /// camera is resolved under `sky`, the sky the output is drawn under, so the
 /// tiles and the picture cannot disagree on what is in the frame.
 fn tile_output(
-    framed: &SceneParams,
+    framed: &OutputParams,
     sky: &SkyState,
     width: u32,
     height: u32,
@@ -1213,6 +1279,17 @@ fn tile_output(
         height,
         export,
     }
+}
+
+/// The size of the screen a wallpaper plan would be anchored to, the one the
+/// preview is framed for, or `None` where the list has no screen with pixels.
+fn preview_screen_of(
+    monitors: &[crate::display::Monitor],
+    anchor: Option<&str>,
+) -> Option<(u32, u32)> {
+    let anchor = layout::resolve_anchor(monitors, anchor)?;
+    let monitor = &monitors[anchor.index];
+    (monitor.width > 0 && monitor.height > 0).then_some((monitor.width, monitor.height))
 }
 
 /// Start feeding the cube surface, when every face is there and there is a

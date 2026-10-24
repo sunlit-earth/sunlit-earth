@@ -1325,9 +1325,12 @@ const RULE_HEIGHTS_KM: [f32; 9] = [0.0, 2.0, 5.0, 8.0, 13.0, 20.0, 27.0, 50.0, 9
 /// ceiling.
 const RULE_VIEWPORT_HEIGHTS: [f32; 6] = [540.0, 1080.0, 1350.0, 1620.0, 2160.0, 3240.0];
 
-/// Under the lens's lower clamp, both ends of the slider's range, two widths
-/// only a spanned canvas derives, and over the upper clamp.
-const RULE_SKY_FOVS: [f32; 8] = [30.0, 60.0, 95.0, 140.0, 180.0, 220.0, 330.0, 400.0];
+/// Under the lens's lower clamp, the narrowest a 1:4 preview derives from the
+/// slider, both ends of the slider's range, the widths a 16:9 screen derives
+/// from those, two only a spanned canvas derives, and over the upper clamp.
+const RULE_SKY_FOVS: [f32; 11] = [
+    0.5, 7.5, 30.0, 60.0, 95.0, 120.0, 180.0, 220.0, 300.0, 330.0, 400.0,
+];
 
 /// Both ends of the reddening slider and the measured atmosphere in between;
 /// zero is the white Sun and has to stay exactly white.

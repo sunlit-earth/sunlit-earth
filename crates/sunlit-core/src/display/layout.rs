@@ -293,7 +293,7 @@ impl OutputFraming {
         framed.sky_fov = self.sky_fov;
         framed.camera.offset_x = self.offset_x;
         framed.camera.offset_y = self.offset_y;
-        OutputParams::framed(framed)
+        OutputParams::framed(&framed)
     }
 
     /// Whether either lens was clamped.

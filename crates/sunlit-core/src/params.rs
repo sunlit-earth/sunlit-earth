@@ -385,8 +385,8 @@ impl SceneParams {
 pub struct OutputParams(SceneParams);
 
 impl OutputParams {
-    pub(crate) fn framed(params: SceneParams) -> Self {
-        Self(params)
+    pub(crate) fn framed(params: &SceneParams) -> Self {
+        Self(*params)
     }
 }
 

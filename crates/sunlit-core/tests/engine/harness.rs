@@ -79,8 +79,10 @@ pub(crate) fn output_sky_as_setting(horizontal: f32) -> f32 {
 
 /// The sky setting that draws `horizontal` degrees across an export of `size`.
 pub(crate) fn output_sky_as_setting_for(horizontal: f32, (width, height): (u32, u32)) -> f32 {
-    let mut output = SceneParams::default();
-    output.sky_fov = horizontal;
+    let output = SceneParams {
+        sky_fov: horizontal,
+        ..SceneParams::default()
+    };
     crate::support::settings_for_output(&output, width, height).sky_fov
 }
 

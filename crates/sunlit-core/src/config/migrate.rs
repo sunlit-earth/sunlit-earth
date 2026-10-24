@@ -672,7 +672,11 @@ mod tests {
             // The old default lands on the round new one rather than on its
             // exact conversion, 85.993, and draws 140.012: a tenth of a pixel at
             // the edge of a 1920 pixel frame.
-            let tolerance = if sky_fov == 140.0 { 0.02 } else { 1e-3 };
+            let tolerance = if (sky_fov - 140.0_f64).abs() < 1e-9 {
+                0.02
+            } else {
+                1e-3
+            };
             assert!(
                 (f64::from(drawn.sky_fov) - sky_fov).abs() < tolerance,
                 "{sky_fov}: {drawn:?}"

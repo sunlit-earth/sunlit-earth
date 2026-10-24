@@ -8,12 +8,12 @@
 //! then shows and focuses its window, and says so when the launched copy is
 //! another version.
 //!
-//! On Linux the socket is a file in `$XDG_RUNTIME_DIR`, which only its user
-//! can open. Elsewhere, and on Linux without that folder, it is a name that
-//! carries a per-user part, because Windows named pipes are visible
-//! machine-wide and Linux abstract sockets to every user on the host: the
-//! session id on Windows, which is also the scope of the guard's mutex there,
-//! and the uid on Unix.
+//! On Linux the socket is a file in `$XDG_RUNTIME_DIR` or `/run/user/<uid>`,
+//! which only its user can open. Elsewhere, and on Linux with neither folder,
+//! it is a name that carries a per-user part, because Windows named pipes are
+//! visible machine-wide and Linux abstract sockets to every user on the host:
+//! the session id on Windows, which is also the scope of the guard's mutex
+//! there, and the uid on Unix.
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -221,59 +221,76 @@ impl std::fmt::Display for Address {
     }
 }
 
-/// Where the activation socket of `instance` is: a file in the user's own
-/// runtime folder when there is one, and a per-user name otherwise.
+/// Where the activation socket of `instance` may be, in order: the running
+/// instance binds the first it can, and a second launch tries them all.
+///
+/// On Linux these are files in the user's own runtime folders, which only the
+/// user can open: the one in `XDG_RUNTIME_DIR` when that is set and absolute,
+/// and the one in `/run/user/<uid>` when that folder exists and is another
+/// one, so a launch from a shell without the variable (over ssh, after
+/// `su -`) and the instance of the desktop session still meet. The per-user
+/// name, which on Linux every user on the host can reach, is the address only
+/// where there is neither folder, and always on the other platforms.
 ///
 /// :param instance: the name the single-instance guard is taken under
 /// :param user: the per-user part, [`user_part`] for this process
 /// :param `runtime_dir`: `XDG_RUNTIME_DIR` on Linux and `None` elsewhere;
 ///     blank or relative counts as unset
-#[must_use]
-pub fn address(instance: &str, user: &str, runtime_dir: Option<&str>) -> Address {
-    match runtime_dir.map(str::trim).map(Path::new) {
-        Some(dir) if dir.is_absolute() => {
-            Address::File(dir.join(format!("{instance}-activation.sock")))
-        }
-        _ => Address::Namespaced(socket_name(instance, user)),
-    }
-}
-
-fn this_address(instance: &str) -> Address {
-    address(instance, &user_part(), platform::runtime_dir().as_deref())
-}
-
-/// The addresses a second launch tries, in order, since the one the running
-/// instance bound depends on its environment and a launch from another shell
-/// (over ssh, after `su -`) may lack `XDG_RUNTIME_DIR`: the file in that
-/// folder when it is set and absolute, the file in `/run/user/<uid>` when that
-/// folder exists and is another one, and the per-user name.
-///
-/// :param instance: the name the single-instance guard is taken under
-/// :param user: the per-user part, [`user_part`] for this process
-/// :param `runtime_dir`: `XDG_RUNTIME_DIR` on Linux and `None` elsewhere
 /// :param uid: this user's id on Linux and `None` elsewhere
 /// :param `dir_exists`: whether a folder exists
+/// :returns: the addresses, never none
 #[must_use]
-pub fn client_addresses(
+pub fn addresses(
     instance: &str,
     user: &str,
     runtime_dir: Option<&str>,
     uid: Option<u32>,
     dir_exists: impl Fn(&Path) -> bool,
 ) -> Vec<Address> {
+    let file_in = |dir: &Path| Address::File(dir.join(format!("{instance}-activation.sock")));
     let mut addresses = Vec::new();
-    if let Address::File(path) = address(instance, user, runtime_dir) {
-        addresses.push(Address::File(path));
+    if let Some(dir) = runtime_dir.map(str::trim).map(Path::new)
+        && dir.is_absolute()
+    {
+        addresses.push(file_in(dir));
     }
     if let Some(uid) = uid {
         let dir = Path::new("/run/user").join(uid.to_string());
-        let file = Address::File(dir.join(format!("{instance}-activation.sock")));
+        let file = file_in(&dir);
         if dir_exists(&dir) && !addresses.contains(&file) {
             addresses.push(file);
         }
     }
-    addresses.push(Address::Namespaced(socket_name(instance, user)));
+    if addresses.is_empty() {
+        addresses.push(Address::Namespaced(socket_name(instance, user)));
+    }
     addresses
+}
+
+fn this_addresses(instance: &str) -> Vec<Address> {
+    #[cfg(target_os = "linux")]
+    let uid = Some(platform::uid());
+    #[cfg(not(target_os = "linux"))]
+    let uid = None;
+    addresses(
+        instance,
+        &user_part(),
+        platform::runtime_dir().as_deref(),
+        uid,
+        Path::is_dir,
+    )
+}
+
+/// Each address with the last error it gave, as one line.
+fn describe_failures(failures: &[(&Address, String)]) -> String {
+    if failures.is_empty() {
+        return String::from("there was no address to try");
+    }
+    failures
+        .iter()
+        .map(|(address, error)| format!("`{address}`: {error}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The per-user part of this process's names: the session id on Windows and
@@ -297,7 +314,8 @@ pub struct ActivationListener {
     address: Address,
 }
 
-/// Take the activation socket of `instance`.
+/// Take the activation socket of `instance`, at the first of its
+/// [`addresses`] that can be bound.
 ///
 /// A file left by a run that crashed is replaced on the platforms where the
 /// name is a file, which is safe because the caller holds the guard.
@@ -305,17 +323,30 @@ pub struct ActivationListener {
 /// :param instance: the name the single-instance guard is taken under
 /// :returns: the bound socket, or why it could not be taken
 pub fn bind(instance: &str) -> Result<ActivationListener, String> {
-    let address = this_address(instance);
-    let name = address
-        .name()
-        .map_err(|e| format!("`{address}` is not a usable socket name: {e}"))?;
-    let listener = ListenerOptions::new()
-        .name(name)
-        .try_overwrite(true)
-        .max_spin_time(Duration::from_secs(1))
-        .create_sync()
-        .map_err(|e| format!("the activation socket `{address}` could not be opened: {e}"))?;
-    Ok(ActivationListener { listener, address })
+    let candidates = this_addresses(instance);
+    let mut failures = Vec::new();
+    for address in &candidates {
+        let listener = address.name().and_then(|name| {
+            ListenerOptions::new()
+                .name(name)
+                .try_overwrite(true)
+                .max_spin_time(Duration::from_secs(1))
+                .create_sync()
+        });
+        match listener {
+            Ok(listener) => {
+                return Ok(ActivationListener {
+                    listener,
+                    address: address.clone(),
+                });
+            }
+            Err(e) => failures.push((address, e.to_string())),
+        }
+    }
+    Err(format!(
+        "the activation socket could not be opened: {}",
+        describe_failures(&failures)
+    ))
 }
 
 impl ActivationListener {
@@ -467,17 +498,7 @@ pub fn second_launch(instance: &str, hidden: bool) -> SecondLaunch {
 /// :returns: the running instance's process id, or why it could not be
 ///     reached
 pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, String> {
-    #[cfg(target_os = "linux")]
-    let uid = Some(platform::uid());
-    #[cfg(not(target_os = "linux"))]
-    let uid = None;
-    let addresses = client_addresses(
-        instance,
-        &user_part(),
-        platform::runtime_dir().as_deref(),
-        uid,
-        Path::is_dir,
-    );
+    let addresses = this_addresses(instance);
     let (tx, rx) = crossbeam_channel::bounded(1);
     std::thread::Builder::new()
         .name("activation-client".into())
@@ -519,18 +540,21 @@ fn exchange(addresses: &[Address], launch: &Launch) -> Result<u32, String> {
 fn connect(addresses: &[Address]) -> Result<interprocess::local_socket::Stream, String> {
     let deadline = Instant::now() + CONNECT_RETRY;
     loop {
-        let mut last = String::from("there was no address to try");
+        let mut failures = Vec::with_capacity(addresses.len());
         for address in addresses {
             let attempt = address
                 .name()
                 .and_then(interprocess::local_socket::Stream::connect);
             match attempt {
                 Ok(stream) => return Ok(stream),
-                Err(e) => last = format!("`{address}`: {e}"),
+                Err(e) => failures.push((address, e.to_string())),
             }
         }
         if Instant::now() >= deadline {
-            return Err(format!("the running instance could not be reached: {last}"));
+            return Err(format!(
+                "the running instance could not be reached: {}",
+                describe_failures(&failures)
+            ));
         }
         std::thread::sleep(CONNECT_POLL);
     }
@@ -730,27 +754,31 @@ mod tests {
     #[test]
     fn the_socket_is_a_file_in_the_runtime_folder_when_there_is_one() {
         let dir = std::env::temp_dir().join("run-user-1000");
-        let file = address("sunlit-earth-app", "uid1000", dir.to_str());
-        let Address::File(path) = &file else {
-            panic!("an absolute runtime folder holds the socket: {file:?}");
+        let none = |_: &Path| false;
+        let found = addresses("sunlit-earth-app", "uid1000", dir.to_str(), None, none);
+        let [Address::File(path)] = found.as_slice() else {
+            panic!("an absolute runtime folder holds the socket: {found:?}");
         };
         assert_eq!(path.parent(), Some(dir.as_path()));
         assert_ne!(
-            file,
-            address("sunlit-earth-e2e", "uid1000", dir.to_str()),
+            found,
+            addresses("sunlit-earth-e2e", "uid1000", dir.to_str(), None, none),
             "two instance names are two sockets"
         );
         for unset in [None, Some(""), Some("  "), Some("relative/run")] {
             assert_eq!(
-                address("sunlit-earth-app", "uid1000", unset),
-                Address::Namespaced(socket_name("sunlit-earth-app", "uid1000")),
+                addresses("sunlit-earth-app", "uid1000", unset, Some(1000), none),
+                [Address::Namespaced(socket_name(
+                    "sunlit-earth-app",
+                    "uid1000"
+                ))],
                 "{unset:?}"
             );
         }
     }
 
     #[test]
-    fn a_second_launch_tries_the_runtime_folder_then_the_uids_then_the_name() {
+    fn the_runtime_folder_comes_first_then_the_uids_and_the_name_only_without_either() {
         let instance = "sunlit-earth-app";
         let named = Address::Namespaced(socket_name(instance, "uid1000"));
         let in_run_user =
@@ -761,44 +789,62 @@ mod tests {
         let missing = |_: &Path| false;
 
         assert_eq!(
-            client_addresses(instance, "uid1000", elsewhere.to_str(), Some(1000), exists),
-            [in_elsewhere.clone(), in_run_user.clone(), named.clone()]
+            addresses(instance, "uid1000", elsewhere.to_str(), Some(1000), exists),
+            [in_elsewhere.clone(), in_run_user.clone()],
+            "with a folder of the user's own, the name every user can reach is left out"
         );
         assert_eq!(
-            client_addresses(instance, "uid1000", None, Some(1000), exists),
-            [in_run_user.clone(), named.clone()],
+            addresses(instance, "uid1000", None, Some(1000), exists),
+            std::slice::from_ref(&in_run_user),
             "a shell without XDG_RUNTIME_DIR still finds /run/user/<uid>"
         );
         assert_eq!(
-            client_addresses(instance, "uid1000", None, Some(1000), missing),
+            addresses(instance, "uid1000", elsewhere.to_str(), Some(1000), missing),
+            [in_elsewhere]
+        );
+        assert_eq!(
+            addresses(instance, "uid1000", None, Some(1000), missing),
             std::slice::from_ref(&named)
         );
         assert_eq!(
-            client_addresses(instance, "uid1000", elsewhere.to_str(), Some(1000), missing),
-            [in_elsewhere, named.clone()]
-        );
-        assert_eq!(
-            client_addresses(instance, "uid1000", Some(""), None, exists),
+            addresses(instance, "uid1000", Some(""), None, exists),
             [named],
             "no uid, no runtime folder: only the name, as on Windows and macOS"
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_runtime_folder_that_is_run_user_is_tried_once() {
         let instance = "sunlit-earth-app";
-        let addresses = client_addresses(
-            instance,
-            "uid1000",
-            Some("/run/user/1000"),
-            Some(1000),
-            |_| true,
+        assert_eq!(
+            addresses(
+                instance,
+                "uid1000",
+                Some("/run/user/1000"),
+                Some(1000),
+                |_| true
+            ),
+            [Address::File(
+                Path::new("/run/user/1000").join(format!("{instance}-activation.sock"))
+            )]
         );
-        let files = addresses
-            .iter()
-            .filter(|address| matches!(address, Address::File(_)))
-            .count();
-        assert!(files <= 1, "{addresses:?}");
+    }
+
+    #[test]
+    fn an_unreachable_instance_names_every_address_and_its_error() {
+        let file = Address::File(std::env::temp_dir().join("a.sock"));
+        let named = Address::Namespaced("b".to_owned());
+        let message = describe_failures(&[
+            (&file, "permission denied".to_owned()),
+            (&named, "connection refused".to_owned()),
+        ]);
+        assert!(
+            message.contains(&format!("`{file}`: permission denied")),
+            "{message}"
+        );
+        assert!(message.contains("`b`: connection refused"), "{message}");
+        assert_eq!(describe_failures(&[]), "there was no address to try");
     }
 
     #[test]

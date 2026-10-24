@@ -136,7 +136,7 @@ fn non_empty_env(name: &str) -> Option<String> {
 
 /// Percent-encode everything but ASCII letters, digits and `-._~/\:`, so a
 /// value of any characters fits on one line and never holds a `=`.
-fn percent_encode(value: &str) -> String {
+pub(crate) fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~/\\:".contains(&byte) {
@@ -150,7 +150,7 @@ fn percent_encode(value: &str) -> String {
 
 /// The other side of [`percent_encode`]. `None` for a `%` not followed by two
 /// hex digits, or bytes that are not UTF-8.
-fn percent_decode(value: &str) -> Option<String> {
+pub(crate) fn percent_decode(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

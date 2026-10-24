@@ -1,5 +1,6 @@
 pub mod about;
 pub mod activation;
+pub mod autostart;
 pub mod camera_controls;
 pub mod displays;
 pub mod engine_client;

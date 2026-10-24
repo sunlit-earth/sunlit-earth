@@ -39,16 +39,69 @@ fn create_icon() -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// The single-instance names this run holds. It must be kept alive for the
+/// entire process lifetime: dropping it releases them and lets another
+/// instance start. It holds nothing when no mutex could be created at all,
+/// where carrying on alone is the friendlier of the two wrong answers.
+pub struct InstanceGuard {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "held so that dropping it releases the names")
+    )]
+    held: Vec<single_instance::SingleInstance>,
+}
+
 /// What the single-instance check found.
 pub enum InstanceCheck {
-    /// Nobody else holds the name. The guard, when there is one, must be kept
-    /// alive for the entire process lifetime: dropping it releases the OS mutex
-    /// and lets another instance start. `None` is a mutex that could not be
-    /// created at all, where carrying on alone is the friendlier of the two
-    /// wrong answers.
-    Alone(Option<single_instance::SingleInstance>),
-    /// Another instance holds the name, and this one is expected to exit.
+    /// Nobody else holds the name.
+    Alone(InstanceGuard),
+    /// Another instance holds the name, and this one is expected to hand over
+    /// to it and exit.
     AlreadyRunning,
+    /// A version from before the guard's name carried the user's part holds
+    /// the old name. It has no activation socket to hand over to, so this one
+    /// exits quietly, as such a version did.
+    OlderVersionRunning,
+}
+
+/// What asking for one name found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Claim {
+    Taken,
+    HeldElsewhere,
+    Failed,
+}
+
+/// What the claims on this run's name and on the legacy one come to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Decision {
+    Alone,
+    AlreadyRunning,
+    OlderVersionRunning,
+}
+
+fn decide(current: Claim, legacy: Option<Claim>) -> Decision {
+    if current == Claim::HeldElsewhere {
+        Decision::AlreadyRunning
+    } else if legacy == Some(Claim::HeldElsewhere) {
+        Decision::OlderVersionRunning
+    } else {
+        Decision::Alone
+    }
+}
+
+fn claim(name: &str, held: &mut Vec<single_instance::SingleInstance>) -> Claim {
+    match single_instance::SingleInstance::new(name) {
+        Ok(instance) if instance.is_single() => {
+            held.push(instance);
+            Claim::Taken
+        }
+        Ok(_) => Claim::HeldElsewhere,
+        Err(e) => {
+            warn!("the single-instance mutex `{name}` could not be created: {e}");
+            Claim::Failed
+        }
+    }
 }
 
 /// Check that no other instance of Sunlit Earth is running.
@@ -57,18 +110,37 @@ pub enum InstanceCheck {
 /// wrong as the socket name is: on Windows a backslash in it is a namespace
 /// separator and the mutex is refused outright.
 ///
+/// On Linux the name used to be the same for every user and now carries the
+/// user's part, so the old name is asked for too: an instance of an older
+/// version holds it, and a run that takes it keeps it, so an older version
+/// started later finds this one.
+///
 /// :param `mutex_name`: the process-wide name this instance claims
 /// :returns: what the check found
 pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
-    let mutex_name = &instance_name(mutex_name);
-    match single_instance::SingleInstance::new(mutex_name) {
-        Ok(instance) if instance.is_single() => InstanceCheck::Alone(Some(instance)),
-        Ok(_) => InstanceCheck::AlreadyRunning,
-        Err(e) => {
-            warn!("the single-instance mutex `{mutex_name}` could not be created: {e}");
-            InstanceCheck::Alone(None)
-        }
+    let mut held = Vec::new();
+    let current = claim(&instance_name(mutex_name), &mut held);
+    let legacy = if current == Claim::HeldElsewhere {
+        None
+    } else {
+        legacy_name(mutex_name).map(|name| claim(&name, &mut held))
+    };
+    match decide(current, legacy) {
+        Decision::Alone => InstanceCheck::Alone(InstanceGuard { held }),
+        Decision::AlreadyRunning => InstanceCheck::AlreadyRunning,
+        Decision::OlderVersionRunning => InstanceCheck::OlderVersionRunning,
     }
+}
+
+/// The name an older version took the guard under, where it differs.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn legacy_name(name: &str) -> Option<String> {
+    Some(name.to_owned())
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn legacy_name(_name: &str) -> Option<String> {
+    None
 }
 
 /// The name `single-instance` is handed, which on macOS is a path it calls
@@ -286,6 +358,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_second_claim_on_a_held_name_finds_the_first_running() {
+        let name = format!("sunlit-earth-guard-test-{}", std::process::id());
+        let InstanceCheck::Alone(guard) = acquire_single_instance(&name) else {
+            panic!("nothing else holds a name made for this test");
+        };
+        assert!(!guard.held.is_empty());
+        assert!(matches!(
+            acquire_single_instance(&name),
+            InstanceCheck::AlreadyRunning
+        ));
+    }
+
+    #[test]
+    fn a_name_held_elsewhere_is_a_running_instance_whatever_the_legacy_name_says() {
+        for legacy in [
+            None,
+            Some(Claim::Taken),
+            Some(Claim::HeldElsewhere),
+            Some(Claim::Failed),
+        ] {
+            assert_eq!(
+                decide(Claim::HeldElsewhere, legacy),
+                Decision::AlreadyRunning,
+                "{legacy:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legacy_name_held_elsewhere_is_an_older_version() {
+        for current in [Claim::Taken, Claim::Failed] {
+            assert_eq!(
+                decide(current, Some(Claim::HeldElsewhere)),
+                Decision::OlderVersionRunning,
+                "{current:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_neither_name_held_elsewhere_the_run_is_alone() {
+        for current in [Claim::Taken, Claim::Failed] {
+            for legacy in [None, Some(Claim::Taken), Some(Claim::Failed)] {
+                assert_eq!(
+                    decide(current, legacy),
+                    Decision::Alone,
+                    "{current:?} {legacy:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_tray_host_that_is_there_is_not_waited_for() {
         let mut slept = Duration::ZERO;
         let waited = wait_for(TRAY_HOST_WAIT, TRAY_HOST_POLL, || true, |d| slept += d);
@@ -335,7 +460,7 @@ mod tests {
     fn a_mutex_name_windows_refuses_leaves_the_app_running_alone() {
         assert!(matches!(
             acquire_single_instance(r"sunlit-earth-bad\name"),
-            InstanceCheck::Alone(None)
+            InstanceCheck::Alone(guard) if guard.held.is_empty()
         ));
     }
 

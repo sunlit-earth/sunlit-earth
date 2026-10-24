@@ -113,6 +113,12 @@ pub fn run() -> ExitCode {
                         second_launch(&mutex_name, cli.tray_start);
                         return ExitCode::SUCCESS;
                     }
+                    crate::tray::InstanceCheck::OlderVersionRunning => {
+                        info!(
+                            "another instance is already running, an older version that cannot be asked to show its window, exiting"
+                        );
+                        return ExitCode::SUCCESS;
+                    }
                     crate::tray::InstanceCheck::Alone(guard) => Some(Instance {
                         name: mutex_name,
                         _guard: guard,
@@ -130,7 +136,7 @@ pub fn run() -> ExitCode {
 struct Instance {
     name: String,
     /// Held for the whole run: dropping it lets another instance start.
-    _guard: Option<single_instance::SingleInstance>,
+    _guard: crate::tray::InstanceGuard,
 }
 
 /// Hand a launch that found the guard taken over to the running instance, or

@@ -120,27 +120,17 @@ fn claim(name: &str, held: &mut Vec<single_instance::SingleInstance>) -> Claim {
 pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
     let mut held = Vec::new();
     let current = claim(&instance_name(mutex_name), &mut held);
-    let legacy = if current == Claim::HeldElsewhere {
-        None
-    } else {
-        legacy_name(mutex_name).map(|name| claim(&name, &mut held))
-    };
+    // Older versions took the bare name on Linux; elsewhere the name is
+    // unchanged and there is nothing older to look for.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let legacy = (current != Claim::HeldElsewhere).then(|| claim(mutex_name, &mut held));
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let legacy = None;
     match decide(current, legacy) {
         Decision::Alone => InstanceCheck::Alone(InstanceGuard { held }),
         Decision::AlreadyRunning => InstanceCheck::AlreadyRunning,
         Decision::OlderVersionRunning => InstanceCheck::OlderVersionRunning,
     }
-}
-
-/// The name an older version took the guard under, where it differs.
-#[cfg(all(unix, not(target_os = "macos")))]
-fn legacy_name(name: &str) -> Option<String> {
-    Some(name.to_owned())
-}
-
-#[cfg(not(all(unix, not(target_os = "macos"))))]
-fn legacy_name(_name: &str) -> Option<String> {
-    None
 }
 
 /// The name `single-instance` is handed, which on macOS is a path it calls

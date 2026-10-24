@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod linux;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod macos;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod windows;
 
@@ -196,30 +198,40 @@ mod platform {
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
 mod platform {
     use std::path::PathBuf;
 
     use super::Autostart;
-
-    const NOT_YET: &str = "Start on login is not available on this platform yet.";
+    use super::macos;
 
     pub(super) fn read() -> Autostart {
-        Autostart::Unsupported {
-            reason: NOT_YET.to_owned(),
+        match macos::system_dir() {
+            Some(dir) => macos::read(&dir),
+            None => Autostart::Unsupported {
+                reason: "This system has no home directory to keep a launch agent in.".to_owned(),
+            },
         }
     }
 
     pub(super) fn enable() -> Result<(), String> {
-        Err(NOT_YET.to_owned())
+        let dir = macos::system_dir()
+            .ok_or("This system has no home directory to keep a launch agent in.")?;
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("this program's path could not be read: {e}"))?;
+        macos::enable(&dir, &exe)
     }
 
     pub(super) fn disable() -> Result<(), String> {
-        Err(NOT_YET.to_owned())
+        let dir = macos::system_dir()
+            .ok_or("This system has no home directory to keep a launch agent in.")?;
+        macos::disable(&dir)
     }
 
     pub(super) fn this_exe() -> Result<PathBuf, String> {
-        std::env::current_exe().map_err(|e| format!("this program's path could not be read: {e}"))
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("this program's path could not be read: {e}"))?;
+        Ok(macos::launched_path(&exe))
     }
 }
 

@@ -387,6 +387,16 @@ fn run_app(
     );
     let about = crate::about::AboutController::default();
     about.register_settings_callback(&window);
+    crate::window_state::register_other_window(about.visibility());
+    {
+        let window_weak = window.as_weak();
+        let link = link.clone();
+        crate::window_state::install_reopen_handler(move || {
+            if let Some(win) = window_weak.upgrade() {
+                crate::window_state::show(&win, &link);
+            }
+        });
+    }
 
     let tray = install_tray_and_geometry(
         &window,
@@ -696,7 +706,8 @@ fn run_event_loop(
     use_tray: bool,
     tray_start: TrayStart,
 ) -> ExitCode {
-    if let Err(e) = window.show() {
+    let hides_at_once = use_tray && matches!(tray_start, TrayStart::Hidden);
+    if let Err(e) = crate::window_state::show_at_startup(window, hides_at_once) {
         error!("the window could not be shown: {e}");
         return ExitCode::FAILURE;
     }
@@ -708,7 +719,7 @@ fn run_event_loop(
     // In tray mode with --tray-start hidden, defer the hide to a zero-duration
     // timer so it fires after the event loop is running. Hiding synchronously
     // before run_event_loop_until_quit() causes the loop to exit immediately.
-    if use_tray && matches!(tray_start, TrayStart::Hidden) {
+    if hides_at_once {
         let ww = window.as_weak();
         let engine_link = link.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {

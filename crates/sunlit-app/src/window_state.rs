@@ -87,12 +87,13 @@ fn raw_handle(window: &MainWindow) -> Option<raw_window_handle::RawWindowHandle>
 /// its first turn, and a start that hides the window on that turn keeps the
 /// accessory policy it launched with and never shows a Dock icon.
 ///
-/// :param window: the settings window
+/// :param window: the settings window, or the one window a launch that found
+///     an older version running opens
 /// :param `hides_at_once`: whether `--tray-start hidden` hides it again on the
 ///     first turn of the event loop
 /// :returns: the platform's error when the window cannot be shown
 pub fn show_at_startup(
-    window: &MainWindow,
+    window: &impl slint::ComponentHandle,
     hides_at_once: bool,
 ) -> Result<(), slint::PlatformError> {
     window.show()?;

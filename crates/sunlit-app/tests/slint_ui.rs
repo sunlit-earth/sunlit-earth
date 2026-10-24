@@ -6315,6 +6315,35 @@ fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
     assert!(labelled(&window, "Quit Sunlit Earth").is_empty());
 }
 
+/// A launch beside an older version says so in a window of its own, which
+/// names this version, and "Close" hides it.
+#[test]
+fn test_the_older_version_window_names_this_version_and_close_hides_it() {
+    init();
+    let window = sunlit_earth::activation::older_version_window().unwrap();
+    window.show().unwrap();
+    assert!(window.window().is_visible());
+
+    let labels: Vec<String> = ElementQuery::from_root(&window)
+        .find_all()
+        .into_iter()
+        .filter_map(|element| element.accessible_label())
+        .map(|label| label.to_string())
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .any(|text| text.contains("older version") && text.contains(env!("CARGO_PKG_VERSION"))),
+        "the window says an older version runs and names this one: {labels:?}"
+    );
+
+    let close: Vec<ElementHandle> =
+        ElementHandle::find_by_accessible_label(&window, "Close").collect();
+    assert_eq!(close.len(), 1);
+    close[0].invoke_accessible_default_action();
+    assert!(!window.window().is_visible());
+}
+
 /// The "Start on login" check box, found by its label.
 fn start_on_login(window: &MainWindow) -> ElementHandle {
     labelled(window, "Start on login")

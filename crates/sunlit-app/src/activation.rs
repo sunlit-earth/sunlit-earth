@@ -26,10 +26,11 @@ use interprocess::local_socket::traits::{ListenerExt, Stream as _};
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName,
 };
+use slint::ComponentHandle;
 use tracing::{debug, info, warn};
 
-use crate::MainWindow;
 use crate::engine_client::EngineLink;
+use crate::{MainWindow, OlderVersionWindow};
 
 /// How long a second launch keeps trying to connect, which covers a first
 /// instance that holds the guard and has not bound its socket yet.
@@ -468,8 +469,34 @@ pub enum SecondLaunch {
     StayedQuiet,
     /// The running instance, this process id, was told to show its window.
     HandedOver(u32),
+    /// Nobody listens at any address, which is what a version that predates
+    /// the hand-over looks like, and why.
+    OlderVersion(String),
     /// The running instance could not be reached, and why.
     Unreachable(String),
+}
+
+/// Why a running instance could not be reached.
+#[derive(Debug)]
+pub struct Unreached {
+    /// Every address was tried and none had anyone listening.
+    pub nobody_listens: bool,
+    pub message: String,
+}
+
+impl Unreached {
+    fn other(message: String) -> Self {
+        Self {
+            nobody_listens: false,
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for Unreached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 /// What a launch that found the guard taken does.
@@ -483,7 +510,8 @@ pub fn second_launch(instance: &str, hidden: bool) -> SecondLaunch {
     }
     match hand_over(instance, Launch::of_this_process()) {
         Ok(pid) => SecondLaunch::HandedOver(pid),
-        Err(e) => SecondLaunch::Unreachable(e),
+        Err(e) if e.nobody_listens => SecondLaunch::OlderVersion(e.message),
+        Err(e) => SecondLaunch::Unreachable(e.message),
     }
 }
 
@@ -497,7 +525,7 @@ pub fn second_launch(instance: &str, hidden: bool) -> SecondLaunch {
 /// :param launch: what to tell it
 /// :returns: the running instance's process id, or why it could not be
 ///     reached
-pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, String> {
+pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, Unreached> {
     let addresses = this_addresses(instance);
     let (tx, rx) = crossbeam_channel::bounded(1);
     std::thread::Builder::new()
@@ -505,56 +533,73 @@ pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, String> {
         .spawn(move || {
             let _ = tx.send(exchange(&addresses, &launch));
         })
-        .map_err(|e| format!("the hand-over thread could not be started: {e}"))?;
+        .map_err(|e| Unreached::other(format!("the hand-over thread could not be started: {e}")))?;
     rx.recv_timeout(EXCHANGE_TIMEOUT).unwrap_or_else(|_| {
-        Err(format!(
+        Err(Unreached::other(format!(
             "the running instance did not answer within {} s",
             EXCHANGE_TIMEOUT.as_secs()
-        ))
+        )))
     })
 }
 
-fn exchange(addresses: &[Address], launch: &Launch) -> Result<u32, String> {
-    let stream = connect(addresses)?;
+fn exchange(addresses: &[Address], launch: &Launch) -> Result<u32, Unreached> {
+    let stream = connect(addresses, CONNECT_RETRY)?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|e| format!("the running instance's answer could not be read: {e}"))?;
+    reader.read_line(&mut line).map_err(|e| {
+        Unreached::other(format!(
+            "the running instance's answer could not be read: {e}"
+        ))
+    })?;
     let pid: u32 = line
         .trim()
         .strip_prefix("pid=")
         .and_then(|pid| pid.parse().ok())
-        .ok_or_else(|| format!("the running instance answered `{}`", line.trim()))?;
+        .ok_or_else(|| {
+            Unreached::other(format!("the running instance answered `{}`", line.trim()))
+        })?;
     platform::allow_foreground(pid);
     let stream = reader.get_mut();
     stream
         .write_all(launch.encode().as_bytes())
         .and_then(|()| stream.flush())
-        .map_err(|e| format!("the launch could not be handed over: {e}"))?;
+        .map_err(|e| Unreached::other(format!("the launch could not be handed over: {e}")))?;
     Ok(pid)
 }
 
 /// Connect to the first of `addresses` that answers, trying them all in
-/// order until [`CONNECT_RETRY`] runs out.
-fn connect(addresses: &[Address]) -> Result<interprocess::local_socket::Stream, String> {
-    let deadline = Instant::now() + CONNECT_RETRY;
+/// order until `retry` runs out.
+fn connect(
+    addresses: &[Address],
+    retry: Duration,
+) -> Result<interprocess::local_socket::Stream, Unreached> {
+    let deadline = Instant::now() + retry;
     loop {
         let mut failures = Vec::with_capacity(addresses.len());
+        let mut nobody_listens = !addresses.is_empty();
         for address in addresses {
             let attempt = address
                 .name()
                 .and_then(interprocess::local_socket::Stream::connect);
             match attempt {
                 Ok(stream) => return Ok(stream),
-                Err(e) => failures.push((address, e.to_string())),
+                Err(e) => {
+                    nobody_listens &= matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    );
+                    failures.push((address, e.to_string()));
+                }
             }
         }
         if Instant::now() >= deadline {
-            return Err(format!(
-                "the running instance could not be reached: {}",
-                describe_failures(&failures)
-            ));
+            return Err(Unreached {
+                nobody_listens,
+                message: format!(
+                    "the running instance could not be reached: {}",
+                    describe_failures(&failures)
+                ),
+            });
         }
         std::thread::sleep(CONNECT_POLL);
     }
@@ -607,6 +652,22 @@ pub fn register_version_notice(window: &MainWindow) {
         debug!("the version notice asked to quit");
         slint::quit_event_loop().ok();
     });
+}
+
+/// The window a launch opens when an older version is running: it names this
+/// version, and "Close" hides it.
+///
+/// :returns: the window, not yet shown, or the platform's error
+pub fn older_version_window() -> Result<OlderVersionWindow, slint::PlatformError> {
+    let window = OlderVersionWindow::new()?;
+    window.set_version(env!("CARGO_PKG_VERSION").into());
+    let weak = window.as_weak();
+    window.on_dismiss(move || {
+        if let Some(window) = weak.upgrade() {
+            let _ = window.hide();
+        }
+    });
+    Ok(window)
 }
 
 #[cfg(windows)]
@@ -845,6 +906,28 @@ mod tests {
         );
         assert!(message.contains("`b`: connection refused"), "{message}");
         assert_eq!(describe_failures(&[]), "there was no address to try");
+    }
+
+    #[test]
+    fn an_instance_nobody_listens_for_reads_as_an_older_version() {
+        let instance = format!("sunlit-earth-activation-older-{}", std::process::id());
+        let e =
+            connect(&this_addresses(&instance), Duration::ZERO).expect_err("nobody listens there");
+        assert!(e.nobody_listens, "{e}");
+    }
+
+    #[test]
+    fn a_listener_that_answers_wrongly_is_not_an_older_version() {
+        let instance = format!("sunlit-earth-activation-wrong-{}", std::process::id());
+        let ActivationListener { listener, .. } = bind(&instance).expect("the socket binds");
+        let _server = std::thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
+                let _ = stream.write_all(b"hello\n");
+            }
+        });
+        let e = exchange(&this_addresses(&instance), &Launch::default())
+            .expect_err("the answer is not a pid");
+        assert!(!e.nobody_listens, "{e}");
     }
 
     #[test]

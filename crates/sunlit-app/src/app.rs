@@ -114,8 +114,9 @@ pub fn run() -> ExitCode {
                         return ExitCode::SUCCESS;
                     }
                     crate::tray::InstanceCheck::OlderVersionRunning => {
-                        info!(
-                            "another instance is already running, an older version that cannot be asked to show its window, exiting"
+                        older_version_running(
+                            cli.tray_start,
+                            "it holds the guard's name from before the per-user part",
                         );
                         return ExitCode::SUCCESS;
                     }
@@ -152,11 +153,47 @@ fn second_launch(instance: &str, tray_start: TrayStart) {
                 "another instance is already running (pid {pid}), so its window was asked to show"
             );
         }
+        SecondLaunch::OlderVersion(e) => older_version_running(tray_start, &e),
         SecondLaunch::Unreachable(e) => {
             info!(
                 "another instance is already running, but it could not be asked to show its window: {e}"
             );
         }
+    }
+}
+
+/// Tell the user that an older version is running and this launch did not
+/// start, in a window of its own, unless it was asked to start hidden.
+///
+/// Returns once the window is closed.
+///
+/// :param `tray_start`: how this launch was asked to start
+/// :param why: what showed that the running instance is an older version
+fn older_version_running(tray_start: TrayStart, why: &str) {
+    info!(
+        "another instance is already running, an older version that cannot be asked to show its window: {why}"
+    );
+    if matches!(tray_start, TrayStart::Hidden) {
+        return;
+    }
+    let window = match crate::activation::older_version_window() {
+        Ok(window) => window,
+        Err(e) => {
+            error!("no window could be created to say so: {e}");
+            return;
+        }
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Err(e) = slint::set_xdg_app_id(APP_ID) {
+        warn!("the app id could not be set: {e}");
+    }
+    if let Err(e) = crate::window_state::show_at_startup(&window, false) {
+        error!("the window that says so could not be shown: {e}");
+        return;
+    }
+    crate::ipc::signal("older_version_notice");
+    if let Err(e) = slint::run_event_loop() {
+        error!("the event loop failed: {e}");
     }
 }
 

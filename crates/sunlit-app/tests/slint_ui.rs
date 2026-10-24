@@ -6158,3 +6158,83 @@ fn test_the_start_on_login_switch_shows_the_entry_it_is_given() {
     assert_eq!(start_on_login(&window).accessible_checked(), Some(false));
     assert!(window.get_autostart_note().is_empty());
 }
+
+/// A tray icon wired to `window` the way the app wires it, with the settings
+/// window's auto-refresh change following into the tray as `app.rs` does.
+fn wired_tray(window: &MainWindow) -> sunlit_earth::TrayIcon {
+    let tray = sunlit_earth::TrayIcon::new().expect("the testing backend creates a tray icon");
+    sunlit_earth::tray::wire(
+        &tray,
+        window,
+        &idle_link(),
+        &sunlit_earth::about::AboutController::default(),
+    );
+    let window_weak = window.as_weak();
+    let tray_weak = tray.as_weak();
+    window.on_auto_refresh_changed(move || {
+        if let (Some(win), Some(tray)) = (window_weak.upgrade(), tray_weak.upgrade()) {
+            sunlit_earth::tray::follow_auto_refresh(&tray, win.get_auto_refresh_enabled());
+        }
+    });
+    tray
+}
+
+/// Slint's tray backends draw no checkmark, so the state is in the titles:
+/// the mark is there exactly when auto-refresh is on, follows the settings
+/// window, and a toggle from the tray reaches the window.
+#[test]
+fn test_the_tray_auto_refresh_title_carries_the_mark() {
+    let window = create_window();
+    window.set_auto_refresh_enabled(false);
+    let tray = wired_tray(&window);
+    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
+
+    let checkbox = labelled(&window, "Auto-refresh wallpaper")
+        .into_iter()
+        .find(|element| element.accessible_checkable() == Some(true))
+        .expect("the auto-refresh check box");
+    checkbox.invoke_accessible_default_action();
+    assert!(window.get_auto_refresh_enabled());
+    assert_eq!(tray.get_auto_refresh_title(), "✓ Auto-refresh");
+
+    tray.set_auto_refresh_enabled(false);
+    tray.invoke_auto_refresh_toggled(false);
+    assert!(
+        !window.get_auto_refresh_enabled(),
+        "the tray's toggle reached the window"
+    );
+    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
+}
+
+/// "Start on login" in the tray follows each read of the entry and is
+/// disabled where the session has no autostart.
+#[test]
+fn test_the_tray_start_on_login_item_follows_the_entry() {
+    use std::path::PathBuf;
+    use sunlit_earth::autostart::{self, Autostart};
+
+    let window = create_window();
+    let tray = wired_tray(&window);
+
+    autostart::ui::show(
+        &window,
+        &Autostart::On {
+            exe: PathBuf::from("/x/sunlit-earth"),
+        },
+    );
+    assert!(tray.get_autostart_on());
+    assert_eq!(tray.get_autostart_title(), "✓ Start on login");
+    assert!(tray.get_autostart_available());
+
+    autostart::ui::show(&window, &Autostart::Off);
+    assert_eq!(tray.get_autostart_title(), "Start on login");
+
+    autostart::ui::show(
+        &window,
+        &Autostart::Unsupported {
+            reason: "no autostart here".to_owned(),
+        },
+    );
+    assert!(!tray.get_autostart_available());
+    assert_eq!(tray.get_autostart_title(), "Start on login");
+}

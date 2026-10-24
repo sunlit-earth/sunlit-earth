@@ -13,11 +13,21 @@ export component TrayIcon inherits SystemTrayIcon {
 
     in property <image> tray-image;
     in-out property <bool> auto-refresh-enabled: false;
+    // Start on login, as the last read of the platform's entry found it.
+    in-out property <bool> autostart-on: false;
+    in property <bool> autostart-available: true;
+
+    // None of Slint 1.18's tray backends draws `checked`, so the state is in
+    // the title. Slint rebuilds the menu when a property read while building
+    // it changes, so the titles follow the state on every platform.
+    out property <string> auto-refresh-title: (root.auto-refresh-enabled ? "✓ " : "") + "Auto-refresh";
+    out property <string> autostart-title: (root.autostart-on ? "✓ " : "") + "Start on login";
 
     callback open-window();
     callback toggle-window();
     callback refresh-now();
     callback auto-refresh-toggled(bool);
+    callback autostart-toggled(bool);
     callback show-about();
     callback exit-app();
 
@@ -37,12 +47,19 @@ export component TrayIcon inherits SystemTrayIcon {
             activated => { root.refresh-now(); }
         }
         MenuItem {
-            title: "Auto-refresh";
+            title: root.auto-refresh-title;
             checkable: true;
             checked <=> root.auto-refresh-enabled;
             // `checked` is toggled by Slint before this fires, so it already
             // holds the new state.
             activated => { root.auto-refresh-toggled(root.auto-refresh-enabled); }
+        }
+        MenuItem {
+            title: root.autostart-title;
+            enabled: root.autostart-available;
+            checkable: true;
+            checked <=> root.autostart-on;
+            activated => { root.autostart-toggled(root.autostart-on); }
         }
         MenuSeparator {}
         MenuItem {

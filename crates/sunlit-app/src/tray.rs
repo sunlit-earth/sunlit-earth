@@ -117,7 +117,29 @@ pub fn create_tray(
         .inspect_err(|e| warn!("this session has no tray to put an icon in: {e}"))
         .ok()?;
     tray.set_tray_image(create_icon());
-    tray.set_auto_refresh_enabled(window.get_auto_refresh_enabled());
+    wire(&tray, window, engine, about);
+
+    tray.show()
+        .inspect_err(|e| warn!("the tray icon could not be shown: {e}"))
+        .ok()?;
+    Some(tray)
+}
+
+/// Show the settings window's auto-refresh state in the tray menu.
+///
+/// :param tray: the tray icon
+/// :param enabled: whether auto-refresh is on
+pub fn follow_auto_refresh(tray: &TrayIcon, enabled: bool) {
+    tray.set_auto_refresh_enabled(enabled);
+}
+
+/// Wire the tray's callbacks to the window, the engine and the About window,
+/// and have its two state items start from what the window shows.
+pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &AboutController) {
+    follow_auto_refresh(tray, window.get_auto_refresh_enabled());
+    tray.set_autostart_on(window.get_autostart_on());
+    tray.set_autostart_available(window.get_autostart_available());
+    crate::autostart::ui::register_tray(tray);
 
     let window_weak = window.as_weak();
     let engine_link = engine.clone();
@@ -160,6 +182,17 @@ pub fn create_tray(
         }
     });
 
+    // The same write and read as the settings window's switch. A failed write
+    // has no status line here, so it is a warning in the log, and the item
+    // shows what the read after it found.
+    let window_weak = window.as_weak();
+    tray.on_autostart_toggled(move |on| {
+        debug!(on, "tray: start on login toggled");
+        if let Some(win) = window_weak.upgrade() {
+            let _ = crate::autostart::ui::toggle(&win, on);
+        }
+    });
+
     let about = about.clone();
     tray.on_show_about(move || {
         let _ = about.show();
@@ -169,11 +202,6 @@ pub fn create_tray(
         debug!("tray: exit requested, executing quit_event_loop");
         slint::quit_event_loop().ok();
     });
-
-    tray.show()
-        .inspect_err(|e| warn!("the tray icon could not be shown: {e}"))
-        .ok()?;
-    Some(tray)
 }
 
 #[cfg(test)]

@@ -241,9 +241,9 @@ fn register_auto_refresh_callback(
         let enabled = win.get_auto_refresh_enabled();
         let was_enabled = prev_enabled.replace(enabled);
 
-        // Keep the tray checkmark in step with the settings window.
+        // Keep the tray's mark in step with the settings window.
         if let Some(tray) = tray.as_ref() {
-            tray.set_auto_refresh_enabled(enabled);
+            crate::tray::follow_auto_refresh(tray, enabled);
         }
 
         send_auto_refresh(&engine, &win);
@@ -424,7 +424,6 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
     crate::window_state::register_other_window(about.visibility());
     crate::activation::register_version_notice(&window);
     crate::autostart::ui::register(&window);
-    crate::autostart::ui::refresh(&window);
     {
         let window_weak = window.as_weak();
         let link = link.clone();
@@ -442,6 +441,8 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
         config,
         matches!(cli.mode, Mode::Tray),
     );
+    // After the tray, so the first read reaches its item too.
+    crate::autostart::ui::refresh(&window);
     // A session with no tray host leaves the window as the only way to reach
     // the app, so from here on this run is a windowed one: the close button
     // ends it and the window is shown whatever `--tray-start` asked for.

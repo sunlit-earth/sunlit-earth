@@ -5,13 +5,19 @@
 //! entry is read at startup, every time the settings window is shown, and
 //! after every toggle from either place.
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use slint::ComponentHandle;
 use tracing::{debug, warn};
 
 use super::Autostart;
-use crate::MainWindow;
+use crate::{MainWindow, TrayIcon};
+
+thread_local! {
+    /// The tray icon whose "Start on login" item follows each read.
+    static TRAY: RefCell<Option<slint::Weak<TrayIcon>>> = const { RefCell::new(None) };
+}
 
 /// What the switch shows for one state of the entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,7 +74,12 @@ pub fn view(state: &Autostart, this_exe: Option<&Path>) -> View {
     }
 }
 
-/// Show `state` in the settings window.
+/// Have the tray's "Start on login" item follow every read.
+pub fn register_tray(tray: &TrayIcon) {
+    TRAY.with(|slot| *slot.borrow_mut() = Some(tray.as_weak()));
+}
+
+/// Show `state` in the settings window and the tray menu.
 ///
 /// :param window: the settings window
 /// :param state: what the entry says
@@ -77,6 +88,12 @@ pub fn show(window: &MainWindow, state: &Autostart) {
     window.set_autostart_on(view.on);
     window.set_autostart_available(view.available);
     window.set_autostart_note(view.note.into());
+    TRAY.with(|slot| {
+        if let Some(tray) = slot.borrow().as_ref().and_then(slint::Weak::upgrade) {
+            tray.set_autostart_on(view.on);
+            tray.set_autostart_available(view.available);
+        }
+    });
 }
 
 /// Read the entry and show what it says.

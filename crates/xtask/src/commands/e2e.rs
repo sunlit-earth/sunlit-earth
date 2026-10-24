@@ -664,8 +664,6 @@ mod tests {
 
     #[test]
     fn both_guest_jobs_opt_into_writing_the_login_entry() {
-        // The case writes the real start-on-login entry of the machine that
-        // runs it, which only a throwaway guest should have done to it.
         let windows = job_script(Target::Windows, &paths(Target::Windows));
         assert!(
             windows.contains("set SUNLIT_EARTH_E2E_AUTOSTART=1"),

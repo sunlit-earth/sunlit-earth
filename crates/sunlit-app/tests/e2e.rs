@@ -445,8 +445,7 @@ fn second_instance(socket_name: &str, extra: &[&str]) -> std::process::Output {
     let output = wait_with_timeout(instance, SHUTDOWN);
     assert!(
         output.status.success(),
-        "the second instance exited with {:?}:
-{}",
+        "the second instance exited with {:?}:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
@@ -460,7 +459,8 @@ fn test_single_instance_second_exits() {
     if !tray_supported() {
         skip_case(
             "test_single_instance_second_exits",
-            "the app takes the single-instance mutex in tray mode only, so there              is nothing to enforce in a session that hosts no tray",
+            "the app takes the single-instance mutex in tray mode only, so there \
+             is nothing to enforce in a session that hosts no tray",
         );
         return;
     }
@@ -477,8 +477,7 @@ fn test_single_instance_second_exits() {
     let stderr_b = String::from_utf8_lossy(&output_b.stderr);
     assert!(
         stderr_b.contains("another instance is already running"),
-        "instance B stderr missing single-instance message:
-{stderr_b}"
+        "instance B stderr missing single-instance message:\n{stderr_b}"
     );
 
     stdout_a.wait_for_signal("activated version_differs=false", SIGNAL_REPLY);
@@ -496,7 +495,8 @@ fn test_a_hidden_second_launch_leaves_the_first_alone() {
     if !tray_supported() {
         skip_case(
             "test_a_hidden_second_launch_leaves_the_first_alone",
-            "the app takes the single-instance mutex in tray mode only, and this              session hosts no tray",
+            "the app takes the single-instance mutex in tray mode only, and this \
+             session hosts no tray",
         );
         return;
     }
@@ -510,8 +510,7 @@ fn test_a_hidden_second_launch_leaves_the_first_alone() {
     let stderr_b = String::from_utf8_lossy(&output_b.stderr);
     assert!(
         stderr_b.contains("asked to start hidden"),
-        "instance B did not say it stayed quiet:
-{stderr_b}"
+        "instance B did not say it stayed quiet:\n{stderr_b}"
     );
 
     std::thread::sleep(Duration::from_secs(3));
@@ -562,7 +561,8 @@ fn test_autostart_round_trip_over_ipc() {
     if std::env::var_os(AUTOSTART_OPT_IN).is_none_or(|value| value.is_empty()) {
         skip_case(
             CASE,
-            "it writes the real start-on-login entry of this machine, which              is harmless in a throwaway guest; the VM job sets SUNLIT_EARTH_E2E_AUTOSTART",
+            "it writes the real start-on-login entry of this machine, which \
+             is harmless in a throwaway guest; the VM job sets SUNLIT_EARTH_E2E_AUTOSTART",
         );
         return;
     }

@@ -105,6 +105,14 @@ pub const DISPLAY_SETTLE: Duration = Duration::from_secs(2);
 /// Public because the integration tests step over it.
 pub const TILE_WAIT: Duration = Duration::from_secs(5);
 
+/// How long a wallpaper waits for the cloud layer's first answer, on the
+/// injected clock, before it is made without clouds. It is the figure the
+/// one-shot commands wait for a slow 8192 px download and its decode, so a map
+/// that is merely slow still makes it in.
+///
+/// Public because the integration tests step over it.
+pub const CLOUD_WAIT: Duration = Duration::from_secs(60);
+
 /// The engine's own state, private to its thread.
 ///
 /// The bools are independent latches on a private struct rather than
@@ -141,6 +149,10 @@ struct Engine {
     /// packs had been opened for their tiles then: one opened since starts
     /// the count over.
     tiles_awaited_since: Option<(Duration, u64)>,
+    /// When the wallpaper owed began to wait for the cloud layer's first
+    /// answer, the cubes being resident, which is what [`CLOUD_WAIT`] counts
+    /// from.
+    clouds_awaited_since: Option<Duration>,
     /// A wallpaper went out after [`TILE_WAIT`] with tiles missing, and is
     /// made again when they are resident.
     reexport: bool,
@@ -358,6 +370,7 @@ impl Engine {
             wallpaper_owed: false,
             wallpaper_shots: Vec::new(),
             tiles_awaited_since: None,
+            clouds_awaited_since: None,
             reexport: false,
             exports: Vec::new(),
             wanted_sky: None,

@@ -94,7 +94,9 @@ pub(crate) fn run_displays(
             return ExitCode::FAILURE;
         }
     };
-    // The publish holds for the textures on its own, and not for the clouds.
+    // The publish holds for the textures and for the cloud layer's first
+    // answer on its own, for a minute at the most. Waiting here as well is
+    // what puts the outcome in the log before the render starts.
     if clouds {
         wait_for_clouds(&clouds_rx, CLOUD_TIMEOUT);
     }
@@ -158,7 +160,9 @@ pub(crate) fn run_render(
         info!("no globe texture found, rendering the procedural grid");
     }
     // An overlay the readiness above does not cover, and without the wait a
-    // warm tile cache usually exports before the cached map is uploaded.
+    // warm tile cache usually exports before the cached map is uploaded. An
+    // export is not a publish, so the engine's own wait for the clouds does
+    // not apply to it.
     if clouds {
         wait_for_clouds(&clouds_rx, CLOUD_TIMEOUT);
     }

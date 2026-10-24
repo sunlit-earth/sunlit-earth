@@ -9,14 +9,15 @@ use sunlit_core::assets::cloud_source::{CloudImage, CloudSource};
 use sunlit_core::assets::cube_layout::CubeTextures;
 use sunlit_core::assets::tiles::{self, BuildGate, PackKind};
 use sunlit_core::engine::clock::MockClock;
-use sunlit_core::engine::{EngineCommand, EngineEvent};
+use sunlit_core::engine::wallpaper_sink::{Frame, WallpaperSink};
+use sunlit_core::engine::{CLOUD_WAIT, EngineCommand, EngineEvent};
 use sunlit_core::params::SceneParams;
 use sunlit_core::scene::scene_time::{SceneTime, instant_of_override};
 
 use crate::clouds_variant::wait_for_cloud_size;
 use crate::cube::CubeFixture;
 use crate::groups::surface;
-use crate::harness::{Harness, TIMEOUT, gpu, test_params};
+use crate::harness::{Harness, TIMEOUT, gpu, on_day, test_params};
 use crate::sinks::{RecordingSink, screen};
 use crate::support;
 
@@ -612,12 +613,14 @@ fn a_day_publish_waits_for_the_mask_whatever_the_clouds() {
 const HELD: Duration = Duration::from_secs(3);
 
 /// The banded fixture map, with every fetch held until the case lets it
-/// through, as a slow download would be.
+/// through, as a slow download would be, or lets it fail, as a dropped
+/// connection would.
 struct HeldClouds {
     inner: support::FixtureClouds,
     held: std::sync::Mutex<bool>,
     released: std::sync::Condvar,
     entered: AtomicU64,
+    fails: AtomicBool,
 }
 
 impl HeldClouds {
@@ -627,12 +630,24 @@ impl HeldClouds {
             held: std::sync::Mutex::new(true),
             released: std::sync::Condvar::new(),
             entered: AtomicU64::new(0),
+            fails: AtomicBool::new(false),
         }
     }
 
     fn release(&self) {
         *self.held.lock().expect("the hold") = false;
         self.released.notify_all();
+    }
+
+    /// Let the fetches held now through, failing.
+    fn release_failing(&self) {
+        self.fails.store(true, Ordering::SeqCst);
+        self.release();
+    }
+
+    /// Hold the fetches that begin from now on.
+    fn hold(&self) {
+        *self.held.lock().expect("the hold") = true;
     }
 
     fn wait_for_entered(&self, count: u64, what: &str) {
@@ -655,6 +670,9 @@ impl CloudSource for HeldClouds {
             held = self.released.wait(held).expect("the hold");
         }
         drop(held);
+        if self.fails.load(Ordering::SeqCst) {
+            return Err("the fixture is offline".to_owned());
+        }
         self.inner.fetch_if_changed(known_etag)
     }
 
@@ -702,4 +720,444 @@ fn a_download_that_returns_after_the_switch_is_not_decoded() {
         "switching on downloads the map again"
     );
     assert_eq!(clouds_settled(&harness), [true]);
+}
+
+/// One screen, big enough that the bands are in its picture.
+const PUBLISH_SCREEN: (u32, u32) = (256, 128);
+
+/// An engine that publishes to a recording sink with a cloud source behind
+/// the overlay, and no cube, so that the clouds are the only thing a publish
+/// can be waiting for. With a clock, the poll interval is the hour of the
+/// switch cases.
+fn publisher(
+    params: &SceneParams,
+    source: Option<Arc<dyn CloudSource>>,
+    clock: Option<Arc<MockClock>>,
+) -> (Harness, Arc<RecordingSink>) {
+    let sink = Arc::new(RecordingSink::new(vec![screen(
+        "only",
+        0,
+        PUBLISH_SCREEN.0,
+        PUBLISH_SCREEN.1,
+        true,
+    )]));
+    let sink_for_config = Arc::clone(&sink);
+    let harness = Harness::start(|config| {
+        config.params = *params;
+        config.wallpaper = sink_for_config;
+        config.cloud = source;
+        if let Some(clock) = clock {
+            config.clock = clock as Arc<dyn sunlit_core::engine::clock::Clock>;
+            config.cloud_poll_interval = POLL;
+        }
+    });
+    (harness, sink)
+}
+
+/// The next `WallpaperSet` within `within` on the wall clock, or `None`.
+fn publish_within(harness: &Harness, within: Duration) -> Option<Result<String, String>> {
+    let deadline = std::time::Instant::now() + within;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        if let EngineEvent::WallpaperSet(result) = event {
+            return Some(result);
+        }
+    }
+    None
+}
+
+/// Two full iterations of the engine's loop, so that a command sent before has
+/// been taken and the tick after it has run.
+fn let_the_engine_loop(harness: &Harness) {
+    for _ in 0..2 {
+        let _ = harness.engine.memory_report();
+    }
+}
+
+/// The picture the last publish handed the only screen.
+fn last_picture(sink: &RecordingSink) -> Arc<Frame> {
+    sink.publications().last().expect("a publication").frames[0]
+        .clone()
+        .expect("a picture for the only screen")
+}
+
+/// The scene with the layer's opacities at zero, which draws it without the
+/// layer.
+fn without_clouds(params: &SceneParams) -> SceneParams {
+    SceneParams {
+        cloud_opacity: 0.0,
+        cloud_opacity_night: 0.0,
+        ..*params
+    }
+}
+
+/// A wallpaper asked for while the first cloud fetch is still on its way is
+/// not made until the map is resident, and then has the clouds in it.
+#[test]
+fn a_wallpaper_waits_for_the_first_cloud_map() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let (harness, sink) = publisher(
+        &switched(true),
+        Some(Arc::clone(&source) as Arc<dyn CloudSource>),
+        None,
+    );
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    source.wait_for_entered(1, "the first poll");
+    assert!(
+        publish_within(&harness, HELD).is_none(),
+        "the wallpaper went out while the cloud map was still downloading"
+    );
+    assert!(sink.publications().is_empty());
+
+    source.release();
+    assert!(harness.wait_for_publish().is_ok());
+    assert!(
+        has_cloud_texture(&harness),
+        "published before the map landed"
+    );
+    let with_clouds = last_picture(&sink);
+
+    harness.settle_at(&without_clouds(&switched(true)));
+    assert!(harness.publish().is_ok());
+    assert_ne!(
+        *with_clouds,
+        *last_picture(&sink),
+        "the wallpaper made after the wait has no clouds in it"
+    );
+}
+
+/// A wallpaper held for the first fetch goes out on the first failed poll,
+/// after the layer has said it has nothing to show and well before the worker's
+/// first retry.
+///
+/// The mock clock stands still, so the bound on the wait cannot be what lets
+/// it go: only the layer's answer can.
+#[test]
+fn a_wallpaper_does_not_wait_on_a_first_poll_that_failed() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (harness, sink) = publisher(
+        &switched(true),
+        Some(Arc::clone(&source) as Arc<dyn CloudSource>),
+        Some(clock),
+    );
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    source.wait_for_entered(1, "the first poll");
+    let_the_engine_loop(&harness);
+    assert!(
+        publish_within(&harness, QUIET).is_none(),
+        "the premise: the wallpaper is held while the first poll is out"
+    );
+
+    let failed = std::time::Instant::now();
+    source.release_failing();
+    let deadline = failed + FIRST_RETRY;
+    let mut settled = None;
+    let mut published = false;
+    while let Ok(event) = harness.events.recv_deadline(deadline) {
+        match event {
+            EngineEvent::CloudsSettled { drawn } => settled = Some(drawn),
+            EngineEvent::WallpaperSet(result) => {
+                assert!(result.is_ok());
+                published = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        published,
+        "no wallpaper within the {FIRST_RETRY:?} the first retry waits"
+    );
+    assert_eq!(
+        settled,
+        Some(false),
+        "the wallpaper was set before the layer said it had nothing to show"
+    );
+    assert_eq!(source.entered.load(Ordering::SeqCst), 1);
+    assert_eq!(sink.publications().len(), 1);
+}
+
+/// A map that never arrives holds the wallpaper for [`CLOUD_WAIT`] on the
+/// engine's clock and not a moment longer, and the wallpaper then has no
+/// clouds in it.
+#[test]
+fn a_wallpaper_waits_for_the_clouds_no_longer_than_the_wait() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (harness, sink) = publisher(
+        &switched(true),
+        Some(Arc::clone(&source) as Arc<dyn CloudSource>),
+        Some(Arc::clone(&clock)),
+    );
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    source.wait_for_entered(1, "the first poll");
+    let_the_engine_loop(&harness);
+    assert!(
+        publish_within(&harness, QUIET).is_none(),
+        "no time has passed"
+    );
+
+    let short = Duration::from_secs(1);
+    harness.advance(&clock, CLOUD_WAIT.saturating_sub(short));
+    assert!(
+        publish_within(&harness, QUIET).is_none(),
+        "the wallpaper went out before {CLOUD_WAIT:?} had passed"
+    );
+
+    harness.advance(&clock, short);
+    assert_eq!(publish_within(&harness, TIMEOUT), Some(Ok(String::new())));
+    let waited = last_picture(&sink);
+
+    harness.settle_at(&without_clouds(&switched(true)));
+    assert!(harness.publish().is_ok());
+    assert_eq!(
+        *waited,
+        *last_picture(&sink),
+        "the wallpaper that waited the clouds out has clouds in it"
+    );
+    source.release();
+}
+
+/// A wallpaper that waited the clouds out does not hand its spent wait to the
+/// next: the clouds are still unsettled, and the next wallpaper holds for the
+/// whole of [`CLOUD_WAIT`] again.
+#[test]
+fn a_second_wallpaper_waits_for_the_clouds_as_long_as_the_first() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (harness, sink) = publisher(
+        &switched(true),
+        Some(Arc::clone(&source) as Arc<dyn CloudSource>),
+        Some(Arc::clone(&clock)),
+    );
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    source.wait_for_entered(1, "the first poll");
+    let_the_engine_loop(&harness);
+    assert!(publish_within(&harness, QUIET).is_none());
+    harness.advance(&clock, CLOUD_WAIT);
+    assert_eq!(publish_within(&harness, TIMEOUT), Some(Ok(String::new())));
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    let_the_engine_loop(&harness);
+    assert!(
+        publish_within(&harness, QUIET).is_none(),
+        "the second wallpaper went out at once on the first one's wait"
+    );
+    let short = Duration::from_secs(1);
+    harness.advance(&clock, CLOUD_WAIT.saturating_sub(short));
+    assert!(
+        publish_within(&harness, QUIET).is_none(),
+        "the second wallpaper went out before {CLOUD_WAIT:?} had passed"
+    );
+    harness.advance(&clock, short);
+    assert_eq!(publish_within(&harness, TIMEOUT), Some(Ok(String::new())));
+    assert_eq!(sink.publications().len(), 2);
+    source.release();
+}
+
+/// The Day scene, with the cloud layer on, on `day_of_year` of the harness's
+/// year.
+fn day_scene_on(day_of_year: u16) -> SceneParams {
+    let mut params = SceneParams {
+        texture_index: 1,
+        ..switched(true)
+    };
+    params.time = on_day(params.time, day_of_year);
+    params
+}
+
+/// March 10th, and September 5th, whose pack the build gate keeps from being
+/// built.
+const MARCH_10: u16 = 69;
+const SEPTEMBER_5: u16 = 248;
+
+/// A cube that has to be loaded while a wallpaper waits for the clouds starts
+/// the wait over: it is counted from when the cubes are resident.
+#[test]
+fn a_cube_that_is_not_resident_starts_the_cloud_wait_over() {
+    let _gpu = gpu();
+    let fixture = CubeFixture::new("engine_clouds_new_month");
+    let textures = CubeTextures::resolve(&fixture.dir.join("textures"));
+    let cancel = AtomicBool::new(false);
+    for kind in [PackKind::Mask, PackKind::Night, PackKind::Day(2)] {
+        tiles::ensure_pack(&fixture.cache(), kind, &textures, &tiles::FIXTURE, &cancel)
+            .expect("build the pack");
+    }
+    let gate = BuildGate::default();
+    gate.hold();
+    let source = Arc::new(HeldClouds::new());
+    let sink = Arc::new(RecordingSink::new(vec![screen(
+        "only",
+        0,
+        PUBLISH_SCREEN.0,
+        PUBLISH_SCREEN.1,
+        true,
+    )]));
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let harness = Harness::start(|config| {
+        fixture.configure(config);
+        config.params = day_scene_on(MARCH_10);
+        config.wallpaper = Arc::clone(&sink) as Arc<dyn WallpaperSink>;
+        config.cloud = Some(Arc::clone(&source) as Arc<dyn CloudSource>);
+        config.clock = Arc::clone(&clock) as Arc<dyn sunlit_core::engine::clock::Clock>;
+        config.cloud_poll_interval = POLL;
+        config.build_gate = gate.clone();
+    });
+    harness.wait_for_textures("March");
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    source.wait_for_entered(1, "the first poll");
+    let_the_engine_loop(&harness);
+    assert!(publish_within(&harness, QUIET).is_none());
+    let short = Duration::from_secs(1);
+    harness.advance(&clock, CLOUD_WAIT.saturating_sub(short));
+    assert!(publish_within(&harness, QUIET).is_none());
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(day_scene_on(
+            SEPTEMBER_5,
+        ))));
+    let_the_engine_loop(&harness);
+    assert!(
+        publish_within(&harness, QUIET).is_none(),
+        "the premise: September's floor holds the wallpaper"
+    );
+    gate.open();
+    harness.wait_for_textures("September");
+    let_the_engine_loop(&harness);
+    assert!(publish_within(&harness, QUIET).is_none());
+
+    harness.advance(&clock, CLOUD_WAIT.saturating_sub(short));
+    assert!(
+        publish_within(&harness, QUIET).is_none(),
+        "the wallpaper went out on a wait that began before the cubes were resident"
+    );
+    harness.advance(&clock, short);
+    assert_eq!(publish_within(&harness, TIMEOUT), Some(Ok(String::new())));
+    source.release();
+}
+
+/// A layer that is switched off, has both opacities at zero, or has no source
+/// behind it never says it has settled, so nothing is waited for.
+#[test]
+fn a_wallpaper_does_not_wait_for_a_layer_that_is_not_drawn() {
+    let _gpu = gpu();
+    let cases = [
+        ("switched off", switched(false), true),
+        (
+            "both opacities at zero",
+            without_clouds(&switched(true)),
+            true,
+        ),
+        ("no source", switched(true), false),
+    ];
+    for (what, params, has_source) in cases {
+        let source = Arc::new(HeldClouds::new());
+        let (harness, sink) = publisher(
+            &params,
+            has_source.then(|| Arc::clone(&source) as Arc<dyn CloudSource>),
+            None,
+        );
+        harness.engine.send(EngineCommand::RenderWallpaperNow);
+        assert_eq!(
+            publish_within(&harness, HELD),
+            Some(Ok(String::new())),
+            "{what}: the wallpaper waited"
+        );
+        assert_eq!(sink.publications().len(), 1, "{what}");
+        source.release();
+    }
+}
+
+/// The wait is for the layer's first answer. A later poll that is slow or in
+/// flight holds nothing, so a session offline for hours still publishes on
+/// schedule.
+#[test]
+fn a_later_cloud_poll_does_not_hold_a_wallpaper() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (harness, sink) = publisher(
+        &switched(true),
+        Some(Arc::clone(&source) as Arc<dyn CloudSource>),
+        Some(Arc::clone(&clock)),
+    );
+    source.wait_for_entered(1, "the first poll");
+    source.release();
+    harness.wait_for_slot_texture("cloud_background_texture");
+    assert_eq!(clouds_settled(&harness), [true]);
+
+    source.hold();
+    harness.advance(&clock, POLL);
+    source.wait_for_entered(2, "the next poll");
+
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    assert_eq!(
+        publish_within(&harness, HELD),
+        Some(Ok(String::new())),
+        "a poll in flight held the wallpaper"
+    );
+    assert_eq!(sink.publications().len(), 1);
+    source.release();
+}
+
+/// Switching the layer off while a wallpaper waits for it lets the wallpaper
+/// go out.
+#[test]
+fn switching_the_layer_off_releases_a_waiting_wallpaper() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let (harness, sink) = publisher(
+        &switched(true),
+        Some(Arc::clone(&source) as Arc<dyn CloudSource>),
+        None,
+    );
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    source.wait_for_entered(1, "the first poll");
+    assert!(publish_within(&harness, QUIET).is_none());
+
+    harness
+        .engine
+        .send(EngineCommand::UpdateParams(Box::new(switched(false))));
+    assert_eq!(
+        publish_within(&harness, HELD),
+        Some(Ok(String::new())),
+        "the wallpaper still waited for a layer that is off"
+    );
+    assert_eq!(sink.publications().len(), 1);
+    source.release();
+}
+
+/// A wallpaper still waiting for the clouds when the engine stops is made with
+/// what is resident, as one waiting for tiles is.
+#[test]
+fn a_wallpaper_waiting_for_the_clouds_is_made_when_the_engine_stops() {
+    let _gpu = gpu();
+    let source = Arc::new(HeldClouds::new());
+    let (harness, sink) = publisher(
+        &switched(true),
+        Some(Arc::clone(&source) as Arc<dyn CloudSource>),
+        None,
+    );
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    source.wait_for_entered(1, "the first poll");
+    assert!(publish_within(&harness, QUIET).is_none());
+
+    let Harness { engine, events, .. } = harness;
+    engine.shutdown();
+    let result = events.try_iter().find_map(|event| match event {
+        EngineEvent::WallpaperSet(result) => Some(result),
+        _ => None,
+    });
+    assert_eq!(result, Some(Ok(String::new())));
+    assert_eq!(sink.publications().len(), 1);
+    source.release();
 }

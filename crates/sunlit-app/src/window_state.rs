@@ -26,6 +26,10 @@ thread_local! {
     /// Whether each of the app's other windows is on screen, asked when the
     /// settings window hides.
     static OTHER_WINDOWS: RefCell<Vec<Box<dyn Fn() -> bool>>> = RefCell::new(Vec::new());
+
+    /// The settings window, asked whether it is on screen when another window
+    /// closes.
+    static MAIN_WINDOW: RefCell<Option<slint::Weak<MainWindow>>> = const { RefCell::new(None) };
 }
 
 /// Show the window and turn the preview on.
@@ -130,13 +134,43 @@ pub fn toggle(window: &MainWindow, engine: &EngineLink) -> bool {
 /// :param engine: the engine whose preview follows the window
 pub fn hidden(engine: &EngineLink) {
     engine.set_preview_enabled(false);
-    platform::hidden(keeps_dock_icon(OTHER_WINDOWS.with(|windows| {
-        windows
-            .borrow()
-            .iter()
-            .map(|visible| visible())
-            .collect::<Vec<_>>()
-    })));
+    platform::hidden(keeps_dock_icon(others_visible()));
+}
+
+fn others_visible() -> Vec<bool> {
+    OTHER_WINDOWS.with(|windows| windows.borrow().iter().map(|visible| visible()).collect())
+}
+
+/// Remember the settings window, which [`other_window_closed`] asks about.
+pub fn register_main_window(window: &MainWindow) {
+    MAIN_WINDOW.with(|slot| *slot.borrow_mut() = Some(window.as_weak()));
+}
+
+/// What follows the close of another of the app's windows, the About window:
+/// on macOS the Dock icon goes once no window of the app is left on screen.
+///
+/// Slint hides the closed window after its close handler answers, so the
+/// windows are looked at on the next turn of the event loop.
+pub fn other_window_closed() {
+    slint::Timer::single_shot(Duration::ZERO, || {
+        let main_visible = MAIN_WINDOW.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(slint::Weak::upgrade)
+                .is_some_and(|window| window.window().is_visible())
+        });
+        if drops_dock_icon_after_close(main_visible, others_visible()) {
+            platform::hidden(false);
+        }
+    });
+}
+
+/// Whether closing another window leaves the app with no window on screen.
+fn drops_dock_icon_after_close(
+    main_visible: bool,
+    others_visible: impl IntoIterator<Item = bool>,
+) -> bool {
+    !main_visible && !keeps_dock_icon(others_visible)
 }
 
 /// Count another of the app's windows in when the settings window hides.
@@ -217,11 +251,15 @@ mod platform {
         _has_visible_windows: Bool,
     ) -> Bool {
         debug!("the Dock asked the app to reopen");
+        // Through a zero timer, as a second launch's activation goes, so a
+        // reopen during a hidden start lands after the deferred hide.
         let posted = slint::invoke_from_event_loop(|| {
-            ON_REOPEN.with(|slot| {
-                if let Some(on_reopen) = slot.borrow().as_ref() {
-                    on_reopen();
-                }
+            slint::Timer::single_shot(std::time::Duration::ZERO, || {
+                ON_REOPEN.with(|slot| {
+                    if let Some(on_reopen) = slot.borrow().as_ref() {
+                        on_reopen();
+                    }
+                });
             });
         });
         if let Err(e) = posted {
@@ -413,6 +451,21 @@ mod tests {
         assert!(!keeps_dock_icon([]));
         assert!(!keeps_dock_icon([false]));
         assert!(!keeps_dock_icon([false, false]));
+    }
+
+    #[test]
+    fn closing_the_last_window_on_screen_drops_the_dock_icon() {
+        use super::drops_dock_icon_after_close;
+        assert!(drops_dock_icon_after_close(false, [false]));
+        assert!(drops_dock_icon_after_close(false, []));
+        assert!(
+            !drops_dock_icon_after_close(true, [false]),
+            "the settings window is still on screen"
+        );
+        assert!(
+            !drops_dock_icon_after_close(false, [false, true]),
+            "another window is still on screen"
+        );
     }
 
     #[test]

@@ -427,6 +427,7 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
     );
     let about = crate::about::AboutController::default();
     about.register_settings_callback(&window);
+    crate::window_state::register_main_window(&window);
     crate::window_state::register_other_window(about.visibility());
     crate::activation::register_version_notice(&window);
     crate::autostart::ui::register(&window);

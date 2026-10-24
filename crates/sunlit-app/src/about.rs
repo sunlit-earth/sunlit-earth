@@ -99,6 +99,10 @@ impl AboutController {
             window.set_license_text(LICENSE.into());
             window.set_mono_family(MONO_FAMILY.into());
             window.on_open_url(|url| open_url(&url));
+            window.window().on_close_requested(|| {
+                crate::window_state::other_window_closed();
+                slint::CloseRequestResponse::HideWindow
+            });
             *slot = Some(window);
         }
         if let Some(window) = slot.as_ref() {

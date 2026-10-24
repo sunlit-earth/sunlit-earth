@@ -14,6 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod linux;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod windows;
 
@@ -152,7 +154,49 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod platform {
+    use std::path::PathBuf;
+
+    use super::Autostart;
+    use super::linux;
+
+    pub(super) fn read() -> Autostart {
+        if let Some(reason) = linux::unsupported_session(
+            std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+            this_exe().ok().as_deref(),
+        ) {
+            return Autostart::Unsupported { reason };
+        }
+        match linux::system_dir() {
+            Some(dir) => linux::read(&dir),
+            None => Autostart::Unsupported {
+                reason: "This system has no home directory to keep an autostart entry in."
+                    .to_owned(),
+            },
+        }
+    }
+
+    pub(super) fn enable() -> Result<(), String> {
+        let dir = linux::system_dir()
+            .ok_or("This system has no home directory to keep an autostart entry in.")?;
+        linux::enable(&dir, &this_exe()?)
+    }
+
+    pub(super) fn disable() -> Result<(), String> {
+        let dir = linux::system_dir()
+            .ok_or("This system has no home directory to keep an autostart entry in.")?;
+        linux::disable(&dir)
+    }
+
+    pub(super) fn this_exe() -> Result<PathBuf, String> {
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("this program's path could not be read: {e}"))?;
+        Ok(linux::stable_path(&exe))
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod platform {
     use std::path::PathBuf;
 

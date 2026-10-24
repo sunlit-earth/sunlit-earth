@@ -23,7 +23,7 @@ fn moon_params() -> SceneParams {
     params.atmo_enabled = false;
     params.star_intensity = 0.0;
     params.sun_glow = 0.0;
-    params.sky_fov = 60.0;
+    params.sky_fov = crate::harness::output_sky_as_setting(60.0);
     params.moon_size = 8.0;
     // Back on, since `test_params` switches every overlay off.
     params.moon_brightness = SceneParams::default().moon_brightness;
@@ -232,7 +232,7 @@ fn moon_placement(
         eye: camera.eye_position(),
         view: camera.view_matrix(),
         size: params.moon_size,
-        sky_fov_deg: params.sky_fov,
+        sky_fov_deg: crate::harness::drawn_at(params, viewport).sky_fov,
         screen_offset: glam::Vec2::ZERO,
         viewport,
     })
@@ -258,7 +258,7 @@ fn sun_screen_position(params: &SceneParams, viewport: glam::Vec2) -> glam::Vec2
     sunlit_core::scene::sky_lens::sky_lens_disc(
         view_direction,
         0.0,
-        params.sky_fov,
+        crate::harness::drawn_at(params, viewport).sky_fov,
         glam::Vec2::ZERO,
         viewport,
     )
@@ -427,6 +427,8 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
     let mut params = moon_params();
     params.sun_glow = 1.0;
     params.time = SceneTime::fixed(time::macros::datetime!(2024-04-08 18:17 UTC));
+    // The 60 degrees `moon_params` gives a 2:1 frame, across this wider one.
+    params.sky_fov = crate::harness::output_sky_as_setting_for(60.0, (WIDTH, HEIGHT));
 
     // The eye on the night side, swung `OFF_AXIS` out of the Earth-Sun line, so
     // the Sun sits that far from the view axis and the Moon almost with it.

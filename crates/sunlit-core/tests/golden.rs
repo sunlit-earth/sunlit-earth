@@ -50,7 +50,7 @@ mod support;
 #[path = "../src/test_support.rs"]
 mod test_support;
 
-use support::{MEAN_TOLERANCE, OUTLIER_FRACTION, OUTLIER_THRESHOLD, compare};
+use support::{MEAN_TOLERANCE, OUTLIER_FRACTION, OUTLIER_THRESHOLD, compare, settings_for_output};
 
 /// The texture mode that draws the day surface alone, as `texture_index`
 /// spells it.
@@ -227,6 +227,10 @@ fn base_params() -> SceneParams {
         // nothing, so every case draws the surface as the textures have it.
         day_ocean_color: Rgb8::from(test_support::EARTH_FIXTURE_OCEAN[0]),
         night_ocean_color: Rgb8::from(test_support::EARTH_FIXTURE_OCEAN[1]),
+        // Every case is written in the units the renderer takes, which is what
+        // the references were made at, and `render` turns them into settings
+        // for the frame. This is the horizontal sky the references have.
+        sky_fov: 140.0,
         ..SceneParams::default()
     };
     params.time = sunlit_core::scene::scene_time::SceneTime::fixed(
@@ -310,8 +314,13 @@ fn wait_for_texture(engine: &EngineHandle, label: &str) {
 
 /// Render `params` at the full frame once every texture it draws from is
 /// resident.
+///
+/// `params` is in the renderer's units at that size, and goes to the engine as
+/// the settings that frame into them.
 fn render(engine: &EngineHandle, params: &SceneParams) -> Vec<u8> {
-    engine.send(EngineCommand::UpdateParams(Box::new(*params)));
+    engine.send(EngineCommand::UpdateParams(Box::new(settings_for_output(
+        params, WIDTH, HEIGHT,
+    ))));
     if params.moon_brightness > 0.0 {
         wait_for_texture(engine, "moon_texture");
     }
@@ -835,8 +844,9 @@ fn golden_panorama_at_a_narrow_sky() {
 
 /// The same sky at a width only a spanned canvas derives.
 ///
-/// The slider stops at 180; `display::layout::SKY_FOV_MAX` is 330, and a canvas
-/// six screens wide asks for about 300. Nothing above 180 had a reference before
+/// The slider's widest sky is 183 degrees across a 16:9 screen;
+/// `display::layout::SKY_FOV_MAX` is 330, and a canvas six screens wide asks
+/// for about 300. Nothing above 180 had a reference before
 /// this case, and three things behave differently out there: star sprites carry
 /// the conformal `(1 + r * r)` factor and magnify hard toward the corners, the
 /// Milky Way is sampled through the lens inverse and is stretched severely at a
@@ -1062,7 +1072,9 @@ fn contact_sheet_of_every_preset() {
             ..base_params()
         };
         let engine = engine();
-        engine.send(EngineCommand::UpdateParams(Box::new(params)));
+        engine.send(EngineCommand::UpdateParams(Box::new(settings_for_output(
+            &params, CELL_W, CELL_H,
+        ))));
         let pixels = engine
             .export_pixels(CELL_W, CELL_H)
             .expect("the engine should be able to export");

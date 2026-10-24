@@ -16,14 +16,14 @@ use tracing::{debug, error, info, warn};
 use super::wallpaper_sink::{Frame, JobImages, WallpaperJob};
 use super::{CLOUD_WAIT, Engine, EngineEvent, TILE_WAIT, join_notes, save_png, tile_output};
 use crate::display::Monitor;
-use crate::display::layout::{self, Framing, Rect};
-use crate::params::SceneParams;
+use crate::display::layout::{self, Framing, OutputFraming, Rect};
+use crate::params::OutputParams;
 
 /// One render a wallpaper is made of: the framing and the size of a group of
 /// screens, or of the canvas the screens span.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Shot {
-    pub framing: Framing,
+    pub framing: OutputFraming,
     pub width: u32,
     pub height: u32,
 }
@@ -264,14 +264,17 @@ impl Engine {
     /// Whether a tile `export`'s render wants in view is on its way, or the
     /// wanted set in force was computed without it.
     fn export_pending(&self, export: &WaitingExport) -> bool {
-        self.output_pending(&self.params, export.width, export.height)
+        let framed = self
+            .export_framing(export.width, export.height)
+            .applied_to(&self.params);
+        self.output_pending(&framed, export.width, export.height)
     }
 
     /// Whether a tile an export of `framed` at `width` by `height` wants in
     /// view is on its way, or the wanted set in force was computed without
     /// it. The output is resolved under the sky that set was computed under,
     /// which is the one it was computed for.
-    fn output_pending(&self, framed: &SceneParams, width: u32, height: u32) -> bool {
+    fn output_pending(&self, framed: &OutputParams, width: u32, height: u32) -> bool {
         let Some(surface) = &self.surface else {
             return false;
         };
@@ -334,6 +337,7 @@ impl Engine {
         }
         info!(screens = monitors.len(), "the display layout changed");
         self.known_monitors = Some(monitors.clone());
+        self.see_monitors(&monitors);
         self.emit(EngineEvent::MonitorsChanged(monitors));
         if self.published {
             self.publish_wallpaper();
@@ -351,6 +355,7 @@ impl Engine {
         // against, so a layout that kept moving is published again only if it
         // is different again.
         self.known_monitors = Some(monitors.clone());
+        self.see_monitors(&monitors);
         let anchor = layout::resolve_anchor(&monitors, self.anchor_monitor.as_deref())
             .ok_or_else(|| "this session has no monitor to put a wallpaper on".to_owned())?;
         let mut note = String::new();
@@ -375,18 +380,13 @@ impl Engine {
             let bounds = layout::bounds_of(&monitors)
                 .ok_or_else(|| "this session has no screen with any pixels on it".to_owned())?;
             let derived = layout::canvas_framing(settings, monitors[anchor.index].rect(), bounds);
-            if derived.sky_clamped {
-                let clamped = "the sky is as wide as it goes, so it does not continue \
-                               across the screens as exactly as the globe does";
-                info!(clamped, "the derived sky lens hit the shader's limit");
-                note = join_notes(note, clamped.to_owned());
-            }
+            note = join_notes(note, clamp_note(&derived));
             return Ok(WallpaperPlan {
                 monitors,
                 anchor: anchor.index,
                 note,
                 shots: vec![Shot {
-                    framing: derived.framing,
+                    framing: derived,
                     width: bounds.width,
                     height: bounds.height,
                 }],
@@ -397,7 +397,7 @@ impl Engine {
         // One render per distinct size, shared by every screen of that size.
         // A screen with no group is one this mode does not paint, and the sink
         // leaves it alone where the desktop lets it.
-        let shots = groups
+        let shots: Vec<Shot> = groups
             .iter()
             .map(|group| Shot {
                 framing: layout::screen_framing(settings, group.width, group.height),
@@ -405,6 +405,9 @@ impl Engine {
                 height: group.height,
             })
             .collect();
+        if let Some(clamped) = shots.iter().find(|shot| shot.framing.clamped()) {
+            note = join_notes(note, clamp_note(&clamped.framing));
+        }
         Ok(WallpaperPlan {
             monitors,
             anchor: anchor.index,
@@ -484,7 +487,7 @@ impl Engine {
     /// Replay the current scene with one screen's framing.
     pub(super) fn export_framed(
         &mut self,
-        framing: &Framing,
+        framing: &OutputFraming,
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, String> {
@@ -499,7 +502,7 @@ impl Engine {
     /// the sky the renderer holds, which is the one the replay draws under.
     fn export_capped(
         &mut self,
-        params: &SceneParams,
+        params: &OutputParams,
         width: u32,
         height: u32,
     ) -> Result<Vec<u8>, String> {
@@ -576,10 +579,27 @@ impl Engine {
         }
     }
 
+    /// The framing an export of `width` by `height` takes: a screen's of
+    /// that size, so a render made on request is the picture a wallpaper of
+    /// that size would be.
+    fn export_framing(&self, width: u32, height: u32) -> OutputFraming {
+        layout::screen_framing(Framing::from(&self.params), width, height)
+    }
+
     /// Render an export from the frame just drawn and hand it over.
     pub(super) fn answer(&mut self, export: WaitingExport) {
-        let params = self.params;
-        let pixels = self.export_capped(&params, export.width, export.height);
+        let framing = self.export_framing(export.width, export.height);
+        if framing.clamped() {
+            warn!(
+                width = export.width,
+                height = export.height,
+                camera_clamped = framing.camera_clamped,
+                sky_clamped = framing.sky_clamped,
+                "an export's derived lens is past what the renderer takes; it is drawn at \
+                 the nearest one it does"
+            );
+        }
+        let pixels = self.export_framed(&framing, export.width, export.height);
         match export.reply {
             ExportReply::Pixels(reply) => {
                 let _ = reply.send(pixels);
@@ -591,4 +611,35 @@ impl Engine {
             }
         }
     }
+}
+
+/// What a wallpaper's status note says about a lens one of its renders could
+/// not honor, or nothing.
+///
+/// The globe and the sky are still drawn; what is lost is that the clamped
+/// lens draws its half of the picture at another scale than the settings ask
+/// for, so the screens or the span no longer match exactly.
+fn clamp_note(framing: &OutputFraming) -> String {
+    let note = match (framing.camera_clamped, framing.sky_clamped) {
+        (false, false) => return String::new(),
+        (true, false) => {
+            "the globe's lens is as wide as it goes on this screen, so the globe is \
+                          drawn larger than the other screens draw it"
+        }
+        (false, true) => {
+            "the sky is as wide as it goes, so it does not continue across the \
+                          screens as exactly as the globe does"
+        }
+        (true, true) => {
+            "the globe's lens and the sky are both as wide as they go, so neither \
+                         matches the other screens exactly"
+        }
+    };
+    info!(
+        note,
+        camera_clamped = framing.camera_clamped,
+        sky_clamped = framing.sky_clamped,
+        "a derived lens hit the renderer's limit"
+    );
+    note.to_owned()
 }

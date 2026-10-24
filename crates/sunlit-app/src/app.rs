@@ -155,11 +155,7 @@ fn init_ui(
         resolution_labels,
     )));
 
-    // The query the settings window starts from. The engine re-queries on every
-    // publish and announces a layout that moved, which is what replaces this
-    // list; `None` is a platform with no way to ask and leaves the group with
-    // nothing to show, which is what hides it.
-    let monitors = display::monitors().unwrap_or_default();
+    let monitors = displays::monitors_of(screens);
     displays::apply_models_to_window(window, &monitors);
     displays::apply_diagram_to_window(window, &monitors, config.anchor().as_deref());
 
@@ -174,8 +170,6 @@ fn init_ui(
             &displays::screen_ids(&monitors),
         ),
     );
-
-    displays::set_monitors(screens, monitors);
 
     ui_callbacks::register_change_callbacks(window, link);
     ui_callbacks::register_mouse_callbacks(window, link);
@@ -368,6 +362,12 @@ fn run_app(
     // One monitor list for the whole window: the Displays group's callbacks read
     // it, and the engine's `MonitorsChanged` event replaces it.
     let screens = displays::shared_monitors();
+    // The query the settings window and the preview's framing start from. The
+    // engine re-queries on every publish and announces a layout that moved,
+    // which is what replaces this list; `None` is a platform with no way to ask,
+    // which leaves the Displays group with nothing to show and hides it, and
+    // frames the preview on its own height.
+    displays::set_monitors(&screens, display::monitors().unwrap_or_default());
     let Some(running) = start_engine(&cli, config, &window, &screens) else {
         return ExitCode::FAILURE;
     };
@@ -476,6 +476,7 @@ fn start_engine(
 
     let mut engine_config = engine_config(cli, config, (800, 600), true);
     engine_config.on_event = on_event;
+    engine_config.monitors = displays::monitors_of(screens);
     let engine: EngineHandle = match engine::start(engine_config) {
         Ok(engine) => engine,
         Err(e) => {

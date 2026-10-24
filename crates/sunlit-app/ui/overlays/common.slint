@@ -135,6 +135,9 @@ export global OverlayHints {
         if id == "frame-reset" {
             return { title: "Center the frame", body: "Both offsets back to their defaults." };
         }
+        if id == "guides" {
+            return { title: "Frame guides", body: "Outline this screen, 16:9 and 4:3 on the preview, to frame a render for any of them.", keys: ["F"] };
+        }
         if id == "help" {
             return { title: "Mouse and keyboard", body: "Every gesture and shortcut on one sheet.", keys: is-macos ? help-keys() : ["F1", "or", "Ctrl", "?"] };
         }

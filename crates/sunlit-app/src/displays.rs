@@ -324,6 +324,12 @@ pub fn report(
     } else {
         let _ = writeln!(out, "anchor: {anchor_label}");
     }
+    let _ = writeln!(
+        out,
+        "settings: camera {:.1} deg, sky {:.1} deg across the short edge, pan ({:.3}, {:.3}) \
+         in halves of it",
+        settings.camera_fov, settings.sky_fov, settings.offset_x, settings.offset_y
+    );
 
     if mode == DisplayMode::AcrossScreens
         && let Some(bounds) = bounds_of(monitors)
@@ -334,19 +340,7 @@ pub fn report(
             "canvas: {}x{} at ({}, {})",
             bounds.width, bounds.height, bounds.x, bounds.y
         );
-        let _ = writeln!(
-            out,
-            "lens: camera {:.1} deg, sky {:.1} deg, pan ({:.3}, {:.3}){}",
-            derived.framing.camera_fov,
-            derived.framing.sky_fov,
-            derived.framing.offset_x,
-            derived.framing.offset_y,
-            if derived.sky_clamped {
-                "  the sky is as wide as it goes and does not continue exactly"
-            } else {
-                ""
-            }
-        );
+        let _ = writeln!(out, "{}", lens_line(&derived));
     }
 
     let _ = writeln!(out, "renders:");
@@ -364,8 +358,26 @@ pub fn report(
             if group.monitors.len() == 1 { "" } else { "s" },
             screens.join(", ")
         );
+        if mode != DisplayMode::AcrossScreens {
+            let derived = layout::screen_framing(settings, group.width, group.height);
+            let _ = writeln!(out, "    {}", lens_line(&derived));
+        }
     }
     out
+}
+
+/// One output's derived lenses, in the units the renderer takes them in.
+fn lens_line(derived: &layout::OutputFraming) -> String {
+    let clamped = match (derived.camera_clamped, derived.sky_clamped) {
+        (false, false) => "",
+        (true, false) => "  the globe's lens is as wide as it goes",
+        (false, true) => "  the sky is as wide as it goes and does not continue exactly",
+        (true, true) => "  both lenses are as wide as they go",
+    };
+    format!(
+        "lens: camera {:.1} deg vertical, sky {:.1} deg horizontal, pan ({:.3}, {:.3}) in NDC{clamped}",
+        derived.camera_fov, derived.sky_fov, derived.offset_x, derived.offset_y
+    )
 }
 
 /// The same plan on one line, for the IPC command the e2e suite parses.
@@ -575,7 +587,7 @@ mod tests {
     fn settings() -> Framing {
         Framing {
             camera_fov: 20.0,
-            sky_fov: 140.0,
+            sky_fov: 86.0,
             offset_x: 0.0,
             offset_y: 0.0,
         }
@@ -605,7 +617,10 @@ mod tests {
             settings(),
         );
         assert!(report.contains("canvas: 3840x1080 at (0, 0)"), "{report}");
-        assert!(report.contains("lens: camera 20.0 deg, sky 21"), "{report}");
+        assert!(
+            report.contains("lens: camera 20.0 deg vertical, sky 21"),
+            "{report}"
+        );
         assert!(
             !report.contains("as wide as it goes"),
             "two screens are inside the sky's range now: {report}"

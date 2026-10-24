@@ -35,6 +35,8 @@ export component CameraPanel inherits Rectangle {
     in property <bool> lit-zoom;
     in property <bool> lit-look;
     in property <bool> lit-frame;
+    // Whether the frame guides are shown, which the guides button lights.
+    in property <bool> guides-shown;
 
     // The control under the pointer, by its hint id, and the vertical middle
     // of that control in the panel's coordinates.
@@ -48,6 +50,7 @@ export component CameraPanel inherits Rectangle {
         : zoom-slider.hovered ? "zoom"
         : look.hovered ? "look"
         : frame.hovered ? "frame"
+        : guides-button.hovered ? "guides"
         : help-button.hovered ? "help"
         : hide-button.hovered ? "hide"
         : "";
@@ -72,6 +75,7 @@ export component CameraPanel inherits Rectangle {
     // A control was used, by the gesture that does the same: "orbit", "roll",
     // "zoom", "look" or "frame".
     callback used(string);
+    callback toggle-guides();
     callback show-shortcuts();
     callback hide-overlays();
 
@@ -389,6 +393,12 @@ export component CameraPanel inherits Rectangle {
                 padding-top: 3px;
                 spacing: 6px;
                 alignment: center;
+
+                guides-button := OverlayButton {
+                    icon: @image-url("../icons/frame.svg");
+                    on: root.guides-shown;
+                    clicked => { root.toggle-guides(); }
+                }
 
                 help-button := OverlayButton {
                     icon: @image-url("../icons/help.svg");

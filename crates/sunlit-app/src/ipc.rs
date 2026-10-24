@@ -26,7 +26,6 @@ use std::io::{BufRead, BufReader, Write};
 use crate::engine_client::EngineLink;
 use interprocess::local_socket::traits::ListenerExt;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
-use slint::ComponentHandle;
 use sunlit_core::assets::cloud_source::DownloadCount;
 use sunlit_core::assets::texture_loader::DecodedCount;
 use sunlit_core::memory::MemorySnapshot;
@@ -132,9 +131,8 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
                     debug!("ipc: showing window");
-                    win.show().ok();
+                    crate::window_state::show(&win, &engine);
                 }
-                engine.set_preview_enabled(true);
                 signal("window_shown");
             })
             .ok();
@@ -146,9 +144,8 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
                     debug!("ipc: hiding window");
-                    win.hide().ok();
+                    crate::window_state::hide(&win, &engine);
                 }
-                engine.set_preview_enabled(false);
                 signal("window_hidden");
             })
             .ok();

@@ -117,8 +117,7 @@ pub fn create_tray(
         if let Some(win) = window_weak.upgrade() {
             debug!("tray: showing window");
             sunlit_core::memory::log_memory_usage("after window shown");
-            win.show().ok();
-            engine_link.set_preview_enabled(true);
+            crate::window_state::show(&win, &engine_link);
         }
     });
 
@@ -126,15 +125,11 @@ pub fn create_tray(
     let engine_link = engine.clone();
     tray.on_toggle_window(move || {
         if let Some(win) = window_weak.upgrade() {
-            if win.window().is_visible() {
-                debug!("tray: hiding window (icon clicked)");
-                win.hide().ok();
-                engine_link.set_preview_enabled(false);
-            } else {
-                debug!("tray: showing window (icon clicked)");
+            if crate::window_state::toggle(&win, &engine_link) {
+                debug!("tray: window shown (icon clicked)");
                 sunlit_core::memory::log_memory_usage("after window shown");
-                win.show().ok();
-                engine_link.set_preview_enabled(true);
+            } else {
+                debug!("tray: window hidden (icon clicked)");
             }
         }
     });

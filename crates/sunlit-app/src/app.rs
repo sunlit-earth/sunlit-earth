@@ -604,9 +604,8 @@ fn register_close_handler(window: &MainWindow, link: &EngineLink, use_tray: bool
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_core::memory::log_memory_usage("after window hidden");
-            // Slint does the hiding for us, so the engine has to be told
-            // separately that nobody is looking any more.
-            engine_link.set_preview_enabled(false);
+            // Slint does the hiding for us once this answers.
+            crate::window_state::hidden(&engine_link);
             slint::CloseRequestResponse::HideWindow
         });
     } else {
@@ -713,11 +712,13 @@ fn run_event_loop(
         let ww = window.as_weak();
         let engine_link = link.clone();
         slint::Timer::single_shot(Duration::ZERO, move || {
-            if let Some(win) = ww.upgrade() {
-                debug!("hiding window for --tray-start hidden (deferred)");
-                win.hide().ok();
+            match ww.upgrade() {
+                Some(win) => {
+                    debug!("hiding window for --tray-start hidden (deferred)");
+                    crate::window_state::hide(&win, &engine_link);
+                }
+                None => crate::window_state::hidden(&engine_link),
             }
-            engine_link.set_preview_enabled(false);
             println!("SIGNAL:window_hidden_deferred");
         });
     }

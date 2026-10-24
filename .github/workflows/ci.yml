@@ -99,7 +99,18 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.include) }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+
+      # rust-cache hashes every installed toolchain into its key, so the
+      # image's own stable Rust would turn each image update into a cache miss.
+      # A rustup home of the job's own holds only the pinned toolchain.
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+        shell: bash
 
       # mesa-vulkan-drivers is lavapipe, which the GPU tests run on here.
       - name: Install Linux dependencies

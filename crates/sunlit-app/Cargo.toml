@@ -28,10 +28,22 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Registry",
+    "Win32_Security",
 ] }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook.workspace = true
+libc.workspace = true
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb.workspace = true
+zbus.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

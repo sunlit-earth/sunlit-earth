@@ -524,6 +524,7 @@ export component SettingCheck inherits Rectangle {
     in property <string> text;
     in property <string> hint;
     in property <length> indent: 0px;
+    in property <bool> enabled: true;
     in-out property <bool> checked;
     callback toggled();
 
@@ -538,6 +539,7 @@ export component SettingCheck inherits Rectangle {
         CheckBox {
             text: root.text;
             min-width: 0;
+            enabled: root.enabled;
             checked <=> root.checked;
             toggled => { root.toggled(); }
         }

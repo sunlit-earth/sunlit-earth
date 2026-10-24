@@ -21,8 +21,8 @@ use common::pixels::{
     assert_space_corner, assert_yellowish, rgb_at,
 };
 use common::process::{
-    ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY, Spawn,
-    StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
+    AUTOSTART_OPT_IN, ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY,
+    Spawn, StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
     WALLPAPER_PLATFORM, assert_no_error_lines, binary, fixture, isolated_config_path,
     isolated_state_dir, memory_report, mib, parse_memory_entries, query_memory,
     quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
@@ -426,6 +426,32 @@ fn test_windowed_mode_graceful_shutdown() {
     );
 }
 
+/// Launch a second instance beside a running one and wait for it to exit.
+///
+/// The same socket name as the first, so it takes the mutex scoped to that
+/// name rather than the default one, which a real running instance may hold.
+/// It is spawned by hand because it is expected to exit on its own.
+fn second_instance(socket_name: &str, extra: &[&str]) -> std::process::Output {
+    let instance = Command::new(binary())
+        .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+        .args(["--log-level", "debug", "--ipc-socket", socket_name])
+        .args(extra)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the second instance");
+    let output = wait_with_timeout(instance, SHUTDOWN);
+    assert!(
+        output.status.success(),
+        "the second instance exited with {:?}:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -440,40 +466,152 @@ fn test_single_instance_second_exits() {
     }
     let socket_name = unique_socket_name();
 
-    // A holds the mutex, so it only has to be answering; nothing here looks at
-    // what it drew.
-    let (mut guard_a, _stdout_a, stderr_a) =
-        Spawn::new(&socket_name).ready(Ready::Listener).start();
+    // A starts hidden, so the frame that follows the activation is the proof
+    // that the second launch brought its window back.
+    let (mut guard_a, stdout_a, stderr_a) = Spawn::new(&socket_name)
+        .args(["--tray-start", "hidden"])
+        .ready(Ready::HiddenWindow)
+        .start();
 
-    // The same socket name as A, so B takes the mutex scoped to that name
-    // rather than the default one, which a real running instance may hold. B
-    // is spawned by hand because it is expected to exit on its own, which is
-    // what the case is about.
-    let instance_b = Command::new(binary())
-        .env("SUNLIT_EARTH_NO_CLOUDS", "1")
-        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
-        .args(["--log-level", "debug", "--ipc-socket", &socket_name])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn instance B");
-
-    let output_b = wait_with_timeout(instance_b, SHUTDOWN);
-
-    assert!(
-        output_b.status.success(),
-        "instance B exited with non-zero status: {:?}",
-        output_b.status
-    );
-
+    let output_b = second_instance(&socket_name, &[]);
     let stderr_b = String::from_utf8_lossy(&output_b.stderr);
     assert!(
         stderr_b.contains("another instance is already running"),
         "instance B stderr missing single-instance message:\n{stderr_b}"
     );
 
+    stdout_a.wait_for_signal("activated version_differs=false", SIGNAL_REPLY);
+    stdout_a.wait_for_signal("first_frame_rendered", READY);
+
     quit_and_expect_clean_exit(&socket_name, &mut guard_a, &stderr_a);
+}
+
+/// An autostart entry that fires beside a running instance must not open its
+/// window.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_a_hidden_second_launch_leaves_the_first_alone() {
+    if !tray_supported() {
+        skip_case(
+            "test_a_hidden_second_launch_leaves_the_first_alone",
+            "the app takes the single-instance mutex in tray mode only, and this \
+             session hosts no tray",
+        );
+        return;
+    }
+    let socket_name = unique_socket_name();
+    let (mut guard_a, stdout_a, stderr_a) = Spawn::new(&socket_name)
+        .args(["--tray-start", "hidden"])
+        .ready(Ready::HiddenWindow)
+        .start();
+
+    let output_b = second_instance(&socket_name, &["--tray-start", "hidden"]);
+    let stderr_b = String::from_utf8_lossy(&output_b.stderr);
+    assert!(
+        stderr_b.contains("asked to start hidden"),
+        "instance B did not say it stayed quiet:\n{stderr_b}"
+    );
+
+    std::thread::sleep(Duration::from_secs(3));
+    let activated: Vec<String> = stdout_a
+        .lines()
+        .into_iter()
+        .filter(|line| line.contains("SIGNAL:activated"))
+        .collect();
+    assert!(
+        activated.is_empty(),
+        "a hidden launch activated the running instance: {activated:?}"
+    );
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard_a, &stderr_a);
+}
+
+/// Removes the real start-on-login entry when the case ends, however it ends.
+struct RemoveAutostartEntry;
+
+impl Drop for RemoveAutostartEntry {
+    fn drop(&mut self) {
+        if let Err(e) = sunlit_earth::autostart::disable() {
+            eprintln!("the autostart entry the case wrote could not be removed: {e}");
+        }
+    }
+}
+
+/// Send an autostart command and read the state it answers with.
+fn autostart_over_ipc(
+    socket_name: &str,
+    stdout: &StdoutWatcher,
+    command: &str,
+) -> sunlit_earth::autostart::AutostartSignal {
+    let from = stdout.line_count();
+    send_ipc_command(socket_name, command);
+    let line = stdout.wait_for_signal_line_from("autostart ", from, SIGNAL_REPLY);
+    sunlit_earth::autostart::AutostartSignal::parse(&line)
+        .unwrap_or_else(|| panic!("{command} answered a line nobody wrote: {line}"))
+}
+
+/// The entry is the setting: enabling writes one for this executable and
+/// disabling removes it, each read back over IPC.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_autostart_round_trip_over_ipc() {
+    const CASE: &str = "test_autostart_round_trip_over_ipc";
+    if std::env::var_os(AUTOSTART_OPT_IN).is_none_or(|value| value.is_empty()) {
+        skip_case(
+            CASE,
+            "it writes the real start-on-login entry of this machine, which \
+             is harmless in a throwaway guest; the VM job sets SUNLIT_EARTH_E2E_AUTOSTART",
+        );
+        return;
+    }
+    let _cleanup = RemoveAutostartEntry;
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout, stderr) = Spawn::new(&socket_name).start();
+
+    let status = autostart_over_ipc(&socket_name, &stdout, "autostart-status");
+    if status.state == "unsupported" {
+        skip_case(CASE, "this session starts nothing at login");
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr);
+        return;
+    }
+
+    let on = autostart_over_ipc(&socket_name, &stdout, "autostart-enable");
+    assert_eq!(on.state, "on", "{on:?}");
+    let written = std::path::PathBuf::from(&on.exe);
+    // What an entry for this binary names: the bundle on macOS, the stable
+    // Homebrew path on Linux, the binary itself otherwise.
+    let spawned = if cfg!(target_os = "macos") {
+        sunlit_earth::autostart::macos::launched_path(&binary())
+    } else if cfg!(target_os = "linux") {
+        sunlit_earth::autostart::linux::stable_path(&binary())
+    } else {
+        binary()
+    };
+    let same = match (written.canonicalize(), spawned.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => sunlit_earth::autostart::same_exe(&written, &spawned),
+    };
+    assert!(
+        same,
+        "the entry runs {} rather than {}",
+        written.display(),
+        spawned.display()
+    );
+    assert_eq!(
+        autostart_over_ipc(&socket_name, &stdout, "autostart-status"),
+        on
+    );
+
+    let off = autostart_over_ipc(&socket_name, &stdout, "autostart-disable");
+    assert_eq!(off.state, "off", "{off:?}");
+    assert_eq!(
+        autostart_over_ipc(&socket_name, &stdout, "autostart-status").state,
+        "off"
+    );
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr);
 }
 
 #[test]

@@ -29,9 +29,10 @@ sunlit-earth/
       src/params.rs  # SceneParams, ParamsDigest, gamma slider mapping
       tests/         # engine/ (a directory target), soak, golden, shading, render_pipeline
     sunlit-app/      # Slint shell: window, tray, IPC, config bridge
+      tests/         # e2e (desktop-gated), slint_ui
+    sunlit-ui/       # the .slint sources and the slint-build step, nothing else
       ui/main.slint  # MainWindow, and the re-exports of the three below
       ui/            # widgets.slint, about.slint, tray.slint
-      tests/         # e2e (desktop-gated), slint_ui
     xtask/           # developer tooling: VM orchestration, the icon, star and licence bakes
   assets/
     ATTRIBUTION.md   # the credits, and what the About window's first tab renders
@@ -51,6 +52,8 @@ sunlit-earth/
 ```
 
 The package inside `crates/sunlit-app` is still named `sunlit-earth`, so the binary, `CARGO_BIN_EXE_sunlit-earth`, and `target/release/sunlit-earth.exe` in the release workflow are unchanged by the directory name.
+
+`crates/sunlit-ui` exists to keep the code `slint-build` generates out of the edit loop. That code is about 10 MB of Rust, and while `slint::include_modules!()` sat in `sunlit-earth`'s own root, every edit to a Rust file of the app and every edit to `sunlit-core` recompiled it along with the rest of the library. In its own crate it is compiled again only when a `.slint` file changes, and `sunlit-earth` re-exports it with `pub use sunlit_ui::*`, so `sunlit_earth::MainWindow` and every other generated name keep their paths. On the Windows development desktop a debug `cargo build` after a one-line edit went from 14.5 s to about 5.3 s in the app and from 18.9 s to about 8 s in core. The crate holds no Rust logic: the callbacks, the models and the window bridge stay in `sunlit-app`, because the point of the crate is that nobody edits it while working on Rust code. The plan is [plans/2026-10-25-sunlit-ui-crate-plan.md](plans/2026-10-25-sunlit-ui-crate-plan.md).
 
 ## Headless first
 
@@ -115,7 +118,7 @@ Above the floors, `SurfaceSet` holds `renderer::tiles::SurfaceTiles`: one tile a
 - `session_end.rs`: Windows only. An invisible top-level window on its own thread that answers `WM_QUERYENDSESSION` and quits the event loop on `WM_ENDSESSION`, so a reboot does not have to wait for Windows to kill the process. winit handles neither message, so without this nothing in the app ever learned the session was ending. The decision is a pure function (`classify`), unit-tested everywhere; the Win32 window is tested by sending it both messages.
 - `mouse_math.rs`: pure functions for mouse interaction (globe drag with tilt correction, frame drag, orient drag, tilt drag, zoom scroll). No Slint dependency; unit-tested with `proptest` invariants. The globe drag alone keeps two gains and blends between them by how fast the cursor is moving, because the painted surface and the sky lens do not scale together: `coarse_drag_gain` is the distance-proportional 0.3 degrees per pixel per eight Earth radii the drag has always had, `fine_drag_gain` is half the angle a pixel spans at the center of the sky lens, so a slow hand moves the Sun's image half a pixel per mouse pixel at every zoom, and `drag_gain` is a smoothstep between them in the logarithm of the speed from `FINE_DRAG_SPEED` to `COARSE_DRAG_SPEED`. The fine gain is capped at the coarse one, which is the only thing that could invert them, at the nearest zoom and the widest sky, and the sweeping end of the blend returns the coarse gain itself rather than the interpolation evaluated at 1, so a sweep turns the globe by exactly what it always did at every zoom rather than at most of them. `DragSpeed` is the estimator, an exponential moving average over the delta each `moved` callback brings and the time since the previous one, with the interval capped so a pause reads as a slow start; `ui_callbacks::register_globe_drag` holds it, and clears it on the left press, which is the one line `ui/main.slint` gained (`mouse-drag-globe-begin`): a press begins a gesture, and without the clear a deliberate drag started a few tens of milliseconds after a sweep inherits the sweep's speed and takes its first steps at the coarse gain. What it costs is path independence: a drag out and back at different speeds does not land where it started, which is the trade every pointer acceleration makes and the one the user chose over a modifier key. The two gains cross only at the nearest zoom against the widest sky, where the coarse gain is 0.056 degrees per pixel and the fine one 0.060, which is the single framing the `fine.min(coarse)` cap exists for: at 140 degrees of sky it is never active and the rate is one number from end to end, and at 180 it is active at the nearest zooms and nowhere else. The sweeping end of the blend returns the coarse gain itself rather than the interpolation evaluated at 1 because `fine + (coarse - fine)` rounds away from `coarse` at 62 of the 1001 zooms the slider reaches.
 
-## UI (`ui/`)
+## UI (`crates/sunlit-ui/ui/`)
 
 `MainWindow`: resizable split layout, controls panel in a `ScrollView`. Top-level controls are "Set as Wallpaper", "Load Defaults" and "Reset", the auto-refresh checkbox, a 3x3 grid of camera presets, and the Displays group where the session has more than one screen. Below is a collapsible "Advanced" section of `SettingGroup`s for Rendering, Camera Position, Camera Orientation, Framing, Date / Time, Clouds, Celestial, Atmosphere, Lighting and Color Correction. About is not in that section: it is a footer pinned under the scroll area, so it is one click away from a closed panel. The adapter name sits at the foot of the Rendering group, elided to one line with the whole of it on hover, because a word-wrapped `Text` inside the `if` reports the height of a single line whatever it wraps to and the scroll area sized from that cannot reach the rest. A `TouchArea` over the image handles drag and scroll.
 
@@ -139,7 +142,7 @@ The documents are `include_str!`s rather than files read at runtime: `assets/ATT
 
 `TrayIcon` inherits `SystemTrayIcon`: menu (Open, Refresh Now, checkable Auto-refresh, About, Exit) and `clicked()` to toggle the window. Only properties *declared* on the derived component are exposed to Rust, so the inherited `icon` is bound to a declared `tray-image` property. A `SystemTrayIcon`-rooted component implements `StrongHandle` but not `ComponentHandle`, so there is no `as_weak()`; the handle is kept in an `Rc`.
 
-## The overlays (`ui/overlays/`)
+## The overlays (`crates/sunlit-ui/ui/overlays/`)
 
 The camera panel and the time bar are Slint elements drawn over the preview, children of `image-container` after `viewport-touch`, so they take the pointer inside their own bounds first and are never part of an export, a wallpaper or a golden image. They are built from primitives (`Rectangle`, `Text`, `Path`, `Image` of the SVGs in `ui/icons/`, `TouchArea`) in one dark translucent look, `OverlayStyle` in `ui/overlays/common.slint`, whatever the sidebar's palette is. Nothing in them turns with `transform-rotation`, which the software renderer ignores: the compass ring's N and ticks are placed with computed coordinates. The plan is [plans/2026-10-18-preview-overlays-plan.md](plans/2026-10-18-preview-overlays-plan.md).
 

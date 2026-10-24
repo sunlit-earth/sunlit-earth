@@ -130,12 +130,19 @@ Revert the commit. Nothing outside the repository depends on the crate layout: t
 
 ## Departures
 
-None yet.
+1. **`docs/rendering.md` and the `ui/...` mentions inside the renamed sections keep their crate-relative paths.** Step 4 lists the documents that name `ui/` paths, and `docs/rendering.md`'s table of the fourteen edits for a shader parameter has a `ui/main.slint` row it does not mention. Every other row of that table is relative to its crate (`renderer/uniforms.rs`, `shaders/sphere.wgsl`), so `ui/main.slint` is still correct relative to `crates/sunlit-ui` and stays as written. The same holds for `ui/main.slint`, `ui/tray.slint`, `ui/icons/` and `ui/overlays/common.slint` inside `docs/architecture.md`'s UI and overlay sections, whose headings now name `crates/sunlit-ui/ui/`, and for `ui/tray.slint` in an open roadmap entry. Only the workspace tree, the two headings, `docs/app-icon.md` and `CLAUDE.md` name the crate, as Step 4 says.
 
 ## Open items
 
-- The roadmap section for the entry in Step 4.
+- Resolved: the roadmap entry is under "CI and distribution", right after the entry about the dev target directory, since both are about what the development build costs rather than about a user-facing defect.
 
 ## Validation Record
 
-Empty until Step 3.
+Step 3, on the Windows desktop in this worktree at ccdcbfe, debug profile:
+
+- `cargo fmt --check`: clean.
+- `cargo build`: finished, no warnings. `cargo test -p sunlit-earth --test slint_ui`: 140 passed.
+- `cargo test --no-fail-fast`: 1942 passed, 0 failed, 20 ignored (the e2e cases). The first whole-workspace run failed five `assets::cloud_fetcher` unit tests in `sunlit-core`, because the shell the run used had `SUNLIT_EARTH_CLOUD_URL=http://127.0.0.1:8765/clouds_processed.jpg` set, which those tests read through `env_override`. That is the environment, not this change: `sunlit-core` does not depend on `sunlit-ui`. The run above had the variable unset.
+- `RUSTFLAGS="-D warnings" cargo clippy --all-targets`: finished with no warnings or errors.
+- `cargo xtask bake licenses`: 528 third-party crates, 17 license texts; `git status` shows `assets/third-party.md` and `assets/THIRD-PARTY-LICENSES.md` unchanged. `the_committed_bake_matches_a_fresh_one` and `the_committed_list_names_the_shipping_crates_and_no_others` passed in the run above.
+- Rebuild after appending an unused private function, each from a settled build and reverted with `git checkout` of the file: in `crates/sunlit-app/src/displays.rs`, `cargo build` took 5.33 s and 5.14 s (the probe measured 5.5 s, today's layout 14.5 s); in `crates/sunlit-core/src/scene/sun.rs`, 7.48 s and 8.16 s (probe 7.8 to 8.5 s, today 18.9 s).

@@ -245,8 +245,9 @@ pub fn event_forwarder(
             tracing::error!("wallpaper update failed: {e}");
             crate::ipc::signal("wallpaper_failed");
         }
-        // The running app publishes again within the hour whatever the clouds
-        // said, so only the one-shot commands wait for them.
+        // The engine's own publish gate waits for the layer's first answer,
+        // so no wallpaper the running app asks for needs this event. The
+        // one-shot commands read it to say why a picture has no clouds.
         EngineEvent::CloudsSettled { .. } => {}
         EngineEvent::Excursion(state) => {
             let weak = weak.clone();

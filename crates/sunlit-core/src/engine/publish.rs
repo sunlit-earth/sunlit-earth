@@ -14,7 +14,7 @@ use crossbeam_channel::Sender;
 use tracing::{debug, error, info, warn};
 
 use super::wallpaper_sink::{Frame, JobImages, WallpaperJob};
-use super::{Engine, EngineEvent, TILE_WAIT, join_notes, save_png, tile_output};
+use super::{CLOUD_WAIT, Engine, EngineEvent, TILE_WAIT, join_notes, save_png, tile_output};
 use crate::display::Monitor;
 use crate::display::layout::{self, Framing, Rect};
 use crate::params::SceneParams;
@@ -80,6 +80,12 @@ impl Engine {
     /// tiles are resident. The renders join the wanted set at its front from
     /// the moment they are planned, while a cube is still on its way too.
     ///
+    /// Held back as well until the cloud layer has had its first answer, a
+    /// map drawn or nothing to draw, but for [`CLOUD_WAIT`] at the most,
+    /// counted from when the cubes are resident: after that it goes out
+    /// without clouds and says so in the log. The wait is for the first
+    /// answer only, so a later poll that is slow or failing holds nothing.
+    ///
     /// One request is remembered, not a queue of them: two wallpaper updates
     /// asked for during one reload are the same wallpaper.
     pub(super) fn publish_wallpaper(&mut self) {
@@ -103,6 +109,7 @@ impl Engine {
         let cubes_pending = self.renderer.textures_pending(&self.params);
         if cubes_pending {
             self.tiles_awaited_since = None;
+            self.clouds_awaited_since = None;
         }
 
         // A debt that already stands has had its support answer and its plan,
@@ -111,7 +118,9 @@ impl Engine {
         // paid, and on Linux `check_supported` walks `PATH` with a stat per
         // directory.
         if self.wallpaper_owed
-            && (cubes_pending || (!exiting && self.shots_pending() && !self.tiles_waited_out(now)))
+            && (cubes_pending
+                || (!exiting && self.clouds_pending() && !self.clouds_waited_out(now))
+                || (!exiting && self.shots_pending() && !self.tiles_waited_out(now)))
         {
             return;
         }
@@ -142,7 +151,17 @@ impl Engine {
             self.want_now();
             return;
         }
+        // Judged only with the cubes resident, so that a first run spending
+        // minutes on its packs does not spend the cloud budget on them. The
+        // tiles the renders want are read in the meantime, since the shots
+        // are in the wanted set from the moment they are planned.
+        if self.clouds_pending() && !exiting && !self.clouds_waited_out(now) {
+            self.wallpaper_owed = true;
+            self.want_now();
+            return;
+        }
         // Draws, and with it computes the wanted set with the plan's renders.
+        // A map that landed since the hold was judged is drawn by it.
         self.prepare_export();
         let missing = self.shots_pending();
         if missing && exiting {
@@ -165,6 +184,21 @@ impl Engine {
             );
         }
 
+        if self.clouds_pending() {
+            if exiting {
+                warn!(
+                    "the cloud layer has not settled as the engine stops; the wallpaper goes out \
+                     without clouds"
+                );
+            } else {
+                warn!(
+                    waited_secs = CLOUD_WAIT.as_secs(),
+                    "the cloud layer did not settle in time; the wallpaper goes out without \
+                     clouds, and the next update has them"
+                );
+            }
+        }
+
         let shots = plan.shots.clone();
         let result = self
             .render_plan(plan)
@@ -175,6 +209,27 @@ impl Engine {
             self.reexport = true;
             self.wallpaper_shots = shots;
         }
+    }
+
+    /// Whether the cloud layer is still owed a first answer that a wallpaper
+    /// should wait for: one is drawn, there is a source to draw it from, and
+    /// `CloudsSettled` has not gone out. Without the first two the event never
+    /// comes, and after it a slow, failing or in-flight poll holds nothing, so
+    /// a session offline for hours still publishes on schedule.
+    fn clouds_pending(&self) -> bool {
+        self.cloud.is_some() && self.params.draws_clouds() && !self.clouds_settled
+    }
+
+    /// Whether the wallpaper owed has waited [`CLOUD_WAIT`] for the cloud layer
+    /// by `now`. The wait starts the first time this asks with the cubes
+    /// resident, and the log says the update is deferred at that moment, once
+    /// per wait.
+    fn clouds_waited_out(&mut self, now: Duration) -> bool {
+        let since = *self.clouds_awaited_since.get_or_insert_with(|| {
+            info!("wallpaper update deferred until the cloud layer has settled");
+            now
+        });
+        now.saturating_sub(since) >= CLOUD_WAIT
     }
 
     /// Whether the wallpaper owed has waited [`TILE_WAIT`] for its tiles by
@@ -233,6 +288,7 @@ impl Engine {
     pub(super) fn report_wallpaper(&mut self, result: Result<String, String>) {
         self.wallpaper_owed = false;
         self.tiles_awaited_since = None;
+        self.clouds_awaited_since = None;
         self.reexport = false;
         self.wallpaper_shots.clear();
         if self.excursion.is_some() {

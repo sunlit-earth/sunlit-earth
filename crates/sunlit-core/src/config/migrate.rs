@@ -13,7 +13,7 @@ use crate::scene::scene_time::{SceneTime, instant_of_override};
 /// One step from the version at its index in [`MIGRATIONS`] to the next.
 type Migration = fn(&mut Table, &mut ChangeLog);
 
-const MIGRATIONS: [Migration; 3] = [v0_to_v1, v1_to_v2, v2_to_v3];
+const MIGRATIONS: [Migration; 4] = [v0_to_v1, v1_to_v2, v2_to_v3, v3_to_v4];
 
 /// The version this build writes, and the one a file reaches after loading.
 #[expect(
@@ -127,6 +127,50 @@ fn v2_to_v3(earth: &mut Table, log: &mut ChangeLog) {
         Value::String(scene_time.to_config_string()),
         log,
     );
+}
+
+/// The aspect ratio most files were tuned on, which [`v3_to_v4`] converts for.
+const TUNED_ASPECT: f64 = 16.0 / 9.0;
+
+/// The sky's default before version 4, across the frame's width, and the one
+/// it has since, across the short edge: the same sky on a 16:9 screen to
+/// within a hundredth of a degree.
+const SKY_FOV_DEFAULT_V3: f64 = 140.0;
+const SKY_FOV_DEFAULT_V4: f64 = 86.0;
+
+/// The short edge rule: `sky_fov` and `offset_x` were measured across the
+/// frame's width and are measured on its short edge now.
+///
+/// Both are converted for the 16:9 screen most files were tuned on, so every
+/// 16:9 wallpaper is the one it was. The old default sky becomes the new
+/// default exactly, in the manner of [`change_default`], rather than the 85.99
+/// the conversion gives. `offset_y` keeps its meaning, since a landscape
+/// frame's short edge is its height, and so does `camera_fov`, whose lens was
+/// already vertical. A missing key stays missing, and a value that is not a
+/// number is left for serde to judge.
+fn v3_to_v4(earth: &mut Table, log: &mut ChangeLog) {
+    convert(earth, "sky_fov", log, |width_fov| {
+        if (width_fov - SKY_FOV_DEFAULT_V3).abs() < f64::EPSILON {
+            SKY_FOV_DEFAULT_V4
+        } else {
+            ((width_fov.to_radians() * 0.25).tan() / TUNED_ASPECT)
+                .atan()
+                .to_degrees()
+                * 4.0
+        }
+    });
+    convert(earth, "offset_x", log, |offset| offset * TUNED_ASPECT);
+}
+
+/// Replace a number `key` holds with `convert` of it, as a float.
+fn convert(earth: &mut Table, key: &str, log: &mut ChangeLog, to: impl Fn(f64) -> f64) {
+    let old = match earth.get(key) {
+        Some(Value::Float(value)) => *value,
+        #[expect(clippy::cast_precision_loss, reason = "a field of view or a pan")]
+        Some(Value::Integer(value)) => *value as f64,
+        _ => return,
+    };
+    override_value(earth, key, Value::Float(to(old)), log);
 }
 
 /// Take `key` out of the file, when it is there.
@@ -577,6 +621,96 @@ mod tests {
                 "the new key is logged"
             );
         }
+    }
+
+    // --- v3_to_v4 ---
+
+    fn short_edge_step(source: &str) -> (Table, Vec<Change>) {
+        let mut table = earth(source);
+        let changes = apply(v3_to_v4, &mut table);
+        (table, changes)
+    }
+
+    fn float(table: &Table, key: &str) -> f64 {
+        table.get(key).and_then(Value::as_float).expect("a float")
+    }
+
+    #[test]
+    fn the_old_default_sky_becomes_the_new_default_exactly() {
+        for source in ["sky_fov = 140.0\n", "sky_fov = 140\n"] {
+            let (table, changes) = short_edge_step(source);
+            assert_eq!(table.get("sky_fov"), Some(&Value::Float(86.0)), "{source}");
+            assert_eq!(changes.len(), 1, "{changes:?}");
+            assert_eq!(changes[0].key, "sky_fov");
+        }
+    }
+
+    /// Success criterion 2: on the 16:9 screen the files were tuned on, the
+    /// migrated settings frame into the lenses and the pan the old ones drew.
+    #[test]
+    fn a_migrated_file_draws_the_same_wallpaper_on_a_16_9_screen() {
+        use crate::display::layout::{Framing, screen_framing};
+
+        for (sky_fov, offset_x, offset_y) in [
+            (60.0, 0.0, 0.0),
+            (100.0, -1.5, 0.4),
+            (140.0, 0.3, -0.2),
+            (155.0, 3.0, -3.0),
+            (180.0, -3.0, 1.0),
+        ] {
+            let (table, _) = short_edge_step(&format!(
+                "sky_fov = {sky_fov:?}\noffset_x = {offset_x:?}\noffset_y = {offset_y:?}\n"
+            ));
+            #[expect(clippy::cast_possible_truncation, reason = "the f32 the config holds")]
+            let settings = Framing {
+                camera_fov: 25.0,
+                sky_fov: float(&table, "sky_fov") as f32,
+                offset_x: float(&table, "offset_x") as f32,
+                offset_y: float(&table, "offset_y") as f32,
+            };
+            let drawn = screen_framing(settings, 1920, 1080);
+            // The old default lands on the round new one rather than on its
+            // exact conversion, 85.993, and draws 140.012: a tenth of a pixel at
+            // the edge of a 1920 pixel frame.
+            let tolerance = if sky_fov == 140.0 { 0.02 } else { 1e-3 };
+            assert!(
+                (f64::from(drawn.sky_fov) - sky_fov).abs() < tolerance,
+                "{sky_fov}: {drawn:?}"
+            );
+            assert!(
+                (f64::from(drawn.offset_x) - offset_x).abs() < 1e-5,
+                "{drawn:?}"
+            );
+            assert!(
+                (f64::from(drawn.offset_y) - offset_y).abs() < 1e-6,
+                "{drawn:?}"
+            );
+            assert!((drawn.camera_fov - 25.0).abs() < 1e-4, "{drawn:?}");
+        }
+    }
+
+    #[test]
+    fn a_sky_other_than_the_old_default_converts_and_the_pan_scales() {
+        let (table, changes) = short_edge_step("sky_fov = 100.0\noffset_x = 0.9\noffset_y = 0.5\n");
+        let sky = float(&table, "sky_fov");
+        assert!(sky < 100.0, "a 16:9 width narrows to its height: {sky}");
+        assert!((float(&table, "offset_x") - 1.6).abs() < 1e-9);
+        assert_eq!(table.get("offset_y"), Some(&Value::Float(0.5)));
+        let keys: Vec<&str> = changes.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["sky_fov", "offset_x"]);
+        assert_eq!(changes[1].from, Some(Value::Float(0.9)));
+    }
+
+    #[test]
+    fn the_short_edge_step_leaves_missing_keys_missing() {
+        let (table, changes) = short_edge_step("camera_fov = 30.0\n");
+        assert!(!table.contains_key("sky_fov"));
+        assert!(!table.contains_key("offset_x"));
+        assert!(changes.is_empty(), "{changes:?}");
+        // A value that is not a number is left for serde to judge.
+        let (table, changes) = short_edge_step("sky_fov = \"wide\"\n");
+        assert_eq!(table.get("sky_fov"), Some(&Value::String("wide".into())));
+        assert!(changes.is_empty());
     }
 
     // --- versions ---

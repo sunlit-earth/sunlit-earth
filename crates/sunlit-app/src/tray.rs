@@ -89,7 +89,15 @@ fn instance_name(name: &str) -> String {
         .into_owned()
 }
 
-#[cfg(not(target_os = "macos"))]
+/// On Linux the name is an abstract socket, which every user on the host
+/// shares, so it carries the user's part.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn instance_name(name: &str) -> String {
+    format!("{name}-{}", crate::activation::user_part())
+}
+
+/// On Windows a mutex without a namespace prefix is the session's own.
+#[cfg(windows)]
 fn instance_name(name: &str) -> String {
     name.to_owned()
 }
@@ -203,8 +211,15 @@ mod tests {
                 path.parent().is_some_and(std::path::Path::is_dir),
                 "the lock's directory has to exist for the create to work: {name}"
             );
-        } else {
+        } else if cfg!(windows) {
             assert_eq!(name, "sunlit-earth-app");
+        } else {
+            assert!(name.starts_with("sunlit-earth-app-"), "{name}");
+            assert_eq!(
+                name,
+                instance_name("sunlit-earth-app"),
+                "stable for one user"
+            );
         }
     }
 

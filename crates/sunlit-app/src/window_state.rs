@@ -40,6 +40,42 @@ pub fn show(window: &MainWindow, engine: &EngineLink) {
     engine.set_preview_enabled(true);
 }
 
+/// Show the window, bring it to the front and give it the keyboard, for a
+/// second launch.
+///
+/// Windows lets the process take the foreground because the launch called
+/// `AllowSetForegroundWindow` for it. On X11 the launch's startup id goes on
+/// the window before it is mapped and its time goes with the request, so a
+/// window manager that prevents focus stealing can tell the user asked for it.
+/// On Wayland the token cannot reach the window Slint creates on show, so the
+/// compositor decides, and most mark the window rather than raise it. On macOS
+/// [`show`] already activates the app.
+///
+/// :param window: the settings window
+/// :param engine: the engine whose preview follows the window
+/// :param `startup_id`: the X11 startup notification id the launch carried
+pub fn show_and_focus(window: &MainWindow, engine: &EngineLink, startup_id: Option<&str>) {
+    if let (Some(handle), Some(id)) = (raw_handle(window), startup_id) {
+        focus::before_show(handle, id);
+    }
+    show(window, engine);
+    if let Some(handle) = raw_handle(window) {
+        focus::after_show(handle, startup_id);
+    } else {
+        tracing::debug!("the window has no handle yet to bring to the front");
+    }
+}
+
+fn raw_handle(window: &MainWindow) -> Option<raw_window_handle::RawWindowHandle> {
+    use raw_window_handle::HasWindowHandle;
+    window
+        .window()
+        .window_handle()
+        .window_handle()
+        .ok()
+        .map(|handle| handle.as_raw())
+}
+
 /// Show the window when the run starts.
 ///
 /// The event loop is not running yet, so on macOS the activation waits for
@@ -244,6 +280,127 @@ mod platform {
     pub(super) fn hidden(_keeps_dock_icon: bool) {}
 
     pub(super) fn install_reopen_handler(_on_reopen: impl Fn() + 'static) {}
+}
+
+#[cfg(windows)]
+mod focus {
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+
+    pub(super) fn before_show(_handle: RawWindowHandle, _startup_id: &str) {}
+
+    pub(super) fn after_show(handle: RawWindowHandle, _startup_id: Option<&str>) {
+        let RawWindowHandle::Win32(handle) = handle else {
+            return;
+        };
+        let hwnd = handle.hwnd.get() as HWND;
+        // SAFETY: `hwnd` is this process's own window, just shown; all three
+        // calls take it by value, touch no memory of ours, and fail harmlessly
+        // on a handle that is no longer valid.
+        #[allow(unsafe_code)]
+        let foreground = unsafe {
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            SetForegroundWindow(hwnd)
+        };
+        if foreground == 0 {
+            tracing::debug!(
+                "Windows did not let the window take the foreground, so it flashes in the task bar"
+            );
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+mod focus {
+    use raw_window_handle::RawWindowHandle;
+    use tracing::debug;
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    pub(super) fn before_show(handle: RawWindowHandle, startup_id: &str) {
+        let Some(window) = x11_window(handle) else {
+            return;
+        };
+        if let Err(e) = set_startup_id(window, startup_id) {
+            debug!("the startup id could not be put on the window: {e}");
+        }
+    }
+
+    pub(super) fn after_show(handle: RawWindowHandle, startup_id: Option<&str>) {
+        let Some(window) = x11_window(handle) else {
+            return;
+        };
+        let time = startup_id
+            .and_then(crate::activation::startup_time)
+            .unwrap_or(x11rb::CURRENT_TIME);
+        if let Err(e) = request_focus(window, time) {
+            debug!("the window manager could not be asked to focus the window: {e}");
+        }
+    }
+
+    fn x11_window(handle: RawWindowHandle) -> Option<u32> {
+        match handle {
+            RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok(),
+            RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+            _ => None,
+        }
+    }
+
+    fn atom(conn: &impl Connection, name: &[u8]) -> Result<u32, String> {
+        Ok(conn
+            .intern_atom(false, name)
+            .map_err(|e| e.to_string())?
+            .reply()
+            .map_err(|e| e.to_string())?
+            .atom)
+    }
+
+    fn set_startup_id(window: u32, startup_id: &str) -> Result<(), String> {
+        let (conn, _) = x11rb::connect(None).map_err(|e| e.to_string())?;
+        let property = atom(&conn, b"_NET_STARTUP_ID")?;
+        let utf8 = atom(&conn, b"UTF8_STRING")?;
+        conn.change_property8(
+            PropMode::REPLACE,
+            window,
+            property,
+            utf8,
+            startup_id.as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+        conn.flush().map_err(|e| e.to_string())
+    }
+
+    /// The EWMH request a pager sends, with source indication 1, an
+    /// application, so the window manager weighs it like a user's launch.
+    fn request_focus(window: u32, time: u32) -> Result<(), String> {
+        let (conn, screen) = x11rb::connect(None).map_err(|e| e.to_string())?;
+        let root = conn.setup().roots[screen].root;
+        let active = atom(&conn, b"_NET_ACTIVE_WINDOW")?;
+        let event = ClientMessageEvent::new(32, window, active, [1, time, 0, 0, 0]);
+        conn.send_event(
+            false,
+            root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
+        )
+        .map_err(|e| e.to_string())?;
+        conn.flush().map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod focus {
+    use raw_window_handle::RawWindowHandle;
+
+    pub(super) fn before_show(_handle: RawWindowHandle, _startup_id: &str) {}
+
+    pub(super) fn after_show(_handle: RawWindowHandle, _startup_id: Option<&str>) {}
 }
 
 #[cfg(test)]

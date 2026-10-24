@@ -426,6 +426,33 @@ fn test_windowed_mode_graceful_shutdown() {
     );
 }
 
+/// Launch a second instance beside a running one and wait for it to exit.
+///
+/// The same socket name as the first, so it takes the mutex scoped to that
+/// name rather than the default one, which a real running instance may hold.
+/// It is spawned by hand because it is expected to exit on its own.
+fn second_instance(socket_name: &str, extra: &[&str]) -> std::process::Output {
+    let instance = Command::new(binary())
+        .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+        .args(["--log-level", "debug", "--ipc-socket", socket_name])
+        .args(extra)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the second instance");
+    let output = wait_with_timeout(instance, SHUTDOWN);
+    assert!(
+        output.status.success(),
+        "the second instance exited with {:?}:
+{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -433,44 +460,69 @@ fn test_single_instance_second_exits() {
     if !tray_supported() {
         skip_case(
             "test_single_instance_second_exits",
-            "the app takes the single-instance mutex in tray mode only, so there \
-             is nothing to enforce in a session that hosts no tray",
+            "the app takes the single-instance mutex in tray mode only, so there              is nothing to enforce in a session that hosts no tray",
         );
         return;
     }
     let socket_name = unique_socket_name();
 
-    // A holds the mutex, so it only has to be answering; nothing here looks at
-    // what it drew.
-    let (mut guard_a, _stdout_a, stderr_a) =
-        Spawn::new(&socket_name).ready(Ready::Listener).start();
+    // A starts hidden, so the frame that follows the activation is the proof
+    // that the second launch brought its window back.
+    let (mut guard_a, stdout_a, stderr_a) = Spawn::new(&socket_name)
+        .args(["--tray-start", "hidden"])
+        .ready(Ready::HiddenWindow)
+        .start();
 
-    // The same socket name as A, so B takes the mutex scoped to that name
-    // rather than the default one, which a real running instance may hold. B
-    // is spawned by hand because it is expected to exit on its own, which is
-    // what the case is about.
-    let instance_b = Command::new(binary())
-        .env("SUNLIT_EARTH_NO_CLOUDS", "1")
-        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
-        .args(["--log-level", "debug", "--ipc-socket", &socket_name])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn instance B");
-
-    let output_b = wait_with_timeout(instance_b, SHUTDOWN);
-
-    assert!(
-        output_b.status.success(),
-        "instance B exited with non-zero status: {:?}",
-        output_b.status
-    );
-
+    let output_b = second_instance(&socket_name, &[]);
     let stderr_b = String::from_utf8_lossy(&output_b.stderr);
     assert!(
         stderr_b.contains("another instance is already running"),
-        "instance B stderr missing single-instance message:\n{stderr_b}"
+        "instance B stderr missing single-instance message:
+{stderr_b}"
+    );
+
+    stdout_a.wait_for_signal("activated version_differs=false", SIGNAL_REPLY);
+    stdout_a.wait_for_signal("first_frame_rendered", READY);
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard_a, &stderr_a);
+}
+
+/// An autostart entry that fires beside a running instance must not open its
+/// window.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_a_hidden_second_launch_leaves_the_first_alone() {
+    if !tray_supported() {
+        skip_case(
+            "test_a_hidden_second_launch_leaves_the_first_alone",
+            "the app takes the single-instance mutex in tray mode only, and this              session hosts no tray",
+        );
+        return;
+    }
+    let socket_name = unique_socket_name();
+    let (mut guard_a, stdout_a, stderr_a) = Spawn::new(&socket_name)
+        .args(["--tray-start", "hidden"])
+        .ready(Ready::HiddenWindow)
+        .start();
+
+    let output_b = second_instance(&socket_name, &["--tray-start", "hidden"]);
+    let stderr_b = String::from_utf8_lossy(&output_b.stderr);
+    assert!(
+        stderr_b.contains("asked to start hidden"),
+        "instance B did not say it stayed quiet:
+{stderr_b}"
+    );
+
+    std::thread::sleep(Duration::from_secs(3));
+    let activated: Vec<String> = stdout_a
+        .lines()
+        .into_iter()
+        .filter(|line| line.contains("SIGNAL:activated"))
+        .collect();
+    assert!(
+        activated.is_empty(),
+        "a hidden launch activated the running instance: {activated:?}"
     );
 
     quit_and_expect_clean_exit(&socket_name, &mut guard_a, &stderr_a);

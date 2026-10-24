@@ -5131,15 +5131,15 @@ fn test_every_hint_names_the_keys_of_its_control() {
     let mut used = Vec::new();
     for (source, marker) in [
         (
-            include_str!("../ui/overlays/camera-panel.slint"),
+            include_str!("../../sunlit-ui/ui/overlays/camera-panel.slint"),
             "out property <string> hovered-hint:",
         ),
         (
-            include_str!("../ui/overlays/time-bar.slint"),
+            include_str!("../../sunlit-ui/ui/overlays/time-bar.slint"),
             "out property <string> hovered-hint:",
         ),
         (
-            include_str!("../ui/main.slint"),
+            include_str!("../../sunlit-ui/ui/main.slint"),
             "property <string> hint-id:",
         ),
     ] {
@@ -6047,7 +6047,7 @@ fn test_the_speed_hint_names_the_speed() {
 // A key cap in a row narrower than its label asks for, beside text that would
 // take every pixel the cap gives up, and the label alone in the cap's font.
 slint::slint! {
-    import { KeyCap } from "ui/overlays/common.slint";
+    import { KeyCap } from "../sunlit-ui/ui/overlays/common.slint";
     export component SqueezedCap inherits Window {
         out property <length> cap-width: cap.width;
         out property <length> label-width: label.preferred-width;

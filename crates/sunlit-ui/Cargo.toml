@@ -1,0 +1,17 @@
+[package]
+name = "sunlit-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Slint user interface of Sunlit Earth, compiled from ui/"
+publish = false
+
+[dependencies]
+slint = { workspace = true, features = ["raw-window-handle-06"] }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[lints]
+workspace = true

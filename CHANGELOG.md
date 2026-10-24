@@ -2,6 +2,15 @@
 
 Notable changes to Sunlit Earth, for people who use it. The GitHub release pages list every merged pull request.
 
+## [0.5.0] - 2026-10-25
+
+- Camera and time controls directly in the scene preview. It's now easier to discover how camera controls work and all keyboard shortcuts are documented. Time controls allow you to control time. Try it, it's fun! ([#82](https://github.com/sunlit-earth/sunlit-earth/pull/82))
+- Autostart option. ([#88](https://github.com/sunlit-earth/sunlit-earth/pull/88))
+- The scene shown in the preview and the actual wallpaper now match exactly. ([#87](https://github.com/sunlit-earth/sunlit-earth/pull/87))
+- New camera mode: fixed toward the Sun, so the Earth turns below the camera. ([#80](https://github.com/sunlit-earth/sunlit-earth/pull/80))
+- Launching the app while it is already running now opens the window of the running app. ([#88](https://github.com/sunlit-earth/sunlit-earth/pull/88))
+- Other changes: Adjustable ocean colors ([#81](https://github.com/sunlit-earth/sunlit-earth/pull/81)), no more black bars around the preview window ([#86](https://github.com/sunlit-earth/sunlit-earth/pull/86)), on macOS the Dock icon only shows while the window is open ([#88](https://github.com/sunlit-earth/sunlit-earth/pull/88)), Bugfix for the first wallpaper after starting the app, which sometimes had no clouds ([#85](https://github.com/sunlit-earth/sunlit-earth/pull/85))
+
 ## [0.4.0] - 2026-10-16
 
 - Sea ice in the Arctic and Antarctic, changing with the month, based on satellite data from EUMETSAT. ([#76](https://github.com/sunlit-earth/sunlit-earth/pull/76), [#78](https://github.com/sunlit-earth/sunlit-earth/pull/78))
@@ -35,6 +44,7 @@ Notable changes to Sunlit Earth, for people who use it. The GitHub release pages
 
 - First public release, for Windows and Linux.
 
+[0.5.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.5.0
 [0.4.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.4.0
 [0.3.0]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.3.0
 [0.2.2]: https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.2.2

@@ -242,6 +242,40 @@ fn this_address(instance: &str) -> Address {
     address(instance, &user_part(), platform::runtime_dir().as_deref())
 }
 
+/// The addresses a second launch tries, in order, since the one the running
+/// instance bound depends on its environment and a launch from another shell
+/// (over ssh, after `su -`) may lack `XDG_RUNTIME_DIR`: the file in that
+/// folder when it is set and absolute, the file in `/run/user/<uid>` when that
+/// folder exists and is another one, and the per-user name.
+///
+/// :param instance: the name the single-instance guard is taken under
+/// :param user: the per-user part, [`user_part`] for this process
+/// :param `runtime_dir`: `XDG_RUNTIME_DIR` on Linux and `None` elsewhere
+/// :param uid: this user's id on Linux and `None` elsewhere
+/// :param `dir_exists`: whether a folder exists
+#[must_use]
+pub fn client_addresses(
+    instance: &str,
+    user: &str,
+    runtime_dir: Option<&str>,
+    uid: Option<u32>,
+    dir_exists: impl Fn(&Path) -> bool,
+) -> Vec<Address> {
+    let mut addresses = Vec::new();
+    if let Address::File(path) = address(instance, user, runtime_dir) {
+        addresses.push(Address::File(path));
+    }
+    if let Some(uid) = uid {
+        let dir = Path::new("/run/user").join(uid.to_string());
+        let file = Address::File(dir.join(format!("{instance}-activation.sock")));
+        if dir_exists(&dir) && !addresses.contains(&file) {
+            addresses.push(file);
+        }
+    }
+    addresses.push(Address::Namespaced(socket_name(instance, user)));
+    addresses
+}
+
 /// The per-user part of this process's names: the session id on Windows and
 /// the uid on Unix.
 #[must_use]
@@ -433,12 +467,22 @@ pub fn second_launch(instance: &str, hidden: bool) -> SecondLaunch {
 /// :returns: the running instance's process id, or why it could not be
 ///     reached
 pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, String> {
-    let address = this_address(instance);
+    #[cfg(target_os = "linux")]
+    let uid = Some(platform::uid());
+    #[cfg(not(target_os = "linux"))]
+    let uid = None;
+    let addresses = client_addresses(
+        instance,
+        &user_part(),
+        platform::runtime_dir().as_deref(),
+        uid,
+        Path::is_dir,
+    );
     let (tx, rx) = crossbeam_channel::bounded(1);
     std::thread::Builder::new()
         .name("activation-client".into())
         .spawn(move || {
-            let _ = tx.send(exchange(&address, &launch));
+            let _ = tx.send(exchange(&addresses, &launch));
         })
         .map_err(|e| format!("the hand-over thread could not be started: {e}"))?;
     rx.recv_timeout(EXCHANGE_TIMEOUT).unwrap_or_else(|_| {
@@ -449,8 +493,8 @@ pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, String> {
     })
 }
 
-fn exchange(address: &Address, launch: &Launch) -> Result<u32, String> {
-    let stream = connect(address)?;
+fn exchange(addresses: &[Address], launch: &Launch) -> Result<u32, String> {
+    let stream = connect(addresses)?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader
@@ -470,19 +514,25 @@ fn exchange(address: &Address, launch: &Launch) -> Result<u32, String> {
     Ok(pid)
 }
 
-fn connect(address: &Address) -> Result<interprocess::local_socket::Stream, String> {
+/// Connect to the first of `addresses` that answers, trying them all in
+/// order until [`CONNECT_RETRY`] runs out.
+fn connect(addresses: &[Address]) -> Result<interprocess::local_socket::Stream, String> {
     let deadline = Instant::now() + CONNECT_RETRY;
     loop {
-        let name = address
-            .name()
-            .map_err(|e| format!("`{address}` is not a usable socket name: {e}"))?;
-        match interprocess::local_socket::Stream::connect(name) {
-            Ok(stream) => return Ok(stream),
-            Err(e) if Instant::now() >= deadline => {
-                return Err(format!("the running instance could not be reached: {e}"));
+        let mut last = String::from("there was no address to try");
+        for address in addresses {
+            let attempt = address
+                .name()
+                .and_then(interprocess::local_socket::Stream::connect);
+            match attempt {
+                Ok(stream) => return Ok(stream),
+                Err(e) => last = format!("`{address}`: {e}"),
             }
-            Err(_) => std::thread::sleep(CONNECT_POLL),
         }
+        if Instant::now() >= deadline {
+            return Err(format!("the running instance could not be reached: {last}"));
+        }
+        std::thread::sleep(CONNECT_POLL);
     }
 }
 
@@ -587,6 +637,13 @@ mod platform {
     pub(super) fn runtime_dir() -> Option<String> {
         None
     }
+
+    #[cfg(target_os = "linux")]
+    #[allow(unsafe_code)]
+    pub(super) fn uid() -> u32 {
+        // SAFETY: getuid has no preconditions and cannot fail.
+        unsafe { libc::getuid() }
+    }
 }
 
 #[cfg(test)]
@@ -690,6 +747,58 @@ mod tests {
                 "{unset:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_second_launch_tries_the_runtime_folder_then_the_uids_then_the_name() {
+        let instance = "sunlit-earth-app";
+        let named = Address::Namespaced(socket_name(instance, "uid1000"));
+        let in_run_user =
+            Address::File(Path::new("/run/user/1000").join(format!("{instance}-activation.sock")));
+        let elsewhere = std::env::temp_dir().join("xdg-runtime");
+        let in_elsewhere = Address::File(elsewhere.join(format!("{instance}-activation.sock")));
+        let exists = |_: &Path| true;
+        let missing = |_: &Path| false;
+
+        assert_eq!(
+            client_addresses(instance, "uid1000", elsewhere.to_str(), Some(1000), exists),
+            [in_elsewhere.clone(), in_run_user.clone(), named.clone()]
+        );
+        assert_eq!(
+            client_addresses(instance, "uid1000", None, Some(1000), exists),
+            [in_run_user.clone(), named.clone()],
+            "a shell without XDG_RUNTIME_DIR still finds /run/user/<uid>"
+        );
+        assert_eq!(
+            client_addresses(instance, "uid1000", None, Some(1000), missing),
+            std::slice::from_ref(&named)
+        );
+        assert_eq!(
+            client_addresses(instance, "uid1000", elsewhere.to_str(), Some(1000), missing),
+            [in_elsewhere, named.clone()]
+        );
+        assert_eq!(
+            client_addresses(instance, "uid1000", Some(""), None, exists),
+            [named],
+            "no uid, no runtime folder: only the name, as on Windows and macOS"
+        );
+    }
+
+    #[test]
+    fn the_runtime_folder_that_is_run_user_is_tried_once() {
+        let instance = "sunlit-earth-app";
+        let addresses = client_addresses(
+            instance,
+            "uid1000",
+            Some("/run/user/1000"),
+            Some(1000),
+            |_| true,
+        );
+        let files = addresses
+            .iter()
+            .filter(|address| matches!(address, Address::File(_)))
+            .count();
+        assert!(files <= 1, "{addresses:?}");
     }
 
     #[test]

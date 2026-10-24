@@ -122,3 +122,5 @@ Steps 1 to 5, on the tree of 473f076, 2026-10-22, on the Windows 11 host:
 - `cargo xtask vm down all` afterwards; `vm status` shows no overlays and no run state.
 
 Validation round 1, on e6071d1..a811b9d: no majors, four minors, all fixed. The doc comments on `EngineConfig::preview_size` and `EngineCommand::SetPreviewSize` still said quantized; `docs/testing.md` still named the harness's old 512 x 288 preview; the `preview_target_size` tests wrote the tier caps down as numbers, and now derive their sizes from `max_preview_width`; and `start_viewport_timer`'s doc comment left out the tier cap.
+
+Step 6, 2026-10-24: the user resized the window and dragged the splitter on their desktop and signed off. Merged `main` at 7bc987c (the wallpaper's wait for the cloud layer, #85) into the branch; the one conflict was the two new entries at the end of `docs/roadmap.md`, both kept. On the merge, `cargo fmt --check` and `cargo clippy --all-targets` are clean and `cargo test` passes, the engine target's 147 cases among them.

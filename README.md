@@ -39,7 +39,7 @@ I built this application as an alternative to [DesktopEarth](https://web.archive
 
 Planned features:
 
-- 🔧 More setup options and autostart.
+- 🔧 More setup options.
 - 🌑 Eclipse rendering (see the moon's shadow moving over the surface of Earth).
 - 💾 Save and load your own profiles.
 
@@ -49,9 +49,9 @@ Planned features:
 
 Download the [latest release](https://github.com/sunlit-earth/sunlit-earth/releases/latest) directly (portable binaries only; there is no installer yet):
 
-- **Windows**: [sunlit-earth-0.4.0-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-windows-x86_64.zip)
-- **macOS**: [sunlit-earth-0.4.0-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.4.0-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-macos-x86_64-app.zip) (Intel)
-- **Linux**: [sunlit-earth-0.4.0-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.4.0-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.4.0/sunlit-earth-0.4.0-linux-aarch64.tar.gz) (ARM64)
+- **Windows**: [sunlit-earth-0.5.0-windows-x86_64.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.5.0/sunlit-earth-0.5.0-windows-x86_64.zip)
+- **macOS**: [sunlit-earth-0.5.0-macos-aarch64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.5.0/sunlit-earth-0.5.0-macos-aarch64-app.zip) (Apple silicon) or [sunlit-earth-0.5.0-macos-x86_64-app.zip](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.5.0/sunlit-earth-0.5.0-macos-x86_64-app.zip) (Intel)
+- **Linux**: [sunlit-earth-0.5.0-linux-x86_64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.5.0/sunlit-earth-0.5.0-linux-x86_64.tar.gz) (x86-64) or [sunlit-earth-0.5.0-linux-aarch64.tar.gz](https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.5.0/sunlit-earth-0.5.0-linux-aarch64.tar.gz) (ARM64)
 
 You can also install and update Sunlit Earth with one of these package managers:
 
@@ -87,7 +87,8 @@ Sunlit Earth is controlled through the UI, and all components have tooltips. To 
 2. Choose a preset or drag the globe to adjust the view to your liking.
 3. Click **Set as Wallpaper** to apply the scene as your desktop background.
 4. Enable **Auto-refresh wallpaper** if you want the wallpaper to keep updating in the background.
-5. You can close the window now, the app will minimize to tray. To terminate the app, right click on the tray icon and exit.
+5. Enable **Start on login** if you want Sunlit Earth to start automatically.
+6. You can close the window now, the app will minimize to tray. To terminate the app, right click on the tray icon and exit.
 
 The desktop shows a still image between updates. The preview lets you compose the next scene; click Set as Wallpaper when you want to apply your changes immediately.
 
@@ -99,13 +100,11 @@ The default globe texture resolution is 8192 pixels around the equator. Under Ad
 
 ### Adjust the view
 
-- Drag with the left mouse button: Move around the globe.
-- Scroll: Zoom in or out.
-- Drag with the right mouse button: Move the image within the frame.
-- Drag with the middle mouse button: Change camera view direction.
-- Drag with both left and right buttons: Rotate the camera.
+Use the camera panel in the top right corner to familiarize yourself with the controls; there are tooltips for everything. The camera can be fully controlled with the mouse or with keyboard shortcuts. Press F1 to see every mouse gesture and keyboard shortcut.
 
-Presets provide starting views. Open **Advanced** for precise camera and framing controls, a date and time override, and adjustments to clouds, celestial objects, atmosphere, lighting, and more.
+You can switch between live time and whatever point in time you want with the time bar at the bottom. Use the play button to advance the time of day or the days of the year, forwards or backwards.
+
+Presets only provide starting views. Open **Advanced** for adjustments to clouds, celestial objects, atmosphere, lighting, colors, and more.
 
 ### Save or restore settings
 
@@ -121,13 +120,13 @@ The settings file is `config.toml`. Back it up if you want to keep a configurati
 
 ### Export an image
 
-Render a PNG without opening the settings window:
+To render a PNG without opening the settings window, open a terminal and run:
 
 ```bash
 sunlit-earth render --output earth.png --width 3840 --height 2160
 ```
 
-This uses your saved configuration. On Windows, use `sunlit-earth.exe`; on Linux, use `./sunlit-earth` when running from its folder. Run `sunlit-earth --help` or `sunlit-earth render --help` for available options. Note that the exported image will not necessarily match your preview exactly, because it will be rendered at your specified resolution and not the preview window's resolution.
+This uses your last saved configuration. On Windows, use `sunlit-earth.exe`; on Linux or Mac, use `./sunlit-earth` when running from its folder. Run `sunlit-earth --help` or `sunlit-earth render --help` for available options. The rendered image shows the same scene as in the preview, saved at the resolution you've specified. You're not restricted to your screen size here, rendering at a much higher resolution is supported.
 
 ## Troubleshooting
 

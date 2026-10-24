@@ -235,3 +235,15 @@ cargo test
 4. **The hint for Hyprland names `exec-once =`, not `exec`.** Decision 3 gives all three sessions the same `exec <path> --tray-start hidden` line, but Hyprland's config starts a program at login with `exec-once = <command>`, and a user who pastes the `exec` line gets an error. sway and i3 keep `exec`.
 
 ## Validation rounds
+
+### Round 1
+
+Reviewed d00fc1a..2cca179: 0 MAJOR, 6 MINOR, and one side effect. All seven are fixed.
+
+1. **An older version holding the bare Linux guard name went unnoticed** (`tray.rs`), so the first start after an upgrade could run a second full instance. Fixed in 8bb5982: on Linux the bare name is asked for as well; held elsewhere, it is an older version, and the launch exits quietly with a log line, since there is no activation socket to ask; taken, it is kept, so an older version started later finds this one. The decision is the pure `decide`, unit-tested on every platform, and `docs/platforms.md` describes the transition.
+2. **Activation answer threads were unbounded and the Linux socket was open to every user** (`activation.rs`). Fixed in 9dd40be: at most four connections are answered at once and the rest are closed unanswered, and a read deadline of five seconds is set where the platform's sockets take one (Windows named pipes do not). On Linux the socket is now a file in `$XDG_RUNTIME_DIR`, departure 3, with the abstract name kept as the fallback; the cross-user and squatting hazard that remains is in `docs/platforms.md`.
+3. **String continuations and line escapes lost in the new e2e messages.** Fixed in 63ef76f, the third occurrence in the shared spawn helper included.
+4. **A comment explaining why a test exists in the xtask's e2e tests.** Removed in 63ef76f.
+5. **Hyprland's hint said `exec`.** Fixed in 278f0d7: it says `exec-once = <path> --tray-start hidden`, and sway and i3 keep `exec`; departure 4, recorded in 9dd40be. `usage.md`, `platforms.md` and the roadmap entry follow.
+6. **macOS Dock icon after About closes, and the reopen's timing** (`window_state.rs`). Fixed in c9481d3: closing the About window looks, on the next turn, at whether any window of the app is still on screen and drops the Dock icon if none is (`drops_dock_icon_after_close`, unit-tested); the reopen goes through the same zero timer as a second launch.
+7. **A second launch during the Linux tray wait could time out.** Fixed in af0341c: the activation socket is answered from before the wait, so the exchange completes at once; the activation itself runs from a zero timer once the event loop starts, after the deferred hide of a hidden start, and the tray's creation in between hides nothing.

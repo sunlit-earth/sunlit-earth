@@ -146,6 +146,10 @@ pub(crate) const WALLPAPER_PLATFORM: bool = cfg!(any(
 /// the same Windows. The VM job sets this; nothing else does.
 pub(crate) const WALLPAPER_OPT_IN: &str = "SUNLIT_EARTH_E2E_WALLPAPER";
 
+/// Whether this run is allowed to write the real start-on-login entry, which
+/// the generated guest jobs set and nothing else does.
+pub(crate) const AUTOSTART_OPT_IN: &str = "SUNLIT_EARTH_E2E_AUTOSTART";
+
 /// How long a case waits for the app to come up: the IPC listener, then the
 /// first frame or the deferred hide.
 ///

@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 pub mod linux;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod macos;
+pub mod ui;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod windows;
 
@@ -78,6 +79,32 @@ impl Autostart {
                     .unwrap_or_default()
             )
         )
+    }
+}
+
+/// What an `autostart` signal line says, read back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutostartSignal {
+    /// `off`, `on`, `off-by-system` or `unsupported`.
+    pub state: String,
+    /// The executable the entry runs, empty where there is none.
+    pub exe: String,
+}
+
+impl AutostartSignal {
+    /// Read a `SIGNAL:autostart ...` line back, the other side of
+    /// [`Autostart::signal_line`].
+    #[must_use]
+    pub fn parse(line: &str) -> Option<Self> {
+        let field = |key: &str| {
+            let prefix = format!("{key}=");
+            line.split_whitespace()
+                .find_map(|token| token.strip_prefix(prefix.as_str()))
+        };
+        Some(Self {
+            state: field("state")?.to_owned(),
+            exe: crate::activation::percent_decode(field("exe")?)?,
+        })
     }
 }
 
@@ -258,6 +285,29 @@ mod tests {
             }
             .signal_line()
             .contains("state=off-by-system")
+        );
+    }
+
+    #[test]
+    fn the_status_line_reads_back() {
+        let exe = PathBuf::from(r"C:\Program Files\Sunlit Earth 100%\sunlit-earth.exe");
+        let line = format!(
+            "SIGNAL:{}",
+            Autostart::On { exe: exe.clone() }.signal_line()
+        );
+        assert_eq!(
+            AutostartSignal::parse(&line),
+            Some(AutostartSignal {
+                state: "on".to_owned(),
+                exe: exe.to_string_lossy().into_owned(),
+            })
+        );
+        assert_eq!(
+            AutostartSignal::parse(&Autostart::Off.signal_line()),
+            Some(AutostartSignal {
+                state: "off".to_owned(),
+                exe: String::new(),
+            })
         );
     }
 

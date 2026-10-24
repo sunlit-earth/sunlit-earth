@@ -21,8 +21,8 @@ use common::pixels::{
     assert_space_corner, assert_yellowish, rgb_at,
 };
 use common::process::{
-    ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY, Spawn,
-    StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
+    AUTOSTART_OPT_IN, ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY,
+    Spawn, StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
     WALLPAPER_PLATFORM, assert_no_error_lines, binary, fixture, isolated_config_path,
     isolated_state_dir, memory_report, mib, parse_memory_entries, query_memory,
     quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
@@ -526,6 +526,84 @@ fn test_a_hidden_second_launch_leaves_the_first_alone() {
     );
 
     quit_and_expect_clean_exit(&socket_name, &mut guard_a, &stderr_a);
+}
+
+/// Removes the real start-on-login entry when the case ends, however it ends.
+struct RemoveAutostartEntry;
+
+impl Drop for RemoveAutostartEntry {
+    fn drop(&mut self) {
+        if let Err(e) = sunlit_earth::autostart::disable() {
+            eprintln!("the autostart entry the case wrote could not be removed: {e}");
+        }
+    }
+}
+
+/// Send an autostart command and read the state it answers with.
+fn autostart_over_ipc(
+    socket_name: &str,
+    stdout: &StdoutWatcher,
+    command: &str,
+) -> sunlit_earth::autostart::AutostartSignal {
+    let from = stdout.line_count();
+    send_ipc_command(socket_name, command);
+    let line = stdout.wait_for_signal_line_from("autostart ", from, SIGNAL_REPLY);
+    sunlit_earth::autostart::AutostartSignal::parse(&line)
+        .unwrap_or_else(|| panic!("{command} answered a line nobody wrote: {line}"))
+}
+
+/// The entry is the setting: enabling writes one for this executable and
+/// disabling removes it, each read back over IPC.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_autostart_round_trip_over_ipc() {
+    const CASE: &str = "test_autostart_round_trip_over_ipc";
+    if std::env::var_os(AUTOSTART_OPT_IN).is_none_or(|value| value.is_empty()) {
+        skip_case(
+            CASE,
+            "it writes the real start-on-login entry of this machine, which              is harmless in a throwaway guest; the VM job sets SUNLIT_EARTH_E2E_AUTOSTART",
+        );
+        return;
+    }
+    let _cleanup = RemoveAutostartEntry;
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout, stderr) = Spawn::new(&socket_name).start();
+
+    let status = autostart_over_ipc(&socket_name, &stdout, "autostart-status");
+    if status.state == "unsupported" {
+        skip_case(CASE, "this session starts nothing at login");
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr);
+        return;
+    }
+
+    let on = autostart_over_ipc(&socket_name, &stdout, "autostart-enable");
+    assert_eq!(on.state, "on", "{on:?}");
+    let written = std::path::PathBuf::from(&on.exe);
+    let spawned = binary();
+    let same = match (written.canonicalize(), spawned.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => sunlit_earth::autostart::same_exe(&written, &spawned),
+    };
+    assert!(
+        same || cfg!(target_os = "macos"),
+        "the entry runs {} rather than {}",
+        written.display(),
+        spawned.display()
+    );
+    assert_eq!(
+        autostart_over_ipc(&socket_name, &stdout, "autostart-status"),
+        on
+    );
+
+    let off = autostart_over_ipc(&socket_name, &stdout, "autostart-disable");
+    assert_eq!(off.state, "off", "{off:?}");
+    assert_eq!(
+        autostart_over_ipc(&socket_name, &stdout, "autostart-status").state,
+        "off"
+    );
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr);
 }
 
 #[test]

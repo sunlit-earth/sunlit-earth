@@ -38,6 +38,7 @@ pub fn show(window: &MainWindow, engine: &EngineLink) {
     }
     platform::shown();
     engine.set_preview_enabled(true);
+    crate::autostart::ui::refresh(window);
 }
 
 /// Show the window, bring it to the front and give it the keyboard, for a

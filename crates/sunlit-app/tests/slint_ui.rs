@@ -6077,3 +6077,84 @@ fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
     assert!(!window.get_version_notice_open());
     assert!(labelled(&window, "Quit Sunlit Earth").is_empty());
 }
+
+/// The "Start on login" check box, found by its label.
+fn start_on_login(window: &MainWindow) -> ElementHandle {
+    labelled(window, "Start on login")
+        .into_iter()
+        .find(|element| element.accessible_checkable() == Some(true))
+        .expect("the Start on login switch")
+}
+
+/// The texts on screen, by their accessible labels.
+fn texts_on_screen(window: &MainWindow) -> Vec<String> {
+    ElementQuery::from_root(window)
+        .find_all()
+        .into_iter()
+        .filter_map(|element| element.accessible_label())
+        .map(|label| label.to_string())
+        .collect()
+}
+
+/// The switch shows the entry it is given: on for this copy with nothing
+/// under it, on with the other path named, off with the system's switch-off
+/// named, and disabled with the line to add where the session has no
+/// autostart.
+#[test]
+fn test_the_start_on_login_switch_shows_the_entry_it_is_given() {
+    use std::path::PathBuf;
+    use sunlit_earth::autostart::{self, Autostart};
+
+    let window = create_window();
+
+    let this = autostart::this_exe().expect("this test's own path");
+    autostart::ui::show(&window, &Autostart::On { exe: this });
+    let switch = start_on_login(&window);
+    assert_eq!(switch.accessible_checked(), Some(true));
+    assert_eq!(switch.accessible_enabled(), Some(true));
+    assert!(window.get_autostart_note().is_empty());
+
+    let other = PathBuf::from("/somewhere/else/sunlit-earth");
+    autostart::ui::show(&window, &Autostart::On { exe: other });
+    assert_eq!(start_on_login(&window).accessible_checked(), Some(true));
+    assert!(
+        texts_on_screen(&window)
+            .iter()
+            .any(|text| text.contains("/somewhere/else/sunlit-earth")),
+        "the note names the other copy"
+    );
+
+    autostart::ui::show(
+        &window,
+        &Autostart::TurnedOffBySystem {
+            exe: PathBuf::from("/x"),
+        },
+    );
+    assert_eq!(start_on_login(&window).accessible_checked(), Some(false));
+    assert!(
+        texts_on_screen(&window)
+            .iter()
+            .any(|text| text.starts_with("Turned off in")),
+        "the note says where it was switched off"
+    );
+
+    let reason = "This session does not start apps from the autostart folder. \
+                  Add `exec /usr/bin/sunlit-earth --tray-start hidden` to its config.";
+    autostart::ui::show(
+        &window,
+        &Autostart::Unsupported {
+            reason: reason.to_owned(),
+        },
+    );
+    let switch = start_on_login(&window);
+    assert_eq!(switch.accessible_checked(), Some(false));
+    assert_eq!(switch.accessible_enabled(), Some(false));
+    assert!(
+        texts_on_screen(&window).iter().any(|text| text == reason),
+        "the exec line is on screen"
+    );
+
+    autostart::ui::show(&window, &Autostart::Off);
+    assert_eq!(start_on_login(&window).accessible_checked(), Some(false));
+    assert!(window.get_autostart_note().is_empty());
+}

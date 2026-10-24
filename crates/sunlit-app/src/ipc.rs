@@ -20,6 +20,10 @@
 //! - `set-wallpaper` — renders and publishes the wallpaper, signalling the
 //!   outcome once the engine reports it
 //! - `displays` — reports the session's monitors and the plan they come to
+//! - `autostart-enable`, `autostart-disable`: write or remove the start on
+//!   login entry, then answer like `autostart-status`
+//! - `autostart-status`: reports the entry as `SIGNAL:autostart state=<off|on|
+//!   off-by-system|unsupported> exe=<percent-encoded path>`
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -218,11 +222,38 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
                 }
             }
         }
+        "autostart-enable" | "autostart-disable" | "autostart-status" => {
+            debug!("ipc: received {cmd} command");
+            report_autostart(cmd, window_weak);
+        }
         "" => {}
         _ => {
             warn!("unknown ipc command: {cmd}");
         }
     }
+}
+
+/// Answer the autostart commands on the listener thread, where the registry or
+/// the file is as reachable as anywhere, and let the window follow.
+fn report_autostart(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>) {
+    let state = match cmd {
+        "autostart-enable" | "autostart-disable" => {
+            let (state, written) = crate::autostart::set(cmd == "autostart-enable");
+            if let Err(e) = written {
+                warn!("ipc: {cmd} failed: {e}");
+            }
+            state
+        }
+        _ => crate::autostart::read(),
+    };
+    signal(&state.signal_line());
+    let ww = window_weak.clone();
+    slint::invoke_from_event_loop(move || {
+        if let Some(win) = ww.upgrade() {
+            crate::autostart::ui::show(&win, &state);
+        }
+    })
+    .ok();
 }
 
 /// Answer the `displays` command with the session's layout on one line.

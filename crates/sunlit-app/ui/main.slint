@@ -3,6 +3,7 @@ import { MonitorTile, Splitter, Hint, SettingRow, SettingColor, SettingCheck, Se
 import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } from "overlays/common.slint";
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
+import { VersionNotice } from "overlays/version-notice.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
@@ -275,6 +276,13 @@ export component MainWindow inherits Window {
     in-out property <bool> overlays-hidden;
     // The sheet of every gesture and shortcut, which F1 or Ctrl + ? opens.
     in-out property <bool> shortcut-sheet-open;
+    // Shown over the preview when a launch of another version found this one
+    // running. Rust opens it and fills in the two versions.
+    in-out property <bool> version-notice-open;
+    in property <string> version-notice-running;
+    in property <string> version-notice-launched;
+    // The notice's "Quit Sunlit Earth", which ends the app like the tray's Exit.
+    callback quit-app();
 
     // The time bar. Rust writes what it shows; the transport's callbacks act
     // on the excursion and the tracks', exact entry's and Now's on the time
@@ -2549,6 +2557,15 @@ export component MainWindow inherits Window {
             width: parent.width;
             height: parent.height;
             close => { root.shortcut-sheet-open = false; }
+        }
+
+        if root.version-notice-open : VersionNotice {
+            width: parent.width;
+            height: parent.height;
+            running: root.version-notice-running;
+            launched: root.version-notice-launched;
+            close => { root.version-notice-open = false; }
+            quit => { root.quit-app(); }
         }
 
         if image-container.tip-shown && !root.overlays-hidden : GestureTip {

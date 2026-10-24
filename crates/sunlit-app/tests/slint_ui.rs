@@ -6008,3 +6008,72 @@ fn test_a_click_outside_a_picker_closes_it_as_cancel_does() {
         );
     }
 }
+
+/// A link to an engine nobody runs, for callbacks that only send to it.
+fn idle_link() -> sunlit_earth::engine_client::EngineLink {
+    let (sender, _) = crossbeam_channel::unbounded();
+    sunlit_earth::engine_client::EngineLink::new(sender, vec!["None".to_owned()], vec![1])
+}
+
+/// The elements with this accessible label, however many there are.
+fn labelled(window: &MainWindow, label: &str) -> Vec<ElementHandle> {
+    ElementHandle::find_by_accessible_label(window, label).collect()
+}
+
+/// A second launch of the version that runs shows the window and nothing
+/// else; one of another version gets the notice, which names both and which
+/// "Close" takes away.
+#[test]
+fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
+    use sunlit_earth::activation::{Launch, activate};
+
+    let window = create_window();
+    let link = idle_link();
+    let running = env!("CARGO_PKG_VERSION");
+
+    activate(
+        &window,
+        &link,
+        &Launch {
+            version: Some(running.to_owned()),
+            ..Launch::default()
+        },
+    );
+    assert!(window.window().is_visible());
+    assert!(!window.get_version_notice_open());
+    assert!(labelled(&window, "Quit Sunlit Earth").is_empty());
+
+    let launched = "999.0.0-test";
+    activate(
+        &window,
+        &link,
+        &Launch {
+            version: Some(launched.to_owned()),
+            exe: Some("/elsewhere/sunlit-earth".to_owned()),
+            ..Launch::default()
+        },
+    );
+    assert!(window.get_version_notice_open());
+    assert_eq!(labelled(&window, "Quit Sunlit Earth").len(), 1);
+    let message: Vec<String> = ElementQuery::from_root(&window)
+        .find_all()
+        .into_iter()
+        .filter_map(|element| element.accessible_label())
+        .map(|label| label.to_string())
+        .filter(|label| label.contains(launched))
+        .collect();
+    assert!(
+        message.iter().any(|text| text.contains(running)),
+        "the notice names both versions: {message:?}"
+    );
+    assert!(
+        message.iter().all(|text| !text.contains("/elsewhere")),
+        "the launched path belongs in the log, not the notice: {message:?}"
+    );
+
+    let close = labelled(&window, "Close");
+    assert_eq!(close.len(), 1);
+    close[0].invoke_accessible_default_action();
+    assert!(!window.get_version_notice_open());
+    assert!(labelled(&window, "Quit Sunlit Earth").is_empty());
+}

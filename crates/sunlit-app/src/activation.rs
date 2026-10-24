@@ -407,7 +407,35 @@ pub fn activate(window: &MainWindow, engine: &EngineLink, launch: &Launch) {
         "another launch asked for the window"
     );
     crate::window_state::show_and_focus(window, engine, launch.startup_id.as_deref());
+    if differs {
+        show_version_notice(
+            window,
+            running,
+            launch.version.as_deref().unwrap_or_default(),
+        );
+    }
     crate::ipc::signal(&format!("activated version_differs={differs}"));
+}
+
+/// Open the notice that the launched copy, another version, did not start.
+///
+/// :param window: the settings window
+/// :param running: this instance's version
+/// :param launched: the version that was launched
+pub fn show_version_notice(window: &MainWindow, running: &str, launched: &str) {
+    window.set_version_notice_running(running.into());
+    window.set_version_notice_launched(launched.into());
+    window.set_version_notice_open(true);
+}
+
+/// Wire the notice's "Quit Sunlit Earth" to the same end as the tray's Exit.
+///
+/// :param window: the settings window
+pub fn register_version_notice(window: &MainWindow) {
+    window.on_quit_app(|| {
+        debug!("the version notice asked to quit");
+        slint::quit_event_loop().ok();
+    });
 }
 
 #[cfg(windows)]

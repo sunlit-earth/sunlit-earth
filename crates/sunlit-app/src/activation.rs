@@ -8,18 +8,24 @@
 //! then shows and focuses its window, and says so when the launched copy is
 //! another version.
 //!
-//! The name carries a per-user part, because Windows named pipes are visible
+//! On Linux the socket is a file in `$XDG_RUNTIME_DIR`, which only its user
+//! can open. Elsewhere, and on Linux without that folder, it is a name that
+//! carries a per-user part, because Windows named pipes are visible
 //! machine-wide and Linux abstract sockets to every user on the host: the
 //! session id on Windows, which is also the scope of the guard's mutex there,
 //! and the uid on Unix.
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{ListenerExt, Stream as _};
-use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
+use interprocess::local_socket::{
+    GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName,
+};
 use tracing::{debug, info, warn};
 
 use crate::MainWindow;
@@ -42,6 +48,17 @@ pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
 /// lines; anything past these limits is not this program talking.
 const MAX_LINES: usize = 16;
 const MAX_BYTES: u64 = 64 * 1024;
+
+/// How long the running instance waits for a connection to say all it has to
+/// say, where the platform's sockets take a read deadline. Windows named pipes
+/// take none, which is what [`MAX_ANSWERING`] is for.
+const ANSWER_DEADLINE: Duration = Duration::from_secs(5);
+
+/// The most connections answered at once. A launch says its piece in well
+/// under a second, so more than this at a time is not launches, and the
+/// connections beyond it are closed unanswered rather than given a thread
+/// each that a silent peer could hold forever.
+const MAX_ANSWERING: usize = 4;
 
 /// What a second launch says about itself. Every field is optional on the
 /// wire, so a launch that leaves one out is still understood.
@@ -177,6 +194,54 @@ pub fn socket_name(instance: &str, user: &str) -> String {
     format!("{instance}-activation-{user}")
 }
 
+/// Where the activation socket of an instance is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Address {
+    /// A name in the platform's namespace for local sockets.
+    Namespaced(String),
+    /// A socket file.
+    File(PathBuf),
+}
+
+impl Address {
+    fn name(&self) -> std::io::Result<Name<'_>> {
+        match self {
+            Self::Namespaced(name) => name.as_str().to_ns_name::<GenericNamespaced>(),
+            Self::File(path) => path.as_path().to_fs_name::<GenericFilePath>(),
+        }
+    }
+}
+
+impl std::fmt::Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Namespaced(name) => f.write_str(name),
+            Self::File(path) => write!(f, "{}", path.display()),
+        }
+    }
+}
+
+/// Where the activation socket of `instance` is: a file in the user's own
+/// runtime folder when there is one, and a per-user name otherwise.
+///
+/// :param instance: the name the single-instance guard is taken under
+/// :param user: the per-user part, [`user_part`] for this process
+/// :param `runtime_dir`: `XDG_RUNTIME_DIR` on Linux and `None` elsewhere;
+///     blank or relative counts as unset
+#[must_use]
+pub fn address(instance: &str, user: &str, runtime_dir: Option<&str>) -> Address {
+    match runtime_dir.map(str::trim).map(Path::new) {
+        Some(dir) if dir.is_absolute() => {
+            Address::File(dir.join(format!("{instance}-activation.sock")))
+        }
+        _ => Address::Namespaced(socket_name(instance, user)),
+    }
+}
+
+fn this_address(instance: &str) -> Address {
+    address(instance, &user_part(), platform::runtime_dir().as_deref())
+}
+
 /// The per-user part of this process's names: the session id on Windows and
 /// the uid on Unix.
 #[must_use]
@@ -195,7 +260,7 @@ pub fn startup_time(startup_id: &str) -> Option<u32> {
 /// A socket that is bound and not yet being answered.
 pub struct ActivationListener {
     listener: interprocess::local_socket::Listener,
-    name: String,
+    address: Address,
 }
 
 /// Take the activation socket of `instance`.
@@ -206,27 +271,26 @@ pub struct ActivationListener {
 /// :param instance: the name the single-instance guard is taken under
 /// :returns: the bound socket, or why it could not be taken
 pub fn bind(instance: &str) -> Result<ActivationListener, String> {
-    let name = socket_name(instance, &user_part());
-    let ns_name = name
-        .as_str()
-        .to_ns_name::<GenericNamespaced>()
-        .map_err(|e| format!("`{name}` is not a usable socket name: {e}"))?;
+    let address = this_address(instance);
+    let name = address
+        .name()
+        .map_err(|e| format!("`{address}` is not a usable socket name: {e}"))?;
     let listener = ListenerOptions::new()
-        .name(ns_name)
+        .name(name)
         .try_overwrite(true)
         .max_spin_time(Duration::from_secs(1))
         .create_sync()
-        .map_err(|e| format!("the activation socket `{name}` could not be opened: {e}"))?;
-    Ok(ActivationListener { listener, name })
+        .map_err(|e| format!("the activation socket `{address}` could not be opened: {e}"))?;
+    Ok(ActivationListener { listener, address })
 }
 
 impl ActivationListener {
     /// Answer every launch that connects, on a thread of its own.
     ///
     /// Each connection is answered on a short thread of its own, so a client
-    /// that connects and never finishes holds up nobody but itself. The
-    /// listener's consumer is `on_launch`, and it runs for as long as the
-    /// process does.
+    /// that connects and never finishes holds up nobody but itself, and at
+    /// most [`MAX_ANSWERING`] are answered at once. The listener's consumer is
+    /// `on_launch`, and it runs for as long as the process does.
     ///
     /// :param `on_launch`: what a launch that said all it had to say does,
     ///     called on the connection's thread
@@ -235,18 +299,28 @@ impl ActivationListener {
         self,
         on_launch: impl Fn(Launch) + Send + Sync + 'static,
     ) -> Result<std::thread::JoinHandle<()>, String> {
-        let Self { listener, name } = self;
+        let Self { listener, address } = self;
         let on_launch: Arc<dyn Fn(Launch) + Send + Sync> = Arc::new(on_launch);
+        let answering = Arc::new(AtomicUsize::new(0));
         let thread = std::thread::Builder::new()
             .name("activation".into())
             .spawn(move || {
                 for conn in listener.incoming() {
                     match conn {
                         Ok(stream) => {
+                            let Some(slot) = AnswerSlot::take(&answering) else {
+                                warn!(
+                                    "{MAX_ANSWERING} connections are being answered already, so another was closed"
+                                );
+                                continue;
+                            };
                             let on_launch = Arc::clone(&on_launch);
                             let answered = std::thread::Builder::new()
                                 .name("activation-answer".into())
-                                .spawn(move || answer(stream, on_launch.as_ref()));
+                                .spawn(move || {
+                                    let _slot = slot;
+                                    answer(stream, on_launch.as_ref());
+                                });
                             if let Err(e) = answered {
                                 warn!("a second launch could not be answered: {e}");
                             }
@@ -256,8 +330,28 @@ impl ActivationListener {
                 }
             })
             .map_err(|e| format!("the activation thread could not be started: {e}"))?;
-        info!("activation socket ready on {name}");
+        info!("activation socket ready on {address}");
         Ok(thread)
+    }
+}
+
+/// One of the [`MAX_ANSWERING`] places, given back when it drops.
+struct AnswerSlot(Arc<AtomicUsize>);
+
+impl AnswerSlot {
+    fn take(answering: &Arc<AtomicUsize>) -> Option<Self> {
+        answering
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                (taken < MAX_ANSWERING).then_some(taken + 1)
+            })
+            .ok()
+            .map(|_| Self(Arc::clone(answering)))
+    }
+}
+
+impl Drop for AnswerSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -266,6 +360,9 @@ fn answer(
     mut stream: interprocess::local_socket::Stream,
     on_launch: &(dyn Fn(Launch) + Send + Sync),
 ) {
+    if let Err(e) = stream.set_recv_timeout(Some(ANSWER_DEADLINE)) {
+        debug!("this platform's sockets take no read deadline: {e}");
+    }
     if let Err(e) = stream
         .write_all(format!("pid={}\n", std::process::id()).as_bytes())
         .and_then(|()| stream.flush())
@@ -336,12 +433,12 @@ pub fn second_launch(instance: &str, hidden: bool) -> SecondLaunch {
 /// :returns: the running instance's process id, or why it could not be
 ///     reached
 pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, String> {
-    let name = socket_name(instance, &user_part());
+    let address = this_address(instance);
     let (tx, rx) = crossbeam_channel::bounded(1);
     std::thread::Builder::new()
         .name("activation-client".into())
         .spawn(move || {
-            let _ = tx.send(exchange(&name, &launch));
+            let _ = tx.send(exchange(&address, &launch));
         })
         .map_err(|e| format!("the hand-over thread could not be started: {e}"))?;
     rx.recv_timeout(EXCHANGE_TIMEOUT).unwrap_or_else(|_| {
@@ -352,8 +449,8 @@ pub fn hand_over(instance: &str, launch: Launch) -> Result<u32, String> {
     })
 }
 
-fn exchange(name: &str, launch: &Launch) -> Result<u32, String> {
-    let stream = connect(name)?;
+fn exchange(address: &Address, launch: &Launch) -> Result<u32, String> {
+    let stream = connect(address)?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader
@@ -373,13 +470,13 @@ fn exchange(name: &str, launch: &Launch) -> Result<u32, String> {
     Ok(pid)
 }
 
-fn connect(name: &str) -> Result<interprocess::local_socket::Stream, String> {
+fn connect(address: &Address) -> Result<interprocess::local_socket::Stream, String> {
     let deadline = Instant::now() + CONNECT_RETRY;
     loop {
-        let ns_name = name
-            .to_ns_name::<GenericNamespaced>()
-            .map_err(|e| format!("`{name}` is not a usable socket name: {e}"))?;
-        match interprocess::local_socket::Stream::connect(ns_name) {
+        let name = address
+            .name()
+            .map_err(|e| format!("`{address}` is not a usable socket name: {e}"))?;
+        match interprocess::local_socket::Stream::connect(name) {
             Ok(stream) => return Ok(stream),
             Err(e) if Instant::now() >= deadline => {
                 return Err(format!("the running instance could not be reached: {e}"));
@@ -464,6 +561,10 @@ mod platform {
             tracing::debug!("the running instance could not be allowed the foreground");
         }
     }
+
+    pub(super) fn runtime_dir() -> Option<String> {
+        None
+    }
 }
 
 #[cfg(unix)]
@@ -476,6 +577,16 @@ mod platform {
     }
 
     pub(super) fn allow_foreground(_pid: u32) {}
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn runtime_dir() -> Option<String> {
+        std::env::var("XDG_RUNTIME_DIR").ok()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn runtime_dir() -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -557,6 +668,40 @@ mod tests {
         assert_ne!(a, socket_name("sunlit-earth-app", "uid1001"));
         assert_ne!(a, socket_name("sunlit-earth-e2e", "uid1000"));
         assert_eq!(user_part(), user_part());
+    }
+
+    #[test]
+    fn the_socket_is_a_file_in_the_runtime_folder_when_there_is_one() {
+        let dir = std::env::temp_dir().join("run-user-1000");
+        let file = address("sunlit-earth-app", "uid1000", dir.to_str());
+        let Address::File(path) = &file else {
+            panic!("an absolute runtime folder holds the socket: {file:?}");
+        };
+        assert_eq!(path.parent(), Some(dir.as_path()));
+        assert_ne!(
+            file,
+            address("sunlit-earth-e2e", "uid1000", dir.to_str()),
+            "two instance names are two sockets"
+        );
+        for unset in [None, Some(""), Some("  "), Some("relative/run")] {
+            assert_eq!(
+                address("sunlit-earth-app", "uid1000", unset),
+                Address::Namespaced(socket_name("sunlit-earth-app", "uid1000")),
+                "{unset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn answers_beyond_the_limit_are_refused_and_a_finished_one_frees_its_place() {
+        let answering = Arc::new(AtomicUsize::new(0));
+        let slots: Vec<AnswerSlot> = (0..MAX_ANSWERING)
+            .map(|_| AnswerSlot::take(&answering).expect("a free place"))
+            .collect();
+        assert!(AnswerSlot::take(&answering).is_none());
+        drop(slots);
+        assert_eq!(answering.load(Ordering::Acquire), 0);
+        assert!(AnswerSlot::take(&answering).is_some());
     }
 
     #[test]

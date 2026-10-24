@@ -90,9 +90,14 @@ jobs:
           fi
         shell: bash
 
+      # rust-cache hashes every installed toolchain into its key, so the
+      # image's own stable Rust would turn each image update into a cache miss.
+      # A rustup home of the job's own holds only the pinned toolchain.
       - name: Install the pinned toolchain
         run: |
           set -euo pipefail
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
           rustup toolchain install --no-self-update
           rustup show active-toolchain
         shell: bash
@@ -207,6 +212,23 @@ jobs:
       # A hosted runner accepts no inbound connection, so the session is dialled
       # from inside. The node is ephemeral and answers on a 100.x address that
       # routes only from this tailnet, which is why printing it below is safe.
+      #
+      # The action points the system resolver at MagicDNS, which resolves no
+      # public name here, and brew, git, the app's cloud download and the
+      # artifact upload all need one. The session is reached by its 100.x
+      # address and needs no MagicDNS, so the runner's own DNS settings are
+      # noted before the join and put back after it.
+      - name: Note the runner's DNS settings
+        if: ${{ inputs.interactive && !cancelled() }}
+        run: |
+          set -euo pipefail
+          servers=$(networksetup -getdnsservers Ethernet | grep -E '^[0-9A-Fa-f:.]+$' | tr '\n' ' ' || true)
+          domains=$(networksetup -getsearchdomains Ethernet | grep -v -i "aren't any" | tr '\n' ' ' || true)
+          echo "dns servers: ${servers:-none, from DHCP}; search domains: ${domains:-none}"
+          echo "RUNNER_DNS_SERVERS=$servers" >> "$GITHUB_ENV"
+          echo "RUNNER_DNS_DOMAINS=$domains" >> "$GITHUB_ENV"
+        shell: bash
+
       - name: Join the tailnet
         if: ${{ inputs.interactive && !cancelled() }}
         uses: tailscale/github-action@v4
@@ -214,6 +236,26 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
+
+      - name: Give the runner its DNS back
+        if: ${{ inputs.interactive && !cancelled() }}
+        run: |
+          set -euo pipefail
+          # Unquoted: several servers or domains are several arguments.
+          sudo networksetup -setdnsservers Ethernet ${RUNNER_DNS_SERVERS:-empty}
+          sudo networksetup -setsearchdomains Ethernet ${RUNNER_DNS_DOMAINS:-empty}
+          sudo dscacheutil -flushcache
+          sudo killall -HUP mDNSResponder || true
+          for attempt in $(seq 1 10); do
+            if dscacheutil -q host -a name ghcr.io | grep -q ip_address; then
+              echo "ghcr.io resolves again after $attempt lookup(s)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::warning::ghcr.io still does not resolve; the resolver configuration follows"
+          scutil --dns | head -40
+        shell: bash
 
       # Apple's own server authenticates and then streams black: the image grants
       # screen capture to the runner's process tree and not to screensharingd's

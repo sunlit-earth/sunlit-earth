@@ -1484,19 +1484,30 @@ fn test_save_preserves_settings_without_a_widget() {
 // The sky slider's range
 // ---------------------------------------------------------------------------
 
-/// The sky slider stops at 180 degrees, and that is not the shader's ceiling.
+/// The sky slider spans the short edge, and its range covers every sky the
+/// width-measured slider offered on the 16:9 screen most configs were tuned on,
+/// 60 to 180 degrees across, which is what the version 4 step converts them to.
 ///
-/// `display::layout::SKY_FOV_MAX` is 330, which is the widest sky a spanned
-/// canvas may derive. The slider means the anchor screen's own field of view and
-/// every other screen extends outward from it, so widening the slider to the
-/// shader's clamp would offer a setting that means nothing on one screen and
-/// double-counts on several.
+/// Its top is not the shader's ceiling either: `display::layout::SKY_FOV_MAX`
+/// is 330, the widest sky a wide output or a span may derive, and the slider
+/// means the short edge every output extends outward from.
 #[test]
-fn test_the_sky_slider_stops_where_one_screen_stops() {
-    let window = create_window();
+fn test_the_sky_slider_covers_the_range_it_had_on_a_16_9_screen() {
+    use sunlit_core::display::layout::{Framing, screen_framing};
 
-    approx::assert_relative_eq!(window.get_sky_fov_minimum(), 60.0);
-    approx::assert_relative_eq!(window.get_sky_fov_maximum(), 180.0);
+    let window = create_window();
+    let across_16_9 = |sky_fov: f32| {
+        let settings = Framing {
+            camera_fov: 20.0,
+            sky_fov,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        screen_framing(settings, 1920, 1080).sky_fov
+    };
+    assert!(across_16_9(window.get_sky_fov_minimum()) <= 60.0);
+    assert!(across_16_9(window.get_sky_fov_maximum()) >= 180.0);
+    assert!(across_16_9(window.get_sky_fov_maximum()) < 200.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -3181,6 +3192,230 @@ fn test_h_hides_and_shows_the_overlays() {
     );
 }
 
+/// The frame guides are off at every start, the panel's button and F toggle
+/// them, H hides them with the other overlays, and nothing of them is saved.
+#[test]
+fn test_the_frame_guides_toggle_and_hide_with_the_overlays() {
+    let (window, _sent) = wired_window();
+    assert!(!window.get_guides_shown(), "the guides are off at start");
+    assert!(!window.get_guides_visible());
+
+    press_at(
+        &window,
+        point_in(
+            &the_element(&window, "CameraPanel::guides-button"),
+            0.5,
+            0.5,
+        ),
+    );
+    assert!(window.get_guides_shown(), "the button shows the guides");
+    assert!(window.get_guides_visible());
+    press_at(
+        &window,
+        point_in(
+            &the_element(&window, "CameraPanel::guides-button"),
+            0.5,
+            0.5,
+        ),
+    );
+    assert!(!window.get_guides_shown(), "the button hides them again");
+
+    click_the_globe(&window);
+    tap(&window, "f");
+    assert!(window.get_guides_shown(), "F shows the guides");
+    tap(&window, "h");
+    assert!(
+        window.get_guides_shown() && !window.get_guides_visible(),
+        "H hides the guides with the overlays and leaves them on"
+    );
+    tap(&window, "h");
+    assert!(window.get_guides_visible(), "H again brings them back");
+    tap(&window, "f");
+    assert!(!window.get_guides_shown(), "F again hides them");
+
+    let read = |window: &MainWindow| {
+        ui_callbacks::read_config_from_window_onto(window, &AA_COUNTS, &AppConfig::default(), false)
+    };
+    let off = read(&window);
+    tap(&window, "f");
+    assert_eq!(read(&window), off, "the guides are not a setting");
+}
+
+/// Show `frame` in the window as the engine would hand it over: its size,
+/// the short edge it was framed on, and the screen it was framed for.
+fn show_frame(window: &MainWindow, frame: (i32, i32), short_edge: f32, screen: Option<(i32, i32)>) {
+    let (screen_width, screen_height) = screen.unwrap_or((0, 0));
+    window.set_frame_width(frame.0);
+    window.set_frame_height(frame.1);
+    window.set_frame_short_edge(short_edge);
+    window.set_frame_screen_width(screen_width);
+    window.set_frame_screen_height(screen_height);
+}
+
+/// A guide's rectangle, `[x, y, width, height]`.
+fn guide_rect(guide: &sunlit_earth::FrameGuide) -> [f32; 4] {
+    [guide.x, guide.y, guide.width, guide.height]
+}
+
+/// The preview panel's size, as the guides are laid out in it.
+fn container(window: &MainWindow) -> (f32, f32) {
+    (window.get_viewport_width(), window.get_viewport_height())
+}
+
+/// The rectangle of `aspect` the guides should draw for a displayed short
+/// edge `short_edge`, centered on the container.
+fn expected_rect(window: &MainWindow, aspect: f32, short_edge: f32) -> [f32; 4] {
+    let (width, height) = container(window);
+    let (w, h) = if aspect >= 1.0 {
+        (short_edge * aspect, short_edge)
+    } else {
+        (short_edge, short_edge / aspect)
+    };
+    [(width - w) / 2.0, (height - h) / 2.0, w, h]
+}
+
+fn assert_rect(actual: [f32; 4], expected: [f32; 4], what: &str) {
+    for (a, e) in actual.iter().zip(expected) {
+        assert!(
+            (a - e).abs() < 0.5,
+            "{what}: {actual:?}, expected {expected:?}"
+        );
+    }
+}
+
+/// A frame of the container's own shape, framed for `screen` the way the
+/// engine frames the preview: the screen's rectangle as tall as the frame.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn frame_filling_the_container(window: &MainWindow, screen: Option<(i32, i32)>) -> f32 {
+    let (width, height) = container(window);
+    let frame = (width.round() as i32, height.round() as i32);
+    let short_edge = match screen {
+        Some((w, h)) => frame.1 as f32 * (w as f32 / h as f32).min(1.0),
+        None => frame.1 as f32,
+    };
+    show_frame(window, frame, short_edge, screen);
+    short_edge * height / frame.1 as f32
+}
+
+/// Where the guides sit: each aspect's rectangle has its short side the
+/// displayed short edge and is centered, a landscape screen's as tall as the
+/// frame in a wide panel and a narrow one, a portrait screen's too, a screen
+/// within 1% of 16:9 sharing that rectangle and its labels, and no screen
+/// leaving only 16:9 and 4:3.
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn test_the_frame_guides_outline_each_aspect_on_the_displayed_short_edge() {
+    let window = create_window();
+    window.set_guides_shown(true);
+
+    for (size, what) in [
+        ((3000, 900), "a wide panel"),
+        ((1200, 1400), "a narrow panel"),
+    ] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(size.0, size.1));
+        let short_edge = frame_filling_the_container(&window, Some((2560, 1440)));
+        let (width, height) = container(&window);
+        approx::assert_relative_eq!(window.get_displayed_short_edge(), height, epsilon = 0.5);
+        let screen = window.get_guide_screen();
+        assert!(screen.shown, "{what}");
+        assert_rect(
+            guide_rect(&screen),
+            expected_rect(&window, 2560.0 / 1440.0, short_edge),
+            what,
+        );
+        approx::assert_relative_eq!(screen.height, height, epsilon = 0.5);
+        assert_eq!(screen.label, "Screen 2560 × 1440");
+        if what == "a narrow panel" {
+            assert!(
+                screen.width > width,
+                "the screen's sides are clipped in {what}"
+            );
+        }
+        // 2560x1440 is 16:9, so the screen's rectangle carries both labels,
+        // a row apart.
+        let wide = window.get_guide_wide();
+        assert!(
+            !wide.shown,
+            "{what}: 16:9 is drawn as the screen's rectangle"
+        );
+        approx::assert_relative_eq!(wide.label_x, screen.label_x);
+        assert!(wide.label_y > screen.label_y + 10.0, "{what}");
+        let classic = window.get_guide_classic();
+        assert!(classic.shown);
+        assert_rect(
+            guide_rect(&classic),
+            expected_rect(&window, 4.0 / 3.0, short_edge),
+            what,
+        );
+        assert!(classic.label_y > wide.label_y, "{what}: the labels stack");
+    }
+
+    // A portrait screen: its rectangle as tall as the frame, its width the
+    // short edge.
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(2400, 1000));
+    let short_edge = frame_filling_the_container(&window, Some((1080, 1920)));
+    let (_, height) = container(&window);
+    let screen = window.get_guide_screen();
+    assert_rect(
+        guide_rect(&screen),
+        expected_rect(&window, 1080.0 / 1920.0, short_edge),
+        "a portrait screen",
+    );
+    approx::assert_relative_eq!(screen.height, height, epsilon = 0.5);
+    assert!(window.get_guide_wide().shown && window.get_guide_classic().shown);
+
+    // Within 1% of 16:9 is 16:9.
+    frame_filling_the_container(&window, Some((1366, 768)));
+    assert!(
+        !window.get_guide_wide().shown,
+        "1366x768 shares 16:9's rectangle"
+    );
+    frame_filling_the_container(&window, Some((1920, 1200)));
+    assert!(window.get_guide_wide().shown, "16:10 is not 16:9");
+
+    // No screen: only 16:9 and 4:3, labelled from the top row.
+    let short_edge = frame_filling_the_container(&window, None);
+    assert!(!window.get_guide_screen().shown);
+    let (wide, classic) = (window.get_guide_wide(), window.get_guide_classic());
+    assert!(wide.shown && classic.shown);
+    assert_rect(
+        guide_rect(&wide),
+        expected_rect(&window, 16.0 / 9.0, short_edge),
+        "no screen",
+    );
+    assert!(classic.label_y > wide.label_y);
+}
+
+/// The guides follow the frame shown rather than the panel: a frame drawn
+/// for another panel shape, shown with `cover` while a resize settles, puts
+/// the displayed short edge where `cover` puts that frame's.
+#[test]
+fn test_the_frame_guides_follow_the_frame_shown_while_a_resize_settles() {
+    let window = create_window();
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(2000, 1000));
+    let (width, height) = container(&window);
+    // A square frame from before the panel was widened: `cover` scales it to
+    // the panel's width and crops its top and bottom.
+    show_frame(&window, (500, 500), 500.0, Some((1920, 1080)));
+    let scale = (width / 500.0).max(height / 500.0);
+    approx::assert_relative_eq!(
+        window.get_displayed_short_edge(),
+        500.0 * scale,
+        epsilon = 0.5
+    );
+    assert_rect(
+        guide_rect(&window.get_guide_screen()),
+        expected_rect(&window, 16.0 / 9.0, 500.0 * scale),
+        "the old frame",
+    );
+}
+
 /// A held arrow orbits the camera for as long as it is held, and with Shift
 /// held it swings the look instead.
 #[test]
@@ -4771,13 +5006,14 @@ fn caps_holding_their_labels(parent: &ElementHandle, what: &str) -> Vec<ElementH
 
 /// The overlay controls whose hints carry keys, most of them a mouse gesture
 /// too.
-const HINTED_CONTROLS: [&str; 8] = [
+const HINTED_CONTROLS: [&str; 9] = [
     "CameraPanel::orbit",
     "CameraPanel::zoom-in",
     "CameraPanel::zoom-slider",
     "CameraPanel::zoom-out",
     "CameraPanel::look",
     "CameraPanel::frame",
+    "CameraPanel::guides-button",
     "CameraPanel::help-button",
     "CameraPanel::hide-button",
 ];
@@ -4829,7 +5065,7 @@ fn test_a_hints_gesture_and_keys_stay_inside_it() {
 /// The keys each hinted control's action has, in the hint's own spelling,
 /// with `SHIFT` and `MOD` standing for the platform's names; "or" between
 /// keys is left out.
-const HINT_KEYS: [(&str, &[&str]); 18] = [
+const HINT_KEYS: [(&str, &[&str]); 19] = [
     ("orbit", &["←↑↓→", "WASD"]),
     ("look", &["SHIFT", "←↑↓→", "WASD"]),
     ("frame", &["MOD", "←↑↓→", "WASD"]),
@@ -4838,6 +5074,7 @@ const HINT_KEYS: [(&str, &[&str]); 18] = [
     ("zoom", &["+", "−"]),
     ("zoom-in", &["+"]),
     ("zoom-out", &["−"]),
+    ("guides", &["F"]),
     ("hide", &["H"]),
     ("show", &["H"]),
     ("skip-back", &[","]),
@@ -5100,7 +5337,7 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
                 .find_all();
             assert_eq!(
                 texts.len(),
-                20,
+                21,
                 "{what}: the sheet lists every gesture and key"
             );
             for text in &texts {

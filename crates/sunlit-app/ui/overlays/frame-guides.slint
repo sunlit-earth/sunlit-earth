@@ -1,0 +1,141 @@
+// Outlines of the pictures the preview stands for: the anchor screen's, a
+// 16:9 render's and a 4:3 render's, each centered on the preview with its
+// short side the frame's short edge as it is displayed. Every output is the
+// same picture scaled until the short edges match, so a rectangle is exactly
+// what a render of that shape shows.
+
+import { OverlayStyle } from "common.slint";
+
+// One outline, in the coordinates of the container it is drawn over.
+export struct FrameGuide {
+    // Whether the outline is drawn. One that coincides with the screen's is
+    // not, and its label goes inside the screen's.
+    shown: bool,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    label: string,
+    label-x: length,
+    label-y: length,
+}
+
+component GuideOutline inherits Rectangle {
+    in property <FrameGuide> guide;
+    in property <color> line-color;
+
+    x: guide.x;
+    y: guide.y;
+    width: guide.width;
+    height: guide.height;
+    border-width: guide.shown ? 1px : 0;
+    border-color: line-color;
+}
+
+component GuideLabel inherits Text {
+    in property <FrameGuide> guide;
+
+    x: guide.label-x;
+    y: guide.label-y;
+    text: guide.label;
+    font-size: 11px;
+}
+
+export component FrameGuides inherits Rectangle {
+    // The frame's short edge as it is displayed, in logical pixels.
+    in property <length> short-edge;
+    // The anchor screen the frame was framed for, or zero for none known.
+    in property <int> screen-width;
+    in property <int> screen-height;
+
+    property <bool> has-screen: screen-width > 0 && screen-height > 0;
+    property <float> screen-aspect: has-screen ? screen-width / screen-height : 1;
+    // Within 1% of a guide's aspect ratio, the screen is that guide.
+    property <bool> screen-is-wide: has-screen && abs(screen-aspect * 9 / 16 - 1) < 0.01;
+    property <bool> screen-is-classic: has-screen && abs(screen-aspect * 3 / 4 - 1) < 0.01;
+    // One label row: the labels of outlines whose edges are close stack
+    // rather than overlap.
+    property <length> label-row: 15px;
+    property <length> inset: 5px;
+
+    // The outline of an aspect ratio `aspect` whose short side is the short
+    // edge, centered.
+    pure function outline(aspect: float) -> FrameGuide {
+        let w = aspect >= 1 ? root.short-edge * aspect : root.short-edge;
+        let h = aspect >= 1 ? root.short-edge : root.short-edge / aspect;
+        return {
+            shown: true,
+            x: (root.width - w) / 2,
+            y: (root.height - h) / 2,
+            width: w,
+            height: h,
+        };
+    }
+
+    property <FrameGuide> screen-outline: outline(screen-aspect);
+    property <FrameGuide> wide-outline: outline(16 / 9);
+    property <FrameGuide> classic-outline: outline(4 / 3);
+
+    out property <FrameGuide> screen: {
+        shown: has-screen,
+        x: screen-outline.x,
+        y: screen-outline.y,
+        width: screen-outline.width,
+        height: screen-outline.height,
+        label: has-screen ? "Screen " + screen-width + " × " + screen-height : "",
+        label-x: screen-outline.x + inset,
+        label-y: screen-outline.y + inset,
+    };
+    out property <FrameGuide> wide: {
+        shown: !screen-is-wide,
+        x: wide-outline.x,
+        y: wide-outline.y,
+        width: wide-outline.width,
+        height: wide-outline.height,
+        label: "16:9",
+        label-x: (screen-is-wide ? screen-outline.x : wide-outline.x) + inset,
+        label-y: (screen-is-wide ? screen-outline.y : wide-outline.y) + inset + (has-screen ? label-row : 0),
+    };
+    out property <FrameGuide> classic: {
+        shown: !screen-is-classic,
+        x: classic-outline.x,
+        y: classic-outline.y,
+        width: classic-outline.width,
+        height: classic-outline.height,
+        label: "4:3",
+        label-x: (screen-is-classic ? screen-outline.x : classic-outline.x) + inset,
+        label-y: (screen-is-classic ? screen-outline.y : classic-outline.y) + inset + (has-screen ? label-row * 2 : label-row),
+    };
+
+    property <color> other: OverlayStyle.fg.with-alpha(0.55);
+
+    GuideOutline {
+        guide: root.classic;
+        line-color: root.other;
+    }
+
+    GuideOutline {
+        guide: root.wide;
+        line-color: root.other;
+    }
+
+    GuideOutline {
+        guide: root.screen;
+        line-color: OverlayStyle.accent;
+    }
+
+    if root.has-screen: GuideLabel {
+        guide: root.screen;
+        color: OverlayStyle.accent;
+    }
+
+    GuideLabel {
+        guide: root.wide;
+        color: root.other;
+    }
+
+    GuideLabel {
+        guide: root.classic;
+        color: root.other;
+    }
+}

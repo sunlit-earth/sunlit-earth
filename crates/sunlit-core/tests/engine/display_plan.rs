@@ -44,12 +44,13 @@ fn one_monitor_is_one_image_at_its_own_size_in_every_mode() {
 /// The one thing a single monitor does *not* come out of this unchanged, and it
 /// is on purpose.
 ///
-/// A portrait screen is what the contain rule exists for, and containing is
-/// exactly what byte-identity forbids. The rule wins, so the exception is pinned
-/// here rather than left latent: the publish is not the pre-feature render, and
-/// it is precisely the render at the contained lens.
+/// A portrait screen is what the contain rule exists for, and the short edge
+/// rule contains it: the Earth lens spans the screen's width. The exception is
+/// pinned here rather than left latent: the publish is not the render at the
+/// setting's own vertical lens, and it is exactly what an export of the same
+/// size draws, since an export is framed as a screen of its size is.
 #[test]
-fn a_portrait_screen_takes_the_contained_lens_instead_of_the_old_one() {
+fn a_portrait_screen_takes_the_contained_lens_and_an_export_of_its_size_matches() {
     let gpu = gpu();
     let group = plain(&gpu);
     let published = publish_plan(
@@ -60,24 +61,22 @@ fn a_portrait_screen_takes_the_contained_lens_instead_of_the_old_one() {
     );
     assert_eq!(published.images, vec![Some((192, 320))]);
 
-    let before = group.export(192, 320);
-    assert_ne!(
-        picture(&published, 0).pixels,
-        before,
-        "a portrait screen still renders what it did before the contain rule"
-    );
-
-    // And what it renders instead is the setting run through the rule, not
-    // something that merely differs from it.
-    let mut contained = test_params();
-    contained.camera.fov_deg =
-        sunlit_core::display::layout::contain_camera_fov(contained.camera.fov_deg, 192, 320);
-    assert!(contained.camera.fov_deg > test_params().camera.fov_deg);
-    let widened = group.picture(&contained, (192, 320));
     assert_eq!(
         picture(&published, 0).pixels,
-        widened,
-        "the portrait screen's wallpaper is not the contain rule's own framing"
+        group.export(192, 320),
+        "a portrait export is not the portrait screen's wallpaper"
+    );
+
+    // The setting's own vertical lens on the same screen: the lens that the
+    // contain rule widens to the setting, rendered.
+    let mut uncontained = test_params();
+    let half = (uncontained.camera.fov_deg.to_radians() * 0.5).tan() * 192.0 / 320.0;
+    uncontained.camera.fov_deg = (half.atan() * 2.0).to_degrees();
+    let old = group.picture(&uncontained, (192, 320));
+    assert_ne!(
+        picture(&published, 0).pixels,
+        old,
+        "a portrait screen still renders the setting as a vertical lens"
     );
 }
 

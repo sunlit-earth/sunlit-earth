@@ -369,3 +369,29 @@ impl sunlit_core::assets::cloud_source::CloudSource for FixtureClouds {
         )
     }
 }
+
+/// The settings an output of `width` by `height` frames into `output`.
+///
+/// The inverse of the short edge rule in `display::layout::output_framing`
+/// for a screen or an export, whose short edge is the shorter side: `output`
+/// carries the vertical Earth lens, the horizontal sky lens and the NDC pan
+/// the renderer takes, and what comes back is the settings that frame into
+/// them. A case written in the renderer's units, as every golden reference
+/// was made, keeps its picture through it whatever the settings mean.
+#[allow(clippy::cast_precision_loss)]
+pub fn settings_for_output(
+    output: &sunlit_core::params::SceneParams,
+    width: u32,
+    height: u32,
+) -> sunlit_core::params::SceneParams {
+    let (width, height) = (width as f32, height as f32);
+    let short_edge = width.min(height);
+    let mut settings = *output;
+    let camera_half = (output.camera.fov_deg.to_radians() * 0.5).tan() * short_edge / height;
+    settings.camera.fov_deg = (camera_half.atan() * 2.0).to_degrees();
+    let sky_quarter = (output.sky_fov.to_radians() * 0.25).tan() * short_edge / width;
+    settings.sky_fov = (sky_quarter.atan() * 4.0).to_degrees();
+    settings.camera.offset_x = output.camera.offset_x * width / short_edge;
+    settings.camera.offset_y = output.camera.offset_y * height / short_edge;
+    settings
+}

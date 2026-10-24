@@ -231,11 +231,13 @@ pub struct AppConfig {
     pub pitch: f32,
 
     // Framing
+    /// The pan, in halves of the picture's short edge, so that it moves the
+    /// scene by the same share of every output whatever its shape.
     pub offset_x: f32,
     pub offset_y: f32,
-    /// Vertical field of view of the Earth lens, in degrees, between
-    /// `CAMERA_FOV_MIN` and `CAMERA_FOV_MAX`. The sky has its own lens and its
-    /// own `sky_fov`; this one frames the globe.
+    /// Field of view of the Earth lens across the picture's short edge, in
+    /// degrees, between `CAMERA_FOV_MIN` and `CAMERA_FOV_MAX`. The sky has its
+    /// own lens and its own `sky_fov`; this one frames the globe.
     pub camera_fov: f32,
 
     // Rendering
@@ -288,7 +290,8 @@ pub struct AppConfig {
     pub atmo_sunrise_width: f32,
 
     // Celestial background
-    /// Horizontal field of view for the stereographic sky lens, in degrees.
+    /// Field of view of the stereographic sky lens across the picture's short
+    /// edge, in degrees.
     pub sky_fov: f32,
     /// Display brightness gain for stars and naked eye planets. A value of
     /// `1.0` is the renderer's neutral artistic exposure, while zero disables
@@ -481,7 +484,7 @@ impl Default for AppConfig {
             nightglow_balance: 0.37,
             atmo_sunrise_glow: 1.0,
             atmo_sunrise_width: 20.0,
-            sky_fov: 140.0,
+            sky_fov: 86.0,
             star_intensity: 2.0,
             star_size: 1.0,
             star_glow_strength: 0.5,
@@ -1296,6 +1299,7 @@ sky_fov = 111.0
             (4096, 8, 0.55),
             "the fixture holds 0.2.2's defaults"
         );
+        assert_relative_eq!(as_written.sky_fov, 140.0);
         let defaults = AppConfig::default();
         assert_eq!(
             load_config_from(&path),
@@ -1303,9 +1307,34 @@ sky_fov = 111.0
                 texture_resolution: defaults.texture_resolution,
                 sample_count: defaults.sample_count,
                 cloud_opacity_night: defaults.cloud_opacity_night,
+                sky_fov: defaults.sky_fov,
                 ..as_written
             }
         );
+    }
+
+    /// A version 3 file, whose sky and horizontal pan were measured across the
+    /// width, loads with both on the short edge and the rest as it was.
+    #[test]
+    fn a_file_from_version_3_loads_its_framing_on_the_short_edge() {
+        let scratch = ScratchDir::new("config_v3");
+        let path = scratch.join("config.toml");
+        fs::write(
+            &path,
+            "version = 3\n[sunlit.earth]\nsky_fov = 140.0\noffset_x = 0.45\noffset_y = -0.2\n\
+             camera_fov = 25.0\n",
+        )
+        .unwrap();
+        let loaded = load_config_from(&path);
+        assert_relative_eq!(loaded.sky_fov, AppConfig::default().sky_fov);
+        assert_relative_eq!(loaded.offset_x, 0.8, epsilon = 1e-6);
+        assert_relative_eq!(loaded.offset_y, -0.2);
+        assert_relative_eq!(loaded.camera_fov, 25.0);
+
+        fs::write(&path, "version = 3\n[sunlit.earth]\nlongitude = 42.0\n").unwrap();
+        let loaded = load_config_from(&path);
+        assert_relative_eq!(loaded.sky_fov, AppConfig::default().sky_fov);
+        assert_relative_eq!(loaded.offset_x, AppConfig::default().offset_x);
     }
 
     #[test]

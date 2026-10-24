@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use crate::color::Rgb8;
 use crate::params::{
     CLOUD_SPHERE_RADIUS, CLOUD_TERMINATOR_WIDTH, NIGHTGLOW_GREEN_RADIUS, NIGHTGLOW_ORANGE_RADIUS,
-    RAYLEIGH_RADIUS, SceneParams,
+    OutputParams, RAYLEIGH_RADIUS, SceneParams,
 };
 use crate::scene::camera::OrbitalCamera;
 use crate::scene::moon;
@@ -124,7 +124,9 @@ impl<'a> RenderTarget<'a> {
 ///
 /// This is one of the two translation points for `SceneParams` (the other is
 /// the Slint bridge in the app): everything the shader reads is derived here
-/// and nowhere else. The Moon's placement is part of that derivation, and the
+/// and nowhere else. It takes `OutputParams`, so the fields of view and the pan
+/// it reads are already the output's own, derived by `display::layout`. The
+/// Moon's placement is part of that derivation, and the
 /// placement is what decides whether there is a silhouette to draw at all, so
 /// this is also the one place that can narrow the selection: a Moon with no
 /// disc is returned as `None` and never reaches the pass.
@@ -137,7 +139,7 @@ impl<'a> RenderTarget<'a> {
 pub(super) fn write_uniforms<'a>(
     queue: &wgpu::Queue,
     uniform_buffer: &wgpu::Buffer,
-    params: &SceneParams,
+    params: &OutputParams,
     viewport_width: u32,
     viewport_height: u32,
     inputs: &FrameInputs,
@@ -437,7 +439,7 @@ pub(super) fn encode_and_submit(
 /// cannot be missing from the other.
 pub(super) fn draw_scene(
     res: &Renderer,
-    params: &SceneParams,
+    params: &OutputParams,
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
     width: u32,
@@ -475,7 +477,7 @@ pub(super) fn draw_scene(
 #[tracing::instrument(level = "trace", skip_all, fields(width = res.render_width, height = res.render_height))]
 pub(super) fn execute_render_pass(
     res: &Renderer,
-    params: &SceneParams,
+    params: &OutputParams,
     bind_group: &wgpu::BindGroup,
     inputs: &FrameInputs,
 ) {

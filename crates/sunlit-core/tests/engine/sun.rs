@@ -237,7 +237,7 @@ fn horizon_params(longitude: f32) -> SceneParams {
     params.camera.longitude = longitude;
     params.camera.latitude = -23.44;
     params.camera.zoom = 0.227_047_34;
-    params.sky_fov = 140.0;
+    params.sky_fov = crate::harness::output_sky_as_setting(140.0);
     params
 }
 
@@ -327,7 +327,9 @@ fn a_pan_past_the_frame_corner_still_draws_the_sun() {
          the Sun may not touch a pixel of it"
     );
 
-    framed.camera.offset_x = -0.9;
+    // The pan is in halves of the short edge, and the width of the 2:1 frame
+    // is two of them: this is 0.9 of the frame's half width.
+    framed.camera.offset_x = -1.8;
     let (painted, brightest) = added(harness, &framed);
     assert!(
         painted > 4000 && brightest > 8,
@@ -392,7 +394,9 @@ fn a_pan_slides_the_composite_without_shearing_it() {
     let panned_params = |offset_x: f32| {
         let mut params = sun_params(160.0);
         params.sun_glow = 1.5;
-        params.camera.offset_x = offset_x;
+        // The pan is in halves of the short edge, and the width of the 2:1
+        // frame is two of them.
+        params.camera.offset_x = offset_x * 2.0;
         params
     };
     let gpu = gpu();

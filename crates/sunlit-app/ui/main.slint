@@ -4,6 +4,7 @@ import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } fr
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
 import { VersionNotice } from "overlays/version-notice.slint";
+import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
@@ -11,6 +12,7 @@ export { AboutWindow } from "about.slint";
 export { TrayIcon } from "tray.slint";
 export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
 export { OverlayHints, OverlayStyle } from "overlays/common.slint";
+export { FrameGuide } from "overlays/frame-guides.slint";
 export { TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 
 // The settings behind the Advanced section, one struct per group, nested the
@@ -191,6 +193,28 @@ export component MainWindow inherits Window {
 
     in property <string> version;
     in property <image> rendered-image;
+    // How the frame in `rendered-image` was framed: its size in pixels, the
+    // short edge the settings are measured on there, and the anchor screen it
+    // was framed for, zero for none known. They travel with the frame, so
+    // what follows them follows the frame shown, the old one shown with
+    // `cover` while a resize settles included.
+    in property <int> frame-width;
+    in property <int> frame-height;
+    in property <float> frame-short-edge;
+    in property <int> frame-screen-width;
+    in property <int> frame-screen-height;
+    // The frame's short edge as `cover` displays it, in logical pixels: what
+    // the frame guides are sized from and what a slow drag is measured on.
+    out property <length> displayed-short-edge: root.frame-width > 0 && root.frame-height > 0
+        ? root.frame-short-edge * 1px * max(image-container.width / (root.frame-width * 1px), image-container.height / (root.frame-height * 1px))
+        : image-container.height;
+    // The frame guides, off at every start and never saved: a framing aid
+    // rather than a setting.
+    in-out property <bool> guides-shown: false;
+    out property <bool> guides-visible: root.guides-shown && !root.overlays-hidden;
+    out property <FrameGuide> guide-screen: frame-guides.screen;
+    out property <FrameGuide> guide-wide: frame-guides.wide;
+    out property <FrameGuide> guide-classic: frame-guides.classic;
     in property <string> renderer-info: "Initializing...";
     in property <[string]> aa-options: ["None", "MSAA 4\u{d7}"];
     in-out property <int> aa-index;
@@ -220,11 +244,13 @@ export component MainWindow inherits Window {
 
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
-    // The sky slider's own range. A hemisphere is as much sky as one screen
-    // can mean, and the shader's clamp is wider, so the two numbers live here
-    // rather than in the row and a test can read what the row is built from.
-    out property <float> sky-fov-minimum: 60.0;
-    out property <float> sky-fov-maximum: 180.0;
+    // The sky slider's own range, across the picture's short side: a 16:9
+    // screen draws about 53 to 183 degrees across its width from it, which
+    // holds the 60 to 180 the slider had when it was measured on the width.
+    // The shader's clamp is wider, so the two numbers live here rather than
+    // in the row and a test can read what the row is built from.
+    out property <float> sky-fov-minimum: 30.0;
+    out property <float> sky-fov-maximum: 120.0;
 
     // What a slider's number means, derived in Rust and written here rather
     // than worked out again in this file: the camera's distance behind the
@@ -859,7 +885,7 @@ export component MainWindow inherits Window {
 
                                 camera-fov-slider := SettingRow {
                                     label: "Field of view";
-                                    hint: "How wide the Earth lens is: narrow flattens the globe the way a long lens does, wide exaggerates its curvature. The sky behind it has a lens of its own.";
+                                    hint: "How wide the Earth lens is, across the short side of the picture: narrow flattens the globe the way a long lens does, wide exaggerates its curvature. The sky behind it has a lens of its own.";
                                     minimum: 10.0;
                                     maximum: 170.0;
                                     value <=> root.framing.fov;
@@ -870,9 +896,9 @@ export component MainWindow inherits Window {
 
                                 offset-x-slider := SettingRow {
                                     label: "Offset X";
-                                    hint: "Slides the finished frame left or right without moving the camera.";
-                                    minimum: -3.0;
-                                    maximum: 3.0;
+                                    hint: "Slides the finished frame left or right without moving the camera, in halves of the short side of the picture.";
+                                    minimum: -5.5;
+                                    maximum: 5.5;
                                     value <=> root.framing.offset-x;
                                     default-value: root.defaults.framing.offset-x;
                                     value-text: round(root.framing.offset-x * 100) / 100;
@@ -887,7 +913,7 @@ export component MainWindow inherits Window {
 
                                 offset-y-slider := SettingRow {
                                     label: "Offset Y";
-                                    hint: "Slides the finished frame up or down without moving the camera.";
+                                    hint: "Slides the finished frame up or down without moving the camera, in halves of the short side of the picture.";
                                     minimum: -3.0;
                                     maximum: 3.0;
                                     value <=> root.framing.offset-y;
@@ -1191,7 +1217,7 @@ export component MainWindow inherits Window {
 
                                 sky-fov-slider := SettingRow {
                                     label: "Field of view";
-                                    hint: "How much sky the background lens covers, which is what sets the scale of the constellations and the Milky Way.";
+                                    hint: "How much sky the background lens covers across the short side of the picture, which is what sets the scale of the constellations and the Milky Way.";
                                     indent: 8px;
                                     minimum: root.sky-fov-minimum;
                                     maximum: root.sky-fov-maximum;
@@ -1877,6 +1903,16 @@ export component MainWindow inherits Window {
             image-fit: cover;
         }
 
+        // Under every control drawn over the preview, and hidden with them.
+        frame-guides := FrameGuides {
+            width: parent.width;
+            height: parent.height;
+            visible: root.guides-visible;
+            short-edge: root.displayed-short-edge;
+            screen-width: root.frame-screen-width;
+            screen-height: root.frame-screen-height;
+        }
+
         property <length> last-mouse-x;
         property <length> last-mouse-y;
         property <bool> left-held: false;
@@ -2155,6 +2191,10 @@ export component MainWindow inherits Window {
             } else if event.text.to-lowercase() == "h" {
                 if down && !event.repeat {
                     root.overlays-hidden = !root.overlays-hidden;
+                }
+            } else if event.text.to-lowercase() == "f" {
+                if down && !event.repeat {
+                    root.guides-shown = !root.guides-shown;
                 }
             } else if event.text == " " {
                 if down && !event.repeat {
@@ -2481,6 +2521,8 @@ export component MainWindow inherits Window {
                 root.shortcut-sheet-open = true;
                 preview-keys.focus();
             }
+            guides-shown: root.guides-shown;
+            toggle-guides => { root.guides-shown = !root.guides-shown; }
             hide-overlays => { root.overlays-hidden = true; }
         }
 

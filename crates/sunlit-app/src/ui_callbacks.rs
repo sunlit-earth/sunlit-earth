@@ -93,7 +93,7 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
         let gain = mouse_math::drag_gain(
             cursor_speed,
             mouse_math::coarse_drag_gain(position.zoom),
-            mouse_math::fine_drag_gain(win.get_celestial().sky.fov, win.get_viewport_width()),
+            mouse_math::fine_drag_gain(win.get_celestial().sky.fov, win.get_displayed_short_edge()),
         );
         // The Sun-fixed mode turns the globe through the longitude its time of
         // day stands for, so the drag keeps its gain, its tilt correction and

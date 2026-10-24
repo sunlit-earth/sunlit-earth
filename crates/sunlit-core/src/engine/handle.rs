@@ -61,6 +61,10 @@ pub struct EngineConfig {
     pub display_mode: crate::display::layout::DisplayMode,
     /// The monitor the plan is anchored to; `None` follows the system primary.
     pub anchor_monitor: Option<String>,
+    /// The monitors this session has at startup, which the preview is framed
+    /// for until a publish or a display change lists them again. Empty where
+    /// they are not known, and the preview then frames on its own height.
+    pub monitors: Vec<crate::display::Monitor>,
     /// Called on the engine thread for every event. Clients that need to be on
     /// another thread (the UI) forward from here.
     pub on_event: Arc<dyn Fn(EngineEvent) + Send + Sync>,
@@ -128,6 +132,7 @@ impl EngineConfig {
             wallpaper: Arc::new(wallpaper_sink::SystemWallpaper),
             display_mode: crate::display::layout::DisplayMode::default(),
             anchor_monitor: None,
+            monitors: Vec::new(),
             on_event: Arc::new(|_| {}),
             record_metrics: false,
             mailbox: None,

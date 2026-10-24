@@ -36,6 +36,7 @@ fn camera_showing(
     viewport: glam::Vec2,
 ) -> (f32, f32) {
     let world = sky.world_from_eqj * eqj;
+    let drawn_sky = crate::harness::drawn_at(params, viewport).sky_fov;
     let score = |longitude: f32, latitude: f32| -> Option<f32> {
         let camera = sunlit_core::scene::camera::OrbitalCamera::new(
             longitude,
@@ -46,7 +47,7 @@ fn camera_showing(
         let circle = sunlit_core::scene::sky_lens::sky_lens_disc(
             view_direction,
             0.0,
-            params.sky_fov,
+            drawn_sky,
             glam::Vec2::ZERO,
             viewport,
         )?;
@@ -145,7 +146,7 @@ fn eqj_screen_position(
     sunlit_core::scene::sky_lens::sky_lens_disc(
         view_direction,
         0.0,
-        params.sky_fov,
+        crate::harness::drawn_at(params, viewport).sky_fov,
         glam::Vec2::ZERO,
         viewport,
     )
@@ -205,6 +206,8 @@ fn panorama_params() -> SceneParams {
             zoom: 0.6,
             ..Default::default()
         },
+        // The sky the cases were measured at, 140 degrees across the 2:1 frame.
+        sky_fov: crate::harness::output_sky_as_setting(140.0),
         ..SceneParams::default()
     };
     params.time = sunlit_core::scene::scene_time::SceneTime::fixed(
@@ -485,7 +488,7 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
         eqj_direction(LANDMARK.0, LANDMARK.1),
         &state,
         &SceneParams {
-            sky_fov: 60.0,
+            sky_fov: crate::harness::output_sky_as_setting(60.0),
             ..params
         },
         viewport,
@@ -494,7 +497,10 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
     params.camera.latitude = latitude;
 
     let measure = |sky_fov: f32| {
-        let framing = SceneParams { sky_fov, ..params };
+        let framing = SceneParams {
+            sky_fov: crate::harness::output_sky_as_setting(sky_fov),
+            ..params
+        };
         let sky = sky_for(&framing);
         let view_direction = (camera_for(&framing).view_matrix()
             * (sky.world_from_eqj * eqj_direction(LANDMARK.0, LANDMARK.1)).extend(0.0))

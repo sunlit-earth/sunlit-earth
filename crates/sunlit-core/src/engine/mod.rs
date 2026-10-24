@@ -28,7 +28,8 @@ use crate::assets::cloud_fetcher::CloudSlots;
 use crate::assets::mailbox::TextureMailbox;
 use crate::assets::tiles::TranscoderConfig;
 use crate::config::QualityTier;
-use crate::params::SceneParams;
+use crate::display::layout::{self, Framing};
+use crate::params::{OutputParams, SceneParams};
 use crate::renderer::residency::{Output, surfaces_for};
 use crate::renderer::{
     RenderOutcome, Renderer, RendererConfig, SlotLayout, SurfaceFormats, resolve_sample_count,
@@ -178,6 +179,14 @@ struct Engine {
     /// `None` until one of the two has happened, which is what makes the first
     /// hint an announcement rather than a comparison against nothing.
     known_monitors: Option<Vec<crate::display::Monitor>>,
+    /// The last monitor list the engine saw from any source, the startup
+    /// enumeration included, which the preview's anchor screen is resolved
+    /// against. Kept apart from `known_monitors`, so the display hint
+    /// comparison and its republish rule do not depend on it.
+    preview_monitors: Vec<crate::display::Monitor>,
+    /// The anchor screen's size, which the preview is framed for (plan
+    /// decision 4), or `None` where no screen is known.
+    preview_screen: Option<(u32, u32)>,
     /// Whether the desk is holding a picture this process made. Set when a sink
     /// accepted one and never on a refusal, so a layout change cannot produce a
     /// wallpaper nobody asked for or an error out of nowhere.
@@ -188,6 +197,9 @@ struct Engine {
     /// The instant the last draw was drawn at, which the preview frame read
     /// back from it shows.
     drawn_instant: time::OffsetDateTime,
+    /// The short edge the last draw was framed on, in frame pixels, and the
+    /// anchor screen it was framed for, which the preview frame carries.
+    drawn_framing: (f32, Option<(u32, u32)>),
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
@@ -249,6 +261,7 @@ impl Engine {
             wallpaper,
             display_mode,
             anchor_monitor,
+            monitors,
             on_event,
             record_metrics,
             mailbox,
@@ -351,6 +364,7 @@ impl Engine {
             )
         });
 
+        let preview_screen = preview_screen_of(&monitors, anchor_monitor.as_deref());
         Ok(Self {
             rx,
             clock,
@@ -379,16 +393,27 @@ impl Engine {
             anchor_monitor,
             display_recheck: None,
             known_monitors: None,
+            preview_monitors: monitors,
+            preview_screen,
             published: false,
             excursion: None,
             drawn_instant,
+            drawn_framing: (0.0, None),
             dirty: true,
             textures_ready: false,
             clouds_settled: false,
             memory_dumped: false,
             last_status: String::new(),
             drain: Schedule::new(DRAIN_INTERVAL, now),
-            sky: Schedule::new(sky_interval(&params, false, height, preview_enabled), now),
+            sky: Schedule::new(
+                sky_interval(
+                    &params,
+                    false,
+                    layout::preview_short_edge(height, preview_screen),
+                    preview_enabled,
+                ),
+                now,
+            ),
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
             cloud,
@@ -479,6 +504,7 @@ impl Engine {
             EngineCommand::SetDisplayPlan { mode, anchor } => {
                 self.display_mode = mode;
                 self.anchor_monitor = anchor;
+                self.update_preview_screen();
             }
             EngineCommand::RenderToFile {
                 path,
@@ -648,7 +674,7 @@ impl Engine {
         let interval = sky_interval(
             &self.params,
             self.excursion.is_some(),
-            self.renderer.size().1,
+            layout::preview_short_edge(self.renderer.size().1, self.preview_screen),
             self.preview.enabled,
         );
         if interval != self.sky.interval {
@@ -883,6 +909,49 @@ impl Engine {
         }
     }
 
+    /// The scene the preview frame draws, and the short edge it is framed on:
+    /// the settings framed for the frame the renderer holds, after the tier's
+    /// cap, and for the anchor screen (plan decision 4).
+    fn preview_output(&self) -> (OutputParams, f32) {
+        let (width, height) = self.renderer.size();
+        let short_edge = layout::preview_short_edge(height, self.preview_screen);
+        let framing =
+            layout::output_framing(Framing::from(&self.params), width, height, short_edge);
+        (framing.applied_to(&self.params), short_edge)
+    }
+
+    /// Take a monitor list in, from a publish or from a recheck that found a
+    /// new layout, for the preview to resolve its anchor screen against.
+    pub(super) fn see_monitors(&mut self, monitors: &[crate::display::Monitor]) {
+        self.preview_monitors = monitors.to_vec();
+        self.update_preview_screen();
+    }
+
+    /// Resolve the preview's anchor screen again, and draw the preview again
+    /// when that changed its framing.
+    ///
+    /// A screen of another size but the same shape frames the preview the
+    /// same way, and so does a landscape screen standing in for none, so the
+    /// frame already drawn is the answer and goes out again saying which
+    /// screen it is for. Drawing it again would cost a frame and close the
+    /// transcoder's pause gate for nothing.
+    fn update_preview_screen(&mut self) {
+        let screen = preview_screen_of(&self.preview_monitors, self.anchor_monitor.as_deref());
+        if screen == self.preview_screen {
+            return;
+        }
+        debug!(?screen, "the preview's anchor screen changed");
+        let before = self.preview_output();
+        self.preview_screen = screen;
+        if self.preview_output() == before {
+            self.drawn_framing.1 = screen;
+            self.preview.owed = true;
+        } else {
+            self.dirty = true;
+            self.retime_sky();
+        }
+    }
+
     /// Draw the scene as it stands, for the preview or for an export, and hand
     /// back the sky it was drawn under.
     ///
@@ -906,8 +975,10 @@ impl Engine {
         } else {
             self.want_tiles(&self.sky_state());
         }
-        let outcome = self.renderer.render(&self.params, &sky);
+        let (output, short_edge) = self.preview_output();
+        let outcome = self.renderer.render(&output, &sky);
         self.drawn_instant = at;
+        self.drawn_framing = (short_edge, self.preview_screen);
         self.note_readiness();
         (outcome, sky)
     }
@@ -982,11 +1053,12 @@ impl Engine {
             sky.sun_direction
         };
         let running = self.excursion.as_ref().is_some_and(Excursion::is_running);
+        let (preview, _) = self.preview_output();
         let Some(surface) = &mut self.surface else {
             return;
         };
         let (width, height) = self.renderer.size();
-        let mut outputs = vec![tile_output(&self.params, sky, width, height, false)];
+        let mut outputs = vec![tile_output(&preview, sky, width, height, false)];
         outputs.extend(self.wallpaper_shots.iter().map(|shot| {
             tile_output(
                 &shot.framing.applied_to(&self.params),
@@ -998,7 +1070,8 @@ impl Engine {
         }));
         outputs.extend(self.exports.iter().map(|export| {
             tile_output(
-                &self.params,
+                &layout::screen_framing(Framing::from(&self.params), export.width, export.height)
+                    .applied_to(&self.params),
                 &exports_sky,
                 export.width,
                 export.height,
@@ -1106,6 +1179,8 @@ impl Engine {
             rgba,
             width,
             height,
+            short_edge: self.drawn_framing.0,
+            screen: self.drawn_framing.1,
             instant: self.drawn_instant,
         });
         true
@@ -1197,11 +1272,11 @@ fn checked_mailbox(
 }
 
 /// One output of the wanted set: `framed` is the scene with the output's
-/// framing applied, as the render takes it (`Framing::applied_to`), and its
+/// framing applied, as the render takes it (`OutputFraming::applied_to`), and its
 /// camera is resolved under `sky`, the sky the output is drawn under, so the
 /// tiles and the picture cannot disagree on what is in the frame.
 fn tile_output(
-    framed: &SceneParams,
+    framed: &OutputParams,
     sky: &SkyState,
     width: u32,
     height: u32,
@@ -1213,6 +1288,17 @@ fn tile_output(
         height,
         export,
     }
+}
+
+/// The size of the screen a wallpaper plan would be anchored to, the one the
+/// preview is framed for, or `None` where the list has no screen with pixels.
+fn preview_screen_of(
+    monitors: &[crate::display::Monitor],
+    anchor: Option<&str>,
+) -> Option<(u32, u32)> {
+    let anchor = layout::resolve_anchor(monitors, anchor)?;
+    let monitor = &monitors[anchor.index];
+    (monitor.width > 0 && monitor.height > 0).then_some((monitor.width, monitor.height))
 }
 
 /// Start feeding the cube surface, when every face is there and there is a
@@ -1309,7 +1395,8 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 }
 
 /// How often the sky schedule redraws a scene drawn at live time, for a
-/// preview `preview_height` pixels tall that is shown or not.
+/// preview framed on a short edge of `preview_short_edge` pixels
+/// ([`layout::preview_short_edge`]) that is shown or not.
 ///
 /// [`SKY_INTERVAL`], except for a Sun-fixed camera under live time with the
 /// preview shown: the surface beneath that camera crosses the frame at about
@@ -1320,7 +1407,7 @@ fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32
 fn sky_interval(
     params: &SceneParams,
     excursion: bool,
-    preview_height: u32,
+    preview_short_edge: f32,
     shown: bool,
 ) -> Duration {
     if !shown || !params.sun_fixed || !params.time.is_live() || excursion {
@@ -1328,11 +1415,7 @@ fn sky_interval(
     }
     let camera = &params.camera;
     let distance = crate::scene::camera::zoom_to_distance(camera.zoom);
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a preview's height is far inside the f32 mantissa"
-    )]
-    let focal = preview_height as f32 / (2.0 * (camera.fov_deg.to_radians() / 2.0).tan());
+    let focal = preview_short_edge / (2.0 * (camera.fov_deg.to_radians() / 2.0).tan());
     let pixels_a_second = focal * EARTH_TURN / (distance - 1.0);
     Duration::try_from_secs_f32(pixels_a_second.recip())
         .map_or(SKY_INTERVAL, |pixel| pixel.clamp(SKY_FLOOR, SKY_INTERVAL))
@@ -1431,10 +1514,10 @@ mod tests {
     #[test]
     fn a_shown_sun_fixed_preview_redraws_once_a_pixel_of_the_turn() {
         let params = sun_fixed_live(crate::scene::camera::distance_to_zoom(8.0));
-        let height = 1080;
-        let focal = 1080.0 / (2.0 * (params.camera.fov_deg.to_radians() / 2.0).tan());
+        let short_edge = 1080.0;
+        let focal = short_edge / (2.0 * (params.camera.fov_deg.to_radians() / 2.0).tan());
         let expected = 7.0 / (focal * EARTH_TURN);
-        let interval = sky_interval(&params, false, height, true);
+        let interval = sky_interval(&params, false, short_edge, true);
         approx::assert_relative_eq!(interval.as_secs_f32(), expected, max_relative = 1e-3);
         assert!(SKY_FLOOR < interval && interval < SKY_INTERVAL);
     }
@@ -1443,17 +1526,17 @@ mod tests {
     /// across the frame, down to the floor and never below it.
     #[test]
     fn the_interval_shortens_with_the_zoom_and_the_preview_down_to_the_floor() {
-        let far = sky_interval(&sun_fixed_live(0.5), false, 720, true);
-        let near = sky_interval(&sun_fixed_live(0.3), false, 720, true);
-        let taller = sky_interval(&sun_fixed_live(0.5), false, 1440, true);
+        let far = sky_interval(&sun_fixed_live(0.5), false, 720.0, true);
+        let near = sky_interval(&sun_fixed_live(0.3), false, 720.0, true);
+        let taller = sky_interval(&sun_fixed_live(0.5), false, 1440.0, true);
         assert!(near < far, "{near:?} against {far:?}");
         assert!(taller < far, "{taller:?} against {far:?}");
         assert_eq!(
-            sky_interval(&sun_fixed_live(0.0), false, 2160, true),
+            sky_interval(&sun_fixed_live(0.0), false, 2160.0, true),
             SKY_FLOOR
         );
         assert_eq!(
-            sky_interval(&sun_fixed_live(1.0), false, 64, true),
+            sky_interval(&sun_fixed_live(1.0), false, 64.0, true),
             SKY_INTERVAL
         );
     }
@@ -1463,23 +1546,23 @@ mod tests {
     #[test]
     fn only_a_shown_sun_fixed_camera_at_live_time_shortens_the_interval() {
         let live = sun_fixed_live(0.0);
-        assert!(sky_interval(&live, false, 1080, true) < SKY_INTERVAL);
-        assert_eq!(sky_interval(&live, false, 1080, false), SKY_INTERVAL);
+        assert!(sky_interval(&live, false, 1080.0, true) < SKY_INTERVAL);
+        assert_eq!(sky_interval(&live, false, 1080.0, false), SKY_INTERVAL);
         let earth = SceneParams {
             sun_fixed: false,
             ..live
         };
-        assert_eq!(sky_interval(&earth, false, 1080, true), SKY_INTERVAL);
+        assert_eq!(sky_interval(&earth, false, 1080.0, true), SKY_INTERVAL);
         let mut overridden = live;
         overridden.time =
             crate::scene::scene_time::SceneTime::fixed(time::OffsetDateTime::UNIX_EPOCH);
-        assert_eq!(sky_interval(&overridden, false, 1080, true), SKY_INTERVAL);
+        assert_eq!(sky_interval(&overridden, false, 1080.0, true), SKY_INTERVAL);
         assert_eq!(
-            sky_interval(&live, true, 1080, true),
+            sky_interval(&live, true, 1080.0, true),
             SKY_INTERVAL,
             "an excursion counts as a fixed time"
         );
-        assert_eq!(sky_interval(&live, false, 0, true), SKY_INTERVAL);
+        assert_eq!(sky_interval(&live, false, 0.0, true), SKY_INTERVAL);
     }
 
     /// The length check comes before the filesystem does, so this needs no

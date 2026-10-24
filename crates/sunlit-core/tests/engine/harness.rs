@@ -47,10 +47,16 @@ pub(crate) const TIMEOUT: Duration = Duration::from_mins(1);
 /// know nothing about. Off here is the same frame the case would have got from
 /// an engine with an empty slot, and a case about one of them switches its own
 /// back on.
+///
+/// The sky is pinned rather than left at its default, and pinned to what the
+/// cases were written against: a sky 140 degrees across the 2:1 frame every
+/// case renders at, the shared `FRAME` and the preview alike, given in the
+/// short edge units the settings take.
 pub(crate) fn test_params() -> SceneParams {
     let mut params = SceneParams {
         texture_index: 0,
         sample_count: 1,
+        sky_fov: output_sky_as_setting(140.0),
         // Camera mode is off for every case here, the way the goldens pin it:
         // the spikes and the ghosts reach past the glare's own cone, so a
         // default-on flare would put pixels in frames that are counting what
@@ -66,6 +72,33 @@ pub(crate) fn test_params() -> SceneParams {
     params
 }
 
+/// The sky setting that draws `horizontal` degrees across a 2:1 frame.
+pub(crate) fn output_sky_as_setting(horizontal: f32) -> f32 {
+    output_sky_as_setting_for(horizontal, (2, 1))
+}
+
+/// The sky setting that draws `horizontal` degrees across an export of `size`.
+pub(crate) fn output_sky_as_setting_for(horizontal: f32, (width, height): (u32, u32)) -> f32 {
+    let output = SceneParams {
+        sky_fov: horizontal,
+        ..SceneParams::default()
+    };
+    crate::support::settings_for_output(&output, width, height).sky_fov
+}
+
+/// The scene an export of `viewport` draws from `settings`: the fields of view
+/// and the pan in the units the renderer takes, which is what a case measuring
+/// where something lands with `scene::sky_lens` needs.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn drawn_at(settings: &SceneParams, viewport: glam::Vec2) -> SceneParams {
+    let framing = sunlit_core::display::layout::screen_framing(
+        sunlit_core::display::layout::Framing::from(settings),
+        viewport.x.round() as u32,
+        viewport.y.round() as u32,
+    );
+    *framing.applied_to(settings)
+}
+
 /// The pinned time of `time` moved to `day_of_year` of its year, the time of
 /// day kept.
 pub(crate) fn on_day(time: SceneTime, day_of_year: u16) -> SceneTime {
@@ -74,6 +107,15 @@ pub(crate) fn on_day(time: SceneTime, day_of_year: u16) -> SceneTime {
     };
     let date = time::Date::from_ordinal_date(at.year(), day_of_year).expect("a day of the year");
     SceneTime::fixed(at.replace_date(date))
+}
+
+/// A preview frame and what it says about its framing.
+pub(crate) struct Framed {
+    pub(crate) rgba: Vec<u8>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) short_edge: f32,
+    pub(crate) screen: Option<(u32, u32)>,
 }
 
 pub(crate) struct Harness {
@@ -209,6 +251,32 @@ impl Harness {
             } = event
             {
                 return (rgba, width, height);
+            }
+        }
+        panic!("no preview frame within {TIMEOUT:?}");
+    }
+
+    /// Block until the next preview frame and say how it was framed, or panic
+    /// on timeout.
+    pub(crate) fn next_framed(&self) -> Framed {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while let Ok(event) = self.events.recv_deadline(deadline) {
+            if let EngineEvent::PreviewFrame {
+                rgba,
+                width,
+                height,
+                short_edge,
+                screen,
+                ..
+            } = event
+            {
+                return Framed {
+                    rgba,
+                    width,
+                    height,
+                    short_edge,
+                    screen,
+                };
             }
         }
         panic!("no preview frame within {TIMEOUT:?}");

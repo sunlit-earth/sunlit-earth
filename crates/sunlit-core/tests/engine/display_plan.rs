@@ -73,7 +73,6 @@ fn a_portrait_screen_takes_the_contained_lens_and_an_export_of_its_size_matches(
     let half = (uncontained.camera.fov_deg.to_radians() * 0.5).tan() * 192.0 / 320.0;
     uncontained.camera.fov_deg = (half.atan() * 2.0).to_degrees();
     let old = group.picture(&uncontained, (192, 320));
-    group.picture(&test_params(), (192, 320));
     assert_ne!(
         picture(&published, 0).pixels,
         old,

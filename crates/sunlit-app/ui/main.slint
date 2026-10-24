@@ -244,10 +244,10 @@ export component MainWindow inherits Window {
     out property <length> viewport-width: image-container.width;
     out property <length> viewport-height: image-container.height;
     // The sky slider's own range, across the picture's short side: a 16:9
-    // screen draws 60 to 180 degrees across its width from it, the range the
-    // slider had when it was measured on the width. The shader's clamp is
-    // wider, so the two numbers live here rather than in the row and a test
-    // can read what the row is built from.
+    // screen draws about 53 to 183 degrees across its width from it, which
+    // holds the 60 to 180 the slider had when it was measured on the width.
+    // The shader's clamp is wider, so the two numbers live here rather than
+    // in the row and a test can read what the row is built from.
     out property <float> sky-fov-minimum: 30.0;
     out property <float> sky-fov-maximum: 120.0;
 

@@ -269,7 +269,7 @@ Revert the branch's commits. A config migrated to version 4 keeps its converted 
 ## Open items
 
 1. **README, proposed rather than made.** `README.md` says under the `render` example that "the exported image will not necessarily match your preview exactly, because it will be rendered at your specified resolution and not the preview window's resolution". That is no longer the case for the composition. A proposed replacement: "The export is the same picture as the preview, scaled until their short sides match: a render of another shape shows more or less along its long side, and the frame guides (F) show what a 16:9 or 4:3 render contains." No README text describes either field of view.
-2. **A panorama case is sensitive to the sky it runs at.** With the default sky, 153 degrees across its 2:1 frame, `panorama::the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction` measured the landmark 102 pixels from the sprite; at the 140 it was written for, which it now pins, it passes. Not investigated. One unverified explanation is that `star_mag_limit` of -1 lets a bright planet into a frame the wider sky chooses, which would move the sprite centroid.
+2. **A panorama case is sensitive to the sky it runs at.** With the default sky, 153 degrees across its 2:1 frame, `panorama::the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction` measured the landmark 102 pixels from the sprite; at the 140 it was written for, which it now pins, it passes. Validation round 1 traced it to the fixture, not the derivation: at the default the camera search picks another direction, and the difference image holds three clusters, Sirius 0.6 px from both the landmark and the lens prediction, and two planets brighter than -1.6 that the wider frame lets in and that pull the sprite centroid away. The pin to 140 stands.
 
 ## Validation Record
 
@@ -278,5 +278,7 @@ Step 6, on 2026-10-24 at aeb9756:
 - `cargo xtask e2e --target windows`: 18 passed, 0 failed, the suite in 504.5 s and the run in 573 s. `test_plasmashell_survives_rapid_republishing` skipped itself, as it does outside KDE.
 - `cargo xtask e2e --target linux` (KDE on X11): 17 passed, 0 failed, the suite in 616.3 s and the run in 694 s. `test_set_wallpaper` skipped its read-back, as it does under Plasma's `dbus-send` setter.
 - `cargo xtask vm down all` afterwards: nothing left running. The WSL target directories were swept per `docs/building.md`.
+
+Validation round 1, on b0497b4..9fdcbfd: no majors, five minors, all fixed. The sky slider's comment in `main.slint` and `docs/rendering.md` put its low end at 60 degrees across a 16:9 width, where it is 52.7; another line of `docs/rendering.md` still gave the slider as 60 to 180; a comment in the `layout.rs` canvas clamp test said a wall of eight screens where the case builds twelve; `sky_interval` measured the Sun-fixed redraw on the preview's height rather than its short edge, so a portrait anchor redrew the preview 1.78 times as often as one pixel of the turn needs, and it now takes `layout::preview_short_edge` and is retimed when the anchor changes the framing; and `display_plan.rs` rendered one picture it threw away.
 
 Step 7, the validation with the user, is the orchestrator's.

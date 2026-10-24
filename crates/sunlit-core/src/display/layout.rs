@@ -1072,7 +1072,7 @@ mod tests {
     )]
     fn a_canvas_wider_than_the_sky_reaches_says_the_sky_was_clamped() {
         // One screen beyond the reach, which at the default sky is a wall of
-        // eight. Nobody has this layout; what the case is for is that the
+        // twelve. Nobody has this layout; what the case is for is that the
         // derivation reports the one number it could not honor instead of
         // handing back a crop that no longer matches.
         let screens = widths_the_sky_reaches().ceil() as i32 + 1;

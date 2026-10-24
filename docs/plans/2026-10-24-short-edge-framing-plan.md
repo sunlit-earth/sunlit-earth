@@ -252,11 +252,24 @@ Revert the branch's commits. A config migrated to version 4 keeps its converted 
 
 ## Departures
 
-None yet.
+1. **The canvas tests compare against the anchor's own framing.** Step 1 expected the existing `canvas_framing` tests to pass unchanged. They do not, because several compared the canvas's derived sky and pan against the settings themselves, which only held while the settings were the anchor's own lenses. The span math is unchanged and still starts from the anchor's `screen_framing`; the tests now compare against that framing instead of against the settings, and their fixture sky is 86, the new default, so a 1920x1080 anchor draws the 140 they were written for. The pixel scale identities they assert are the same.
+
+2. **The default sky draws 140.012 degrees across a 16:9 width, not 140.0 to within 0.01.** Decision 7 moves the old default 140 to exactly 86 and says that is 140.0 on 16:9 to within 0.01. The exact conversion is 85.993, and 86 draws 140.012. I kept 86, as the plan chose a round default in the manner of `change_default`; the difference is about a tenth of a pixel at the edge of a 1920 pixel frame. Criterion 2 holds to that margin for the default and to a thousandth of a degree for every other value, and `a_migrated_file_draws_the_same_wallpaper_on_a_16_9_screen` says so.
+
+3. **The golden and engine cases convert in one place each rather than per case.** Decision 9 has each golden case's `sky_fov` rewritten through a helper. The golden `render` (and the contact sheet) instead sends `tests/support::settings_for_output` of the case's params for its frame size, and `base_params` pins the sky at 140 in the renderer's units, since the default is no longer that. The engine harness's `test_params` pins a sky that draws 140 across its 2:1 frame (`output_sky_as_setting`), the panorama cases pin the same, and the cases that set a sky or a pan of their own convert it, while the placement helpers in `moon.rs` and `panorama.rs` take the derived framing (`harness::drawn_at`). Same effect, fewer places to get wrong: no reference changed.
+
+4. **A new preview anchor of the same shape re-sends the frame instead of redrawing it.** Decision 4 says a change of `preview_screen` marks the engine dirty. Doing that unconditionally broke `readiness::the_tile_wait_is_not_renewed_by_the_packs_of_other_months`: the first publish learned the 1920x1080 screen, the redraw that caused came after the test had moved the mock clock, and the other months' packs no longer landed within the test's minute; a draw closes the transcoder's pause gate on the mock clock, which I take to be the mechanism, though I did not trace it further. Without the redraw the case passes. A landscape screen frames a landscape preview exactly as no screen does, so `update_preview_screen` now marks the engine dirty only when the derived preview framing changes, and otherwise re-sends the frame already drawn with the new `screen`, so the window's guides still learn the screen's size.
+
+5. **`sunlit-earth displays` prints more than it did.** Decision 3 says it prints the settings and each shot's derived framing "as it does now". It printed only the span's canvas lens. It now prints a `settings:` line in short edge units, the canvas `lens:` line for a span, and a `lens:` line under each render group otherwise, each derived line saying vertical, horizontal and NDC.
+
+6. **`OutputParams::framed` is `pub(crate)`.** Decision 2 has only `OutputFraming::applied_to` build an `OutputParams`. Rust cannot restrict a constructor in `params.rs` to `display::layout`, which is not an ancestor module, so the constructor is crate private and documented as the derivation's alone; outside the crate nothing can build one, and every render path takes one.
+
+7. **The shortcut sheet's card padding drops from 18 to 13 pixels.** The F row made the sheet one row longer, and at 800x700 the card scrolled by 8 pixels, which `test_the_shortcut_sheet_keeps_its_text_on_the_card` forbids. Five pixels off the top and bottom padding keep every row on the card without scrolling.
 
 ## Open items
 
-None yet.
+1. **README, proposed rather than made.** `README.md` says under the `render` example that "the exported image will not necessarily match your preview exactly, because it will be rendered at your specified resolution and not the preview window's resolution". That is no longer the case for the composition. A proposed replacement: "The export is the same picture as the preview, scaled until their short sides match: a render of another shape shows more or less along its long side, and the frame guides (F) show what a 16:9 or 4:3 render contains." No README text describes either field of view.
+2. **A panorama case is sensitive to the sky it runs at.** With the default sky, 153 degrees across its 2:1 frame, `panorama::the_panorama_puts_a_landmark_where_the_star_path_puts_the_same_direction` measured the landmark 102 pixels from the sprite; at the 140 it was written for, which it now pins, it passes. Not investigated. One unverified explanation is that `star_mag_limit` of -1 lets a bright planet into a frame the wider sky chooses, which would move the sprite centroid.
 
 ## Validation Record
 

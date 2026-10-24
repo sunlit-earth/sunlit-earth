@@ -16,8 +16,13 @@ use super::{ARGS, Autostart};
 /// The entry's file name, the basename of the app's own desktop entry.
 pub const FILE_NAME: &str = "sunlit-earth.desktop";
 
-/// The sessions that start nothing from the autostart folder.
-const SESSIONS_WITHOUT_AUTOSTART: [&str; 3] = ["sway", "i3", "Hyprland"];
+/// The sessions that start nothing from the autostart folder, each with what
+/// its config starts a program at login with.
+const SESSIONS_WITHOUT_AUTOSTART: [(&str, &str); 3] = [
+    ("sway", "exec"),
+    ("i3", "exec"),
+    ("Hyprland", "exec-once ="),
+];
 
 /// The autostart folder for a given environment.
 ///
@@ -51,14 +56,12 @@ pub fn system_dir() -> Option<PathBuf> {
 #[must_use]
 pub fn unsupported_session(current_desktop: Option<&str>, exe: Option<&Path>) -> Option<String> {
     let desktops = current_desktop.unwrap_or_default();
-    let without = desktops.split(':').any(|desktop| {
+    let keyword = desktops.split(':').find_map(|desktop| {
         SESSIONS_WITHOUT_AUTOSTART
             .iter()
-            .any(|name| desktop.trim().eq_ignore_ascii_case(name))
-    });
-    if !without {
-        return None;
-    }
+            .find(|(name, _)| desktop.trim().eq_ignore_ascii_case(name))
+            .map(|(_, keyword)| *keyword)
+    })?;
     let exe = exe.map_or_else(
         || "sunlit-earth".to_owned(),
         |exe| {
@@ -71,7 +74,7 @@ pub fn unsupported_session(current_desktop: Option<&str>, exe: Option<&Path>) ->
         },
     );
     Some(format!(
-        "This session does not start apps from the autostart folder. Add `exec {exe} {}` to its config.",
+        "This session does not start apps from the autostart folder. Add `{keyword} {exe} {}` to its config.",
         ARGS.join(" ")
     ))
 }
@@ -524,13 +527,26 @@ mod tests {
     #[test]
     fn the_sessions_that_start_nothing_from_the_folder_are_recognized() {
         let exe = Path::new("/usr/bin/sunlit-earth");
-        for desktop in ["sway", "i3", "Hyprland", "hyprland", "SWAY", "wlroots:sway"] {
+        for (desktop, line) in [
+            ("sway", "`exec /usr/bin/sunlit-earth --tray-start hidden`"),
+            ("SWAY", "`exec /usr/bin/sunlit-earth --tray-start hidden`"),
+            (
+                "wlroots:sway",
+                "`exec /usr/bin/sunlit-earth --tray-start hidden`",
+            ),
+            ("i3", "`exec /usr/bin/sunlit-earth --tray-start hidden`"),
+            (
+                "Hyprland",
+                "`exec-once = /usr/bin/sunlit-earth --tray-start hidden`",
+            ),
+            (
+                "hyprland",
+                "`exec-once = /usr/bin/sunlit-earth --tray-start hidden`",
+            ),
+        ] {
             let reason = unsupported_session(Some(desktop), Some(exe))
                 .unwrap_or_else(|| panic!("{desktop} starts nothing from the folder"));
-            assert!(
-                reason.contains("exec /usr/bin/sunlit-earth --tray-start hidden"),
-                "{reason}"
-            );
+            assert!(reason.contains(line), "{desktop}: {reason}");
         }
         for desktop in [Some("ubuntu:GNOME"), Some("KDE"), Some(""), None] {
             assert_eq!(unsupported_session(desktop, Some(exe)), None, "{desktop:?}");

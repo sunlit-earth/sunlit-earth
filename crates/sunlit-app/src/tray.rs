@@ -104,6 +104,12 @@ fn claim(name: &str, held: &mut Vec<single_instance::SingleInstance>) -> Claim {
     }
 }
 
+/// Ask for a name and let it go again at once.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn probe(name: &str) -> Claim {
+    claim(name, &mut Vec::new())
+}
+
 /// Check that no other instance of Sunlit Earth is running.
 ///
 /// The name is derived from `--ipc-socket`, so it is as much the user's to get
@@ -112,8 +118,9 @@ fn claim(name: &str, held: &mut Vec<single_instance::SingleInstance>) -> Claim {
 ///
 /// On Linux the name used to be the same for every user and now carries the
 /// user's part, so the old name is asked for too: an instance of an older
-/// version holds it, and a run that takes it keeps it, so an older version
-/// started later finds this one.
+/// version holds it. It is let go again at once, because the abstract name is
+/// shared by every user on the host and keeping it would turn another user's
+/// new instance away as an older version.
 ///
 /// :param `mutex_name`: the process-wide name this instance claims
 /// :returns: what the check found
@@ -123,7 +130,7 @@ pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
     // Older versions took the bare name on Linux; elsewhere the name is
     // unchanged and there is nothing older to look for.
     #[cfg(all(unix, not(target_os = "macos")))]
-    let legacy = (current != Claim::HeldElsewhere).then(|| claim(mutex_name, &mut held));
+    let legacy = (current != Claim::HeldElsewhere).then(|| probe(mutex_name));
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     let legacy = None;
     match decide(current, legacy) {

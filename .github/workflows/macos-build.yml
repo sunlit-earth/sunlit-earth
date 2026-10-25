@@ -299,6 +299,8 @@ jobs:
           git -C "$src" checkout -q FETCH_HEAD
           cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release
           cmake --build "$src/build"
+          clang -framework CoreGraphics -o "$RUNNER_TEMP/display-sizes" .github/macos/display-sizes.c
+          "$RUNNER_TEMP/display-sizes"
         shell: bash
 
       # Legacy VNC auth uses the password as a DES key and keeps the first eight
@@ -329,30 +331,61 @@ jobs:
           sudo defaults write /Library/Preferences/com.apple.screensaver askForPassword -int 0 || true
           sudo defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLock -bool true || true
           mkdir -p session-out
+          address=$(tailscale ip -4)
+          size_of() { "$RUNNER_TEMP/display-sizes" 2>/dev/null | sed -n "$(( $1 + 1 ))p" || true; }
           # One macVNC per screen, since each serves a single display: the
           # first screen on 5900, the second on 5901.
-          for screen in $(seq 0 $(( SCREENS - 1 ))); do
-            port=$(( 5900 + screen ))
+          start_vnc() {
+            local screen=$1 port=$(( 5900 + $1 ))
+            sizes[screen]=$(size_of "$screen")
             "$RUNNER_TEMP/macVNC/build/macVNC.app/Contents/MacOS/macVNC" -display "$screen" \
-              -rfbport "$port" -passwd "$VNC_PASSWORD" > "session-out/macvnc-$port.log" 2>&1 &
+              -rfbport "$port" -passwd "$VNC_PASSWORD" >> "session-out/macvnc-$port.log" 2>&1 &
+            pids[screen]=$!
             for _ in $(seq 1 15); do
               sudo lsof -nP -iTCP:"$port" -sTCP:LISTEN > /dev/null 2>&1 && break
               sleep 1
             done
             if ! sudo lsof -nP -iTCP:"$port" -sTCP:LISTEN > /dev/null 2>&1; then
               echo "macVNC is not listening on $port"
-              cat "session-out/macvnc-$port.log"
+              return 1
+            fi
+            echo "screen $((screen + 1)) at ${sizes[screen]}: connect a VNC client to $address:$port, password only, no user name"
+          }
+          sizes=()
+          pids=()
+          for screen in $(seq 0 $(( SCREENS - 1 ))); do
+            if ! start_vnc "$screen"; then
+              cat "session-out/macvnc-$(( 5900 + screen )).log"
               exit 1
             fi
-            echo "screen $((screen + 1)): connect a VNC client to $(tailscale ip -4):$port, password only, no user name"
           done
+          # macVNC sizes its framebuffers and its capture stream once, at
+          # startup, and overruns them when its screen grows, so it is
+          # restarted whenever its screen changes size or it exits.
           deadline=$(( $(date +%s) + MINUTES * 60 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
             if [ -e /tmp/release-the-runner ]; then
               echo "released from inside the session"
               break
             fi
-            sleep 10
+            for screen in $(seq 0 $(( SCREENS - 1 ))); do
+              size=$(size_of "$screen")
+              [ -n "$size" ] || continue
+              pid=${pids[screen]}
+              if ! kill -0 "$pid" 2>/dev/null; then
+                status=0
+                wait "$pid" || status=$?
+                echo "macVNC for screen $((screen + 1)) exited with status $status; restarting it"
+              elif [ "$size" != "${sizes[screen]}" ]; then
+                echo "screen $((screen + 1)) went from ${sizes[screen]} to $size; restarting its macVNC"
+                kill "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+              else
+                continue
+              fi
+              start_vnc "$screen" || echo "::warning::macVNC for screen $((screen + 1)) did not come back; trying again"
+            done
+            sleep 2
           done
           cp -R "$HOME/Library/Application Support/SunlitEarth" session-out/app-data 2>/dev/null \
             || echo "the app wrote no data directory"

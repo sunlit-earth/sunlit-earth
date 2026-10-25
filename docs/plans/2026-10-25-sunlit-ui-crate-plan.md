@@ -157,4 +157,17 @@ Step 5:
 
 Validation round 1, over 8024c11..fe76154: 0 major, 4 minor, all fixed. The app's build script printed no rerun line outside Windows (departure 2); `tray.rs`'s module comment and two entries of `docs/architecture.md`'s `sunlit-app` section still named `ui/` relative to the app crate (departure 1); departure 1 overstated which documents name the crate; the new crate had no README (departure 3) and this record did not say Success Criterion 4 was pending.
 
+After round 1's fixes, at 05dffb7: `cargo test --no-fail-fast` with `SUNLIT_EARTH_CLOUD_URL` unset passed 1942, failed 0, ignored 20; `cargo fmt --check` and `RUSTFLAGS="-D warnings" cargo clippy --all-targets` clean.
+
+Final measurement, the main checkout at 8024c11 against this branch at 05dffb7, each in its own `target/`, on the Windows desktop (16 threads), debug profile. Each run appended an unused private function to the file, from a build settled twice, and reverted it with `git checkout`. Medians of three runs, with the range:
+
+| After a one-line edit in | Before | After |
+|---|---|---|
+| `crates/sunlit-app/src/displays.rs`, `cargo build` | 15.0 s (14.6 to 16.9) | 5.5 s (5.5 to 5.8) |
+| `crates/sunlit-core/src/scene/sun.rs`, `cargo build` | 15.7 s (15.7 to 16.5) | 7.9 s (7.8 to 8.0) |
+| `crates/sunlit-app/src/displays.rs`, `cargo test --no-run` | 21.0 s (20.9 to 23.5) | 10.1 s (9.9 to 10.4) |
+| `crates/sunlit-core/src/scene/sun.rs`, `cargo test --no-run` | 23.5 s (22.0 to 23.9) | 16.3 s (15.9 to 17.0) |
+
+The core `cargo build` baseline is lower than the 18.9 s in Measurements, which was a single run. `docs/architecture.md` and `docs/roadmap.md` quote these medians.
+
 Success Criterion 4, the user's check of the app, is pending (Step 6).

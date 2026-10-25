@@ -11,7 +11,7 @@ Sunlit Earth is a free and open source desktop application that renders a beauti
 
 I built this application as an alternative to [DesktopEarth](https://web.archive.org/web/20221006113849/http://www.anka.me/desktopearth.aspx) and [Xplanet](https://xplanet.sourceforge.net/), both of which I used for years, but they seem to be abandoned now. Sunlit Earth is an attempt to rebuild the ideas of these projects with modern technologies and package them in an application that is easy to use.
 
-[Download](#downloads) · [Getting started](#getting-started) · [Using the app](#using-the-app) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
+[Website](https://sunlit.earth) · [Download](#downloads) · [Getting started](#getting-started) · [Using the app](#using-the-app) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source)
 
 ## Screenshots
 

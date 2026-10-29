@@ -5788,7 +5788,6 @@ fn picker_edges(window: &MainWindow, label: &str) -> Option<[f32; 4]> {
         .find(|element| element.accessible_role() == Some(AccessibleRole::Button))?;
     let [left, top, right, bottom] = edges(&button);
     let (left, right) = (left.max(preview_left + 1.0), right.min(preview_right - 1.0));
-
     if left >= right {
         return None;
     }

@@ -111,14 +111,18 @@ pub fn light_left(shadow: &ShadowAxis, point: Vec3) -> f32 {
 
 /// Whether the penumbra reaches the sphere of `radius` about the Earth's
 /// center, which is what decides whether a frame draws the shadow at all.
+///
+/// The Earth has to be past the Moon along the axis: at a full Moon near a
+/// node it stands on the axis on the Sun's side, inside the cone's other
+/// nappe, where the Moon casts nothing on it.
 #[must_use]
 pub fn penumbra_reaches(shadow: &ShadowAxis, radius: f32) -> bool {
-    let cone = Cone::penumbra(
-        DVec3::from(shadow.moon),
-        DVec3::from(shadow.axis).normalize(),
-        f64::from(shadow.moon_to_sun),
-    );
-    cone.distance_from_center() < f64::from(radius)
+    let moon = DVec3::from(shadow.moon);
+    let axis = DVec3::from(shadow.axis).normalize();
+    let past_the_moon = -moon.dot(axis) > 0.0;
+    past_the_moon
+        && Cone::penumbra(moon, axis, f64::from(shadow.moon_to_sun)).distance_from_center()
+            < f64::from(radius)
 }
 
 /// One of the shadow's two cones, tangent to the Sun and the Moon.
@@ -336,24 +340,29 @@ impl Eclipse {
     }
 }
 
-/// The first eclipse whose peak is after `at`, within the years the scene
-/// accepts.
+/// How far apart two peaks have to be to be two eclipses: two searches can
+/// round one peak to whole seconds a second apart, and two eclipses are at
+/// least 29 days apart.
+const SAME_PEAK: Duration = Duration::HOUR;
+
+/// The first eclipse whose peak is more than an hour after `at`, within the
+/// years the scene accepts.
 #[must_use]
 pub fn next_after(at: OffsetDateTime) -> Option<Eclipse> {
     found_from(at - Duration::days(1))
-        .find(|found| found.instant() > at)
+        .find(|found| found.instant() > at + SAME_PEAK)
         .filter(Found::in_range)
         .map(Found::eclipse)
 }
 
-/// The last eclipse whose peak is before `at`, within the years the scene
-/// accepts. The library searches forward only, so this starts far enough
+/// The last eclipse whose peak is more than an hour before `at`, within the
+/// years the scene accepts. The library searches forward only, so this starts far enough
 /// back to hold at least one: the longest gap between two solar eclipses of
 /// 1900 to 2100 is 178.3 days.
 #[must_use]
 pub fn previous_before(at: OffsetDateTime) -> Option<Eclipse> {
     found_from(at - Duration::days(200))
-        .take_while(|found| found.instant() < at)
+        .take_while(|found| found.instant() < at - SAME_PEAK)
         .last()
         .filter(Found::in_range)
         .map(Found::eclipse)
@@ -411,9 +420,11 @@ struct Found {
 }
 
 impl Found {
-    /// The peak to the whole second. Two searches from different starts
-    /// refine the same peak to instants microseconds apart, and the second is
-    /// what makes the two the same eclipse to everything that compares them.
+    /// The peak to the whole second, which is what the time setting and the
+    /// panel show. Two searches from different starts refine the same peak
+    /// to instants microseconds apart, which the rounding mostly makes one,
+    /// but not where they straddle half a second; `SAME_PEAK` is what keeps
+    /// `next_after` and `previous_before` from taking them for two.
     fn instant(&self) -> OffsetDateTime {
         let exact = sky::instant_of_time(self.peak);
         let second = exact.replace_nanosecond(0).unwrap_or(exact);
@@ -1001,6 +1012,12 @@ mod tests {
         ));
         assert!(!penumbra_reaches(
             &sky_shadow(datetime!(2024-04-22 18:00 UTC)),
+            shell
+        ));
+        // The total lunar eclipse of 2025-09-07: the Earth on the axis, on
+        // the Sun's side of the Moon, inside the cone's other nappe.
+        assert!(!penumbra_reaches(
+            &sky_shadow(datetime!(2025-09-07 18:12 UTC)),
             shell
         ));
     }

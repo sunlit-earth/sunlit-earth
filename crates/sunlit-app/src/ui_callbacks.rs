@@ -597,7 +597,6 @@ pub fn register_change_callbacks(window: &MainWindow, link: &EngineLink) {
             let switched_to = win.get_camera_position().sun_fixed;
             crate::time_bar::leave_eclipse_as(&win, !switched_to);
             convert_camera_frame(&win);
-
             engine.push_params(&win);
         }
     });

@@ -2686,7 +2686,6 @@ export component MainWindow inherits Window {
                 : max(6px, camera-panel.x - self.width - 12px);
             y: image-container.hint-over-bar
                 ? max(6px, (eclipse-panel.visible ? eclipse-panel.y : time-bar.y) - self.height - 8px)
-
                 : clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
         }
 

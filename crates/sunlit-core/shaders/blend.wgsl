@@ -61,5 +61,4 @@ fn blend_fragment_lit(
     shaded_day *= sunlight;
 
     return BlendResult(mix(night_color, shaded_day, blend), blend);
-
 }

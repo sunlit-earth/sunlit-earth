@@ -807,7 +807,6 @@ fn register_setting(window: &MainWindow, link: &EngineLink) {
         if let Some(win) = weak.upgrade() {
             leave_eclipse(&win);
             let mut settings = win.get_datetime();
-
             settings.use_custom = false;
             settings.instant = slint::SharedString::new();
             win.set_datetime(settings);

@@ -89,6 +89,9 @@ fn register_globe_drag(window: &MainWindow, link: &EngineLink) {
         let mut estimator = speed.get();
         let cursor_speed = estimator.observe(dx.hypot(dy), seconds);
         speed.set(estimator);
+        // The first move of a drag takes the camera over from eclipse mode,
+        // and the drag carries on from the camera shown.
+        crate::time_bar::leave_eclipse(&win);
         let mut position = win.get_camera_position();
         let gain = mouse_math::drag_gain(
             cursor_speed,
@@ -304,6 +307,7 @@ fn apply_camera_stick(
     match stick {
         CameraStick::Orbit => {
             cancel_eases(eases, &[EaseField::Longitude, EaseField::Latitude]);
+            crate::time_bar::leave_eclipse(window);
             let mut position = window.get_camera_position();
             let (longitude, latitude) = camera_controls::orbit_by_stick(
                 held_longitude_of(&position),
@@ -384,6 +388,7 @@ fn register_camera_panel(window: &MainWindow, link: &EngineLink) {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
+        crate::time_bar::leave_eclipse(&win);
         let position = win.get_camera_position();
         let (longitude, latitude) = camera_controls::orbit_step(
             held_longitude_of(&position),
@@ -533,6 +538,7 @@ pub fn register_mouse_callbacks(window: &MainWindow, link: &EngineLink) {
         let Some(preset) = PRESETS.get(slider_index(index)) else {
             return;
         };
+        crate::time_bar::leave_eclipse(&win);
         apply_preset(&win, preset);
         engine.push_params(&win);
     });
@@ -557,6 +563,8 @@ pub fn register_change_callbacks(window: &MainWindow, link: &EngineLink) {
             if win.get_datetime().use_custom {
                 let now = time::OffsetDateTime::now_utc();
                 set_fixed_time(&win, now.replace_nanosecond(0).unwrap_or(now));
+            } else {
+                crate::time_bar::leave_eclipse(&win);
             }
             update_datetime_labels(&win);
             engine.push_params(&win);
@@ -572,6 +580,7 @@ pub fn register_change_callbacks(window: &MainWindow, link: &EngineLink) {
             let at = instant_of_sliders(settings.hour, settings.day_of_year, settings.year, |at| {
                 display_offset(utc, at)
             });
+            crate::time_bar::leave_eclipse_for_a_new_day(&win, at);
             set_fixed_time(&win, at);
             update_datetime_labels(&win);
             engine.push_params(&win);
@@ -582,7 +591,13 @@ pub fn register_change_callbacks(window: &MainWindow, link: &EngineLink) {
     let engine = link.clone();
     window.on_camera_frame_toggled(move || {
         if let Some(win) = window_weak.upgrade() {
+            // The switch has moved by the time this runs, so eclipse mode is
+            // left into the field the mode it moved from reads, which the
+            // conversion then carries across.
+            let switched_to = win.get_camera_position().sun_fixed;
+            crate::time_bar::leave_eclipse_as(&win, !switched_to);
             convert_camera_frame(&win);
+
             engine.push_params(&win);
         }
     });

@@ -224,6 +224,9 @@ pub struct AppConfig {
     /// in hours from 0 to 24. Kept apart from `scene_time`, the instant drawn,
     /// and read only while `sun_fixed` is on.
     pub solar_time: f32,
+    /// Eclipse mode: the camera hangs over the Moon's shadow at the instant
+    /// drawn, ahead of either mode above, whose keys keep what they held.
+    pub eclipse_follow: bool,
 
     // Camera orientation
     pub tilt: f32,
@@ -356,6 +359,17 @@ pub struct AppConfig {
     /// Floor under the Moon's unlit face: the earthshine that keeps a new moon
     /// from disappearing altogether.
     pub moon_earthshine: f32,
+    /// How dark the Moon's shadow is drawn on the Earth during a solar
+    /// eclipse, 0 to 1: one is the light the Moon leaves, zero no shadow.
+    pub moon_shadow: f32,
+    /// The brightness drawn where the Sun is fully covered, 0 to 0.5.
+    pub moon_shadow_umbra: f32,
+    /// How far beyond the umbra the shadow stays visible, as the light left
+    /// at which it has faded out: 1 is the penumbra's outer edge.
+    pub moon_shadow_reach: f32,
+    /// How long the shadow stays dark going outward from the umbra, as the
+    /// exponent on its eased light left: higher keeps it dark farther.
+    pub moon_shadow_falloff: f32,
     /// Brightness of the diffuse Milky Way panorama, and the switch that puts
     /// it in the scene at all: zero skips the draw.
     pub milky_way_intensity: f32,
@@ -445,6 +459,7 @@ impl Default for AppConfig {
             zoom: cam.zoom,
             sun_fixed: false,
             solar_time: 12.0,
+            eclipse_follow: false,
             tilt: cam.tilt_deg,
             yaw: cam.yaw_deg,
             pitch: cam.pitch_deg,
@@ -504,6 +519,10 @@ impl Default for AppConfig {
             moon_brightness: 1.0,
             moon_size: 2.5,
             moon_earthshine: 0.15,
+            moon_shadow: 1.0,
+            moon_shadow_umbra: 0.0,
+            moon_shadow_reach: 1.0,
+            moon_shadow_falloff: 0.5,
             milky_way_intensity: 0.2,
             day_ocean_color: Rgb8::new(10, 30, 60),
             night_ocean_color: Rgb8::new(5, 5, 15),
@@ -843,6 +862,7 @@ mod tests {
             zoom: 0.8,
             sun_fixed: true,
             solar_time: 18.25,
+            eclipse_follow: true,
             tilt: 30.0,
             yaw: -10.0,
             pitch: 5.0,
@@ -902,6 +922,10 @@ mod tests {
             moon_brightness: 1.3,
             moon_size: 2.5,
             moon_earthshine: 0.12,
+            moon_shadow: 0.4,
+            moon_shadow_umbra: 0.3,
+            moon_shadow_reach: 0.6,
+            moon_shadow_falloff: 1.5,
             milky_way_intensity: 0.8,
             day_ocean_color: Rgb8::new(0, 64, 255),
             night_ocean_color: Rgb8::new(255, 128, 1),
@@ -1082,6 +1106,7 @@ sky_fov = 111.0
             zoom: 0.6,
             sun_fixed: true,
             solar_time: 3.5,
+            eclipse_follow: true,
             tilt: 15.0,
             yaw: 20.0,
             pitch: -5.0,
@@ -1141,6 +1166,10 @@ sky_fov = 111.0
             moon_brightness: 0.6,
             moon_size: 6.0,
             moon_earthshine: 0.3,
+            moon_shadow: 0.7,
+            moon_shadow_umbra: 0.15,
+            moon_shadow_reach: 0.35,
+            moon_shadow_falloff: 2.5,
             milky_way_intensity: 1.6,
             day_ocean_color: Rgb8::new(200, 120, 7),
             night_ocean_color: Rgb8::new(1, 2, 3),

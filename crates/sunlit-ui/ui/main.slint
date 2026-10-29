@@ -5,7 +5,8 @@ import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.sli
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
 import { VersionNotice } from "overlays/version-notice.slint";
 import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
-import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
+import { TimeBar, TimeBarView, RateChoice, SeasonMark, EclipseMark, EclipseBand } from "overlays/time-bar.slint";
+import { EclipsePanel, EclipsePanelView, EclipsePhase } from "overlays/eclipse-panel.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
@@ -14,7 +15,8 @@ export { TrayIcon } from "tray.slint";
 export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
 export { OverlayHints, OverlayStyle } from "overlays/common.slint";
 export { FrameGuide } from "overlays/frame-guides.slint";
-export { TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
+export { TimeBarView, RateChoice, SeasonMark, EclipseMark, EclipseBand } from "overlays/time-bar.slint";
+export { EclipsePanelView, EclipsePhase } from "overlays/eclipse-panel.slint";
 
 // The settings behind the Advanced section, one struct per group, nested the
 // way the panel nests its subsections. The nesting is the one statement of
@@ -27,6 +29,7 @@ export struct CameraPositionSettings {
     zoom: float,
     sun-fixed: bool,
     solar-time: float,
+    eclipse-follow: bool,
 }
 
 export struct CameraOrientationSettings {
@@ -97,6 +100,10 @@ export struct MoonSettings {
     brightness: float,
     size: float,
     earthshine: float,
+    shadow: float,
+    shadow-umbra: float,
+    shadow-reach: float,
+    shadow-falloff: float,
 }
 
 export struct StarSettings {
@@ -332,6 +339,12 @@ export component MainWindow inherits Window {
     in property <int> time-longest-ladder;
     in property <[RateChoice]> time-rates;
     in property <[SeasonMark]> time-seasons;
+    in property <[EclipseMark]> time-eclipses;
+    in property <[EclipseBand]> time-eclipse-bands;
+    in property <EclipsePanelView> time-eclipse-panel;
+    // "Following the solar eclipse of Wed 12 Aug 2026", which stands in for
+    // the camera's position rows while eclipse mode is on.
+    in property <string> eclipse-follow-label;
     in property <[float]> time-month-ticks;
     in property <image> time-shading;
     in-out property <bool> time-bar-pinned;
@@ -361,6 +374,13 @@ export component MainWindow inherits Window {
     callback time-tick();
     // The date at a place along the date track, "18 Oct".
     pure callback time-date-at(float) -> string;
+    // Eclipse mode's button; the previous or the next eclipse, from the
+    // panel or Page Up and Page Down; an eclipse's mark on the date track by
+    // its index; a phase row of the panel by its index.
+    callback time-eclipse-toggled();
+    callback time-eclipse-step(bool);
+    callback time-eclipse-picked(int);
+    callback time-eclipse-phase(int);
 
     callback load-defaults();
     callback reset();
@@ -761,7 +781,13 @@ export component MainWindow inherits Window {
                                     toggled => { root.camera-frame-toggled(); }
                                 }
 
-                                if !root.camera-position.sun-fixed : longitude-slider := SettingRow {
+                                if root.camera-position.eclipse-follow : Text {
+                                    text: root.eclipse-follow-label;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                if !root.camera-position.sun-fixed && !root.camera-position.eclipse-follow : longitude-slider := SettingRow {
                                     label: "Longitude";
                                     hint: "The meridian the camera hangs above, which is what turns the globe left and right.";
                                     minimum: -180;
@@ -773,7 +799,7 @@ export component MainWindow inherits Window {
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                if root.camera-position.sun-fixed : solar-time-slider := SettingRow {
+                                if root.camera-position.sun-fixed && !root.camera-position.eclipse-follow : solar-time-slider := SettingRow {
                                     label: "Time of day";
                                     hint: "The local solar time beneath the camera, which decides the side of the Earth it faces: 12:00 looks at noon, 00:00 at midnight. The Earth turns beneath it while the time stays.";
                                     minimum: 0;
@@ -785,7 +811,7 @@ export component MainWindow inherits Window {
                                     changed => { root.sliders-changed(); }
                                 }
 
-                                latitude-slider := SettingRow {
+                                if !root.camera-position.eclipse-follow : latitude-slider := SettingRow {
                                     label: "Latitude";
                                     hint: "How far north or south of the equator the camera hangs, from one pole to the other.";
                                     minimum: -89;
@@ -1411,6 +1437,54 @@ export component MainWindow inherits Window {
                                     value <=> root.celestial.moon.earthshine;
                                     default-value: root.defaults.celestial.moon.earthshine;
                                     value-text: round(root.celestial.moon.earthshine * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                moon-shadow-slider := SettingRow {
+                                    label: "Shadow on Earth";
+                                    hint: "How dark the Moon's shadow is drawn on the Earth during a solar eclipse. Drawn in the Blend surface mode.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.celestial.moon.shadow;
+                                    default-value: root.defaults.celestial.moon.shadow;
+                                    value-text: round(root.celestial.moon.shadow * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                moon-shadow-umbra-slider := SettingRow {
+                                    label: "Umbra brightness";
+                                    hint: "How much light is drawn where the Sun is fully covered.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 0.5;
+                                    value <=> root.celestial.moon.shadow-umbra;
+                                    default-value: root.defaults.celestial.moon.shadow-umbra;
+                                    value-text: round(root.celestial.moon.shadow-umbra * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                moon-shadow-reach-slider := SettingRow {
+                                    label: "Shadow reach";
+                                    hint: "How far beyond the umbra the shadow stays visible, as a share of the penumbra.";
+                                    indent: 8px;
+                                    minimum: 0.05;
+                                    maximum: 1.0;
+                                    value <=> root.celestial.moon.shadow-reach;
+                                    default-value: root.defaults.celestial.moon.shadow-reach;
+                                    value-text: round(root.celestial.moon.shadow-reach * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                moon-shadow-falloff-slider := SettingRow {
+                                    label: "Shadow falloff";
+                                    hint: "How long the shadow stays dark going outward from the umbra. Higher values keep it dark farther.";
+                                    indent: 8px;
+                                    minimum: 0.25;
+                                    maximum: 3.0;
+                                    value <=> root.celestial.moon.shadow-falloff;
+                                    default-value: root.defaults.celestial.moon.shadow-falloff;
+                                    value-text: round(root.celestial.moon.shadow-falloff * 100) / 100;
                                     changed => { root.sliders-changed(); }
                                 }
 
@@ -2236,6 +2310,10 @@ export component MainWindow inherits Window {
                     image-container.key-shuttle = 0;
                     root.time-now();
                 }
+            } else if event.text == Key.PageUp || event.text == Key.PageDown {
+                if down && !event.repeat {
+                    root.time-eclipse-step(event.text == Key.PageDown);
+                }
             } else if image-container.skip-of(event) != 0 {
                 if down && !event.repeat {
                     root.time-skip(image-container.skip-of(event) > 0, abs(image-container.skip-of(event)) > 1);
@@ -2543,6 +2621,20 @@ export component MainWindow inherits Window {
             clicked => { root.overlays-hidden = false; }
         }
 
+        // Eclipse mode's panel, over the bar's right end while the bar is
+        // open. Before the bar, so the bar's own lists open over it.
+        eclipse-panel := EclipsePanel {
+            x: time-bar.x + time-bar.width - self.width;
+            y: time-bar.y - self.height - 8px;
+            visible: !root.overlays-hidden && time-bar.open && root.time-bar.eclipse-follow;
+            view: root.time-eclipse-panel;
+            compact: self.x < camera-panel.x + camera-panel.width && self.x + self.width > camera-panel.x
+                && time-bar.y - 8px - self.full-height < camera-panel.y + camera-panel.height + 8px;
+            previous => { root.time-eclipse-step(false); }
+            next => { root.time-eclipse-step(true); }
+            phase-picked(index) => { root.time-eclipse-phase(index); }
+        }
+
         time-bar := TimeBar {
             x: (parent.width - self.width) / 2;
             y: parent.height - self.height - 14px;
@@ -2556,6 +2648,9 @@ export component MainWindow inherits Window {
             longest-ladder: root.time-longest-ladder;
             rates: root.time-rates;
             seasons: root.time-seasons;
+            eclipses: root.time-eclipses;
+            eclipse-bands: root.time-eclipse-bands;
+            panel-hovered: eclipse-panel.visible && eclipse-panel.hovered;
             month-ticks: root.time-month-ticks;
             shading: root.time-shading;
             pinned <=> root.time-bar-pinned;
@@ -2572,6 +2667,8 @@ export component MainWindow inherits Window {
             exact-time(hour, minute) => { root.time-exact-time(hour, minute); }
             tick => { root.time-tick(); }
             date-at(x) => { return root.time-date-at(x); }
+            eclipse-toggled => { root.time-eclipse-toggled(); }
+            eclipse-picked(index) => { root.time-eclipse-picked(index); }
         }
 
         // A bar wider than the preview fades out where its edges are cut.
@@ -2600,8 +2697,10 @@ export component MainWindow inherits Window {
             : root.overlays-hidden ? (show-button.hovered ? "show" : "")
             : camera-panel.any-held ? ""
             : camera-panel.hovered-hint != "" ? camera-panel.hovered-hint
+            : image-container.panel-hint != "" ? image-container.panel-hint
             : time-bar.hovered-hint;
-        property <bool> hint-over-bar: !root.overlays-hidden && camera-panel.hovered-hint == "" && time-bar.hovered-hint != "";
+        property <string> panel-hint: eclipse-panel.visible ? eclipse-panel.hovered-hint : "";
+        property <bool> hint-over-bar: !root.overlays-hidden && camera-panel.hovered-hint == "" && (time-bar.hovered-hint != "" || image-container.panel-hint != "");
         property <string> shown-hint;
         property <duration> hint-since;
         changed hint-id => {
@@ -2622,10 +2721,10 @@ export component MainWindow inherits Window {
             content: OverlayHints.content(image-container.shown-hint);
             width: min(250px, image-container.width - 12px);
             x: image-container.hint-over-bar
-                ? clamp(time-bar.x + time-bar.hovered-x - self.width / 2, 6px, parent.width - self.width - 6px)
+                ? clamp((image-container.panel-hint != "" ? eclipse-panel.x + eclipse-panel.hovered-x : time-bar.x + time-bar.hovered-x) - self.width / 2, 6px, parent.width - self.width - 6px)
                 : max(6px, camera-panel.x - self.width - 12px);
             y: image-container.hint-over-bar
-                ? max(6px, time-bar.y - self.height - 8px)
+                ? max(6px, (eclipse-panel.visible ? eclipse-panel.y : time-bar.y) - self.height - 8px)
                 : clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
         }
 

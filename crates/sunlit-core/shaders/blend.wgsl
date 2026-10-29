@@ -30,6 +30,25 @@ fn blend_fragment(
     diffuse_floor: f32,
     diffuse_ramp: f32,
 ) -> BlendResult {
+    return blend_fragment_lit(
+        day_color, night_color, n_dot_l, terminator_width,
+        diffuse_enabled, diffuse_floor, diffuse_ramp, 1.0,
+    );
+}
+
+/// The same with the shaded day scaled by `sunlight`, the share of it an
+/// eclipse leaves, after the clamp that would otherwise hold it up at the
+/// night texture.
+fn blend_fragment_lit(
+    day_color: vec3<f32>,
+    night_color: vec3<f32>,
+    n_dot_l: f32,
+    terminator_width: f32,
+    diffuse_enabled: bool,
+    diffuse_floor: f32,
+    diffuse_ramp: f32,
+    sunlight: f32,
+) -> BlendResult {
     let w = terminator_width;
     let blend = smoothstep(-w, w, n_dot_l);
 
@@ -39,6 +58,7 @@ fn blend_fragment(
                           smoothstep(0.0, diffuse_ramp, n_dot_l));
         shaded_day = max(day_color * shading, min(night_color, day_color));
     }
+    shaded_day *= sunlight;
 
     return BlendResult(mix(night_color, shaded_day, blend), blend);
 }

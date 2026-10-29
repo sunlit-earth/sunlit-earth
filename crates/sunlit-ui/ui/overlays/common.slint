@@ -51,6 +51,10 @@ export global OverlayHints {
     // The speed and what it means, "60× · 1 min/s", for the speed's hint,
     // since a narrow bar shows the speed's arrow alone.
     in property <string> speed;
+    // Where eclipse mode's previous and next lead, "Partial, Sat 29 Mar
+    // 2025", empty at the end of the range.
+    in property <string> eclipse-previous;
+    in property <string> eclipse-next;
 
     out property <string> mod-key: is-macos ? "⌘" : "Ctrl";
     out property <string> shift-key: is-macos ? "⇧" : "Shift";
@@ -206,6 +210,21 @@ export global OverlayHints {
                 body: "Playback has taken the preview away from the time setting. " + wallpaper-time + " Click to go back to it.",
             };
         }
+        if id == "eclipse-mode" {
+            return {
+                title: "Eclipse mode",
+                body: "Jumps to the next solar eclipse and keeps the Moon's shadow in view as the time of day moves. Click again to stop following.",
+                keys: ["PgUp", "PgDn"],
+            };
+        }
+        if id == "eclipse-previous" || id == "eclipse-next" {
+            let target = id == "eclipse-previous" ? eclipse-previous : eclipse-next;
+            return {
+                title: (id == "eclipse-previous" ? "Previous solar eclipse" : "Next solar eclipse") + (target == "" ? "" : ": " + target),
+                body: target == "" ? "None within 1900 to 2100." : "",
+                keys: [id == "eclipse-previous" ? "PgUp" : "PgDn"],
+            };
+        }
         if id == "pin" {
             return { title: "Keep open", body: "Keep the full bar open and at full strength, wherever the pointer goes." };
         }
@@ -219,6 +238,12 @@ export global OverlayHints {
             return {
                 title: "Time of day",
                 body: "Drag to change the time and keep the date. With the camera fixed toward the Sun, the hour turns the Earth beneath the camera and the light under it stays, so the track is plain.",
+            };
+        }
+        if id == "day-track-eclipse" {
+            return {
+                title: "Time of day",
+                body: "Drag to change the time and keep the date, with the camera following the Moon's shadow. The track shows when the shadow is on the Earth: the penumbra faint, the umbra or the antumbra stronger, a line at the peak.",
             };
         }
         if id == "year-track" {

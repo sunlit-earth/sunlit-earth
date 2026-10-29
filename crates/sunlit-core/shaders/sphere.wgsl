@@ -2,7 +2,7 @@ struct Uniforms {
     mvp: mat4x4<f32>,              // 64 bytes, offset 0
     sun_dir: vec3<f32>,            // 12 bytes, offset 64
     terminator_width: f32,         // 4 bytes, offset 76
-    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 2: night alone, bits 3 and 4: uniform day and night)
+    flags: u32,                    // 4 bytes, offset 80 (bit 0: diffuse shading, bit 2: night alone, bits 3 and 4: uniform day and night, bit 5: eclipse)
     diffuse_floor: f32,            // 4 bytes, offset 84
     diffuse_ramp: f32,             // 4 bytes, offset 88
     _pad: f32,                     // 4 bytes, offset 92
@@ -80,6 +80,14 @@ struct Uniforms {
     _pad12: f32,                      // 4 bytes, offset 588
     night_ocean_shift: vec3<f32>,     // 12 bytes, offset 592
     _pad13: f32,                      // 4 bytes, offset 604
+    eclipse_moon: vec3<f32>,          // 12 bytes, offset 608
+    eclipse_moon_to_sun: f32,         // 4 bytes, offset 620
+    eclipse_axis: vec3<f32>,          // 12 bytes, offset 624
+    eclipse_strength: f32,            // 4 bytes, offset 636
+    eclipse_moon_radius: f32,         // 4 bytes, offset 640
+    eclipse_sun_radius: f32,          // 4 bytes, offset 644
+    eclipse_earth_radius: f32,        // 4 bytes, offset 648
+    eclipse_earth_e2: f32,            // 4 bytes, offset 652
 };
 
 @group(0) @binding(0)
@@ -594,13 +602,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     night_rgb = adjust_saturation(night_rgb, uniforms.night_saturation);
 
     let n_dot_l = dot(n, uniforms.sun_dir);
+    let sunlight = eclipse_shade(n, 0.0);
 
-    let result = blend_fragment(
+    let result = blend_fragment_lit(
         day_rgb, night_rgb, n_dot_l,
         uniforms.terminator_width,
         (uniforms.flags & 1u) != 0u,
         uniforms.diffuse_floor,
         uniforms.diffuse_ramp,
+        sunlight,
     );
 
     var color = result.color;
@@ -618,7 +628,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // Normalize Fresnel by F0 so specular stays at its pre-Fresnel
             // intensity at normal incidence and only grows at grazing angles.
             let glint = spec * (fresnel / 0.02) * max(n_dot_l, 0.0) * result.blend
-                        * uniforms.spec_intensity * water;
+                        * uniforms.spec_intensity * water * sunlight;
             color += vec3<f32>(glint);
         }
 
@@ -627,7 +637,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // transmission and increased sky reflection on real water.
         if uniforms.fresnel_mix > 0.0 {
             let sky_color = vec3<f32>(0.5, 0.7, 0.9);
-            color = mix(color, sky_color * result.blend, fresnel * uniforms.fresnel_mix * water);
+            color = mix(color, sky_color * result.blend * sunlight, fresnel * uniforms.fresnel_mix * water);
         }
     }
 
@@ -656,6 +666,71 @@ const FLAG_UNIFORM_NIGHT: u32 = 16u;
 
 fn shells_follow_the_sun() -> bool {
     return (uniforms.flags & (FLAG_UNIFORM_DAY | FLAG_UNIFORM_NIGHT)) == 0u;
+}
+
+// ---------------------------------------------------------------------------
+// The Moon's shadow
+//
+// Mirrored by `surface_point` and `light_left` in `scene::eclipse`, which the
+// CPU tests and gates the frame with. Everything is measured in the frame of
+// the shadow's axis, from differences of numbers the size of the Moon's
+// distance, which is what holds in f32 where the angle between the two
+// directions would not.
+// ---------------------------------------------------------------------------
+
+/// Bit 5 of `uniforms.flags`: the Moon's penumbra reaches the shells this
+/// frame, in the blend mode, so the eclipse fields are filled.
+const FLAG_ECLIPSE: u32 = 32u;
+
+/// The place on the WGS84 ellipsoid whose normal is `n`, raised `height`
+/// along it: the true point a fragment of the sphere at `n` stands for.
+fn eclipse_surface_point(n: vec3<f32>, height: f32) -> vec3<f32> {
+    let e2 = uniforms.eclipse_earth_e2;
+    let normal_radius = uniforms.eclipse_earth_radius / sqrt(1.0 - e2 * n.y * n.y);
+    return normal_radius * vec3<f32>(n.x, (1.0 - e2) * n.y, n.z) + height * n;
+}
+
+/// Area shared by two circles whose centers are `d` apart, as
+/// `scene::disk_occlusion::overlap_area` has it.
+fn disk_overlap(r0: f32, r1: f32, d: f32) -> f32 {
+    if r0 <= 0.0 || r1 <= 0.0 || d >= r0 + r1 {
+        return 0.0;
+    }
+    if d <= abs(r0 - r1) {
+        let contained = min(r0, r1);
+        return PI * contained * contained;
+    }
+    let a0 = acos(clamp((d * d + r0 * r0 - r1 * r1) / (2.0 * d * r0), -1.0, 1.0));
+    let a1 = acos(clamp((d * d + r1 * r1 - r0 * r0) / (2.0 * d * r1), -1.0, 1.0));
+    let kite = 0.5 * sqrt(max((-d + r0 + r1) * (d + r0 - r1) * (d - r0 + r1) * (d + r0 + r1), 0.0));
+    return r0 * r0 * a0 + r1 * r1 * a1 - kite;
+}
+
+/// The share of sunlight that reaches the place drawn at `n`, `height` above
+/// the ground: the share of the Sun's disk the Moon's leaves uncovered.
+fn eclipse_light(n: vec3<f32>, height: f32) -> f32 {
+    let axis = uniforms.eclipse_axis;
+    let q = eclipse_surface_point(n, height) - uniforms.eclipse_moon;
+    let z = dot(q, axis);
+    if z <= 0.0 {
+        return 1.0;
+    }
+    let r = length(q - z * axis);
+    let separation = atan(r / z) - atan(r / (z + uniforms.eclipse_moon_to_sun));
+    let moon_radius = asin(uniforms.eclipse_moon_radius / length(q));
+    let sun_radius = asin(uniforms.eclipse_sun_radius / length(q + uniforms.eclipse_moon_to_sun * axis));
+    let covered = disk_overlap(1.0, moon_radius / sun_radius, separation / sun_radius) / PI;
+    return clamp(1.0 - covered, 0.0, 1.0);
+}
+
+/// What the eclipse leaves of every term that is sunlight at `n`, `height`
+/// above the ground: the light left re-encoded as the stored values are,
+/// scaled by the strength setting. Exactly one outside the gate.
+fn eclipse_shade(n: vec3<f32>, height: f32) -> f32 {
+    if (uniforms.flags & FLAG_ECLIPSE) == 0u {
+        return 1.0;
+    }
+    return mix(1.0, pow(eclipse_light(n, height), 1.0 / 2.2), uniforms.eclipse_strength);
 }
 
 /// The cosine of the Sun's angle from the zenith that the shells light the
@@ -747,9 +822,10 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     let shell_shift = sqrt(1.0 - 1.0 / (uniforms.cloud_sphere_radius * uniforms.cloud_sphere_radius));
     let w = uniforms.cloud_terminator;
     let sunlit = smoothstep(-shell_shift - w, -shell_shift + w, n_dot_l);
+    let sunlight = eclipse_shade(n, uniforms.cloud_sphere_radius - 1.0);
     // cloud_night is a fraction of display white, not an irradiance: see the
     // field's doc comment in uniforms.rs.
-    let brightness = mix(vec3<f32>(uniforms.cloud_night), vec3<f32>(1.0), sunlit);
+    let brightness = mix(vec3<f32>(uniforms.cloud_night), vec3<f32>(sunlight), sunlit);
     // The two hemispheres carry their own opacity, because one alpha does not
     // read the same on both: the day side keeps the multiply on coverage, and
     // the night side reads its slider as an optical depth, which is what puts
@@ -762,7 +838,7 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     // exactly that call.
     let night_alpha = saturate(1.0 - pow(max(1.0 - cloud_density, 1e-6), depth));
     let day_alpha = cloud_density * uniforms.cloud_opacity;
-    return vec4<f32>(brightness, mix(night_alpha, day_alpha, sunlit));
+    return vec4<f32>(brightness, mix(night_alpha, day_alpha, sunlit * sunlight));
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +915,7 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let v = normalize(uniforms.eye_pos - in.world_normal);
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
     let n_dot_l = shell_n_dot_l(n);
+    let sunlight = eclipse_shade(n, uniforms.rayleigh_radius - 1.0);
 
     // Bidirectional falloff: Gaussian-like profile peaking where the view ray
     // grazes the Earth's surface (not at the shell edge). The shell is larger
@@ -858,7 +935,7 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let term_color = vec3<f32>(1.0, 0.5, 0.2);  // orange spectral depletion
     // Night-side fadeout
     let night_fade = smoothstep(0.0, -0.3, n_dot_l);
-    let color = mix(term_color * term_t * 0.5, day_color, day_t) * (1.0 - night_fade);
+    let color = mix(term_color * term_t * 0.5, day_color * sunlight, day_t) * (1.0 - night_fade);
 
     // The forward-scattering lobe around the Sun's own azimuth. Its color is the
     // same light path the Sun's disk is drawn through, taken at this fragment's
@@ -888,7 +965,8 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     // the surface terminator, so the gate reaches a little into the night side.
     // The lobe is a terminator effect, so a globe lit evenly has none.
     let sunlit = smoothstep(-0.2, 0.0, n_dot_l) * f32(shells_follow_the_sun());
-    let sunrise = limb_hue_km(ray_height) * lobe * sunlit * uniforms.atmo_sunrise_glow;
+    let sunrise = limb_hue_km(ray_height) * lobe * sunlit * uniforms.atmo_sunrise_glow * sunlight;
+
 
     // In-scattering: blue light scattered toward the viewer.
     // Extinction: original light blocked by the atmosphere (controlled by haze).

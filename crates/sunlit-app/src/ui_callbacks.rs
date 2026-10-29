@@ -156,6 +156,7 @@ pub fn apply_preset(window: &MainWindow, preset: &CameraParams) {
         zoom: preset.zoom,
         sun_fixed: current.sun_fixed,
         solar_time,
+        eclipse_follow: false,
     });
     window.set_camera_orientation(CameraOrientationSettings {
         tilt: preset.tilt_deg,
@@ -881,6 +882,7 @@ pub fn scene_settings(params: &SceneParams) -> SceneSettings {
             zoom: cam.zoom,
             sun_fixed: params.sun_fixed,
             solar_time: params.solar_time,
+            eclipse_follow: params.eclipse_follow,
         },
         camera_orientation: CameraOrientationSettings {
             tilt: cam.tilt_deg,
@@ -934,6 +936,7 @@ pub fn scene_settings(params: &SceneParams) -> SceneSettings {
                 brightness: params.moon_brightness,
                 size: params.moon_size,
                 earthshine: params.moon_earthshine,
+                shadow: params.moon_shadow,
             },
             stars: StarSettings {
                 intensity: params.star_intensity,
@@ -1064,6 +1067,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         },
         sun_fixed: position.sun_fixed,
         solar_time: position.solar_time,
+        eclipse_follow: position.eclipse_follow,
         texture_index: window.get_texture_index(),
         sample_count: aa_counts.get(aa_index).copied().unwrap_or(1),
         terminator_width: lighting.terminator_width,
@@ -1115,6 +1119,7 @@ pub fn read_params_from_window(window: &MainWindow, aa_counts: &[u32]) -> SceneP
         moon_brightness: celestial.moon.brightness,
         moon_size: celestial.moon.size,
         moon_earthshine: celestial.moon.earthshine,
+        moon_shadow: celestial.moon.shadow,
         milky_way_intensity: celestial.sky.milky_way,
         day_ocean_color: rgb8(color.day.ocean),
         night_ocean_color: rgb8(color.night.ocean),

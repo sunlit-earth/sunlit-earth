@@ -66,26 +66,62 @@ export struct EclipsePanelView {
     has-next: bool,
 }
 
-component Chevron inherits Rectangle {
+// Previous or next: a chevron and a word, the chevron on the side it steps
+// toward.
+component StepButton inherits Rectangle {
     in property <bool> left;
     in property <bool> enabled;
+    in property <string> text;
     in property <string> label;
     out property <bool> hovered: touch.has-hover;
     callback clicked();
 
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
+    height: 28px;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: OverlayStyle.border;
     background: root.enabled && touch.has-hover ? OverlayStyle.faint : transparent;
 
-    Path {
-        width: 8px;
-        height: 10px;
-        viewbox-width: 8;
-        viewbox-height: 10;
-        commands: root.left ? "M6 1L2 5L6 9" : "M2 1L6 5L2 9";
-        stroke: root.enabled ? OverlayStyle.fg : OverlayStyle.border;
-        stroke-width: 1.5px;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: root.left ? LayoutAlignment.start : LayoutAlignment.end;
+
+        if root.left : VerticalLayout {
+            alignment: center;
+
+            Path {
+                width: 8px;
+                height: 10px;
+                viewbox-width: 8;
+                viewbox-height: 10;
+                commands: "M6 1L2 5L6 9";
+                stroke: root.enabled ? OverlayStyle.fg : OverlayStyle.border;
+                stroke-width: 1.5px;
+            }
+        }
+
+        Text {
+            text: root.text;
+            color: root.enabled ? OverlayStyle.fg : OverlayStyle.border;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+
+        if !root.left : VerticalLayout {
+            alignment: center;
+
+            Path {
+                width: 8px;
+                height: 10px;
+                viewbox-width: 8;
+                viewbox-height: 10;
+                commands: "M2 1L6 5L2 9";
+                stroke: root.enabled ? OverlayStyle.fg : OverlayStyle.border;
+                stroke-width: 1.5px;
+            }
+        }
     }
 
     touch := TouchArea {
@@ -156,15 +192,19 @@ component PhaseRow inherits Rectangle {
 export component EclipsePanel inherits Rectangle {
     in property <EclipsePanelView> view;
     // Too little room above the bar for both it and the camera panel: the
-    // phases and the fact line give way, and the header and the instant's
-    // line stay.
+    // phases and the fact line give way, and the header, the instant's line
+    // and previous and next stay.
     in property <bool> compact;
 
+    // The room the phases take whatever the eclipse has, so that stepping
+    // between kinds moves nothing: a total or an annular eclipse's five.
+    property <int> phase-rows: 5;
+
     // The panel's height with every line shown, which is what decides
-    // whether it has to be compact.
-    out property <length> full-height: 2 * 10px + 22px + 16px + 6px + root.view.phases.length * 20px + 4px + 16px + 4px + 16px;
+    // whether it has to be compact. It depends on the preview's size alone.
+    out property <length> full-height: 2 * 10px + 22px + 16px + 6px + root.phase-rows * 20px + 4px + 16px + 4px + 16px + 8px + 28px;
     out property <string> hovered-hint: previous.hovered ? "eclipse-previous" : next.hovered ? "eclipse-next" : "";
-    out property <length> hovered-x: previous.hovered ? previous.x + previous.width / 2 : next.x + next.width / 2;
+    out property <length> hovered-x: steps.x + (previous.hovered ? previous.x + previous.width / 2 : next.x + next.width / 2);
     out property <bool> hovered: touch.has-hover || self.hovered-hint != "" || root.hovered-row >= 0;
 
     callback previous();
@@ -191,18 +231,8 @@ export component EclipsePanel inherits Rectangle {
 
         HorizontalLayout {
             height: 22px;
+            padding-left: 6px;
             spacing: 6px;
-
-            VerticalLayout {
-                alignment: center;
-
-                previous := Chevron {
-                    left: true;
-                    enabled: root.view.has-previous;
-                    label: "Previous solar eclipse";
-                    clicked => { root.previous(); }
-                }
-            }
 
             VerticalLayout {
                 alignment: center;
@@ -223,26 +253,19 @@ export component EclipsePanel inherits Rectangle {
                 horizontal-stretch: 1;
                 overflow: elide;
             }
-
-            VerticalLayout {
-                alignment: center;
-
-                next := Chevron {
-                    left: false;
-                    enabled: root.view.has-next;
-                    label: "Next solar eclipse";
-                    clicked => { root.next(); }
-                }
-            }
         }
 
-        Text {
+        HorizontalLayout {
             height: 16px;
-            text: root.view.date-text;
-            color: OverlayStyle.dim;
-            font-size: 11px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+            padding-left: 24px;
+
+            Text {
+                text: root.view.date-text;
+                color: OverlayStyle.dim;
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
 
         if !root.compact : Rectangle {
@@ -250,6 +273,9 @@ export component EclipsePanel inherits Rectangle {
         }
 
         if !root.compact : VerticalLayout {
+            height: root.phase-rows * 20px;
+            alignment: start;
+
             for phase[index] in root.view.phases : PhaseRow {
                 phase: phase;
                 current: index == root.view.current;
@@ -288,6 +314,33 @@ export component EclipsePanel inherits Rectangle {
             font-size: 11px;
             vertical-alignment: center;
             overflow: elide;
+        }
+
+        Rectangle {
+            height: 8px;
+        }
+
+        steps := HorizontalLayout {
+            height: 28px;
+            spacing: 6px;
+
+            previous := StepButton {
+                left: true;
+                enabled: root.view.has-previous;
+                text: "Previous";
+                label: "Previous solar eclipse";
+                width: (root.width - 2 * 10px - 6px) / 2;
+                clicked => { root.previous(); }
+            }
+
+            next := StepButton {
+                left: false;
+                enabled: root.view.has-next;
+                text: "Next";
+                label: "Next solar eclipse";
+                width: (root.width - 2 * 10px - 6px) / 2;
+                clicked => { root.next(); }
+            }
         }
     }
 }

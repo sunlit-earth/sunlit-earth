@@ -7,18 +7,25 @@
 //! to the engine and which ends any excursion there. Every text the bar shows
 //! is formatted here.
 
+use std::cell::RefCell;
+
 use slint::{ComponentHandle, Model};
 use time::OffsetDateTime;
 
 use sunlit_core::engine::EngineCommand;
 use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind, ExcursionState, TimeStep};
+use sunlit_core::scene::camera;
 use sunlit_core::scene::datetime;
+use sunlit_core::scene::eclipse::{self, Eclipse, EclipseKind};
 use sunlit_core::scene::scene_time::SceneTime;
 use sunlit_core::scene::sky;
 
 use crate::engine_client::EngineLink;
 use crate::ui_callbacks::{self, display_offset, instant_of_sliders, sliders_of};
-use crate::{MainWindow, OverlayHints, RateChoice, SeasonMark, TimeBarView};
+use crate::{
+    EclipseBand, EclipseMark, EclipsePanelView, EclipsePhase, MainWindow, OverlayHints, RateChoice,
+    SeasonMark, TimeBarView,
+};
 
 const MINUS: &str = "\u{2212}";
 
@@ -385,9 +392,21 @@ fn year_fraction(local: OffsetDateTime) -> f32 {
         / f32::from(datetime::days_in_year(local.year()))
 }
 
-/// Act on the transport and tell the engine.
+/// Act on the transport and tell the engine. Playback of the date swings the
+/// camera of eclipse mode around the globe, so it leaves the mode first.
 fn act(window: &MainWindow, link: &EngineLink, action: Action) {
     let (next, command) = transport(window).act(action);
+    if matches!(
+        command,
+        Some(ExcursionCommand::Play {
+            kind: ExcursionKind::Date,
+            ..
+        })
+    ) && window.get_camera_position().eclipse_follow
+    {
+        leave_eclipse(window);
+        link.push_params(window);
+    }
     let mut view = window.get_time_bar();
     view.rate = next.rate;
     view.date_kind = next.kind == ExcursionKind::Date;
@@ -398,11 +417,18 @@ fn act(window: &MainWindow, link: &EngineLink, action: Action) {
     refresh(window);
 }
 
-/// Make `at` the time setting, from a track or exact entry. The push ends the
-/// excursion in the engine when the setting changed, and `End` when it did
-/// not; the bar goes back to the setting at once rather than when the engine
-/// says so, so the next move of a drag starts from what it set.
+/// Make `at` the time setting, from a track or exact entry. A new day on
+/// screen leaves eclipse mode, whose eclipse is on the day it was.
 fn set_time(window: &MainWindow, link: &EngineLink, at: OffsetDateTime) {
+    leave_eclipse_for_a_new_day(window, at);
+    write_time(window, link, at);
+}
+
+/// Make `at` the time setting. The push ends the excursion in the engine when
+/// the setting changed, and `End` when it did not; the bar goes back to the
+/// setting at once rather than when the engine says so, so the next move of a
+/// drag starts from what it set.
+fn write_time(window: &MainWindow, link: &EngineLink, at: OffsetDateTime) {
     ui_callbacks::set_fixed_time(window, at);
     ui_callbacks::update_datetime_labels(window);
     link.push_params(window);
@@ -547,6 +573,7 @@ pub fn refresh(window: &MainWindow) {
     view.year_fraction = year_fraction(local);
     let position = window.get_camera_position();
     view.sun_fixed = position.sun_fixed;
+    refresh_eclipse(window, &mut view, position.eclipse_follow, now);
     view.year = local.year();
     view.month = i32::from(u8::from(local.month()));
     view.day = i32::from(local.day());
@@ -559,7 +586,7 @@ pub fn refresh(window: &MainWindow) {
 
     refresh_ladder(window, transport);
     refresh_year(window, local);
-    if !position.sun_fixed {
+    if !position.sun_fixed && !position.eclipse_follow {
         refresh_shading(window, local, position.latitude, position.longitude);
     }
 }
@@ -591,8 +618,8 @@ fn refresh_ladder(window: &MainWindow, transport: Transport) {
     window.set_time_rates(slint::ModelRc::new(slint::VecModel::from(choices)));
 }
 
-/// The date track's month ticks and season marks, when the displayed year
-/// or zone changed.
+/// The date track's month ticks, season marks and eclipse marks, when the
+/// displayed year or zone changed.
 fn refresh_year(window: &MainWindow, local: OffsetDateTime) {
     let utc = window.get_time_zone_utc();
     let key = format!("{}|{}", local.year(), if utc { "utc" } else { "local" });
@@ -605,7 +632,15 @@ fn refresh_year(window: &MainWindow, local: OffsetDateTime) {
         .filter_map(|month| time::Date::from_calendar_date(local.year(), month, 1).ok())
         .map(|first| f32::from(first.ordinal() - 1) / days)
         .collect();
-    let seasons: Vec<SeasonMark> = seasons_shown(local.year(), utc)
+    let shown_seasons = seasons_shown(local.year(), utc);
+    let eclipses = eclipse::in_year(local.year(), |at| display_offset(utc, at));
+    window.set_time_eclipses(slint::ModelRc::new(slint::VecModel::from(eclipse_marks(
+        &eclipses,
+        &shown_seasons,
+        utc,
+    ))));
+    YEAR_ECLIPSES.with(|year| *year.borrow_mut() = (key.clone(), eclipses));
+    let seasons: Vec<SeasonMark> = shown_seasons
         .iter()
         .zip(SEASON_NAMES)
         .map(|(&at, name)| SeasonMark {
@@ -681,6 +716,7 @@ pub fn register(window: &MainWindow, link: &EngineLink) {
     window.set_time_longest_ladder(i32::try_from(longest).unwrap_or(i32::MAX));
     register_transport(window, link);
     register_setting(window, link);
+    register_eclipse(window, link);
     register_labels(window);
     refresh(window);
 }
@@ -753,6 +789,10 @@ fn register_transport(window: &MainWindow, link: &EngineLink) {
                 forward,
                 big,
             };
+            if step.kind == ExcursionKind::Date && win.get_camera_position().eclipse_follow {
+                leave_eclipse(&win);
+                engine.push_params(&win);
+            }
             engine.send(EngineCommand::Excursion(ExcursionCommand::Skip(step)));
         }
     });
@@ -765,7 +805,9 @@ fn register_setting(window: &MainWindow, link: &EngineLink) {
     let engine = link.clone();
     window.on_time_now(move || {
         if let Some(win) = weak.upgrade() {
+            leave_eclipse(&win);
             let mut settings = win.get_datetime();
+
             settings.use_custom = false;
             settings.instant = slint::SharedString::new();
             win.set_datetime(settings);
@@ -862,6 +904,480 @@ fn register_labels(window: &MainWindow) {
         time::Date::from_ordinal_date(local.year(), day + 1)
             .map(|date| day_and_month(date).into())
             .unwrap_or_default()
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Eclipse mode
+// ---------------------------------------------------------------------------
+
+/// Fourteen days: under half the shortest gap between two solar eclipses of
+/// 1900 to 2100, 29.3 days, so an eclipse whose peak is this near an instant
+/// is the eclipse nearest it.
+const NEAREST_REACH: time::Duration = time::Duration::days(14);
+
+/// How near a season an eclipse's mark has to be, in days, for its label to
+/// name the season too: a glyph's width on the date track of the widest bar.
+const SEASON_NEIGHBOR_DAYS: f64 = 6.0;
+
+/// The eclipse the mode is on and its neighbors.
+#[derive(Clone)]
+struct Current {
+    eclipse: Eclipse,
+    previous: Option<Eclipse>,
+    next: Option<Eclipse>,
+}
+
+thread_local! {
+    /// The eclipse nearest the time setting, which is the one the mode is on,
+    /// kept while the setting stays within `NEAREST_REACH` of its peak, which
+    /// nothing that keeps the mode can move it past.
+    static CURRENT: RefCell<Option<Current>> = const { RefCell::new(None) };
+    /// The displayed year's eclipses in the order of the date track's marks,
+    /// under the key of the year they were found for.
+    static YEAR_ECLIPSES: RefCell<(String, Vec<Eclipse>)> = const { RefCell::new((String::new(), Vec::new())) };
+}
+
+/// The eclipse the mode is on, the one nearest the time setting `setting`.
+fn current_eclipse(setting: OffsetDateTime) -> Option<Current> {
+    CURRENT.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let held = cell
+            .as_ref()
+            .is_some_and(|current| (current.eclipse.peak - setting).abs() <= NEAREST_REACH);
+        if !held {
+            *cell = eclipse::nearest(setting).map(|eclipse| Current {
+                previous: eclipse::previous_before(eclipse.peak),
+                next: eclipse::next_after(eclipse.peak),
+                eclipse,
+            });
+        }
+        cell.clone()
+    })
+}
+
+fn kind_index(kind: EclipseKind) -> i32 {
+    match kind {
+        EclipseKind::Partial => 0,
+        EclipseKind::Annular => 1,
+        EclipseKind::Total => 2,
+    }
+}
+
+fn kind_word(kind: EclipseKind) -> &'static str {
+    match kind {
+        EclipseKind::Partial => "Partial",
+        EclipseKind::Annular => "Annular",
+        EclipseKind::Total => "Total",
+    }
+}
+
+/// "Total solar eclipse".
+fn eclipse_title(kind: EclipseKind) -> String {
+    format!("{} solar eclipse", kind_word(kind))
+}
+
+/// "65° N".
+fn latitude_text(latitude: f32) -> String {
+    let hemisphere = if latitude < 0.0 { "S" } else { "N" };
+    format!("{:.0}° {hemisphere}", latitude.abs())
+}
+
+/// "93%".
+fn share_text(share: f32) -> String {
+    format!("{:.0}%", (share * 100.0).clamp(0.0, 100.0))
+}
+
+/// "1 h 12 min", "20 min", "3 days".
+fn span_text(span: time::Duration) -> String {
+    let minutes = (span.abs().as_seconds_f64() / 60.0).round();
+    if minutes < 60.0 {
+        format!("{minutes:.0} min")
+    } else if minutes < 48.0 * 60.0 {
+        let hours = (minutes / 60.0).floor();
+        let rest = minutes - hours * 60.0;
+        if rest == 0.0 {
+            format!("{hours:.0} h")
+        } else {
+            format!("{hours:.0} h {rest:.0} min")
+        }
+    } else {
+        format!("{:.0} days", (minutes / 1440.0).round())
+    }
+}
+
+/// "Partial, Sat 29 Mar 2025", in the displayed zone.
+fn neighbor_text(eclipse: Option<&Eclipse>, utc: bool) -> String {
+    eclipse.map_or_else(String::new, |eclipse| {
+        let local = eclipse.peak.to_offset(display_offset(utc, eclipse.peak));
+        format!(
+            "{}, {} {}",
+            kind_word(eclipse.kind),
+            datetime::day_label(local.date()),
+            local.year()
+        )
+    })
+}
+
+/// The eclipse's contacts and peak in order, with what the panel calls them
+/// and the mark of each: 0 the penumbra's, 1 the umbra's, 2 the peak.
+fn phases_of(eclipse: &Eclipse) -> Vec<(OffsetDateTime, String, i32)> {
+    let central = match eclipse.kind {
+        EclipseKind::Annular => "Annular",
+        _ => "Total",
+    };
+    let contacts = eclipse.contacts;
+    let mut phases = vec![(contacts.p1, "Partial begins".to_owned(), 0)];
+    if let Some(u1) = contacts.u1 {
+        phases.push((u1, format!("{central} begins"), 1));
+    }
+    phases.push((eclipse.peak, "Peak".to_owned(), 2));
+    if let Some(u4) = contacts.u4 {
+        phases.push((u4, format!("{central} ends"), 1));
+    }
+    phases.push((contacts.p4, "Partial ends".to_owned(), 0));
+    phases
+}
+
+/// What the panel says about the eclipse at its greatest point.
+fn fact_text(eclipse: &Eclipse) -> String {
+    let greatest = eclipse.greatest;
+    match (eclipse.kind, eclipse.central_duration) {
+        (EclipseKind::Partial, _) | (_, None) => format!(
+            "{} of the Sun covered at most, at {}",
+            share_text(greatest.covered),
+            latitude_text(greatest.latitude)
+        ),
+        (kind, Some(duration)) => {
+            let seconds = duration.as_seconds_f64().round();
+            format!(
+                "{} {:.0} min {:.0} s at greatest eclipse",
+                if kind == EclipseKind::Annular {
+                    "Annularity"
+                } else {
+                    "Totality"
+                },
+                (seconds / 60.0).floor(),
+                seconds % 60.0
+            )
+        }
+    }
+}
+
+/// What the instant on screen shows of the shadow.
+fn now_text(eclipse: &Eclipse, shown: OffsetDateTime) -> String {
+    if shown < eclipse.contacts.p1 {
+        format!(
+            "Shadow reaches Earth in {}",
+            span_text(eclipse.contacts.p1 - shown)
+        )
+    } else if shown > eclipse.contacts.p4 {
+        format!(
+            "Shadow left Earth {} ago",
+            span_text(shown - eclipse.contacts.p4)
+        )
+    } else {
+        let shadow = sky::shadow_at(shown);
+        format!(
+            "Now: Sun {} covered at {}",
+            share_text(eclipse::covered_at_center(&shadow)),
+            latitude_text(eclipse::shadow_center(&shadow).0)
+        )
+    }
+}
+
+fn panel_view(current: &Current, shown: OffsetDateTime, utc: bool) -> EclipsePanelView {
+    let eclipse = &current.eclipse;
+    let local = |at: OffsetDateTime| at.to_offset(display_offset(utc, at));
+    let peak = local(eclipse.peak);
+    let phases = phases_of(eclipse);
+    let on_earth = eclipse.on_earth_at(shown);
+    let row = phases
+        .iter()
+        .rposition(|(at, _, _)| *at <= shown)
+        .filter(|_| on_earth)
+        .and_then(|row| i32::try_from(row).ok())
+        .unwrap_or(-1);
+    EclipsePanelView {
+        kind: kind_index(eclipse.kind),
+        title: eclipse_title(eclipse.kind).into(),
+        date_text: format!(
+            "{} {} \u{b7} {}",
+            datetime::day_label(peak.date()),
+            peak.year(),
+            datetime::zone_label(peak.offset())
+        )
+        .into(),
+        phases: slint::ModelRc::new(slint::VecModel::from(
+            phases
+                .iter()
+                .map(|(at, label, glyph)| EclipsePhase {
+                    label: label.as_str().into(),
+                    time: clock_text(local(*at)).into(),
+                    glyph: *glyph,
+                })
+                .collect::<Vec<_>>(),
+        )),
+        current: row,
+        fact: fact_text(eclipse).into(),
+        now_text: now_text(eclipse, shown).into(),
+        has_previous: current.previous.is_some(),
+        has_next: current.next.is_some(),
+    }
+}
+
+/// The stretches of the day on screen the shadow is on the Earth, and where
+/// the peak falls along it, -1 outside it.
+fn eclipse_bands(eclipse: &Eclipse, local: OffsetDateTime, utc: bool) -> (Vec<EclipseBand>, f32) {
+    let offset_at = |at| display_offset(utc, at);
+    let day_start = instant_of_sliders(0.0, f32::from(local.ordinal()), local.year(), offset_at);
+    let day_end = local
+        .date()
+        .next_day()
+        .map_or(day_start + time::Duration::DAY, |next| {
+            instant_of_sliders(0.0, f32::from(next.ordinal()), next.year(), offset_at)
+        });
+    let length = (day_end - day_start).as_seconds_f64();
+    #[expect(clippy::cast_possible_truncation, reason = "a fraction of one day")]
+    let along = |at: OffsetDateTime| ((at - day_start).as_seconds_f64() / length) as f32;
+    let band = |from: OffsetDateTime, to: OffsetDateTime, umbra: bool| {
+        let (start, end) = (along(from), along(to));
+        (end > 0.0 && start < 1.0).then(|| EclipseBand {
+            start: start.max(0.0),
+            end: end.min(1.0),
+            umbra,
+            cut_start: start < 0.0,
+            cut_end: end > 1.0,
+        })
+    };
+    let contacts = eclipse.contacts;
+    let bands = [
+        band(contacts.p1, contacts.p4, false),
+        contacts
+            .u1
+            .zip(contacts.u4)
+            .and_then(|(u1, u4)| band(u1, u4, true)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let peak = along(eclipse.peak);
+    (
+        bands,
+        if (0.0..=1.0).contains(&peak) {
+            peak
+        } else {
+            -1.0
+        },
+    )
+}
+
+/// The date track's marks for `eclipses`, in the displayed zone, a mark near
+/// a season naming it too.
+fn eclipse_marks(eclipses: &[Eclipse], seasons: &[OffsetDateTime], utc: bool) -> Vec<EclipseMark> {
+    eclipses
+        .iter()
+        .map(|eclipse| {
+            let at = eclipse.peak.to_offset(display_offset(utc, eclipse.peak));
+            let mut label = format!(
+                "{} \u{b7} {} {}",
+                eclipse_title(eclipse.kind),
+                datetime::day_label(at.date()),
+                clock_text(at)
+            );
+            if let Some((_, name)) = seasons.iter().zip(SEASON_NAMES).find(|(season, _)| {
+                (**season - eclipse.peak).abs().as_seconds_f64() < SEASON_NEIGHBOR_DAYS * 86_400.0
+            }) {
+                label.push_str(" \u{b7} ");
+                label.push_str(name);
+            }
+            EclipseMark {
+                fraction: year_fraction(at),
+                kind: kind_index(eclipse.kind),
+                label: label.into(),
+            }
+        })
+        .collect()
+}
+
+/// The time setting's instant, which is what the mode's eclipse is nearest.
+fn setting_instant(window: &MainWindow, now: OffsetDateTime) -> OffsetDateTime {
+    ui_callbacks::scene_time_of(&window.get_datetime()).instant(now)
+}
+
+/// The panel, the bands, the hints and the sidebar's line, for the eclipse
+/// the mode is on; the bands and the view's peak cleared with the mode off.
+fn refresh_eclipse(window: &MainWindow, view: &mut TimeBarView, follow: bool, now: OffsetDateTime) {
+    let current = follow
+        .then(|| current_eclipse(setting_instant(window, now)))
+        .flatten();
+    view.eclipse_follow = follow;
+    let Some(current) = current else {
+        view.eclipse_peak = -1.0;
+        if window.get_time_eclipse_bands().row_count() > 0 {
+            window.set_time_eclipse_bands(slint::ModelRc::default());
+        }
+        return;
+    };
+    let utc = window.get_time_zone_utc();
+    let shown = on_screen(window, now);
+    let local = shown.to_offset(display_offset(utc, shown));
+    let (bands, peak) = eclipse_bands(&current.eclipse, local, utc);
+    view.eclipse_kind = kind_index(current.eclipse.kind);
+    view.eclipse_peak = peak;
+    window.set_time_eclipse_bands(slint::ModelRc::new(slint::VecModel::from(bands)));
+    window.set_time_eclipse_panel(panel_view(&current, shown, utc));
+    let peak_local = current
+        .eclipse
+        .peak
+        .to_offset(display_offset(utc, current.eclipse.peak));
+    window.set_eclipse_follow_label(
+        format!(
+            "Following the solar eclipse of {} {}",
+            datetime::day_label(peak_local.date()),
+            peak_local.year()
+        )
+        .into(),
+    );
+    let hints = window.global::<OverlayHints>();
+    hints.set_eclipse_previous(neighbor_text(current.previous.as_ref(), utc).into());
+    hints.set_eclipse_next(neighbor_text(current.next.as_ref(), utc).into());
+}
+
+/// Turn eclipse mode on at `eclipse`: its peak becomes the time setting,
+/// which ends an excursion, and the camera follows the shadow from there.
+pub fn enter_eclipse(window: &MainWindow, link: &EngineLink, eclipse: &Eclipse) {
+    let mut position = window.get_camera_position();
+    position.eclipse_follow = true;
+    window.set_camera_position(position);
+    write_time(window, link, eclipse.peak);
+}
+
+/// Turn eclipse mode off, leaving the camera where it is: the position the
+/// mode resolved at the instant on screen is written into the settings the
+/// camera's mode reads, the latitude and the longitude, or the time of day
+/// in the Sun-fixed mode. The caller pushes the scene.
+pub fn leave_eclipse(window: &MainWindow) {
+    leave_eclipse_as(window, window.get_camera_position().sun_fixed);
+}
+
+/// `leave_eclipse` writing the field the mode `sun_fixed` reads, for the
+/// Sun-fixed switch, whose callback runs once the switch has already moved.
+pub(crate) fn leave_eclipse_as(window: &MainWindow, sun_fixed: bool) {
+    let mut position = window.get_camera_position();
+    if !position.eclipse_follow {
+        return;
+    }
+    let at = on_screen(window, OffsetDateTime::now_utc());
+    let (latitude, longitude) = eclipse::followed_point(&sky::shadow_at(at));
+    position.latitude = latitude;
+    if sun_fixed {
+        position.solar_time = camera::solar_time_of(longitude, sky::sun_direction_at(at));
+    } else {
+        position.longitude = longitude;
+    }
+    position.eclipse_follow = false;
+    window.set_camera_position(position);
+    window.set_time_shading_key(slint::SharedString::new());
+    window.set_time_eclipse_bands(slint::ModelRc::default());
+}
+
+/// Whether `a` and `b` fall on different days in the displayed zone.
+fn different_days(window: &MainWindow, a: OffsetDateTime, b: OffsetDateTime) -> bool {
+    let utc = window.get_time_zone_utc();
+    a.to_offset(display_offset(utc, a)).date() != b.to_offset(display_offset(utc, b)).date()
+}
+
+/// Leave eclipse mode when a write of the time setting to `at` moves the day
+/// on screen, which is the day the mode's eclipse is on.
+pub(crate) fn leave_eclipse_for_a_new_day(window: &MainWindow, at: OffsetDateTime) {
+    if window.get_camera_position().eclipse_follow
+        && different_days(window, on_screen(window, OffsetDateTime::now_utc()), at)
+    {
+        leave_eclipse(window);
+    }
+}
+
+/// The callbacks of eclipse mode: the button, previous and next, the date
+/// track's marks and the panel's phase rows.
+fn register_eclipse(window: &MainWindow, link: &EngineLink) {
+    let weak = window.as_weak();
+    let engine = link.clone();
+    window.on_time_eclipse_toggled(move || {
+        let Some(win) = weak.upgrade() else {
+            return;
+        };
+        if win.get_camera_position().eclipse_follow {
+            leave_eclipse(&win);
+            engine.push_params(&win);
+            return;
+        }
+        let at = on_screen(&win, OffsetDateTime::now_utc());
+        if let Some(found) = eclipse::on_earth_at(at).or_else(|| eclipse::next_after(at)) {
+            enter_eclipse(&win, &engine, &found);
+        }
+    });
+
+    let weak = window.as_weak();
+    let engine = link.clone();
+    window.on_time_eclipse_step(move |forward| {
+        let Some(win) = weak.upgrade() else {
+            return;
+        };
+        let now = OffsetDateTime::now_utc();
+        let target = if win.get_camera_position().eclipse_follow {
+            current_eclipse(setting_instant(&win, now)).and_then(|current| {
+                if forward {
+                    current.next
+                } else {
+                    current.previous
+                }
+            })
+        } else {
+            let at = on_screen(&win, now);
+            if forward {
+                eclipse::next_after(at)
+            } else {
+                eclipse::previous_before(at)
+            }
+        };
+        if let Some(found) = target {
+            enter_eclipse(&win, &engine, &found);
+        }
+    });
+
+    let weak = window.as_weak();
+    let engine = link.clone();
+    window.on_time_eclipse_picked(move |index| {
+        let Some(win) = weak.upgrade() else {
+            return;
+        };
+        let picked = YEAR_ECLIPSES.with(|year| {
+            usize::try_from(index)
+                .ok()
+                .and_then(|index| year.borrow().1.get(index).copied())
+        });
+        if let Some(found) = picked {
+            enter_eclipse(&win, &engine, &found);
+        }
+    });
+
+    let weak = window.as_weak();
+    let engine = link.clone();
+    window.on_time_eclipse_phase(move |index| {
+        let Some(win) = weak.upgrade() else {
+            return;
+        };
+        let at =
+            current_eclipse(setting_instant(&win, OffsetDateTime::now_utc())).and_then(|current| {
+                let phases = phases_of(&current.eclipse);
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|index| phases.get(index).map(|phase| phase.0))
+            });
+        if let Some(at) = at {
+            write_time(&win, &engine, at);
+        }
     });
 }
 

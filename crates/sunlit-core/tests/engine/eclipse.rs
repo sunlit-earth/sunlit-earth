@@ -92,8 +92,8 @@ fn an_eclipse_mode_run_follows_the_shadow_and_a_time_write_is_no_drag() {
     let earth = SceneParams {
         eclipse_follow: false,
         camera: CameraParams {
-            latitude,
             longitude,
+            latitude,
             ..following.camera
         },
         ..following

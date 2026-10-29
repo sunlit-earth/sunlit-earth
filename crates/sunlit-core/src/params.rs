@@ -340,8 +340,8 @@ impl SceneParams {
         if self.eclipse_follow {
             let (latitude, longitude) = eclipse::followed_point(&sky.shadow);
             CameraParams {
-                latitude,
                 longitude,
+                latitude,
                 ..self.camera
             }
         } else if self.sun_fixed {
@@ -1097,8 +1097,8 @@ mod tests {
             assert_eq!(
                 following.camera_at(&sky),
                 CameraParams {
-                    latitude,
                     longitude,
+                    latitude,
                     ..turned_camera()
                 }
             );

@@ -5069,7 +5069,7 @@ fn test_a_hints_gesture_and_keys_stay_inside_it() {
 /// The keys each hinted control's action has, in the hint's own spelling,
 /// with `SHIFT` and `MOD` standing for the platform's names; "or" between
 /// keys is left out.
-const HINT_KEYS: [(&str, &[&str]); 19] = [
+const HINT_KEYS: [(&str, &[&str]); 22] = [
     ("orbit", &["←↑↓→", "WASD"]),
     ("look", &["SHIFT", "←↑↓→", "WASD"]),
     ("frame", &["MOD", "←↑↓→", "WASD"]),
@@ -5089,12 +5089,15 @@ const HINT_KEYS: [(&str, &[&str]); 19] = [
     ("drive-time", &["T"]),
     ("drive-date", &["G"]),
     ("now", &["0"]),
+    ("eclipse-mode", &["PgUp", "PgDn"]),
+    ("eclipse-previous", &["PgUp"]),
+    ("eclipse-next", &["PgDn"]),
 ];
 
 /// The hinted controls no key does the same as: the resets, exact entry, the
 /// zone, the state pill while live (not clickable) or in Preview (whose click
 /// ends the excursion, which no key does alone), the pin and the tracks.
-const HINTS_WITHOUT_KEYS: [&str; 11] = [
+const HINTS_WITHOUT_KEYS: [&str; 12] = [
     "look-reset",
     "frame-reset",
     "pick-date",
@@ -5105,6 +5108,7 @@ const HINTS_WITHOUT_KEYS: [&str; 11] = [
     "pin",
     "day-track",
     "day-track-sun-fixed",
+    "day-track-eclipse",
     "year-track",
 ];
 
@@ -5140,6 +5144,10 @@ fn test_every_hint_names_the_keys_of_its_control() {
         ),
         (
             include_str!("../../sunlit-ui/ui/overlays/time-bar.slint"),
+            "out property <string> hovered-hint:",
+        ),
+        (
+            include_str!("../../sunlit-ui/ui/overlays/eclipse-panel.slint"),
             "out property <string> hovered-hint:",
         ),
         (
@@ -5341,7 +5349,7 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
                 .find_all();
             assert_eq!(
                 texts.len(),
-                21,
+                22,
                 "{what}: the sheet lists every gesture and key"
             );
             for text in &texts {
@@ -5503,19 +5511,34 @@ fn test_play_stands_centered_over_the_tracks() {
             .set_size(slint::PhysicalSize::new(width, 5000));
         open_the_bar(&window);
         let [play_left, _, play_right, _] = edges(&the_labeled(&window, "Play"));
-        let [track_left, _, track_right, _] = edges(&the_element(&window, "TimeBar::day-track"));
         approx::assert_abs_diff_eq!(
             f32::midpoint(play_left, play_right),
-            f32::midpoint(track_left, track_right),
+            play_middle(&window),
             epsilon = 1.5
         );
+    }
+}
+
+/// Where play's middle belongs: over the tracks' middle while the transport
+/// centered there clears eclipse mode's button and its 6 px gap, and
+/// otherwise in the middle of the room left of them.
+fn play_middle(window: &MainWindow) -> f32 {
+    let [track_left, _, track_right, _] = edges(&the_element(window, "TimeBar::day-track"));
+    let row = edges(&the_element(window, "TimeBar::skip-forward"))[2]
+        - edges(&the_element(window, "TimeBar::skip-back"))[0];
+    let room_right = edges(&the_labeled(window, "Eclipse mode"))[0] - 6.0;
+    let centered = f32::midpoint(track_left, track_right);
+    if centered + row / 2.0 <= room_right + 0.5 {
+        centered
+    } else {
+        f32::midpoint(track_left, room_right)
     }
 }
 
 /// Windows at the default panel from the narrowest whose bar holds the
 /// compact transport with the time's twelve speeds up to one past the widest
 /// bar.
-const BAR_WINDOWS: [u32; 7] = [952, 1000, 1050, 1100, 1150, 1200, 1400];
+const BAR_WINDOWS: [u32; 7] = [986, 1000, 1050, 1100, 1150, 1200, 1400];
 
 fn overlap(a: [f32; 4], b: [f32; 4]) -> bool {
     a[0] < b[2] - 0.5 && b[0] < a[2] - 0.5 && a[1] < b[3] - 0.5 && b[1] < a[3] - 0.5
@@ -5523,7 +5546,8 @@ fn overlap(a: [f32; 4], b: [f32; 4]) -> bool {
 
 /// At every bar width the transport stays inside the tracks' column, which
 /// keeps it off the clock column, clear of the speed readout and the radio
-/// labels, with play over the tracks' middle, for both kinds of play.
+/// labels and of eclipse mode's button at the column's right end, with play
+/// where `play_middle` puts it, for both kinds of play.
 #[test]
 fn test_the_transport_stays_over_the_tracks_and_clear_of_the_readout() {
     for date in [false, true] {
@@ -5555,11 +5579,17 @@ fn test_the_transport_stays_over_the_tracks_and_clear_of_the_readout() {
                 the_labeled(&window, "TIME"),
                 the_labeled(&window, "DATE"),
             ];
+            let mode = edges(&the_labeled(&window, "Eclipse mode"));
+            approx::assert_abs_diff_eq!(mode[2], track_right, epsilon = 0.5);
             for part in &transport {
                 let part = edges(part);
                 assert!(
                     part[0] >= track_left - 0.5 && part[2] <= track_right + 0.5,
                     "{what}: the transport runs out of the tracks' column"
+                );
+                assert!(
+                    part[2] <= mode[0] - 6.0 + 0.5,
+                    "{what}: the transport runs into eclipse mode's button"
                 );
                 for other in &others {
                     assert!(
@@ -5572,7 +5602,7 @@ fn test_the_transport_stays_over_the_tracks_and_clear_of_the_readout() {
             let [play_left, _, play_right, _] = edges(&play);
             approx::assert_abs_diff_eq!(
                 f32::midpoint(play_left, play_right),
-                f32::midpoint(track_left, track_right),
+                play_middle(&window),
                 epsilon = 1.5
             );
         }
@@ -5611,8 +5641,8 @@ fn bar_parts(window: &MainWindow) -> Vec<(String, f32, f32)> {
 
 /// A window at the default panel whose bar holds the compact transport with
 /// the time's twelve speeds, and narrower ones down to the app's minimum.
-const NARROWEST_BAR_WINDOW: u32 = 952;
-const NARROWER_WINDOWS: [u32; 6] = [520, 600, 700, 800, 900, 951];
+const NARROWEST_BAR_WINDOW: u32 = 986;
+const NARROWER_WINDOWS: [u32; 6] = [520, 600, 700, 800, 900, 985];
 
 /// The open bar is never narrower than the bar that holds the compact
 /// transport, whichever kind of play it shows: in a narrower preview it keeps
@@ -5753,8 +5783,12 @@ fn test_the_cut_part_of_the_bar_takes_no_clicks() {
 fn picker_edges(window: &MainWindow, label: &str) -> Option<[f32; 4]> {
     let [preview_left, _, preview_right, _] =
         edges(&the_element(window, "MainWindow::image-container"));
-    let [left, top, right, bottom] = edges(&the_labeled(window, label));
+    // A preview narrower than the bar can cut the button out of sight.
+    let button = ElementHandle::find_by_accessible_label(window, label)
+        .find(|element| element.accessible_role() == Some(AccessibleRole::Button))?;
+    let [left, top, right, bottom] = edges(&button);
     let (left, right) = (left.max(preview_left + 1.0), right.min(preview_right - 1.0));
+
     if left >= right {
         return None;
     }
@@ -5796,7 +5830,7 @@ fn test_the_pickers_open_inside_the_preview() {
     let (window, _sent) = wired_window();
     window.set_time_bar_pinned(true);
     let (mut opened, mut wider) = (0, 0);
-    for width in [520, 600, 700, 800, 1000] {
+    for width in [520, 600, 700, 800, 900, 1000] {
         window
             .window()
             .set_size(slint::PhysicalSize::new(width, 700));
@@ -6507,4 +6541,394 @@ fn test_the_tray_start_on_login_item_follows_the_entry() {
     );
     assert!(!tray.get_autostart_available());
     assert_eq!(tray.get_autostart_title(), "Start on login");
+}
+
+// ---------------------------------------------------------------------------
+// Eclipse mode
+// ---------------------------------------------------------------------------
+
+/// The peak of the solar eclipse nearest `at`.
+fn peak_near(at: time::OffsetDateTime) -> time::OffsetDateTime {
+    sunlit_core::scene::eclipse::nearest(at)
+        .expect("an eclipse near the date")
+        .peak
+}
+
+/// Make `at` the window's time setting, as the date and time group holds it.
+fn set_the_time(window: &MainWindow, at: time::OffsetDateTime) {
+    let at = at.to_offset(time::UtcOffset::UTC);
+    window.set_datetime(DateTimeSettings {
+        use_custom: true,
+        instant: sunlit_core::scene::scene_time::SceneTime::fixed(at)
+            .to_config_string()
+            .into(),
+        hour: f32::from(at.hour()) + f32::from(at.minute()) / 60.0,
+        day_of_year: f32::from(at.ordinal()),
+        year: at.year(),
+    });
+    sunlit_earth::time_bar::refresh(window);
+}
+
+/// The window's time setting, `None` while live.
+fn the_time(window: &MainWindow) -> Option<time::OffsetDateTime> {
+    match sunlit_core::scene::scene_time::SceneTime::from_config_string(
+        &window.get_datetime().instant,
+    ) {
+        Some(sunlit_core::scene::scene_time::SceneTime::Fixed(at))
+            if window.get_datetime().use_custom =>
+        {
+            Some(at)
+        }
+        _ => None,
+    }
+}
+
+fn following(window: &MainWindow) -> bool {
+    window.get_camera_position().eclipse_follow
+}
+
+fn press_the_labeled(window: &MainWindow, label: &str) {
+    press_at(window, point_in(&the_labeled(window, label), 0.5, 0.5));
+}
+
+/// A window in eclipse mode at the peak of the eclipse nearest `near`, with
+/// the bar open.
+fn in_eclipse_mode(
+    near: time::OffsetDateTime,
+) -> (
+    MainWindow,
+    crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+    time::OffsetDateTime,
+) {
+    let (window, sent) = wired_window();
+    let peak = peak_near(near);
+    set_the_time(&window, peak - time::Duration::minutes(20));
+    open_the_bar(&window);
+    press_the_labeled(&window, "Eclipse mode");
+    assert!(following(&window), "the button turned the mode on");
+    assert_eq!(the_time(&window), Some(peak));
+    (window, sent, peak)
+}
+
+/// With the time on no eclipse, the button writes the peak of the next one;
+/// with the shadow on the Earth, the peak of that one.
+#[test]
+fn test_the_eclipse_button_enters_the_mode_at_the_eclipse_on_screen_or_the_next() {
+    use time::macros::datetime;
+
+    let august = peak_near(datetime!(2026-08-12 12:00 UTC));
+    for start in [
+        datetime!(2026-06-01 12:00 UTC),
+        august - time::Duration::minutes(30),
+    ] {
+        let (window, sent) = wired_window();
+        set_the_time(&window, start);
+        open_the_bar(&window);
+        press_the_labeled(&window, "Eclipse mode");
+        assert!(following(&window), "from {start}");
+        assert_eq!(the_time(&window), Some(august), "from {start}");
+        let pushed = last_pushed(&sent);
+        assert!(pushed.eclipse_follow);
+        assert_eq!(
+            pushed.time,
+            sunlit_core::scene::scene_time::SceneTime::fixed(august)
+        );
+    }
+}
+
+/// Page Down enters the mode at the next eclipse, and the keys and the
+/// panel's chevrons walk the eclipses with the mode kept on.
+#[test]
+fn test_previous_and_next_walk_the_eclipses_and_keep_the_mode() {
+    use slint::platform::Key;
+    use time::macros::datetime;
+
+    let february = peak_near(datetime!(2026-02-17 12:00 UTC));
+    let august = peak_near(datetime!(2026-08-12 12:00 UTC));
+    let next_february = peak_near(datetime!(2027-02-06 12:00 UTC));
+    let (window, _sent) = wired_window();
+    set_the_time(&window, datetime!(2026-01-10 12:00 UTC));
+    click_the_globe(&window);
+    tap(&window, Key::PageDown);
+    assert!(following(&window), "Page Down with the mode off enters it");
+    assert_eq!(the_time(&window), Some(february));
+    tap(&window, Key::PageDown);
+    assert_eq!(the_time(&window), Some(august));
+    tap(&window, Key::PageDown);
+    assert_eq!(the_time(&window), Some(next_february));
+    tap(&window, Key::PageUp);
+    assert_eq!(the_time(&window), Some(august));
+    assert!(following(&window));
+
+    open_the_bar(&window);
+    press_the_labeled(&window, "Next solar eclipse");
+    assert_eq!(the_time(&window), Some(next_february));
+    press_the_labeled(&window, "Previous solar eclipse");
+    press_the_labeled(&window, "Previous solar eclipse");
+    assert_eq!(the_time(&window), Some(february));
+    assert!(following(&window), "the panel's chevrons keep the mode");
+}
+
+/// A click on an eclipse's mark on the date track enters the mode at that
+/// eclipse, and the press is the mark's: it writes the peak, not the date
+/// track's instant under the pointer.
+#[test]
+fn test_a_date_track_mark_enters_the_mode_at_its_eclipse() {
+    use time::macros::datetime;
+
+    let august = peak_near(datetime!(2026-08-12 12:00 UTC));
+    let (window, sent) = wired_window();
+    open_the_bar(&window);
+    let marks: Vec<ElementHandle> = the_element(&window, "MainWindow::time-bar")
+        .query_descendants()
+        .match_accessible_role(AccessibleRole::Button)
+        .match_predicate(|element| {
+            element
+                .accessible_label()
+                .is_some_and(|label| label.starts_with("Total solar eclipse"))
+        })
+        .find_all();
+    assert_eq!(marks.len(), 1, "2026 has one total solar eclipse");
+    let _ = sent.try_iter().count();
+    press_at(&window, point_in(&marks[0], 0.5, 0.5));
+    assert!(following(&window));
+    assert_eq!(the_time(&window), Some(august));
+    assert!(last_pushed(&sent).eclipse_follow);
+}
+
+/// What the window resolves before and after an exit is the same camera, to
+/// a hundredth of a degree.
+fn assert_the_same_camera(
+    before: &sunlit_core::scene::camera::CameraParams,
+    after: &sunlit_core::scene::camera::CameraParams,
+    what: &str,
+) {
+    assert!(
+        east_of(after.longitude, before.longitude).abs() < 0.01
+            && (after.latitude - before.latitude).abs() < 0.01,
+        "{what}: the camera moved from {:.3}, {:.3} to {:.3}, {:.3}",
+        before.latitude,
+        before.longitude,
+        after.latitude,
+        after.longitude
+    );
+}
+
+/// Every exit that keeps the instant on screen leaves the camera where the
+/// mode had it, the Sun-fixed mode included, where the time of day is what
+/// puts that longitude beneath the camera.
+#[test]
+fn test_each_exit_ends_the_mode_and_leaves_the_camera_where_it_was() {
+    use sunlit_earth::CameraStick;
+    use time::macros::datetime;
+
+    type Exit = fn(&MainWindow);
+    let exits: [(&str, Exit); 6] = [
+        ("the button", |window| {
+            press_the_labeled(window, "Eclipse mode");
+        }),
+        ("the globe drag", |window| {
+            window.invoke_mouse_drag_globe_begin();
+            window.invoke_mouse_drag_globe(0.0, 0.0);
+        }),
+        ("the orbit stick", |window| {
+            window.invoke_camera_stick(CameraStick::Orbit, 0.0, 0.0, 0.0);
+        }),
+        ("the Sun-fixed switch", |window| {
+            the_button(window, "Fixed toward the Sun").invoke_accessible_default_action();
+        }),
+        ("a date track pick", |window| {
+            window.invoke_time_track(true, 0.95);
+        }),
+        ("date playback", |window| {
+            press_at(window, point_in(&the_labeled(window, "DATE"), 0.5, 0.5));
+            press_the_labeled(window, "Play");
+        }),
+    ];
+    for sun_fixed in [false, true] {
+        for (what, exit) in exits {
+            let (window, _sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+            if sun_fixed {
+                let mut position = window.get_camera_position();
+                position.sun_fixed = true;
+                window.set_camera_position(position);
+            }
+            let before = resolved(&window);
+            let shown_before = the_time(&window);
+            exit(&window);
+            let what = format!("{what}, Sun-fixed: {sun_fixed}");
+            assert!(!following(&window), "{what}: the mode is still on");
+            if shown_before == the_time(&window) {
+                assert_the_same_camera(&before, &resolved(&window), &what);
+            } else {
+                // A new day: the camera the settings now hold is the one
+                // the mode resolved at the instant left.
+                let position = window.get_camera_position();
+                assert!((position.latitude - before.latitude).abs() < 0.01, "{what}");
+            }
+        }
+    }
+
+    for (what, exit) in [
+        ("Now", (|window| window.invoke_time_now()) as Exit),
+        ("the override switched off", |window| {
+            let mut settings = window.get_datetime();
+            settings.use_custom = false;
+            window.set_datetime(settings);
+            window.invoke_datetime_override_toggled();
+        }),
+        ("a preset", |window| window.invoke_apply_preset(0)),
+        ("an orbit step", |window| {
+            window.invoke_camera_orbit_step(1, 0);
+        }),
+    ] {
+        let (window, _sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+        exit(&window);
+        assert!(!following(&window), "{what}: the mode is still on");
+    }
+}
+
+/// What moves the time within the eclipse's day, and what turns, zooms,
+/// frames or rolls the picture, keeps the mode.
+#[test]
+fn test_what_keeps_the_day_or_only_frames_the_picture_keeps_the_mode() {
+    use sunlit_earth::CameraStick;
+    use time::macros::datetime;
+
+    type Keep = fn(&MainWindow);
+    let keeps: [(&str, Keep); 8] = [
+        ("a day track drag", |window| {
+            window.invoke_time_track(false, 0.6);
+        }),
+        ("exact time entry", |window| {
+            window.invoke_time_exact_time(19, 30);
+        }),
+        ("the Hour slider", |window| {
+            let mut settings = window.get_datetime();
+            settings.hour = 20.5;
+            window.set_datetime(settings);
+            window.invoke_datetime_edited();
+        }),
+        ("zoom", |window| window.invoke_camera_zoom_step(1)),
+        ("look", |window| {
+            window.invoke_camera_stick(CameraStick::Look, 0.5, 0.0, 0.1);
+        }),
+        ("frame", |window| {
+            window.invoke_camera_stick(CameraStick::Frame, 0.5, 0.0, 0.1);
+        }),
+        ("roll", |window| window.invoke_camera_roll(5.0)),
+        ("a clock run", |window| press_the_labeled(window, "Play")),
+    ];
+    for (what, keep) in keeps {
+        let (window, _sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+        keep(&window);
+        assert!(following(&window), "{what} ended the mode");
+    }
+}
+
+/// Date playback and a skip of the date end the mode; a clock run does not.
+#[test]
+fn test_date_playback_and_a_date_skip_end_the_mode() {
+    use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind};
+    use time::macros::datetime;
+
+    let (window, sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+    let _ = excursion_commands(&sent);
+    press_the_labeled(&window, "Play");
+    assert!(following(&window), "a clock run ended the mode");
+    let (commands, _) = excursion_commands(&sent);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            ExcursionCommand::Play {
+                kind: ExcursionKind::Clock,
+                ..
+            }
+        )),
+        "{commands:?}"
+    );
+
+    let (window, _sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+    press_at(&window, point_in(&the_labeled(&window, "DATE"), 0.5, 0.5));
+    assert!(
+        following(&window),
+        "choosing the date's kind alone moved nothing"
+    );
+    window.invoke_time_skip(true, false);
+    assert!(!following(&window), "a skip of the date kept the mode");
+}
+
+/// The panel is shown exactly while the bar is open and the mode is on, its
+/// rows are the contacts in the displayed zone, and a click on a row writes
+/// its instant and keeps the mode. A partial eclipse has three rows.
+#[test]
+fn test_the_panel_shows_the_phases_and_a_row_click_keeps_the_mode() {
+    use slint::Model as _;
+    use time::macros::datetime;
+
+    let panels = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "MainWindow::eclipse-panel").count()
+    };
+    let (window, _sent) = wired_window();
+    open_the_bar(&window);
+    assert_eq!(panels(&window), 0, "the panel shows with the mode off");
+
+    let (window, _sent, peak) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+    assert_eq!(panels(&window), 1, "the panel is not shown in the mode");
+    let eclipse = sunlit_core::scene::eclipse::nearest(peak).expect("the eclipse");
+    let view = window.get_time_eclipse_panel();
+    let times: Vec<String> = view
+        .phases
+        .iter()
+        .map(|phase| phase.time.to_string())
+        .collect();
+    let hhmm = |at: time::OffsetDateTime| format!("{:02}:{:02}", at.hour(), at.minute());
+    let contacts = eclipse.contacts;
+    assert_eq!(
+        times,
+        [
+            hhmm(contacts.p1),
+            hhmm(contacts.u1.expect("a total eclipse")),
+            hhmm(peak),
+            hhmm(contacts.u4.expect("a total eclipse")),
+            hhmm(contacts.p4),
+        ]
+    );
+    assert_eq!(view.current, 2, "the peak's row is the current one");
+    press_the_labeled(&window, "Partial begins");
+    assert_eq!(the_time(&window), Some(contacts.p1));
+    assert!(following(&window), "a phase row ended the mode");
+
+    let (window, _sent, _) = in_eclipse_mode(datetime!(2025-03-29 12:00 UTC));
+    assert_eq!(window.get_time_eclipse_panel().phases.row_count(), 3);
+}
+
+/// In the mode the day track shows the eclipse's bands instead of the Sun's
+/// altitude, and the altitude comes back once the mode is left.
+#[test]
+fn test_the_day_track_shows_the_eclipse_in_the_mode() {
+    use slint::Model as _;
+    use time::macros::datetime;
+
+    let (window, _sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+    let bands = window.get_time_eclipse_bands();
+    assert_eq!(bands.row_count(), 2, "the penumbra's band and the umbra's");
+    assert!(window.get_time_bar().eclipse_peak > 0.0);
+    press_the_labeled(&window, "Eclipse mode");
+    assert_eq!(window.get_time_eclipse_bands().row_count(), 0);
+    assert!(
+        !window.get_time_shading_key().is_empty(),
+        "the altitude shading was not drawn again"
+    );
+}
+
+/// Load Defaults turns the mode off.
+#[test]
+fn test_load_defaults_leaves_eclipse_mode() {
+    use time::macros::datetime;
+
+    let (window, sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+    window.invoke_load_defaults();
+    assert!(!following(&window));
+    assert!(!last_pushed(&sent).eclipse_follow);
 }

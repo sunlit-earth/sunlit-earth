@@ -3,6 +3,7 @@
 
 import { DatePickerPopup, TimePickerPopup } from "std-widgets.slint";
 import { OverlayStyle } from "common.slint";
+import { EclipseGlyph } from "eclipse-panel.slint";
 
 // What the bar shows, written whole by Rust from the time setting, the
 // excursion the engine reports and the instant of the last frame.
@@ -35,6 +36,12 @@ export struct TimeBarView {
     year-fraction: float,
     // The camera is fixed toward the Sun, so the time track is drawn plain.
     sun-fixed: bool,
+    // Eclipse mode is on, and the kind of the eclipse it is on, for the
+    // pill's mark: 0 partial, 1 annular, 2 total.
+    eclipse-follow: bool,
+    eclipse-kind: int,
+    // Where that eclipse's peak falls along the displayed day, or -1.
+    eclipse-peak: float,
     // The instant on screen in the displayed zone, for exact entry.
     year: int,
     month: int,
@@ -56,6 +63,23 @@ export struct SeasonMark {
     label: string,
 }
 
+// A solar eclipse on the date track: 0 partial, 1 annular, 2 total.
+export struct EclipseMark {
+    fraction: float,
+    kind: int,
+    label: string,
+}
+
+// A stretch of the displayed day in which the shadow is on the Earth, the
+// penumbra's or the umbra's, cut where the day ends.
+export struct EclipseBand {
+    start: float,
+    end: float,
+    umbra: bool,
+    cut-start: bool,
+    cut-end: bool,
+}
+
 // A shape of the bar drawn from SVG path data in a box of its own.
 component Glyph inherits Path {
     in property <color> tint;
@@ -64,6 +88,9 @@ component Glyph inherits Path {
 
 // A small square button of the transport.
 component TimeButton inherits Rectangle {
+    // Lit the way play is while it runs.
+    in property <bool> lit;
+    in property <string> label;
     out property <bool> hovered: touch.has-hover;
     out property <bool> shift-held;
     callback clicked();
@@ -71,13 +98,14 @@ component TimeButton inherits Rectangle {
     width: 28px;
     height: 28px;
     border-radius: 8px;
-    background: touch.has-hover ? OverlayStyle.faint : transparent;
+    background: root.lit ? OverlayStyle.accent : touch.has-hover ? OverlayStyle.faint : transparent;
 
     @children
 
     touch := TouchArea {
         mouse-cursor: pointer;
         accessible-role: button;
+        accessible-label: root.label;
 
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
@@ -297,9 +325,14 @@ export component TimeBar inherits Rectangle {
     in property <[int]> ladder;
     in property <[RateChoice]> rates;
     in property <[SeasonMark]> seasons;
+    in property <[EclipseMark]> eclipses;
+    in property <[EclipseBand]> eclipse-bands;
     in property <[float]> month-ticks;
     in property <image> shading;
     in-out property <bool> pinned;
+    // The pointer is over eclipse mode's panel above the bar, which counts as
+    // over the bar.
+    in property <bool> panel-hovered;
     // Whether the pointer is over the preview; outside it the bar fades.
     in property <bool> pointer-in;
     // How wide the bar may grow.
@@ -318,6 +351,7 @@ export component TimeBar inherits Rectangle {
         : root.skip-back-hovered ? "skip-back"
         : root.skip-forward-hovered ? "skip-forward"
         : root.play-hovered ? "play"
+        : root.mode-hovered ? "eclipse-mode"
         : root.ruler-hovered ? "ruler"
         : root.speed-hovered ? "rate"
         : root.drive-time-hovered ? "drive-time"
@@ -326,15 +360,16 @@ export component TimeBar inherits Rectangle {
         : root.time-hovered ? "pick-time"
         : root.zone-hovered ? "zone"
         : root.date-hovered ? "pick-date"
-        : root.day-hovered ? (root.view.sun-fixed ? "day-track-sun-fixed" : "day-track")
+        : root.day-hovered ? (root.view.eclipse-follow ? "day-track-eclipse" : root.view.sun-fixed ? "day-track-sun-fixed" : "day-track")
         : root.year-hovered ? "year-track"
         : "";
     out property <length> hovered-x: hovered-hint == "pin" ? root.width - 17px
         : hovered-hint == "drive-time" || hovered-hint == "drive-date" ? root.left-column + 24px
         : hovered-hint == "rate" ? speed-readout.x + speed-readout.width / 2
+        : hovered-hint == "eclipse-mode" ? root.middle-column + root.middle-width - 14px
         : hovered-hint == "pick-time" || hovered-hint == "zone" || hovered-hint == "pick-date" || hovered-hint == "preview" || hovered-hint == "live" || hovered-hint == "now" ? root.right-column + 70px
         : root.middle-column + root.middle-width / 2;
-    out property <bool> hovered: background-touch.has-hover || root.rates-hovered || self.hovered-hint != "";
+    out property <bool> hovered: background-touch.has-hover || root.rates-hovered || self.hovered-hint != "" || root.mark-hovered >= 0 || root.panel-hovered;
     out property <bool> open: root.pinned || root.hover-open || root.track-held || root.rates-open || root.picker-open;
     // Where each picker stood when it last opened, in the bar's coordinates.
     out property <length> date-picker-x: root.picker-x(root.date-picker-size.width);
@@ -354,6 +389,10 @@ export component TimeBar inherits Rectangle {
     callback exact-time(int, int);
     callback tick();
     pure callback date-at(float) -> string;
+    // Eclipse mode's button, and a click on an eclipse's mark on the date
+    // track by its index.
+    callback eclipse-toggled();
+    callback eclipse-picked(int);
 
     // What the open bar's parts report, written by them while it is open.
     property <bool> skip-back-hovered;
@@ -371,6 +410,8 @@ export component TimeBar inherits Rectangle {
     property <bool> year-hovered;
     property <bool> track-held;
     property <bool> rates-hovered;
+    property <bool> mode-hovered;
+    property <int> mark-hovered: -1;
 
     property <bool> hover-open;
     property <duration> left-at;
@@ -383,22 +424,33 @@ export component TimeBar inherits Rectangle {
     property <length> beside-tracks: root.middle-column + 10px + 142px + 12px + 26px;
     property <length> middle-width: root.width - root.beside-tracks;
     property <length> right-column: root.middle-column + root.middle-width + 10px;
-    // The speed readout starts at the left column. Where the transport at
-    // full size, centered over the tracks, would run into the widest readout
-    // of the ladder's speeds, the readout folds to its arrow and the rulers'
-    // dots pack closer, down to `min-pitch`, keeping the row inside the
-    // tracks' column. The open bar is never narrower than the row of the
-    // longest ladder needs at that pitch, whichever kind is shown, and a
-    // preview narrower than that cuts its edges off.
+    // The speed readout starts at the left column, and eclipse mode's button
+    // ends the transport's row at the tracks' right edge, `mode-room` with
+    // its gap. The transport stays centered over the tracks while its right
+    // end clears that gap, and otherwise centers in the room left of it.
+    // Where the transport at full size would run into the widest readout of
+    // the ladder's speeds or past that room, the readout folds to its arrow
+    // and the rulers' dots pack closer, down to `min-pitch`. The open bar is
+    // never narrower than the row of the longest ladder needs at that pitch,
+    // whichever kind is shown, and a preview narrower than that cuts its
+    // edges off.
     property <length> transport-fixed: 2 * 28px + 44px + 4 * 6px;
-    property <length> narrowest: root.beside-tracks + root.transport-fixed + 2 * (6px + root.longest-ladder * root.min-pitch);
+    property <length> mode-room: 28px + 6px;
+    property <length> row-room: root.middle-width - root.mode-room;
+    property <length> narrowest: root.beside-tracks + root.mode-room + root.transport-fixed + 2 * (6px + root.longest-ladder * root.min-pitch);
     property <length> full-row: root.transport-fixed + 2 * (6px + root.ladder.length * 11px);
     property <length> readout-width: widest-readout.preferred-width + 16px;
     property <length> readout-height: readout-lines.preferred-height + 8px;
-    property <bool> compact: root.left-column + root.readout-width + 6px > root.middle-column + (root.middle-width - root.full-row) / 2;
+    property <bool> compact: root.full-row > root.row-room
+        || root.left-column + root.readout-width + 6px > root.middle-column + root.row-x(root.full-row);
     property <length> min-pitch: 7px;
     property <length> pitch: !root.compact ? 11px
-        : max(root.min-pitch, min(11px, ((root.middle-width - root.transport-fixed) / 2 - 6px) / max(1, root.ladder.length)));
+        : max(root.min-pitch, min(11px, ((root.row-room - root.transport-fixed) / 2 - 6px) / max(1, root.ladder.length)));
+
+    // Where in the tracks' column a transport row `row` wide starts.
+    pure function row-x(row: length) -> length {
+        return (root.middle-width + row) / 2 <= root.row-room ? (root.middle-width - row) / 2 : (root.row-room - row) / 2;
+    }
     property <color> state-color: root.view.excursion ? OverlayStyle.accent
         : root.view.live ? OverlayStyle.fg
         : OverlayStyle.sun;
@@ -452,6 +504,14 @@ export component TimeBar inherits Rectangle {
 
             HorizontalLayout {
                 spacing: 5px;
+
+                if root.view.eclipse-follow : VerticalLayout {
+                    alignment: center;
+
+                    EclipseGlyph {
+                        kind: root.view.eclipse-kind;
+                    }
+                }
 
                 Rectangle {
                     width: root.view.live ? 8px : 0px;
@@ -612,7 +672,7 @@ export component TimeBar inherits Rectangle {
     if root.open : Rectangle {
         // Skip, the rulers and play, centered over the tracks.
         HorizontalLayout {
-            x: root.middle-column + (root.middle-width - self.preferred-width) / 2;
+            x: root.middle-column + root.row-x(self.preferred-width);
             width: self.preferred-width;
             y: 8px;
             height: 44px;
@@ -717,6 +777,23 @@ export component TimeBar inherits Rectangle {
             }
         }
 
+        mode-button := TimeButton {
+            x: root.middle-column + root.middle-width - self.width;
+            y: 8px + (44px - self.height) / 2;
+            lit: root.view.eclipse-follow;
+            label: "Eclipse mode";
+            clicked => { root.eclipse-toggled(); }
+            changed hovered => { root.mode-hovered = self.hovered; }
+
+            EclipseGlyph {
+                kind: 2;
+                width: 14px;
+                height: 14px;
+                bright: root.view.eclipse-follow ? #04121b : OverlayStyle.dim;
+                dark: root.view.eclipse-follow ? OverlayStyle.accent : OverlayStyle.solid;
+            }
+        }
+
         DriveLabel {
             x: root.left-column;
             y: 60px;
@@ -755,11 +832,45 @@ export component TimeBar inherits Rectangle {
             changed hovered => { root.day-hovered = self.hovered; }
             changed held => { root.track-held = self.held || year-track.held; }
 
-            if !root.view.sun-fixed : Image {
+            if !root.view.sun-fixed && !root.view.eclipse-follow : Image {
                 width: parent.width;
                 height: parent.height;
                 source: root.shading;
                 image-fit: fill;
+            }
+
+            for band in root.eclipse-bands : Rectangle {
+                x: band.start * parent.width;
+                width: (band.end - band.start) * parent.width;
+                height: parent.height;
+                background: OverlayStyle.sun.with-alpha(band.umbra ? 0.5 : 0.2);
+
+                if band.cut-start : Path {
+                    x: 1px;
+                    width: 5px;
+                    height: parent.height;
+                    viewbox-width: 5;
+                    viewbox-height: 22;
+                    commands: "M5 7L0 11L5 15Z";
+                    fill: OverlayStyle.sun;
+                }
+
+                if band.cut-end : Path {
+                    x: parent.width - self.width - 1px;
+                    width: 5px;
+                    height: parent.height;
+                    viewbox-width: 5;
+                    viewbox-height: 22;
+                    commands: "M0 7L5 11L0 15Z";
+                    fill: OverlayStyle.sun;
+                }
+            }
+
+            if root.view.eclipse-follow && root.view.eclipse-peak >= 0 : Rectangle {
+                x: root.view.eclipse-peak * parent.width;
+                width: 1px;
+                height: parent.height;
+                background: OverlayStyle.sun;
             }
 
             for hour in 8 : Rectangle {
@@ -820,8 +931,59 @@ export component TimeBar inherits Rectangle {
             }
         }
 
+        // The eclipses of the displayed year over the date track, drawn over
+        // a season's diamond they meet. Each takes its own presses, so a
+        // press on one jumps to it rather than starting a drag, and shows its
+        // own label where the track's would be.
+        for mark[index] in root.eclipses : Rectangle {
+            x: root.middle-column + mark.fraction * root.middle-width - self.width / 2;
+            y: 91px + (22px - self.height) / 2;
+            width: 13px;
+            height: 13px;
+
+            EclipseGlyph {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                kind: mark.kind;
+            }
+
+            mark-touch := TouchArea {
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: mark.label;
+                clicked => { root.eclipse-picked(index); }
+                changed has-hover => {
+                    if self.has-hover {
+                        root.mark-hovered = index;
+                    } else if root.mark-hovered == index {
+                        root.mark-hovered = -1;
+                    }
+                }
+            }
+
+            if mark-touch.has-hover : Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: -self.height - 4px - (22px - parent.height) / 2;
+                width: mark-text.preferred-width + 12px;
+                height: 20px;
+                border-radius: 5px;
+                border-width: 1px;
+                border-color: OverlayStyle.tip-border;
+                background: OverlayStyle.tip-background;
+
+                mark-text := Text {
+                    text: mark.label;
+                    color: OverlayStyle.fg;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
         // The clock block: the state with the offset, the time with its zone,
         // and the date.
+
         Rectangle {
             x: root.right-column;
             y: 8px;

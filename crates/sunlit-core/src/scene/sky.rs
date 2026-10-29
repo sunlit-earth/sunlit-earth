@@ -8,8 +8,9 @@ use astronomy_engine_bindings::{
     astro_body_t_BODY_VENUS, astro_status_t, astro_status_t_ASTRO_SUCCESS, astro_time_t,
     astro_vector_t,
 };
-use glam::{Mat3, Vec3};
+use glam::{DMat3, DVec3, Mat3, Vec3};
 
+use super::eclipse::ShadowAxis;
 use super::scene_time::SceneTime;
 use super::sun::make_time;
 
@@ -51,6 +52,9 @@ pub struct SkyState {
     pub moon_position: Vec3,
     /// Rotation from the Moon's IAU body-fixed frame into renderer world space.
     pub moon_rotation: Mat3,
+    /// The Moon's shadow: its axis from the Sun through the Moon, in the
+    /// same frame and units as `moon_position`.
+    pub shadow: ShadowAxis,
 }
 
 const PLANETS: [(PlanetKind, astro_body_t); 5] = [
@@ -106,7 +110,7 @@ pub fn seasons(year: i32) -> Option<[time::OffsetDateTime; 4]> {
 
 /// An Astronomy Engine time as an instant: its `ut` counts days from noon
 /// on the first of January 2000.
-fn instant_of_time(time: astro_time_t) -> time::OffsetDateTime {
+pub(crate) fn instant_of_time(time: astro_time_t) -> time::OffsetDateTime {
     let noon_2000 = time::macros::datetime!(2000-01-01 12:00 UTC);
     noon_2000 + time::Duration::seconds_f64(time.ut * 86_400.0)
 }
@@ -119,20 +123,74 @@ pub fn compute_sky_state(scene_time: &SceneTime) -> SkyState {
 /// Compute the sky state from an Astronomy Engine time value.
 pub(crate) fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
     let world_from_eqj = rotation_world_from_eqj(&mut time);
-    let sun_direction = body_direction(astro_body_t_BODY_SUN, time, world_from_eqj);
+    let sun = geo_vector(astro_body_t_BODY_SUN, time);
+    let moon = geo_moon(time);
+    let sun_direction = direction_in_world(sun, world_from_eqj);
     let planets = PLANETS.map(|(kind, body)| PlanetState {
         kind,
         direction: body_direction(body, time, world_from_eqj),
         magnitude: body_magnitude(body, time),
     });
+    let moon_position = moon_position_in_world(moon, world_from_eqj);
 
     SkyState {
         world_from_eqj,
         sun_direction,
         planets,
-        moon_position: moon_position(time, world_from_eqj),
+        moon_position,
         moon_rotation: moon_rotation(&mut time, world_from_eqj),
+        shadow: shadow_in_world(sun, moon, moon_position, world_from_eqj),
     }
+}
+
+/// The Moon's shadow alone at `at`, as [`SkyState::shadow`] has it, for
+/// whoever needs where the shadow is and not the sky.
+#[must_use]
+pub fn shadow_at(at: time::OffsetDateTime) -> ShadowAxis {
+    let mut time = time_for_instant(at);
+    let world_from_eqj = rotation_world_from_eqj(&mut time);
+    let sun = geo_vector(astro_body_t_BODY_SUN, time);
+    let moon = geo_moon(time);
+    shadow_in_world(
+        sun,
+        moon,
+        moon_position_in_world(moon, world_from_eqj),
+        world_from_eqj,
+    )
+}
+
+/// The shadow's axis taken in f64 from the Sun's vector before it is
+/// normalized and the Moon's, and turned into world space with the rest.
+fn shadow_in_world(
+    sun: astro_vector_t,
+    moon: astro_vector_t,
+    moon_position: Vec3,
+    world_from_eqj: Mat3,
+) -> ShadowAxis {
+    let sun_to_moon = (dvec3_of(moon) - dvec3_of(sun)) * f64::from(EARTH_RADII_PER_AU);
+    let axis = sun_to_moon.normalize();
+    ShadowAxis {
+        moon: moon_position,
+        axis: (world_from_eqj * Vec3::new(f32_of(axis.x), f32_of(axis.y), f32_of(axis.z)))
+            .normalize(),
+        moon_to_sun: f32_of(sun_to_moon.length()),
+    }
+}
+
+/// The Moon's shadow axis at `time` in f64 throughout, for the contact
+/// search, whose roots the f32 frame would blur: the Moon's center and the
+/// axis's direction in world space in Earth radii, and the distance from the
+/// Moon to the Sun.
+pub(crate) fn shadow_f64(mut time: astro_time_t) -> (DVec3, DVec3, f64) {
+    let world_from_eqj = rotation_world_from_eqj_f64(&mut time);
+    let sun = dvec3_of(geo_vector(astro_body_t_BODY_SUN, time)) * f64::from(EARTH_RADII_PER_AU);
+    let moon = dvec3_of(geo_moon(time)) * f64::from(EARTH_RADII_PER_AU);
+    let sun_to_moon = moon - sun;
+    (
+        world_from_eqj * moon,
+        world_from_eqj * sun_to_moon.normalize(),
+        sun_to_moon.length(),
+    )
 }
 
 /// Earth radii per astronomical unit.
@@ -140,7 +198,7 @@ pub(crate) fn compute_sky_state_from_time(mut time: astro_time_t) -> SkyState {
 /// The scene's unit of length is the Earth's equatorial radius (6378.137 km),
 /// which is what the camera distances and the atmosphere shells are in, so this
 /// is 1 AU expressed in those.
-const EARTH_RADII_PER_AU: f32 = 23_454.8;
+pub(crate) const EARTH_RADII_PER_AU: f32 = 23_454.8;
 
 /// Fail with the entry point's own name when a call reports one.
 ///
@@ -172,18 +230,28 @@ fn vec3_of(v: astro_vector_t) -> Vec3 {
     Vec3::new(f32_of(v.x), f32_of(v.y), f32_of(v.z))
 }
 
+/// A returned vector at the library's own precision.
+fn dvec3_of(v: astro_vector_t) -> DVec3 {
+    DVec3::new(v.x, v.y, v.z)
+}
+
 /// One row of a returned rotation matrix, likewise.
 fn vec3_of_row(row: [f64; 3]) -> Vec3 {
     Vec3::new(f32_of(row[0]), f32_of(row[1]), f32_of(row[2]))
 }
 
-/// The Moon's geocentric position in world space, in Earth radii.
-fn moon_position(time: astro_time_t, rotation: Mat3) -> Vec3 {
+/// The Moon's geocentric position in the J2000 frame, in AU.
+fn geo_moon(time: astro_time_t) -> astro_vector_t {
     // SAFETY: Astronomy_GeoMoon is a pure C function. The time value is valid
     // and the function returns a value type with no retained references.
     #[allow(unsafe_code)]
     let vector = unsafe { Astronomy_GeoMoon(time) };
     checked(vector.status, "Astronomy_GeoMoon");
+    vector
+}
+
+/// The Moon's geocentric position in world space, in Earth radii.
+fn moon_position_in_world(vector: astro_vector_t, rotation: Mat3) -> Vec3 {
     rotation * (vec3_of(vector) * EARTH_RADII_PER_AU)
 }
 
@@ -238,13 +306,45 @@ fn rotation_world_from_eqj(time: &mut astro_time_t) -> Mat3 {
     world_from_earth_fixed * earth_fixed_from_eqd * eqd_from_eqj
 }
 
-fn body_direction(body: astro_body_t, time: astro_time_t, rotation: Mat3) -> Vec3 {
+/// The same rotation in f64, built the same way.
+fn rotation_world_from_eqj_f64(time: &mut astro_time_t) -> DMat3 {
+    // SAFETY: as in `rotation_world_from_eqj`.
+    #[allow(unsafe_code)]
+    let (rotation, gast_hours) = unsafe {
+        (
+            Astronomy_Rotation_EQJ_EQD(std::ptr::from_mut(time)),
+            Astronomy_SiderealTime(std::ptr::from_mut(time)),
+        )
+    };
+    checked(rotation.status, "Astronomy_Rotation_EQJ_EQD");
+
+    let eqd_from_eqj = DMat3::from_cols(
+        DVec3::from_array(rotation.rot[0]),
+        DVec3::from_array(rotation.rot[1]),
+        DVec3::from_array(rotation.rot[2]),
+    );
+    let earth_fixed_from_eqd = DMat3::from_rotation_z(-(gast_hours * 15.0).to_radians());
+    let world_from_earth_fixed = DMat3::from_cols(DVec3::Z, DVec3::X, DVec3::Y);
+
+    world_from_earth_fixed * earth_fixed_from_eqd * eqd_from_eqj
+}
+
+/// A body's aberrated geocentric vector in the J2000 frame, in AU.
+fn geo_vector(body: astro_body_t, time: astro_time_t) -> astro_vector_t {
     // SAFETY: Astronomy_GeoVector is a pure C function. The body constants and
     // time value are valid, and the function returns a value type.
     #[allow(unsafe_code)]
     let vector = unsafe { Astronomy_GeoVector(body, time, astro_aberration_t_ABERRATION) };
     checked(vector.status, "Astronomy_GeoVector");
+    vector
+}
+
+fn direction_in_world(vector: astro_vector_t, rotation: Mat3) -> Vec3 {
     (rotation * vec3_of(vector).normalize()).normalize()
+}
+
+fn body_direction(body: astro_body_t, time: astro_time_t, rotation: Mat3) -> Vec3 {
+    direction_in_world(geo_vector(body, time), rotation)
 }
 
 fn body_magnitude(body: astro_body_t, time: astro_time_t) -> f32 {
@@ -256,7 +356,7 @@ fn body_magnitude(body: astro_body_t, time: astro_time_t) -> f32 {
     f32_of(illumination.mag)
 }
 
-fn time_for_instant(at: time::OffsetDateTime) -> astro_time_t {
+pub(crate) fn time_for_instant(at: time::OffsetDateTime) -> astro_time_t {
     let at = super::month::CivilTime::of(at);
     make_time(
         at.year,
@@ -429,7 +529,7 @@ mod tests {
         let world_from_eqj = rotation_world_from_eqj(&mut time);
         MoonState {
             world_from_eqj,
-            position: moon_position(time, world_from_eqj),
+            position: moon_position_in_world(geo_moon(time), world_from_eqj),
             rotation: moon_rotation(&mut time, world_from_eqj),
         }
     }

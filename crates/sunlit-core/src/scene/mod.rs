@@ -1,6 +1,7 @@
 pub mod camera;
 pub mod datetime;
 pub mod disk_occlusion;
+pub mod eclipse;
 pub mod limb_extinction;
 pub mod month;
 pub mod moon;

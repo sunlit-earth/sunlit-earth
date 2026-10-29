@@ -6648,7 +6648,8 @@ fn test_the_eclipse_button_enters_the_mode_at_the_eclipse_on_screen_or_the_next(
 }
 
 /// Page Down enters the mode at the next eclipse, and the keys and the
-/// panel's chevrons walk the eclipses with the mode kept on.
+/// panel's Previous and Next buttons walk the eclipses with the mode kept
+/// on.
 #[test]
 fn test_previous_and_next_walk_the_eclipses_and_keep_the_mode() {
     use slint::platform::Key;
@@ -6677,7 +6678,7 @@ fn test_previous_and_next_walk_the_eclipses_and_keep_the_mode() {
     press_the_labeled(&window, "Previous solar eclipse");
     press_the_labeled(&window, "Previous solar eclipse");
     assert_eq!(the_time(&window), Some(february));
-    assert!(following(&window), "the panel's chevrons keep the mode");
+    assert!(following(&window), "the panel's buttons keep the mode");
 }
 
 /// A click on an eclipse's mark on the date track enters the mode at that

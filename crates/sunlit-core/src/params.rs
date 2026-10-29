@@ -10,6 +10,7 @@
 use crate::color::Rgb8;
 use crate::config::AppConfig;
 use crate::scene::camera::{CameraParams, held_longitude, longitude_of};
+use crate::scene::eclipse;
 use crate::scene::scene_time::SceneTime;
 use crate::scene::sky::SkyState;
 
@@ -50,6 +51,10 @@ pub struct SceneParams {
     /// The local apparent solar time beneath the camera in the Sun-fixed mode,
     /// in hours from 0 to 24, which stands in for the longitude there.
     pub solar_time: f32,
+    /// Eclipse mode: the camera's latitude and longitude are the point
+    /// `eclipse::followed_point` takes from the shadow of the frame's sky,
+    /// ahead of the Sun-fixed mode.
+    pub eclipse_follow: bool,
 
     /// Index of the selected texture mode (0 grid, 1 day, 2 night, 3 blend).
     pub texture_index: i32,
@@ -137,6 +142,8 @@ pub struct SceneParams {
     pub moon_brightness: f32,
     pub moon_size: f32,
     pub moon_earthshine: f32,
+    /// How dark the Moon's shadow is drawn on the Earth, 0 to 1.
+    pub moon_shadow: f32,
 
     // The Milky Way
     pub milky_way_intensity: f32,
@@ -180,6 +187,7 @@ impl SceneParams {
             },
             sun_fixed: config.sun_fixed,
             solar_time: config.solar_time,
+            eclipse_follow: config.eclipse_follow,
             texture_index: config.texture_index,
             sample_count: config.sample_count,
             terminator_width: config.terminator_width,
@@ -231,6 +239,7 @@ impl SceneParams {
             moon_brightness: config.moon_brightness,
             moon_size: config.moon_size,
             moon_earthshine: config.moon_earthshine,
+            moon_shadow: config.moon_shadow,
             milky_way_intensity: config.milky_way_intensity,
             day_ocean_color: config.day_ocean_color,
             night_ocean_color: config.night_ocean_color,
@@ -256,6 +265,7 @@ impl SceneParams {
         config.camera_fov = self.camera.fov_deg;
         config.sun_fixed = self.sun_fixed;
         config.solar_time = self.solar_time;
+        config.eclipse_follow = self.eclipse_follow;
         config.texture_index = self.texture_index;
         config.sample_count = self.sample_count;
         config.terminator_width = self.terminator_width;
@@ -307,6 +317,7 @@ impl SceneParams {
         config.moon_brightness = self.moon_brightness;
         config.moon_size = self.moon_size;
         config.moon_earthshine = self.moon_earthshine;
+        config.moon_shadow = self.moon_shadow;
         config.milky_way_intensity = self.milky_way_intensity;
         config.day_ocean_color = self.day_ocean_color;
         config.night_ocean_color = self.night_ocean_color;
@@ -321,10 +332,19 @@ impl SceneParams {
     ///
     /// The settings' camera itself in the Earth-fixed mode. In the Sun-fixed
     /// mode the longitude is the one the time of day puts beneath the camera
-    /// with the Sun where `sky` has it, so every path that draws or measures a
-    /// frame resolves its camera here, under the sky that frame is drawn with.
+    /// with the Sun where `sky` has it. In eclipse mode, ahead of both, the
+    /// latitude and the longitude are the point the camera follows over the
+    /// Moon's shadow in `sky`. Every path that draws or measures a frame
+    /// resolves its camera here, under the sky that frame is drawn with.
     pub fn camera_at(&self, sky: &SkyState) -> CameraParams {
-        if self.sun_fixed {
+        if self.eclipse_follow {
+            let (latitude, longitude) = eclipse::followed_point(&sky.shadow);
+            CameraParams {
+                latitude,
+                longitude,
+                ..self.camera
+            }
+        } else if self.sun_fixed {
             CameraParams {
                 longitude: longitude_of(self.solar_time, sky.sun_direction),
                 ..self.camera
@@ -336,7 +356,8 @@ impl SceneParams {
 
     /// The camera as the settings hold it: in the Sun-fixed mode, with the
     /// held longitude the time of day stands for, so that what moves it is a
-    /// hand on the settings and never the Earth's turn.
+    /// hand on the settings and never the Earth's turn. Eclipse mode does not
+    /// reach it, so the shadow's motion is never a hand either.
     pub(crate) fn held_camera(&self) -> CameraParams {
         if self.sun_fixed {
             CameraParams {
@@ -576,6 +597,7 @@ scene_digest! {
     }
     switched {
         sun_fixed,
+        eclipse_follow,
         diffuse_shading,
         clouds_enabled,
     }
@@ -624,6 +646,7 @@ scene_digest! {
         moon_brightness,
         moon_size,
         moon_earthshine,
+        moon_shadow,
         milky_way_intensity,
         day_gamma,
         day_saturation,
@@ -1023,6 +1046,134 @@ mod tests {
                 "{hour}:{minute:02}"
             );
         }
+    }
+
+    // --- eclipse mode ---
+
+    /// A camera with every field away from its default, so a case can see
+    /// which of them the mode replaced.
+    fn turned_camera() -> CameraParams {
+        CameraParams {
+            longitude: 40.0,
+            latitude: -12.0,
+            zoom: 0.31,
+            offset_x: 0.12,
+            offset_y: -0.07,
+            tilt_deg: 14.0,
+            yaw_deg: -6.0,
+            pitch_deg: 4.0,
+            fov_deg: 27.0,
+        }
+    }
+
+    /// Skies inside the 2024-04-08 eclipse and on an ordinary day, where the
+    /// axis misses the Earth by far.
+    fn eclipse_skies() -> Vec<SkyState> {
+        [
+            (2024, 4, 8, 17, 0),
+            (2024, 4, 8, 19, 30),
+            (2026, 10, 16, 9, 0),
+        ]
+        .into_iter()
+        .map(|(year, month, day, hour, minute)| {
+            crate::scene::sky::compute_sky_state_from_time(crate::scene::sun::make_time(
+                year, month, day, hour, minute, 0.0,
+            ))
+        })
+        .collect()
+    }
+
+    /// The mode hangs the camera over the point it follows under any sky and
+    /// keeps the distance, the orientation and the framing the settings hold.
+    #[test]
+    fn eclipse_mode_hangs_the_camera_over_the_point_it_follows() {
+        let following = SceneParams {
+            camera: turned_camera(),
+            eclipse_follow: true,
+            ..params()
+        };
+        for sky in eclipse_skies() {
+            let (latitude, longitude) = eclipse::followed_point(&sky.shadow);
+            assert_eq!(
+                following.camera_at(&sky),
+                CameraParams {
+                    latitude,
+                    longitude,
+                    ..turned_camera()
+                }
+            );
+        }
+    }
+
+    /// Off, the two other modes resolve exactly the cameras they did before
+    /// the mode existed.
+    #[test]
+    fn without_eclipse_mode_the_cameras_are_the_other_modes_own() {
+        for sky in eclipse_skies() {
+            let earth = SceneParams {
+                camera: turned_camera(),
+                ..params()
+            };
+            assert_eq!(earth.camera_at(&sky), turned_camera());
+            let sun = SceneParams {
+                sun_fixed: true,
+                solar_time: 7.5,
+                ..earth
+            };
+            assert_eq!(
+                sun.camera_at(&sky),
+                CameraParams {
+                    longitude: longitude_of(7.5, sky.sun_direction),
+                    ..turned_camera()
+                }
+            );
+        }
+    }
+
+    /// Eclipse mode comes ahead of the Sun-fixed mode, and the held camera,
+    /// which the digest and the drag watch take, does not see it.
+    #[test]
+    fn eclipse_mode_comes_ahead_of_the_sun_fixed_mode_and_not_into_the_held_camera() {
+        for sun_fixed in [false, true] {
+            let held = SceneParams {
+                camera: turned_camera(),
+                sun_fixed,
+                solar_time: 15.0,
+                ..params()
+            };
+            let following = SceneParams {
+                eclipse_follow: true,
+                ..held
+            };
+            for sky in eclipse_skies() {
+                let (latitude, longitude) = eclipse::followed_point(&sky.shadow);
+                let camera = following.camera_at(&sky);
+                assert_eq!((camera.latitude, camera.longitude), (latitude, longitude));
+            }
+            assert_eq!(following.held_camera(), held.held_camera());
+        }
+    }
+
+    /// The mode's key travels through a config and back, and a config
+    /// written before it existed loads with the mode off.
+    #[test]
+    fn the_eclipse_mode_round_trips_and_an_older_config_leaves_it_off() {
+        let mut config = AppConfig::default();
+        let original = SceneParams {
+            eclipse_follow: true,
+            ..params()
+        };
+        original.write_to_config(&mut config);
+        assert!(config.eclipse_follow);
+        assert_eq!(SceneParams::from_config(&config), original);
+        let older: AppConfig = toml::from_str("longitude = 42.0\nsun_fixed = true").unwrap();
+        assert!(!SceneParams::from_config(&older).eclipse_follow);
+        assert!(
+            digest_mutations(params())
+                .iter()
+                .any(|(name, _)| *name == "eclipse_follow"),
+            "the digest's mutation table has no row for the mode"
+        );
     }
 
     // --- gamma slider mapping ---

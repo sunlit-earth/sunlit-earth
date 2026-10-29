@@ -792,6 +792,14 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         _pad12: 0.0,
         night_ocean_shift: [0.0; 3],
         _pad13: 0.0,
+        eclipse_moon: [0.0; 3],
+        eclipse_moon_to_sun: 0.0,
+        eclipse_axis: [0.0; 3],
+        eclipse_strength: 0.0,
+        eclipse_moon_radius: sunlit_core::scene::eclipse::MOON_RADIUS,
+        eclipse_sun_radius: sunlit_core::scene::eclipse::SUN_RADIUS,
+        eclipse_earth_radius: sunlit_core::scene::eclipse::EQUATORIAL_RADIUS,
+        eclipse_earth_e2: sunlit_core::scene::eclipse::ECCENTRICITY_SQUARED,
     }
 }
 
@@ -1009,6 +1017,18 @@ fn uniform_readback() {
     output[88] = uniforms.night_ocean_shift.r;
     output[89] = uniforms.night_ocean_shift.g;
     output[90] = uniforms.night_ocean_shift.b;
+    output[91] = uniforms.eclipse_moon.x;
+    output[92] = uniforms.eclipse_moon.y;
+    output[93] = uniforms.eclipse_moon.z;
+    output[94] = uniforms.eclipse_moon_to_sun;
+    output[95] = uniforms.eclipse_axis.x;
+    output[96] = uniforms.eclipse_axis.y;
+    output[97] = uniforms.eclipse_axis.z;
+    output[98] = uniforms.eclipse_strength;
+    output[99] = uniforms.eclipse_moon_radius;
+    output[100] = uniforms.eclipse_sun_radius;
+    output[101] = uniforms.eclipse_earth_radius;
+    output[102] = uniforms.eclipse_earth_e2;
 }
 ";
 
@@ -1017,7 +1037,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 91] = [
+const PROBED_FIELDS: [(f32, &str); 103] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -1109,6 +1129,18 @@ const PROBED_FIELDS: [(f32, &str); 91] = [
     (-0.75, "night_ocean_shift.r"),
     (0.375, "night_ocean_shift.g"),
     (1.0, "night_ocean_shift.b"),
+    (11.0, "eclipse_moon.x"),
+    (-12.0, "eclipse_moon.y"),
+    (58.5, "eclipse_moon.z"),
+    (23_456.0, "eclipse_moon_to_sun"),
+    (0.6, "eclipse_axis.x"),
+    (0.0, "eclipse_axis.y"),
+    (-0.8, "eclipse_axis.z"),
+    (0.65, "eclipse_strength"),
+    (0.27, "eclipse_moon_radius"),
+    (109.1, "eclipse_sun_radius"),
+    (0.95, "eclipse_earth_radius"),
+    (0.0067, "eclipse_earth_e2"),
 ];
 
 #[allow(clippy::too_many_lines)]
@@ -1230,6 +1262,14 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         _pad12: 0.0,
         night_ocean_shift: [-0.75, 0.375, 1.0],
         _pad13: 0.0,
+        eclipse_moon: [11.0, -12.0, 58.5],
+        eclipse_moon_to_sun: 23_456.0,
+        eclipse_axis: [0.6, 0.0, -0.8],
+        eclipse_strength: 0.65,
+        eclipse_moon_radius: 0.27,
+        eclipse_sun_radius: 109.1,
+        eclipse_earth_radius: 0.95,
+        eclipse_earth_e2: 0.0067,
     };
 
     let uniform_buf = ctx
@@ -1316,6 +1356,43 @@ fn shared_rule_probe() {
 }
 ";
 
+/// A second entry point beside it for the fourth rule, the light the Moon's
+/// shadow leaves, which takes points rather than one value per uniform.
+const ECLIPSE_RULE_PROBE: &str = "
+@group(1) @binding(2) var<storage, read> eclipse_points: array<vec4<f32>>;
+@group(1) @binding(3) var<storage, read_write> eclipse_out: array<f32>;
+
+@compute @workgroup_size(1)
+fn eclipse_rule_probe() {
+    for (var i = 0u; i < arrayLength(&eclipse_points); i = i + 1u) {
+        let point = eclipse_points[i];
+        eclipse_out[i] = eclipse_light(point.xyz, point.w);
+    }
+}
+";
+
+/// The heights the fourth rule is compared at: the globe, the cloud shell's
+/// and the Rayleigh shell's.
+const ECLIPSE_HEIGHTS: [f32; 3] = [0.0, 0.0015, 0.015];
+
+/// Directions along a great circle through the shadow's center: across the
+/// whole penumbra and out past it, and finely through the umbra.
+fn directions_across(shadow: &sunlit_core::scene::eclipse::ShadowAxis) -> Vec<glam::Vec3> {
+    let (latitude, longitude) = sunlit_core::scene::eclipse::shadow_center(shadow);
+    let (lat, lon) = (latitude.to_radians(), longitude.to_radians());
+    let center = glam::Vec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos());
+    let along = center.cross(glam::Vec3::Y).normalize();
+    let coarse = (-80..=80).map(|step| f32::from(i8::try_from(step).unwrap()) * 0.5);
+    let fine = (-40..=40).map(|step| f32::from(i8::try_from(step).unwrap()) * 0.05);
+    coarse
+        .chain(fine)
+        .map(|degrees| {
+            let angle = degrees.to_radians();
+            center * angle.cos() + along * angle.sin()
+        })
+        .collect()
+}
+
 /// Heights through the band the third rule is compared at: the surface, the
 /// few kilometers where the disk fades out, the rows the research table names,
 /// and the top of the band where the path takes nothing.
@@ -1336,28 +1413,32 @@ const RULE_SKY_FOVS: [f32; 11] = [
 /// zero is the white Sun and has to stay exactly white.
 const RULE_REDDENINGS: [f32; 3] = [0.0, 1.0, 2.0];
 
-/// Three rules exist once in WGSL and once on the CPU, in `scene::sky_lens` and
-/// `scene::limb_extinction`, and every
+/// Four rules exist once in WGSL and once on the CPU, in `scene::sky_lens`,
+/// `scene::limb_extinction` and `scene::eclipse`, and every
 /// pairing matters at the pixel. The CPU sizes the Sun's disk with the density
 /// ramp and the shader draws that disk's antialiased edge with it; the CPU
 /// measures occlusion at a screen position the shader has to draw the Sun at;
-/// and the CPU integrates the light path over the visible disk to decide what
+/// the CPU integrates the light path over the visible disk to decide what
 /// color and how bright the glare is while the shader draws the disk that glare
-/// is supposed to have come from.
+/// is supposed to have come from; and the CPU decides from the light the
+/// Moon's shadow leaves whether a frame draws it at all, and says where the
+/// shadow is, while the shader draws it.
 ///
 /// The viewport heights avoid 1080 and below, where the ramp clamps to 1.0 and
 /// any two knees agree: every golden and every engine frame renders there, so
 /// nothing else in the suite can see a divergence at all.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
+fn the_shader_and_the_cpu_agree_on_the_four_shared_rules() {
     let ctx = render_ctx();
 
     let shader = ctx
         .device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shared_rule_probe_shader"),
-            source: wgpu::ShaderSource::Wgsl(production_shaders(SHARED_RULE_PROBE).into()),
+            source: wgpu::ShaderSource::Wgsl(
+                production_shaders(&format!("{SHARED_RULE_PROBE}{ECLIPSE_RULE_PROBE}")).into(),
+            ),
         });
     let pipeline = ctx
         .device
@@ -1485,6 +1566,135 @@ fn the_shader_and_the_cpu_agree_on_the_three_shared_rules() {
                 values[5 + index * 4]
             );
         }
+    }
+
+    check_the_eclipse_rule(&ctx, &shader);
+}
+
+/// The fourth rule: `eclipse_light` against `scene::eclipse::light_left` at
+/// the points `surface_point` puts the same directions at, on the globe and at
+/// both shells' heights, at the peaks of a total and an annular eclipse.
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+fn check_the_eclipse_rule(ctx: &RenderContext, shader: &wgpu::ShaderModule) {
+    use sunlit_core::scene::eclipse;
+
+    let pipeline = ctx
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("eclipse_rule_probe_pipeline"),
+            layout: None,
+            module: shader,
+            entry_point: Some("eclipse_rule_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+    for (at, kind) in [
+        (
+            time::macros::datetime!(2024-04-08 12:00 UTC),
+            eclipse::EclipseKind::Total,
+        ),
+        (
+            time::macros::datetime!(2023-10-14 12:00 UTC),
+            eclipse::EclipseKind::Annular,
+        ),
+    ] {
+        let found = eclipse::nearest(at).expect("an eclipse");
+        assert_eq!(found.kind, kind);
+        let shadow = sunlit_core::scene::sky::shadow_at(found.peak);
+        let points: Vec<[f32; 4]> = ECLIPSE_HEIGHTS
+            .iter()
+            .flat_map(|height| {
+                directions_across(&shadow)
+                    .into_iter()
+                    .map(move |n| [n.x, n.y, n.z, *height])
+            })
+            .collect();
+        let uniforms = Uniforms {
+            flags: 32,
+            eclipse_moon: shadow.moon.into(),
+            eclipse_moon_to_sun: shadow.moon_to_sun,
+            eclipse_axis: shadow.axis.into(),
+            eclipse_strength: 1.0,
+            ..default_test_uniforms(64)
+        };
+        let uniform_buf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("eclipse_rule_uniforms"),
+                contents: bytemuck::cast_slice(&[uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let points_buf = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("eclipse_rule_points"),
+                contents: bytemuck::cast_slice(&points),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let output_size = (points.len() * std::mem::size_of::<f32>()) as u64;
+        let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("eclipse_rule_output"),
+            size: output_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let uniform_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
+        });
+        let point_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(1),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: points_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: output_buf.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &uniform_group, &[]);
+            pass.set_bind_group(1, &point_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
+        let shader_light: &[f32] = bytemuck::cast_slice(&data);
+
+        let mut darkest = 1.0_f32;
+        let mut brightest = 0.0_f32;
+        for (point, shader) in points.iter().zip(shader_light) {
+            let n = glam::Vec3::new(point[0], point[1], point[2]);
+            let cpu = eclipse::light_left(&shadow, eclipse::surface_point(n, point[3]));
+            assert!(
+                (shader - cpu).abs() < 2e-3,
+                "the light the shadow leaves at {n} and height {}, {kind:?}: the shader \
+                 says {shader}, scene::eclipse::light_left says {cpu}",
+                point[3]
+            );
+            darkest = darkest.min(cpu);
+            brightest = brightest.max(cpu);
+        }
+        assert!(
+            darkest < 0.2 && brightest > 0.999_999,
+            "the line did not cross the shadow: {darkest} to {brightest}"
+        );
     }
 }
 

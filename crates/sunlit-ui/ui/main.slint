@@ -27,6 +27,7 @@ export struct CameraPositionSettings {
     zoom: float,
     sun-fixed: bool,
     solar-time: float,
+    eclipse-follow: bool,
 }
 
 export struct CameraOrientationSettings {
@@ -97,6 +98,7 @@ export struct MoonSettings {
     brightness: float,
     size: float,
     earthshine: float,
+    shadow: float,
 }
 
 export struct StarSettings {
@@ -1411,6 +1413,18 @@ export component MainWindow inherits Window {
                                     value <=> root.celestial.moon.earthshine;
                                     default-value: root.defaults.celestial.moon.earthshine;
                                     value-text: round(root.celestial.moon.earthshine * 100) + "%";
+                                    changed => { root.sliders-changed(); }
+                                }
+
+                                moon-shadow-slider := SettingRow {
+                                    label: "Shadow on Earth";
+                                    hint: "How dark the Moon's shadow is drawn on the Earth during a solar eclipse. Drawn in the Blend surface mode.";
+                                    indent: 8px;
+                                    minimum: 0.0;
+                                    maximum: 1.0;
+                                    value <=> root.celestial.moon.shadow;
+                                    default-value: root.defaults.celestial.moon.shadow;
+                                    value-text: round(root.celestial.moon.shadow * 100) + "%";
                                     changed => { root.sliders-changed(); }
                                 }
 

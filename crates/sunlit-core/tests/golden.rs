@@ -1050,6 +1050,251 @@ fn a_sun_fixed_render_matches_the_earth_fixed_render_beneath_it() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The Moon's shadow
+//
+// Comparisons of renders rather than references of their own: each case draws
+// a frame with the shadow and the same frame without it and reads what the
+// one did to the other.
+// ---------------------------------------------------------------------------
+
+/// Blend mode at `peak` with the camera at the closest zoom straight above
+/// the given place, where a pixel of the frame is about 4 km of ground.
+fn above_the_shadow(peak: time::OffsetDateTime, latitude: f32, longitude: f32) -> SceneParams {
+    let base = base_params();
+    SceneParams {
+        texture_index: BLEND_MODE,
+        camera: CameraParams {
+            latitude,
+            longitude,
+            zoom: 0.0,
+            ..base.camera
+        },
+        time: sunlit_core::scene::scene_time::SceneTime::fixed(peak),
+        ..base
+    }
+}
+
+fn with_shadow(params: &SceneParams, moon_shadow: f32) -> SceneParams {
+    SceneParams {
+        moon_shadow,
+        ..*params
+    }
+}
+
+fn luma_at(pixels: &[u8], index: usize) -> f32 {
+    let p = &pixels[index * 4..index * 4 + 3];
+    0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2])
+}
+
+/// What the shadow left of each pixel of the plain frame, `None` where the
+/// plain frame is too dark to say.
+fn light_ratios(shadowed: &[u8], plain: &[u8]) -> Vec<Option<f32>> {
+    (0..(WIDTH * HEIGHT) as usize)
+        .map(|index| {
+            let lit = luma_at(plain, index);
+            (lit > 8.0).then(|| luma_at(shadowed, index) / lit)
+        })
+        .collect()
+}
+
+/// The drawn latitude and longitude under a pixel of a frame of `params`,
+/// from the camera's own matrices: the sphere's direction there, whose
+/// elevation is the geodetic latitude of the place the cube faces draw.
+#[allow(clippy::cast_precision_loss)]
+fn reprojected(params: &SceneParams, x: f32, y: f32) -> Option<(f32, f32)> {
+    let camera = sunlit_core::scene::camera::OrbitalCamera::from_params(&params.camera);
+    let inverse = camera.mvp_matrix(WIDTH as f32 / HEIGHT as f32).inverse();
+    let ndc = glam::Vec2::new(
+        (x + 0.5) / WIDTH as f32 * 2.0 - 1.0,
+        1.0 - (y + 0.5) / HEIGHT as f32 * 2.0,
+    );
+    let near = inverse.project_point3(ndc.extend(0.25));
+    let far = inverse.project_point3(ndc.extend(0.75));
+    let direction = (far - near).normalize();
+    let b = near.dot(direction);
+    let discriminant = b * b - (near.length_squared() - 1.0);
+    if discriminant < 0.0 {
+        return None;
+    }
+    let point = near + (-b - discriminant.sqrt()) * direction;
+    Some((
+        point.y.clamp(-1.0, 1.0).asin().to_degrees(),
+        point.x.atan2(point.z).to_degrees(),
+    ))
+}
+
+fn km_apart(a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (lat1, lon1) = (a.0.to_radians(), a.1.to_radians());
+    let (lat2, lon2) = (b.0.to_radians(), b.1.to_radians());
+    let haversine = ((lat2 - lat1) * 0.5).sin().powi(2)
+        + lat1.cos() * lat2.cos() * ((lon2 - lon1) * 0.5).sin().powi(2);
+    2.0 * haversine.sqrt().min(1.0).asin() * 6371.0
+}
+
+/// At the peaks of 2024-04-08 and of 2026-08-12, whose shadow meets the Earth
+/// near the pole, the darkest part of the frame the shadow leaves is where
+/// Astronomy Engine puts the peak: the centroid of the pixels within a
+/// hundredth of the least light, reprojected, within the larger of 25 km and
+/// two pixels.
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn the_umbra_falls_where_the_library_puts_the_peak() {
+    for at in [
+        time::macros::datetime!(2024-04-08 12:00 UTC),
+        time::macros::datetime!(2026-08-12 12:00 UTC),
+    ] {
+        let eclipse = sunlit_core::scene::eclipse::nearest(at).expect("an eclipse");
+        let peak_point = (eclipse.greatest.latitude, eclipse.greatest.longitude);
+        let params = above_the_shadow(eclipse.peak, peak_point.0, peak_point.1);
+        let engine = engine();
+        let shadowed = render(&engine, &with_shadow(&params, 1.0));
+        let plain = render(&engine, &with_shadow(&params, 0.0));
+        drop(engine);
+
+        let ratios = light_ratios(&shadowed, &plain);
+        let least = ratios.iter().flatten().copied().fold(f32::MAX, f32::min);
+        assert!(
+            least < 0.05,
+            "the umbra leaves {least} of the light at {at}"
+        );
+        let (mut sum_x, mut sum_y, mut count) = (0.0_f32, 0.0_f32, 0.0_f32);
+        for (index, ratio) in ratios.iter().enumerate() {
+            if ratio.is_some_and(|ratio| ratio <= least + 0.01) {
+                sum_x += (index % WIDTH as usize) as f32;
+                sum_y += (index / WIDTH as usize) as f32;
+                count += 1.0;
+            }
+        }
+        let (x, y) = (sum_x / count, sum_y / count);
+        let darkest = reprojected(&params, x, y).expect("the darkest pixels are on the globe");
+        let pixel = km_apart(
+            darkest,
+            reprojected(&params, x + 1.0, y).expect("so is the pixel beside them"),
+        );
+        let apart = km_apart(darkest, peak_point);
+        assert!(
+            apart <= 25.0_f32.max(2.0 * pixel),
+            "the umbra's center is {apart} km from the peak point at {at}, a pixel {pixel} km"
+        );
+    }
+}
+
+/// At the peak of 2023-10-14 the antumbra's center is lit, and darker than
+/// the penumbra around it.
+#[test]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn the_antumbras_center_is_lit_and_darker_than_the_penumbra() {
+    let eclipse =
+        sunlit_core::scene::eclipse::nearest(time::macros::datetime!(2023-10-14 12:00 UTC))
+            .expect("an eclipse");
+    let params = above_the_shadow(
+        eclipse.peak,
+        eclipse.greatest.latitude,
+        eclipse.greatest.longitude,
+    );
+    let engine = engine();
+    let shadowed = render(&engine, &with_shadow(&params, 1.0));
+    let plain = render(&engine, &with_shadow(&params, 0.0));
+    drop(engine);
+
+    let ratios = light_ratios(&shadowed, &plain);
+    let at = |x: u32, y: u32| ratios[(y * WIDTH + x) as usize];
+    let center = at(WIDTH / 2, HEIGHT / 2).expect("the frame's center is lit ground");
+    assert!(
+        center > 0.05,
+        "the antumbra's center keeps {center} of the light"
+    );
+    let ring: Vec<f32> = (0..16)
+        .filter_map(|step| {
+            let angle = f32::from(u8::try_from(step).unwrap()) * std::f32::consts::TAU / 16.0;
+            let x = (WIDTH / 2) as f32 + 80.0 * angle.cos();
+            let y = (HEIGHT / 2) as f32 + 80.0 * angle.sin();
+            at(x as u32, y as u32)
+        })
+        .collect();
+    assert!(!ring.is_empty());
+    for around in ring {
+        assert!(
+            around > center + 0.05,
+            "the penumbra 80 pixels out keeps {around} of the light, the center {center}"
+        );
+    }
+}
+
+/// Where the gate is closed the frame is the frame with the shadow switched
+/// off, byte for byte: at an instant with no eclipse in the blend mode, and
+/// inside an eclipse in the grid mode. Inside one in the blend mode it is not.
+#[test]
+fn outside_its_gate_the_shadow_changes_no_pixel() {
+    let eclipse =
+        sunlit_core::scene::eclipse::nearest(time::macros::datetime!(2024-04-08 12:00 UTC))
+            .expect("an eclipse");
+    let inside = above_the_shadow(
+        eclipse.peak,
+        eclipse.greatest.latitude,
+        eclipse.greatest.longitude,
+    );
+    let no_eclipse = SceneParams {
+        time: sunlit_core::scene::scene_time::SceneTime::fixed(
+            eclipse.peak + time::Duration::days(7),
+        ),
+        ..inside
+    };
+    let grid = SceneParams {
+        texture_index: 0,
+        ..inside
+    };
+    let engine = engine();
+    for (what, params) in [("no eclipse", no_eclipse), ("the grid", grid)] {
+        let shadowed = render(&engine, &with_shadow(&params, 1.0));
+        let plain = render(&engine, &with_shadow(&params, 0.0));
+        assert!(shadowed == plain, "{what}: the shadow changed the frame");
+    }
+    let shadowed = render(&engine, &with_shadow(&inside, 1.0));
+    let plain = render(&engine, &with_shadow(&inside, 0.0));
+    assert!(
+        shadowed != plain,
+        "inside the eclipse the shadow changed nothing"
+    );
+}
+
+/// Half the strength draws a frame between none and the whole of it.
+#[test]
+fn half_the_strength_lies_between_none_and_all_of_it() {
+    let eclipse =
+        sunlit_core::scene::eclipse::nearest(time::macros::datetime!(2024-04-08 12:00 UTC))
+            .expect("an eclipse");
+    let params = SceneParams {
+        camera: CameraParams {
+            zoom: 0.26,
+            ..CameraParams::default()
+        },
+        ..above_the_shadow(
+            eclipse.peak,
+            eclipse.greatest.latitude,
+            eclipse.greatest.longitude,
+        )
+    };
+    let engine = engine();
+    let none = render(&engine, &with_shadow(&params, 0.0));
+    let half = render(&engine, &with_shadow(&params, 0.5));
+    let all = render(&engine, &with_shadow(&params, 1.0));
+    drop(engine);
+    assert!(none != half && half != all);
+    for ((n, h), a) in none.iter().zip(&half).zip(&all) {
+        let (low, high) = ((*n).min(*a), (*n).max(*a));
+        assert!(
+            low.saturating_sub(1) <= *h && *h <= high.saturating_add(1),
+            "{h} outside {low} to {high}"
+        );
+    }
+}
+
 /// Render every camera preset into one image for human review.
 ///
 /// This asserts almost nothing: it exists so CI can upload a single PNG that a

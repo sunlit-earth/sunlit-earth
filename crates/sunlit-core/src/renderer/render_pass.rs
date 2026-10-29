@@ -6,6 +6,7 @@ use crate::params::{
     OutputParams, RAYLEIGH_RADIUS, SceneParams,
 };
 use crate::scene::camera::OrbitalCamera;
+use crate::scene::eclipse;
 use crate::scene::moon;
 use crate::scene::sky::SkyState;
 use crate::scene::sun_occlusion;
@@ -66,6 +67,20 @@ const FLAG_NIGHT_ALONE: u32 = 4;
 const FLAG_UNIFORM_DAY: u32 = 8;
 /// Bit 4 of `Uniforms::flags`: the shells are lit as night everywhere.
 const FLAG_UNIFORM_NIGHT: u32 = 16;
+/// Bit 5 of `Uniforms::flags`: the Moon's penumbra reaches the shells, and
+/// the eclipse fields are filled.
+const FLAG_ECLIPSE: u32 = 32;
+
+/// Whether the frame draws the Moon's shadow: in the blend mode, with the
+/// shadow switched on, and only while the penumbra reaches the outermost
+/// shell. The sphere of that shell encloses the ellipsoid and every shell, so
+/// the gate never closes on a fragment the shadow reaches, and every other
+/// frame runs the code it ran before the shadow existed.
+fn draws_eclipse(params: &SceneParams, sky: &SkyState) -> bool {
+    TextureMode::from_index(params.texture_index) == TextureMode::Blend
+        && params.moon_shadow > 0.0
+        && eclipse::penumbra_reaches(&sky.shadow, RAYLEIGH_RADIUS)
+}
 
 /// The flag bits that light the shells over the globe for the surface mode
 /// the user selected.
@@ -193,6 +208,7 @@ pub(super) fn write_uniforms<'a>(
             reach: params.sun_horizon_reach,
         },
     });
+    let shadow = draws_eclipse(params, &inputs.sky).then_some(inputs.sky.shadow);
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
         sun_dir: inputs.sky.sun_direction.into(),
@@ -209,7 +225,8 @@ pub(super) fn write_uniforms<'a>(
             FLAG_NIGHT_ALONE
         } else {
             0
-        } | shell_lighting_flags(TextureMode::from_index(params.texture_index)),
+        } | shell_lighting_flags(TextureMode::from_index(params.texture_index))
+            | if shadow.is_some() { FLAG_ECLIPSE } else { 0 },
         diffuse_floor: params.diffuse_floor,
         diffuse_ramp: params.diffuse_ramp,
         _pad: 0.0,
@@ -291,6 +308,14 @@ pub(super) fn write_uniforms<'a>(
         _pad12: 0.0,
         night_ocean_shift: ocean_shift(params.night_ocean_color, inputs.fills[1]),
         _pad13: 0.0,
+        eclipse_moon: shadow.map_or([0.0; 3], |shadow| shadow.moon.into()),
+        eclipse_moon_to_sun: shadow.map_or(0.0, |shadow| shadow.moon_to_sun),
+        eclipse_axis: shadow.map_or([0.0; 3], |shadow| shadow.axis.into()),
+        eclipse_strength: shadow.map_or(0.0, |_| params.moon_shadow),
+        eclipse_moon_radius: eclipse::MOON_RADIUS,
+        eclipse_sun_radius: eclipse::SUN_RADIUS,
+        eclipse_earth_radius: eclipse::EQUATORIAL_RADIUS,
+        eclipse_earth_e2: eclipse::ECCENTRICITY_SQUARED,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

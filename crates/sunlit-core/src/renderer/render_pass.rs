@@ -209,6 +209,7 @@ pub(super) fn write_uniforms<'a>(
         },
     });
     let shadow = draws_eclipse(params, &inputs.sky).then_some(inputs.sky.shadow);
+    let rings = eclipse::limb_rings();
     let uniforms = Uniforms {
         mvp: mvp.to_cols_array(),
         sun_dir: inputs.sky.sun_direction.into(),
@@ -316,6 +317,12 @@ pub(super) fn write_uniforms<'a>(
         eclipse_sun_radius: eclipse::SUN_RADIUS,
         eclipse_earth_radius: eclipse::EQUATORIAL_RADIUS,
         eclipse_earth_e2: eclipse::ECCENTRICITY_SQUARED,
+        eclipse_umbra: shadow.map_or(0.0, |_| params.moon_shadow_umbra),
+        eclipse_reach: shadow.map_or(0.0, |_| params.moon_shadow_reach.max(eclipse::MIN_REACH)),
+        eclipse_falloff: shadow.map_or(0.0, |_| params.moon_shadow_falloff),
+        _pad14: 0.0,
+        eclipse_ring_radii: rings.radii,
+        eclipse_ring_weights: rings.weights,
     };
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     moon_drawn

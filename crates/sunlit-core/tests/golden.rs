@@ -1075,9 +1075,15 @@ fn above_the_shadow(peak: time::OffsetDateTime, latitude: f32, longitude: f32) -
     }
 }
 
+/// `params` with the shadow at `moon_shadow` and its look pinned: a black
+/// umbra fading out at the penumbra's edge, which is what the cases below
+/// measure the shadow's place and shape by, whatever the defaults become.
 fn with_shadow(params: &SceneParams, moon_shadow: f32) -> SceneParams {
     SceneParams {
         moon_shadow,
+        moon_shadow_umbra: 0.0,
+        moon_shadow_reach: 1.0,
+        moon_shadow_falloff: 0.5,
         ..*params
     }
 }

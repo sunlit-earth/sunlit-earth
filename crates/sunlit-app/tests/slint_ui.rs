@@ -135,6 +135,9 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
             size: 5.5,
             earthshine: 0.21,
             shadow: 0.62,
+            shadow_umbra: 0.12,
+            shadow_reach: 0.45,
+            shadow_falloff: 1.75,
         },
         stars: StarSettings {
             intensity: 0.73,
@@ -176,6 +179,9 @@ fn test_celestial_properties_roundtrip_through_scene_params() {
     approx::assert_relative_eq!(params.moon_size, 5.5);
     approx::assert_relative_eq!(params.moon_earthshine, 0.21);
     approx::assert_relative_eq!(params.moon_shadow, 0.62);
+    approx::assert_relative_eq!(params.moon_shadow_umbra, 0.12);
+    approx::assert_relative_eq!(params.moon_shadow_reach, 0.45);
+    approx::assert_relative_eq!(params.moon_shadow_falloff, 1.75);
     approx::assert_relative_eq!(params.milky_way_intensity, 1.15);
 }
 
@@ -206,6 +212,9 @@ fn test_celestial_properties_apply_from_scene_params() {
         moon_size: 3.5,
         moon_earthshine: 0.17,
         moon_shadow: 0.44,
+        moon_shadow_umbra: 0.08,
+        moon_shadow_reach: 0.3,
+        moon_shadow_falloff: 2.25,
         milky_way_intensity: 0.35,
         ..SceneParams::default()
     };
@@ -240,6 +249,9 @@ fn test_celestial_properties_apply_from_scene_params() {
     approx::assert_relative_eq!(moon.size, 3.5);
     approx::assert_relative_eq!(moon.earthshine, 0.17);
     approx::assert_relative_eq!(moon.shadow, 0.44);
+    approx::assert_relative_eq!(moon.shadow_umbra, 0.08);
+    approx::assert_relative_eq!(moon.shadow_reach, 0.3);
+    approx::assert_relative_eq!(moon.shadow_falloff, 2.25);
     approx::assert_relative_eq!(sky.milky_way, 0.35);
 }
 

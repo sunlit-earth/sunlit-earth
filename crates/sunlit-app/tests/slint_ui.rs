@@ -7037,20 +7037,30 @@ fn test_load_defaults_leaves_eclipse_mode() {
 
 /// Where the panel's previous and next buttons are and how large, the
 /// panel's height, and whether it shows its phase rows.
-fn the_panels_layout(window: &MainWindow) -> (Vec<(f32, f32, f32, f32)>, f32, bool) {
+#[derive(Debug, PartialEq)]
+struct PanelLayout {
+    /// Each button's x, y, width and height.
+    buttons: Vec<[f32; 4]>,
+    height: f32,
+    rows: bool,
+}
+
+fn the_panels_layout(window: &MainWindow) -> PanelLayout {
     let buttons = ["Previous solar eclipse", "Next solar eclipse"]
         .iter()
         .map(|label| {
             let button = the_labeled(window, label);
             let (at, size) = (button.absolute_position(), button.size());
-            (at.x, at.y, size.width, size.height)
+            [at.x, at.y, size.width, size.height]
         })
         .collect();
-    let height = the_element(window, "MainWindow::eclipse-panel")
-        .size()
-        .height;
-    let rows = ElementHandle::find_by_accessible_label(window, "Partial begins").count() > 0;
-    (buttons, height, rows)
+    PanelLayout {
+        buttons,
+        height: the_element(window, "MainWindow::eclipse-panel")
+            .size()
+            .height,
+        rows: ElementHandle::find_by_accessible_label(window, "Partial begins").count() > 0,
+    }
 }
 
 /// Stepping from an annular eclipse to a partial one and back moves neither
@@ -7074,10 +7084,10 @@ fn test_the_panels_buttons_stay_put_between_kinds_of_eclipse() {
             .set_size(slint::LogicalSize::new(PANEL_COMPACT_WINDOW.0, height));
         open_the_bar(&window);
         let before = the_panels_layout(&window);
-        for (_, _, _, button_height) in &before.0 {
-            assert!(*button_height >= 28.0, "a button {button_height} px tall");
+        for button in &before.buttons {
+            assert!(button[3] >= 28.0, "a button {} px tall", button[3]);
         }
-        approx::assert_relative_eq!(before.0[0].2, before.0[1].2);
+        approx::assert_relative_eq!(before.buttons[0][2], before.buttons[1][2]);
         let next = point_in(&the_labeled(&window, "Next solar eclipse"), 0.5, 0.5);
         press_at(&window, next);
         assert_eq!(the_time(&window), Some(partial));
@@ -7093,7 +7103,7 @@ fn test_the_panels_buttons_stay_put_between_kinds_of_eclipse() {
         press_at(&window, next);
         assert_eq!(the_time(&window), Some(after), "two clicks on Next");
         assert!(following(&window));
-        forms.push(before.2);
+        forms.push(before.rows);
     }
     assert_eq!(
         forms,

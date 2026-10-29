@@ -138,6 +138,33 @@ Following the conventions in testing.md, behavior rather than constants:
 - At a time with no eclipse the frame is bit for bit the frame without the feature, which is what the gate promises.
 - One golden over the Earth fixture with the cloud fixture, at a time when the penumbra and the umbra are both in view.
 
+### 3.6 What photographs of the shadow show
+
+The first look at the shadow as built (`F^(1/2.2)`, a uniform disk) read as a dark spot with a hard rim. Photographs of the shadow from orbit were gathered on 2026-10-29, each page fetched and each image confirmed to load. The user picked these as the useful ones:
+
+| Image | Eclipse | Vantage | What it is good for |
+|---|---|---|---|
+| Mir 27 crew / CNES, [page](https://science.nasa.gov/image-article/apod-1999-august-30-looking-back-on-an-eclipsed-earth), [image](https://assets.science.nasa.gov/content/dam/science/cds/apod/apod/1999/august/eclipse99_mir_big.jpg) | 1999-08-11 | Low orbit, oblique, over cloud | The umbra's edge and the falloff, the best view |
+| ISS Expedition 71, [page](https://science.nasa.gov/image-detail/iss071e003390-lrg), [image](https://science.nasa.gov/wp-content/uploads/2023/06/iss071e003390-lrg.jpg) | 2024-04-08 | Low orbit, toward the horizon | High quality, though the angle is not ideal; cropped and enhanced for contrast by NASA |
+| DSCOVR EPIC, [page](https://science.nasa.gov/earth/earth-observatory/an-epic-eclipse-87675/), [frames](https://assets.science.nasa.gov/content/dam/science/esd/eo/images/imagerecords/87000/87675/eclipse_epc_2016068.zip) | 2016-03-09 | L1, the full sunlit disk | Scale: the visible shadow against the hemisphere; 13 frames 20 minutes apart |
+| Himawari-8 (NICT), [still](https://i0.wp.com/cosmiclog.com/wp-content/uploads/2016/03/160309-himawari.jpg?ssl=1), [CIMSS page](http://cimss.ssec.wisc.edu/goes/blog/archives/20899) | 2016-03-09 | Geostationary, full disk | Scale, the same eclipse as EPIC from closer; the CIMSS band 1 frame is named for 01:50 UTC |
+| GOES-16/18, CIMSS, [post](https://cimss.ssec.wisc.edu/satellite-blog/archives/58552) | 2024-04-08 | Geostationary | Scale only: minimum composites of the 0.86 µm band with a contrast stretch, not natural color |
+
+What they agree on, read by eye from the Mir, ISS 2006, EPIC 2024 and Himawari images: no picture shows a hard edge at the umbra. The darkening is deepest over the umbra, the visible shadow reaches well beyond it, several times its width, and the falloff is gradual but not regular, and the outline is not a circle. Much of the irregularity is the shadow multiplying a scene of bright cloud and dark ground, which the app's rendering gets on its own, since the shade multiplies the textures. The brown cast of the EPIC and MODIS images is not taken as real: those instruments build color from narrow bands chosen for science, not for human color vision, and the Mir and ISS photographs, from ordinary cameras, show a neutral grey.
+
+Two physical effects soften the edge and were left out of the first build: limb darkening, which takes light from the thin crescent that is all that is left near the umbra (section 3.2), and light scattered into the umbra by the air around it, which keeps the umbra's floor above black. Neither is measured from space in numbers found, so both are judged against the photographs.
+
+**Limb darkening in the shader.** Section 3.2 offered a table by the uncovered area. Measured over Moon to Sun ratios of 0.92 to 1.08 against a fine integration of the 550 nm law, the light left is not quite a function of the area alone: the best cubic in the area is off by up to 0.019, and by up to 44% of the light where little is left, which is the region near the umbra that the look turns on. Splitting the disk into rings of uniform brightness does better, each ring's covered share from the circle overlap at its two radii and its weight the integral of the law over it. Rings of equal area are poor at the limb; rings of equal width in `mu` with exact weights give:
+
+| Rings | Largest error | Largest relative error where more than 0.3% is left |
+|---|---|---|
+| 3 | 0.0073 | 14% |
+| 4 | 0.0053 | 6% |
+| 6 | 0.0023 | 5% |
+| 8 | 0.0011 | 1.5% |
+
+Four rings, at `mu` 1, 0.75, 0.5, 0.25 and 0, are radii 0, 0.6614, 0.8660, 0.9682 and 1 of the Sun's, with weights 0.5107, 0.3088, 0.1458 and 0.0348 of the disk's light (the law's integral `0.3 mu^2 + 0.62 mu^3 - 0.115 mu^4` between the ring's edges, over its value 0.805 at `mu` 1). That is four circle overlaps where the uniform disk takes one.
+
 ## 4. The Moon in front of the Sun, seen from the camera
 
 ### 4.1 When it happens
@@ -297,3 +324,10 @@ Taken with the user on 2026-10-29:
 8. One mode button at the right end of the transport row, and a panel above the bar for previous, next and the eclipse's details (section 5.7), shown whenever the bar is open and the mode is on.
 9. While the mode is on, the day track shows the eclipse's phases.
 10. The eclipse's geometry, the shadow drawn, its center, the camera's point and the contact times, is computed on the WGS84 ellipsoid; the drawn globe stays a sphere (section 2.3).
+
+Taken after the first look, the same day (section 3.6):
+
+11. The clouds under the shadow keep their day opacity and are darkened as the ground is.
+12. The Sun's disk carries limb darkening. The shadow stays neutral grey, with no color cast.
+13. Three settings let the look be tuned by eye against the photographs: the brightness inside the umbra, how far the shadow reaches beyond it, and how fast it brightens.
+14. No randomness is added to the shadow's outline for now; the three settings are tried first.

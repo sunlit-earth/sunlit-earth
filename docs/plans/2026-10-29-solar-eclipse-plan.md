@@ -4,6 +4,8 @@
 
 Two features that work together. First, the Moon's shadow is drawn on the Earth where and when it falls: a penumbra a little more than an Earth diameter across that darkens the globe, the clouds and the blue limb, with the umbra or the antumbra a dark spot inside it. It is drawn in the blend surface mode, from the true geometry on the WGS84 ellipsoid while the globe stays a sphere, and costs nothing outside the few hours of each eclipse. Second, eclipse mode: a button in the time bar that sets the time to the next solar eclipse and keeps the camera over the shadow as the time of day moves, with a panel above the bar for the previous and the next eclipse, the phases and their times, and what the instant on screen shows. The date track marks every eclipse of the year, and while the mode is on the day track shows when the shadow is on the Earth.
 
+After the first look, section A8 amends the shadow's look: the Sun's limb darkening, the clouds kept at their day opacity under the shadow, and three settings to tune the umbra's brightness, the shadow's reach and its falloff against photographs.
+
 The research, the measurements and the decisions behind this are in `2026-10-29-solar-eclipse-research.md`. The rendering of the Moon in front of the Sun as the camera sees it stays as it is (research section 4).
 
 ## Stakes Classification
@@ -39,7 +41,7 @@ moon_radius = asin(R_moon / length(q)),  sun_radius = asin(R_sun / length(q + D 
 light_left = 1 - overlap(separation, moon_radius, sun_radius) / (pi * sun_radius^2)
 ```
 
-with `overlap` the circle-circle lens area that `disk_occlusion::overlap_area` already computes, and 1 for `z <= 0`, behind the Moon. The disk is uniform: limb darkening (research section 3.2) changes brightness only inside the penumbra, and the look decides later whether to add it. `R_moon` is 1737.4 km and `R_sun` 695,700 km, Astronomy Engine's radii, as constants in Earth radii of `EARTH_RADII_PER_AU`.
+with `overlap` the circle-circle lens area that `disk_occlusion::overlap_area` already computes, and 1 for `z <= 0`, behind the Moon. As steps 1 to 7 built it the disk is uniform; A8 gives it the Sun's limb darkening. `R_moon` is 1737.4 km and `R_sun` 695,700 km, Astronomy Engine's radii, as constants in Earth radii of `EARTH_RADII_PER_AU`.
 
 `P` is the true point of the place drawn, not the point of the sphere. For a fragment at the sphere's direction `n` and a height `h` above the surface (0 for the globe, `CLOUD_SPHERE_RADIUS - 1` and `RAYLEIGH_RADIUS - 1` for the shells),
 
@@ -61,19 +63,53 @@ On the CPU, per frame, the penumbral cone's distance from the Earth's center is 
 
 #### A4. From light left to pixels
 
-The shade is `mix(1.0, pow(light_left, 1.0 / 2.2), moon_shadow)`, the light left re-encoded as the stored values are, scaled by the strength setting. It multiplies every term that is sunlight (research section 3.3): the day surface in `blend_fragment` after its `min(night, day)` clamp, the specular glint and the Fresnel sky color in `fs_main`, the day brightness and the share of the deck drawn at the day opacity in `fs_cloud`, and the day blue and the sunrise lobe in `fs_rayleigh`. The nightglow shells do not take it. Nothing else changes: the umbra darkens and shows no night texture (decision of 2026-10-29), so the wanted set of tiles is untouched.
+The shade is `mix(1.0, pow(light_left, 1.0 / 2.2), moon_shadow)`, the light left re-encoded as the stored values are, scaled by the strength setting. It multiplies every term that is sunlight (research section 3.3): the day surface in `blend_fragment` after its `min(night, day)` clamp, the specular glint and the Fresnel sky color in `fs_main`, the day brightness and the share of the deck drawn at the day opacity in `fs_cloud`, and the day blue and the sunrise lobe in `fs_rayleigh`. The nightglow shells do not take it. Nothing else changes: the umbra darkens and shows no night texture (decision of 2026-10-29), so the wanted set of tiles is untouched. A8 replaces this mapping and takes the shade off the clouds' opacity.
 
 #### A5. Uniforms
 
-Appended to the block: `eclipse_moon: vec3` with `eclipse_moon_to_sun: f32`, `eclipse_axis: vec3` with `eclipse_strength: f32`, then `eclipse_moon_radius: f32`, `eclipse_sun_radius: f32`, `eclipse_earth_radius: f32` (WGS84's `a`) and `eclipse_earth_e2: f32`, 32 bytes, so the block grows to 640 and the size assertion with it. The four are constants but go through the block so that the WGSL holds no copy of them to drift.
+Appended to the block: `eclipse_moon: vec3` with `eclipse_moon_to_sun: f32`, `eclipse_axis: vec3` with `eclipse_strength: f32`, then `eclipse_moon_radius: f32`, `eclipse_sun_radius: f32`, `eclipse_earth_radius: f32` (WGS84's `a`) and `eclipse_earth_e2: f32`, 32 bytes, so the block grows to 640 and the size assertion with it. The four are constants but go through the block so that the WGSL holds no copy of them to drift. A8 adds 48 bytes more.
 
 #### A6. One setting
 
-`moon_shadow`, 0 to 1, default 1, in the Moon's row group of the Celestial settings as "Shadow on Earth", hint "How dark the Moon's shadow is drawn on the Earth during a solar eclipse. Drawn in the Blend surface mode." It is the fourteen edits of a shader parameter (CLAUDE.md), in the `quantized` group of `scene_digest!`. Neither `moon_size` nor the pixel floor reaches the shadow (research section 3.4).
+`moon_shadow`, 0 to 1, default 1, in the Moon's row group of the Celestial settings as "Shadow on Earth", hint "How dark the Moon's shadow is drawn on the Earth during a solar eclipse. Drawn in the Blend surface mode." It is the fourteen edits of a shader parameter (CLAUDE.md), in the `quantized` group of `scene_digest!`. Neither `moon_size` nor the pixel floor reaches the shadow (research section 3.4). A8 adds three settings beside it.
 
 #### A7. The cost is measured before it is accepted
 
 Inside the gate a fragment of the globe, the cloud shell and the Rayleigh shell runs `eclipse_light` once: two `atan`, two `asin`, the two `acos` of the lens area and a few square roots. Step 2 measures a preview frame inside an eclipse against one outside it, on WARP and on the desktop GPU, at the preview sizes of the Sun-fixed plan's table, and the step does not close until the user has seen the numbers.
+
+#### A8. The look (amended after the first look)
+
+The first look at the build of steps 1 to 7 showed a hard rim around the umbra, which no photograph from orbit shows (research section 3.6). Decisions 11 to 14 of the research change three things.
+
+**Limb darkening.** `light_left` and `eclipse_light` integrate the Sun's disk as four rings of uniform brightness instead of one uniform disk: ring `i` between the radii `rho_i` and `rho_{i+1}` of the Sun's, with `rho` 0, 0.6614, 0.8660, 0.9682 and 1 (`mu` 1, 0.75, 0.5, 0.25 and 0), has the weight `w_i` 0.5107, 0.3088, 0.1458 and 0.0348, the 550 nm law's share of the disk's light, and loses the share `(overlap(rho_{i+1}) - overlap(rho_i)) / (pi * (rho_{i+1}^2 - rho_i^2))` to the Moon, `overlap(rho)` being the lens area of a disk of `rho` sun radii and the Moon's disk at the separation, in sun radii. The light left is `1 - sum(w_i * covered_i)`. Measured against a fine integration over Moon to Sun ratios 0.92 to 1.08, it is within 0.0053, and within 6% where more than 0.3% of the light is left (research section 3.6). The radii and the weights are computed once in Rust and go through the block like A5's constants, so the WGSL holds no copy. The panel's "Sun 100% covered" line stays the obscuration by area, which is what the word means.
+
+**The mapping.** The shade becomes
+
+```
+x = clamp(light_left / reach, 0, 1)
+drawn = umbra + (1 - umbra) * pow(smoothstep(0, 1, x), falloff)
+shade = mix(1, drawn, moon_shadow)
+```
+
+`umbra` is the brightness left where the Sun is covered, `reach` the light left at which the shadow has faded out, 1 being the penumbra's outer edge, and `falloff` how long the shadow stays dark going outward, higher values keeping it dark farther. `smoothstep` leaves the curve flat at both ends, so there is no rim at the umbra and no edge at the reach unless a small `falloff` asks for a steep start. Over most of the penumbra the light left grows nearly in proportion to the distance from the umbra's edge, so `reach` reads as a share of the penumbra's width. The pow is held off a zero base as `fs_cloud` already does.
+
+**The clouds.** `fs_cloud`'s opacity goes back to `mix(night_alpha, day_alpha, sunlit)` and the shade no longer reaches it: the deck keeps its day opacity under the shadow and its brightness, `mix(cloud_night, sunlight, sunlit)` with `sunlight` the shade, is darkened as the ground is. The surface, the glint, the Fresnel color and the Rayleigh shell take the new shade where A4 put the old.
+
+**Three settings.** In the Moon's row group, under "Shadow on Earth", each the fourteen edits of a shader parameter in the `quantized` group of `scene_digest!`:
+
+| Key | Label | Range | Starting value | Hint |
+|---|---|---|---|---|
+| `moon_shadow_umbra` | Umbra brightness | 0 to 0.5 | 0 | How much light is drawn where the Sun is fully covered. |
+| `moon_shadow_reach` | Shadow reach | 0.05 to 1 | 1 | How far beyond the umbra the shadow stays visible, as a share of the penumbra. |
+| `moon_shadow_falloff` | Shadow falloff | 0.25 to 3 | 0.5 | How long the shadow stays dark going outward from the umbra. Higher values keep it dark farther. |
+
+The starting values are where tuning begins, not the defaults: step 9 sets the defaults from what the user tunes. The keys are new and no release has shipped the feature, so none of this needs a migration.
+
+**Uniforms.** `eclipse_umbra`, `eclipse_reach` and `eclipse_falloff` with a pad, then `eclipse_ring_radii: vec4` (the four outer radii) and `eclipse_ring_weights: vec4`, 48 bytes, so the block grows from 656 to 704.
+
+**No randomness.** The outline is the geometry's (decision 14). Clouds and ground already break it up the way the photographs show.
+
+**Cost.** Four overlaps where there was one, inside the gate only. Step 8 measures it with A7's harness; if WARP goes over the budget of departure 4, three rings (within 0.0073 and 14%) are the fallback, recorded as a departure.
 
 ### Part B: the eclipses themselves
 
@@ -180,6 +216,21 @@ Now: Sun 100% covered at 65° N
 
 The room above the bar decides how much is shown. Where the panel would reach the camera panel's bottom plus 8 px, in a preview narrower than about 1000 px and too short for both, it drops the phase rows and the fact line and keeps the header and the last line. The bar's hover hints go above the panel while it is shown.
 
+**Amended after the first use: stable, larger previous and next.** Stepping from a total or an annular eclipse to a partial one took two phase rows away, the panel's top, anchored by its bottom above the bar, came down 40 px, and the chevrons in its header moved out from under the pointer; at 20 px they were also hard to hit. So:
+
+- The chevrons leave the header for a row of their own at the panel's bottom, the edge nearest the bar and the mode button: two buttons, "‹ Previous" and "Next ›", each half the panel's inner width and 28 px tall, the mode button's height, with the hints naming their target as before and disabled at the range's ends. The bottom edge is fixed above the bar, so the row stays where it is whatever the panel shows above it, compact form included.
+- The panel's height no longer depends on the eclipse: it always reserves five phase rows, and a partial eclipse's three rows sit at the top of that space with the rest left empty. `full-height`, and with it the compact rule, then depends on the preview's size alone, so stepping between kinds cannot flip the panel into or out of its compact form.
+
+```
+    ● Total solar eclipse
+    Wed 12 Aug 2026 · UTC+2
+◌  Partial begins                    17:34
+   …five rows, or three and room for two…
+Totality 2 min 21 s at greatest eclipse
+Now: Sun 100% covered at 65° N
+[ ‹ Previous        ] [         Next › ]
+```
+
 #### D5. Marks on the date track
 
 `EclipseMark { fraction, kind, label }`, set by `refresh_year` with the season marks from `eclipse::in_year` in the displayed zone, keyed like them by year and zone. Each is a 9 px `Glyph` in `OverlayStyle.sun` on the track's centerline: total, a dark disk with a thin bright rim; annular, a thick bright ring around a smaller dark center; partial, a bright disk with a dark bite. Hovering one shows its label in place of the track's date label, "Total solar eclipse · Wed 12 Aug 19:45"; a click calls `eclipse-picked(index)`, which enters the mode at it. A mark has its own `TouchArea` above the track's, so a press on it never starts a drag. Where an eclipse mark and a season mark are closer than a glyph, the eclipse is drawn over the diamond and the label names both, "Total solar eclipse · Mon 20 Mar 10:17 · March equinox" in UTC.
@@ -225,7 +276,8 @@ Page Up enters or moves the mode to the previous eclipse and Page Down to the ne
 - The contact times of the six eclipses of research section 2.3 come out within 15 seconds of NASA's, and the durations within six seconds.
 - The mode button, previous, next and a date track mark each put the camera over the shadow at the peak; every exit of D2 ends the mode without the frame jumping.
 - In the mode, playing the clock keeps the umbra inside the globe's disk from U1 to U4 at the default zoom.
-- A frame inside an eclipse costs WARP no more than the budget fixed in step 2.
+- A frame inside an eclipse costs WARP no more than the budget fixed in step 2, limb darkening included.
+- The limb-darkened light left is within 0.006 of a fine integration of the 550 nm law; the clouds keep their opacity under the shadow; the user has tuned the three settings of A8 against the photographs of research section 3.6 and their values are the defaults.
 
 ## Implementation Steps
 
@@ -257,9 +309,15 @@ Tests 18 to 27.
 
 `docs/roadmap.md`: the eclipse item under Rendering becomes the solar half done, the lunar eclipse and the corona left. `docs/rendering.md`: a section on the Moon's shadow, its rule, its gate, its mapping and the cost measured. `docs/architecture.md`: `camera_at`'s third case next to the Sun-fixed one. `docs/usage.md`: eclipse mode, its panel, the marks, the keys and what leaves the mode. `docs/testing.md`: the fourth shared rule. README only with the user's permission.
 
-### Step 8: Validation with the user
+### Step 8: The look and the panel's previous and next
 
-Run the app at the 2024-04-08 and the 2026-08-12 eclipses: the shadow's look at the default strength, the camera's follow while playing the clock at 1 min/s and 10 min/s, `EPS` 0.2 against a stiffer or a softer value, the panel and the bands at the full width and at the narrowest bar, and each exit of D2. Publish a wallpaper in the mode on two screens in a Linux guest with `--screens 2`.
+A8: the rings in `light_left` and `eclipse_light`, their radii and weights in the block; the new mapping in `eclipse_shade`; `fs_cloud`'s opacity; the three settings' fourteen edits each. D4's amendment: the previous and next row at the panel's bottom and the fixed height. Tests 28 to 33; tests 9 to 12 keep passing, with the three settings pinned where a test depends on them. A7's harness rerun with the rings and the numbers added to departure 4. `docs/rendering.md`'s section on the Moon's shadow and `docs/usage.md` follow; the roadmap's line on the remaining review names step 9.
+
+For the tuning in step 9, render configs for `cargo app -- render --config` at the instants and the closest viewpoints the app allows for each image of research section 3.6, with the times read from the sources' metadata (the Himawari frame is named for 01:50 UTC; the EPIC zip carries its frames), and a script outside the repository that sets a render beside its photograph. The camera comes no closer than 1.5 Earth radii from the center and goes no farther than 80, so the low orbit photographs are matched in the shape of the falloff rather than the view, the geostationary ones in the view, and EPIC at 80 radii, close to its near-orthographic view from L1.
+
+### Step 9: Validation with the user
+
+Tune the three settings of A8 by eye in the running app against the photographs and the renders of step 8, and make the values the defaults. Run the app at the 2024-04-08 and the 2026-08-12 eclipses: the shadow's look at the default strength, the camera's follow while playing the clock at 1 min/s and 10 min/s, `EPS` 0.2 against a stiffer or a softer value, the panel and the bands at the full width and at the narrowest bar, and each exit of D2. Publish a wallpaper in the mode on two screens in a Linux guest with `--screens 2`.
 
 ## Tests
 
@@ -305,10 +363,21 @@ Window, `tests/slint_ui.rs`, at pinned instants:
 26. The open bar is never narrower than the new `narrowest`, and at it the transport and the mode button do not overlap.
 27. Load Defaults turns the mode off.
 
+Added by A8:
+
+28. The limb-darkened `light_left` is within 0.006 of a fine numerical integration of the 550 nm law (a thousand rings, in the test) at Moon to Sun ratios 0.92, 1 and 1.08 across the separations from the axis to the penumbra's edge; it is 1 outside the penumbra, 0 inside the umbra, falls monotonically toward the axis, and is below the uniform disk's light left wherever the area left is under 0.3 (the fine integration is at least 0.0028 below it up to 0.45, which the rings' error could cross).
+29. The mapping: `drawn` is the umbra brightness where nothing is left and 1 where the light left reaches `reach`, never decreases with the light left, and is continuous; with `moon_shadow` at 0 the shade is 1 whatever the three settings.
+30. The shared rule probe of test 9 covers the rings and the mapping, with the three settings away from their starting values.
+31. Inside the umbra, the cloud shell's opacity is the opacity of the same frame without the shadow, and its brightness is darker.
+32. The digest's mutation table covers the three settings, a config without them loads the starting values, and each round trips.
+33. Stepping with Next from the annular eclipse of 2024-10-02 to the partial eclipse of 2025-03-29 and back with Previous leaves the previous and next buttons at the same window position to the pixel, the panel at the same height and `compact` unchanged; both buttons are at least 28 px tall; and clicking Next twice at one pointer position steps twice.
+
 ## Out of Scope
 
 - The Moon in front of the Sun as the camera sees it: a corona, the glare's centroid, Baily's beads (research section 4).
-- Limb darkening and a color cast in the penumbra, which the look may ask for later (research section 3.2).
+- A color cast in the penumbra: the shadow stays neutral grey (research decision 12).
+- Randomness in the shadow's outline (research decision 14).
+- Light scattered into the umbra by the air as a model of its own; A8's umbra brightness stands in for it.
 - The night texture in the umbra (decision 2).
 - The shadow in the grid, Day and Night modes (decision 1).
 - Lunar eclipses.
@@ -320,7 +389,8 @@ Window, `tests/slint_ui.rs`, at pinned instants:
 - The shadow's branch costs more than a software adapter can afford during the hours it runs. Step 2 measures before the step is closed; the gate already keeps every other frame free, and a cheaper rule (a precomputed table of the lens area by separation) is the fallback.
 - A shader change outside the gate would move every golden reference. Test 11 compares frames bit for bit and the golden suite stays as it is.
 - An exit missed in D2 leaves a camera following the shadow after the user took it over. The table lists every writer of the camera's position in `ui_callbacks.rs` as of `ca634ac`, and tests 21 to 23 walk them; a new writer of the position later has to call `leave_eclipse`, which `docs/architecture.md` says next to `camera_at`.
-- The panel covers something in a small preview. D4's compact form and step 8's check at the narrowest bar.
+- The panel covers something in a small preview. D4's compact form and step 9's check at the narrowest bar.
+- Four rings cost WARP more than the budget during an eclipse. Step 8 measures them; three rings are the fallback.
 
 ## Departures
 
@@ -346,10 +416,11 @@ Window, `tests/slint_ui.rs`, at pinned instants:
 ## Open items
 
 - A key for the mode itself, if wanted: X is free and does not depend on the layout.
-- `EPS`, 0.2 proposed, confirmed in step 8.
+- `EPS`, 0.2 proposed, confirmed in step 9.
 - The cost budget of step 2: a tenth of a WARP frame proposed in departure 4, awaiting the user.
 - The golden case of test 13 and its references on `warp`, `lavapipe` and `metal` (departure 3).
 - The texts of the hints, the panel's lines and the Camera Position line.
+- The defaults of A8's three settings, set in step 9, and whether the three stay visible settings afterwards or become constants.
 
 ## Validation Record
 

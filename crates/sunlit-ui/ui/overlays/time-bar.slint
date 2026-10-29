@@ -832,7 +832,7 @@ export component TimeBar inherits Rectangle {
             changed hovered => { root.day-hovered = self.hovered; }
             changed held => { root.track-held = self.held || year-track.held; }
 
-            if !root.view.sun-fixed && !root.view.eclipse-follow : Image {
+            if !root.view.sun-fixed && !root.view.eclipse-follow : altitude-shading := Image {
                 width: parent.width;
                 height: parent.height;
                 source: root.shading;

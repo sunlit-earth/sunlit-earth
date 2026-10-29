@@ -340,29 +340,24 @@ impl Eclipse {
     }
 }
 
-/// How far apart two peaks have to be to be two eclipses: two searches can
-/// round one peak to whole seconds a second apart, and two eclipses are at
-/// least 29 days apart.
-const SAME_PEAK: Duration = Duration::HOUR;
-
-/// The first eclipse whose peak is more than an hour after `at`, within the
-/// years the scene accepts.
+/// The first eclipse whose peak is after `at`, within the years the scene
+/// accepts.
 #[must_use]
 pub fn next_after(at: OffsetDateTime) -> Option<Eclipse> {
     found_from(at - Duration::days(1))
-        .find(|found| found.instant() > at + SAME_PEAK)
+        .find(|found| found.instant() > at)
         .filter(Found::in_range)
         .map(Found::eclipse)
 }
 
-/// The last eclipse whose peak is more than an hour before `at`, within the
-/// years the scene accepts. The library searches forward only, so this starts far enough
+/// The last eclipse whose peak is before `at`, within the years the scene
+/// accepts. The library searches forward only, so this starts far enough
 /// back to hold at least one: the longest gap between two solar eclipses of
 /// 1900 to 2100 is 178.3 days.
 #[must_use]
 pub fn previous_before(at: OffsetDateTime) -> Option<Eclipse> {
     found_from(at - Duration::days(200))
-        .take_while(|found| found.instant() < at - SAME_PEAK)
+        .take_while(|found| found.instant() < at)
         .last()
         .filter(Found::in_range)
         .map(Found::eclipse)
@@ -421,10 +416,7 @@ struct Found {
 
 impl Found {
     /// The peak to the whole second, which is what the time setting and the
-    /// panel show. Two searches from different starts refine the same peak
-    /// to instants microseconds apart, which the rounding mostly makes one,
-    /// but not where they straddle half a second; `SAME_PEAK` is what keeps
-    /// `next_after` and `previous_before` from taking them for two.
+    /// panel show.
     fn instant(&self) -> OffsetDateTime {
         let exact = sky::instant_of_time(self.peak);
         let second = exact.replace_nanosecond(0).unwrap_or(exact);
@@ -486,12 +478,27 @@ fn found_from(start: OffsetDateTime) -> impl Iterator<Item = Found> {
     // takes a time value and returns a value type.
     #[allow(unsafe_code)]
     let first = unsafe { Astronomy_SearchGlobalSolarEclipse(time_of(start)) };
-    std::iter::successors(found(first), |previous| {
+    std::iter::successors(found(first).map(canonical), |previous| {
         // SAFETY: as above, from the previous eclipse's peak.
         #[allow(unsafe_code)]
         let next = unsafe { Astronomy_NextGlobalSolarEclipse(previous.peak) };
-        found(next)
+        found(next).map(canonical)
     })
+}
+
+/// The eclipse `found` is, as the search from two days before its peak's UTC
+/// date finds it. The library refines a peak to instants microseconds apart
+/// from different starts, so every search goes through this one start, which
+/// makes the same eclipse the same peak to the bit whichever search found it.
+fn canonical(found: Found) -> Found {
+    let peak = sky::instant_of_time(found.peak);
+    let start = peak.date().midnight().assume_utc() - Duration::days(2);
+    // SAFETY: as in `found_from`.
+    #[allow(unsafe_code)]
+    let again = unsafe { Astronomy_SearchGlobalSolarEclipse(time_of(start)) };
+    self::found(again)
+        .filter(|again| (again.peak.ut - found.peak.ut).abs() < 1.0)
+        .unwrap_or(found)
 }
 
 fn found(result: astronomy_engine_bindings::astro_global_solar_eclipse_t) -> Option<Found> {
@@ -906,6 +913,56 @@ mod tests {
                 Some(pair[0].peak)
             );
         }
+    }
+
+    #[test]
+    fn every_search_finds_an_eclipse_at_the_same_peak() {
+        let all: Vec<Found> = found_from(EARLIEST - Duration::days(2))
+            .take_while(|found| found.instant() < LATEST)
+            .collect();
+        assert!(all.len() > 400);
+        for found in &all {
+            let peak = found.instant();
+            for back in [200, 30, 7, 2, 1] {
+                let again = found_from(peak - Duration::days(back))
+                    .take_while(|other| other.instant() < peak + Duration::days(1))
+                    .find(|other| (other.instant() - peak).abs() < Duration::days(1))
+                    .unwrap_or_else(|| panic!("{peak} not found from {back} days back"));
+                assert_eq!(
+                    again.peak.ut.to_bits(),
+                    found.peak.ut.to_bits(),
+                    "{peak} from {back} days back"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn next_and_previous_take_an_eclipse_peaking_within_the_hour() {
+        let peak = eclipse_near(datetime!(2026-08-12 12:00 UTC)).peak;
+        assert_eq!(peak.date(), time::macros::date!(2026 - 08 - 12));
+        let before = datetime!(2026-08-12 17:00 UTC);
+        let after = datetime!(2026-08-12 18:30 UTC);
+        assert!(before < peak && peak < after);
+        assert_eq!(next_after(before).map(|e| e.peak), Some(peak));
+        assert_eq!(previous_before(after).map(|e| e.peak), Some(peak));
+        assert_eq!(
+            next_after(peak - Duration::SECOND).map(|e| e.peak),
+            Some(peak)
+        );
+        assert_eq!(
+            previous_before(peak + Duration::SECOND).map(|e| e.peak),
+            Some(peak)
+        );
+    }
+
+    #[test]
+    fn an_eclipse_whose_shadow_has_not_yet_reached_the_earth_is_next() {
+        let at = datetime!(2011-07-01 07:45 UTC);
+        assert_eq!(on_earth_at(at), None);
+        let next = next_after(at).expect("the eclipse of 2011-07-01");
+        assert_eq!(next.peak.date(), time::macros::date!(2011 - 07 - 01));
+        assert!(at < next.contacts.p1 && next.peak - at < Duration::HOUR);
     }
 
     #[test]

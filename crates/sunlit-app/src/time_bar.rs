@@ -1085,7 +1085,31 @@ fn now_text(eclipse: &Eclipse, shown: OffsetDateTime) -> String {
     }
 }
 
-fn panel_view(current: &Current, shown: OffsetDateTime, utc: bool) -> EclipsePanelView {
+/// `rows` in `held`, the model the panel shows, where it has as many rows,
+/// each written only where it changed: a new model would make the panel's
+/// repeater destroy every row on each frame of a run, and a press or a hover
+/// on one with it.
+fn phase_rows(
+    held: slint::ModelRc<EclipsePhase>,
+    rows: Vec<EclipsePhase>,
+) -> slint::ModelRc<EclipsePhase> {
+    if held.row_count() != rows.len() {
+        return slint::ModelRc::new(slint::VecModel::from(rows));
+    }
+    for (index, row) in rows.into_iter().enumerate() {
+        if held.row_data(index).as_ref() != Some(&row) {
+            held.set_row_data(index, row);
+        }
+    }
+    held
+}
+
+fn panel_view(
+    current: &Current,
+    shown: OffsetDateTime,
+    utc: bool,
+    held: slint::ModelRc<EclipsePhase>,
+) -> EclipsePanelView {
     let eclipse = &current.eclipse;
     let local = |at: OffsetDateTime| at.to_offset(display_offset(utc, at));
     let peak = local(eclipse.peak);
@@ -1107,7 +1131,8 @@ fn panel_view(current: &Current, shown: OffsetDateTime, utc: bool) -> EclipsePan
             datetime::zone_label(peak.offset())
         )
         .into(),
-        phases: slint::ModelRc::new(slint::VecModel::from(
+        phases: phase_rows(
+            held,
             phases
                 .iter()
                 .map(|(at, label, glyph)| EclipsePhase {
@@ -1115,8 +1140,8 @@ fn panel_view(current: &Current, shown: OffsetDateTime, utc: bool) -> EclipsePan
                     time: clock_text(local(*at)).into(),
                     glyph: *glyph,
                 })
-                .collect::<Vec<_>>(),
-        )),
+                .collect(),
+        ),
         current: row,
         fact: fact_text(eclipse).into(),
         now_text: now_text(eclipse, shown).into(),
@@ -1224,8 +1249,15 @@ fn refresh_eclipse(window: &MainWindow, view: &mut TimeBarView, follow: bool, no
     let (bands, peak) = eclipse_bands(&current.eclipse, local, utc);
     view.eclipse_kind = kind_index(current.eclipse.kind);
     view.eclipse_peak = peak;
-    window.set_time_eclipse_bands(slint::ModelRc::new(slint::VecModel::from(bands)));
-    window.set_time_eclipse_panel(panel_view(&current, shown, utc));
+    if !window
+        .get_time_eclipse_bands()
+        .iter()
+        .eq(bands.iter().cloned())
+    {
+        window.set_time_eclipse_bands(slint::ModelRc::new(slint::VecModel::from(bands)));
+    }
+    let held = window.get_time_eclipse_panel().phases;
+    window.set_time_eclipse_panel(panel_view(&current, shown, utc, held));
     let peak_local = current
         .eclipse
         .peak

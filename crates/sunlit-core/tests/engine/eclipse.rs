@@ -28,8 +28,9 @@ fn command(harness: &Harness, command: ExcursionCommand) {
 
 /// In eclipse mode a Clock run carries the camera along with the shadow: the
 /// motion observer reads the camera the frames resolve, as it reads a
-/// Sun-fixed camera's turn, and the tiles wanted where the run paused are
-/// those an Earth-fixed camera over the point the mode followed there wants.
+/// Sun-fixed camera's turn, at the rate the followed point moves, and where
+/// the run paused the tiles wanted and the frame are those of an Earth-fixed
+/// camera over the point the mode followed there.
 /// At the setting, two moves of the time 30 ms apart, which is what the day
 /// track does in the mode, are no drag: the held camera does not move.
 #[test]
@@ -75,8 +76,18 @@ fn an_eclipse_mode_run_follows_the_shadow_and_a_time_write_is_no_drag() {
         followed_at(begin + time::Duration::minutes(6)),
     );
     assert!(
-        drag.latitude_rate != 0.0 || drag.longitude_rate != 0.0,
-        "the camera the run resolves did not move: {drag:?}, from {from:?} to {to:?}"
+        (to.0 - from.0).abs() > 0.01 && (to.1 - from.1).abs() > 0.01,
+        "the premise: the shadow moves, {from:?} to {to:?}"
+    );
+    approx::assert_relative_eq!(
+        drag.latitude_rate,
+        (to.0 - from.0) / 0.05,
+        max_relative = 1e-3
+    );
+    approx::assert_relative_eq!(
+        drag.longitude_rate,
+        (to.1 - from.1) / 0.05,
+        max_relative = 1e-3
     );
 
     harness.advance(&clock, Duration::from_millis(900));
@@ -106,6 +117,7 @@ fn an_eclipse_mode_run_follows_the_shadow_and_a_time_write_is_no_drag() {
         over.wanted, paused.wanted,
         "the tiles wanted are not the ones beneath the camera the run followed"
     );
+    assert_the_frame_is_the_fixed_cameras(&harness, &following, &earth);
 
     command(&harness, ExcursionCommand::End);
     harness.settle_at(&following);
@@ -121,6 +133,38 @@ fn an_eclipse_mode_run_follows_the_shadow_and_a_time_write_is_no_drag() {
     assert!(
         tile_report(&harness).drag.is_none(),
         "two moves of the time in eclipse mode were taken for a drag"
+    );
+}
+
+/// The frame in eclipse mode is the frame of the Earth-fixed camera `earth`
+/// at the same instant, much nearer it than the frame of a camera 0.05
+/// degrees off.
+fn assert_the_frame_is_the_fixed_cameras(
+    harness: &Harness,
+    following: &SceneParams,
+    earth: &SceneParams,
+) {
+    let frame_of = |params: &SceneParams| {
+        harness.settle();
+        harness.frame_after_change(params).0
+    };
+    let mode = frame_of(following);
+    let fixed = frame_of(earth);
+    let off = frame_of(&SceneParams {
+        camera: CameraParams {
+            latitude: earth.camera.latitude + 0.05,
+            ..earth.camera
+        },
+        ..*earth
+    });
+    // The followed point moves up to 0.04 degrees a second of the eclipse, so
+    // a camera resolved at another second than the pause's comes near the
+    // frame 0.05 degrees off.
+    let (to_fixed, _) = crate::tiles::difference(&mode, &fixed, 24);
+    let (to_off, _) = crate::tiles::difference(&mode, &off, 24);
+    assert!(
+        to_off > 0.0 && to_fixed * 10.0 <= to_off,
+        "the paused frame is not the one over the followed point: {to_fixed}, {to_off} 0.05 degrees off"
     );
 }
 
@@ -226,13 +270,13 @@ fn measure_what_the_shadow_costs_a_preview_frame() {
         },
         ..SceneParams::default()
     };
-    let dir = std::env::temp_dir().join("sunlit-eclipse-cost");
+    let dir = ScratchDir::new("engine_eclipse_cost");
     test_support::write_earth_fixture(&dir.join("textures"));
     let moon = overlay("lroc_color_poles_1k.jxl", || {
-        support::write_moon_fixture(&dir)
+        support::write_moon_fixture(dir.path())
     });
     let panorama = overlay("milkyway_2020_4k.jxl", || {
-        support::write_panorama_bands_fixture(&dir)
+        support::write_panorama_bands_fixture(dir.path())
     });
     println!("| Preview | Adapter | Outside | Inside | Inside less outside |");
     for software in [true, false] {

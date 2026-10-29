@@ -6898,8 +6898,82 @@ fn test_the_panel_shows_the_phases_and_a_row_click_keeps_the_mode() {
     assert_eq!(the_time(&window), Some(contacts.p1));
     assert!(following(&window), "a phase row ended the mode");
 
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(900.0, 300.0),
+        });
+    let_pass(1000);
+    assert!(
+        the_element(&window, "MainWindow::time-bar").size().height < 40.0,
+        "the bar did not fold"
+    );
+    assert!(following(&window));
+    assert_eq!(panels(&window), 0, "the panel shows over the folded bar");
+
     let (window, _sent, _) = in_eclipse_mode(datetime!(2025-03-29 12:00 UTC));
     assert_eq!(window.get_time_eclipse_panel().phases.row_count(), 3);
+    assert_eq!(
+        window.get_time_eclipse_panel().current,
+        1,
+        "the peak's row is the current one"
+    );
+}
+
+/// The panel's rows outlive the frames of a run: every frame keeps the phase
+/// model the panel shows, so a press on a row held across frames still
+/// writes its instant, and a pointer that leaves a row across frames lets
+/// the bar fold.
+#[test]
+fn test_the_panels_rows_outlive_the_frames_of_a_run() {
+    use time::macros::datetime;
+
+    let frames = |window: &MainWindow, from: time::OffsetDateTime| {
+        for minute in 1..=5 {
+            sunlit_earth::time_bar::frame_shown(window, from + time::Duration::minutes(minute));
+        }
+    };
+    let (window, _sent, peak) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
+    let contacts = sunlit_core::scene::eclipse::nearest(peak)
+        .expect("the eclipse")
+        .contacts;
+    running_at(&window, 60);
+    let phases = window.get_time_eclipse_panel().phases;
+    let row = point_in(&the_labeled(&window, "Partial begins"), 0.5, 0.5);
+    hold_at(&window, row);
+    frames(
+        &window,
+        contacts.u4.expect("a total eclipse") - time::Duration::minutes(2),
+    );
+    assert!(
+        window.get_time_eclipse_panel().phases == phases,
+        "a frame replaced the panel's phase model"
+    );
+    assert_eq!(
+        window.get_time_eclipse_panel().current,
+        3,
+        "the frames moved the current row past the umbra's end"
+    );
+    release_at(&window, row);
+    assert_eq!(the_time(&window), Some(contacts.p1));
+    assert!(following(&window));
+
+    running_at(&window, 60);
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: row });
+    frames(&window, contacts.p1);
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(900.0, 300.0),
+        });
+    frames(&window, contacts.p1 + time::Duration::minutes(5));
+    let_pass(1000);
+    assert!(
+        the_element(&window, "MainWindow::time-bar").size().height < 40.0,
+        "a row's hover outlived the pointer and held the bar open"
+    );
 }
 
 /// In the mode the day track shows the eclipse's bands instead of the Sun's
@@ -6909,16 +6983,33 @@ fn test_the_day_track_shows_the_eclipse_in_the_mode() {
     use slint::Model as _;
     use time::macros::datetime;
 
+    let shadings = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "TimeBar::altitude-shading").count()
+    };
+    let (window, _sent) = wired_window();
+    open_the_bar(&window);
+    assert_eq!(
+        shadings(&window),
+        1,
+        "no altitude shading with the mode off"
+    );
+
     let (window, _sent, _) = in_eclipse_mode(datetime!(2024-04-08 12:00 UTC));
     let bands = window.get_time_eclipse_bands();
     assert_eq!(bands.row_count(), 2, "the penumbra's band and the umbra's");
     assert!(window.get_time_bar().eclipse_peak > 0.0);
+    assert_eq!(
+        shadings(&window),
+        0,
+        "the altitude shading shows in the mode"
+    );
     press_the_labeled(&window, "Eclipse mode");
     assert_eq!(window.get_time_eclipse_bands().row_count(), 0);
     assert!(
         !window.get_time_shading_key().is_empty(),
         "the altitude shading was not drawn again"
     );
+    assert_eq!(shadings(&window), 1);
 }
 
 /// Load Defaults turns the mode off.

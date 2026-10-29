@@ -156,14 +156,14 @@ Two physical effects soften the edge and were left out of the first build: limb 
 
 **Limb darkening in the shader.** Section 3.2 offered a table by the uncovered area. Measured over Moon to Sun ratios of 0.92 to 1.08 against a fine integration of the 550 nm law, the light left is not quite a function of the area alone: the best cubic in the area is off by up to 0.019, and by up to 44% of the light where little is left, which is the region near the umbra that the look turns on. Splitting the disk into rings of uniform brightness does better, each ring's covered share from the circle overlap at its two radii and its weight the integral of the law over it. Rings of equal area are poor at the limb; rings of equal width in `mu` with exact weights give:
 
-| Rings | Largest error | Largest relative error where more than 0.3% is left |
+| Rings | Largest error | Largest relative error where more than 0.3% is left, sampled at ratios 0.92, 1 and 1.08 |
 |---|---|---|
 | 3 | 0.0073 | 14% |
 | 4 | 0.0053 | 6% |
 | 6 | 0.0023 | 5% |
 | 8 | 0.0011 | 1.5% |
 
-Four rings, at `mu` 1, 0.75, 0.5, 0.25 and 0, are radii 0, 0.6614, 0.8660, 0.9682 and 1 of the Sun's, with weights 0.5107, 0.3088, 0.1458 and 0.0348 of the disk's light (the law's integral `0.3 mu^2 + 0.62 mu^3 - 0.115 mu^4` between the ring's edges, over its value 0.805 at `mu` 1). That is four circle overlaps where the uniform disk takes one.
+Four rings, at `mu` 1, 0.75, 0.5, 0.25 and 0, are radii 0, 0.6614, 0.8660, 0.9682 and 1 of the Sun's, with weights 0.5107, 0.3088, 0.1458 and 0.0348 of the disk's light (the law's integral `0.3 mu^2 + 0.62 mu^3 - 0.115 mu^4` between the ring's edges, over its value 0.805 at `mu` 1). That is four circle overlaps where the uniform disk takes one. The relative column holds only at the three sampled ratios: validation round 4 swept the ratios in steps of 0.01 and found four rings up to 19% off where 0.3% to 2% of the light is left (0.0038 against 0.0032 at a ratio of 1), and about 7% above 2%, while the largest error stays 0.0053. That far into the shadow the difference is under 0.01 of the drawn shade.
 
 ## 4. The Moon in front of the Sun, seen from the camera
 

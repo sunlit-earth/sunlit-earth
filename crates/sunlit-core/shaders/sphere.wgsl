@@ -678,10 +678,10 @@ fn shells_follow_the_sun() -> bool {
 // The Moon's shadow
 //
 // Mirrored by `surface_point`, `light_left` and `ShadowLook::shade` in
-// `scene::eclipse`, which the CPU tests and gates the frame with. Everything is measured in the frame of
-// the shadow's axis, from differences of numbers the size of the Moon's
-// distance, which is what holds in f32 where the angle between the two
-// directions would not.
+// `scene::eclipse`, which the CPU tests and gates the frame with.
+// Everything is measured in the frame of the shadow's axis, from
+// differences of numbers the size of the Moon's distance, which is what
+// holds in f32 where the angle between the two directions would not.
 // ---------------------------------------------------------------------------
 
 /// Bit 5 of `uniforms.flags`: the Moon's penumbra reaches the shells this

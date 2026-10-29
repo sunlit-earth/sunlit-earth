@@ -967,7 +967,6 @@ fn fs_rayleigh(in: VertexOutput) -> @location(0) vec4<f32> {
     let sunlit = smoothstep(-0.2, 0.0, n_dot_l) * f32(shells_follow_the_sun());
     let sunrise = limb_hue_km(ray_height) * lobe * sunlit * uniforms.atmo_sunrise_glow * sunlight;
 
-
     // In-scattering: blue light scattered toward the viewer.
     // Extinction: original light blocked by the atmosphere (controlled by haze).
     // Both share the same spatial profile (rim) since they're the same interaction.

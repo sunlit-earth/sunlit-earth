@@ -7034,3 +7034,74 @@ fn test_load_defaults_leaves_eclipse_mode() {
     assert!(!following(&window));
     assert!(!last_pushed(&sent).eclipse_follow);
 }
+
+/// Where the panel's previous and next buttons are and how large, the
+/// panel's height, and whether it shows its phase rows.
+fn the_panels_layout(window: &MainWindow) -> (Vec<(f32, f32, f32, f32)>, f32, bool) {
+    let buttons = ["Previous solar eclipse", "Next solar eclipse"]
+        .iter()
+        .map(|label| {
+            let button = the_labeled(window, label);
+            let (at, size) = (button.absolute_position(), button.size());
+            (at.x, at.y, size.width, size.height)
+        })
+        .collect();
+    let height = the_element(window, "MainWindow::eclipse-panel")
+        .size()
+        .height;
+    let rows = ElementHandle::find_by_accessible_label(window, "Partial begins").count() > 0;
+    (buttons, height, rows)
+}
+
+/// Stepping from an annular eclipse to a partial one and back moves neither
+/// button nor the panel's height nor its compact form, in a preview with
+/// room for the phases and in one without; the buttons are as tall as the
+/// mode button and share the row equally; and two clicks on Next at one
+/// pointer position step twice.
+#[test]
+fn test_the_panels_buttons_stay_put_between_kinds_of_eclipse() {
+    use time::macros::datetime;
+
+    let annular = peak_near(datetime!(2024-10-02 12:00 UTC));
+    let partial = peak_near(datetime!(2025-03-29 12:00 UTC));
+    let after = peak_near(datetime!(2025-09-21 12:00 UTC));
+    let mut forms = Vec::new();
+    for height in [5000.0, PANEL_COMPACT_WINDOW.1] {
+        let (window, _sent, peak) = in_eclipse_mode(datetime!(2024-10-02 12:00 UTC));
+        assert_eq!(peak, annular);
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(PANEL_COMPACT_WINDOW.0, height));
+        open_the_bar(&window);
+        let before = the_panels_layout(&window);
+        for (_, _, _, button_height) in &before.0 {
+            assert!(*button_height >= 28.0, "a button {button_height} px tall");
+        }
+        approx::assert_relative_eq!(before.0[0].2, before.0[1].2);
+        let next = point_in(&the_labeled(&window, "Next solar eclipse"), 0.5, 0.5);
+        press_at(&window, next);
+        assert_eq!(the_time(&window), Some(partial));
+        assert_eq!(
+            the_panels_layout(&window),
+            before,
+            "the partial eclipse moved the panel in a {height} px window"
+        );
+        press_the_labeled(&window, "Previous solar eclipse");
+        assert_eq!(the_time(&window), Some(annular));
+        assert_eq!(the_panels_layout(&window), before);
+        press_at(&window, next);
+        press_at(&window, next);
+        assert_eq!(the_time(&window), Some(after), "two clicks on Next");
+        assert!(following(&window));
+        forms.push(before.2);
+    }
+    assert_eq!(
+        forms,
+        [true, false],
+        "the tall window shows the phases and the short one is compact"
+    );
+}
+
+/// A window whose preview is too short for both the camera panel and the
+/// eclipse panel with its phases.
+const PANEL_COMPACT_WINDOW: (f32, f32) = (1200.0, 640.0);

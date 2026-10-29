@@ -144,6 +144,12 @@ pub struct SceneParams {
     pub moon_earthshine: f32,
     /// How dark the Moon's shadow is drawn on the Earth, 0 to 1.
     pub moon_shadow: f32,
+    /// The brightness drawn where the Sun is covered.
+    pub moon_shadow_umbra: f32,
+    /// The light left at which the shadow has faded out.
+    pub moon_shadow_reach: f32,
+    /// The exponent on the shadow's eased light left.
+    pub moon_shadow_falloff: f32,
 
     // The Milky Way
     pub milky_way_intensity: f32,
@@ -240,6 +246,9 @@ impl SceneParams {
             moon_size: config.moon_size,
             moon_earthshine: config.moon_earthshine,
             moon_shadow: config.moon_shadow,
+            moon_shadow_umbra: config.moon_shadow_umbra,
+            moon_shadow_reach: config.moon_shadow_reach,
+            moon_shadow_falloff: config.moon_shadow_falloff,
             milky_way_intensity: config.milky_way_intensity,
             day_ocean_color: config.day_ocean_color,
             night_ocean_color: config.night_ocean_color,
@@ -318,6 +327,9 @@ impl SceneParams {
         config.moon_size = self.moon_size;
         config.moon_earthshine = self.moon_earthshine;
         config.moon_shadow = self.moon_shadow;
+        config.moon_shadow_umbra = self.moon_shadow_umbra;
+        config.moon_shadow_reach = self.moon_shadow_reach;
+        config.moon_shadow_falloff = self.moon_shadow_falloff;
         config.milky_way_intensity = self.milky_way_intensity;
         config.day_ocean_color = self.day_ocean_color;
         config.night_ocean_color = self.night_ocean_color;
@@ -647,6 +659,9 @@ scene_digest! {
         moon_size,
         moon_earthshine,
         moon_shadow,
+        moon_shadow_umbra,
+        moon_shadow_reach,
+        moon_shadow_falloff,
         milky_way_intensity,
         day_gamma,
         day_saturation,
@@ -1174,6 +1189,38 @@ mod tests {
                 .any(|(name, _)| *name == "eclipse_follow"),
             "the digest's mutation table has no row for the mode"
         );
+    }
+
+    /// The three settings of the shadow's look travel through a config and
+    /// back, a config written before they existed loads them where tuning
+    /// starts, and the digest watches each.
+    #[test]
+    fn the_shadows_look_round_trips_and_an_older_config_starts_it_at_the_defaults() {
+        let mut config = AppConfig::default();
+        let original = SceneParams {
+            moon_shadow_umbra: 0.2,
+            moon_shadow_reach: 0.4,
+            moon_shadow_falloff: 2.0,
+            ..params()
+        };
+        original.write_to_config(&mut config);
+        assert_eq!(SceneParams::from_config(&config), original);
+        let older: AppConfig = toml::from_str("moon_shadow = 0.5").unwrap();
+        let defaults = AppConfig::default();
+        assert_relative_eq!(older.moon_shadow_umbra, defaults.moon_shadow_umbra);
+        assert_relative_eq!(older.moon_shadow_reach, defaults.moon_shadow_reach);
+        assert_relative_eq!(older.moon_shadow_falloff, defaults.moon_shadow_falloff);
+        let mutations = digest_mutations(params());
+        for setting in [
+            "moon_shadow_umbra",
+            "moon_shadow_reach",
+            "moon_shadow_falloff",
+        ] {
+            assert!(
+                mutations.iter().any(|(name, _)| *name == setting),
+                "the digest's mutation table has no row for {setting}"
+            );
+        }
     }
 
     // --- gamma slider mapping ---

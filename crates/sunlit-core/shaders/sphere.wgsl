@@ -88,6 +88,12 @@ struct Uniforms {
     eclipse_sun_radius: f32,          // 4 bytes, offset 644
     eclipse_earth_radius: f32,        // 4 bytes, offset 648
     eclipse_earth_e2: f32,            // 4 bytes, offset 652
+    eclipse_umbra: f32,               // 4 bytes, offset 656
+    eclipse_reach: f32,               // 4 bytes, offset 660
+    eclipse_falloff: f32,             // 4 bytes, offset 664
+    _pad14: f32,                      // 4 bytes, offset 668
+    eclipse_ring_radii: vec4<f32>,    // 16 bytes, offset 672
+    eclipse_ring_weights: vec4<f32>,  // 16 bytes, offset 688
 };
 
 @group(0) @binding(0)
@@ -671,8 +677,8 @@ fn shells_follow_the_sun() -> bool {
 // ---------------------------------------------------------------------------
 // The Moon's shadow
 //
-// Mirrored by `surface_point` and `light_left` in `scene::eclipse`, which the
-// CPU tests and gates the frame with. Everything is measured in the frame of
+// Mirrored by `surface_point`, `light_left` and `ShadowLook::shade` in
+// `scene::eclipse`, which the CPU tests and gates the frame with. Everything is measured in the frame of
 // the shadow's axis, from differences of numbers the size of the Moon's
 // distance, which is what holds in f32 where the angle between the two
 // directions would not.
@@ -707,7 +713,8 @@ fn disk_overlap(r0: f32, r1: f32, d: f32) -> f32 {
 }
 
 /// The share of sunlight that reaches the place drawn at `n`, `height` above
-/// the ground: the share of the Sun's disk the Moon's leaves uncovered.
+/// the ground: the share of the Sun's light the Moon's disk leaves uncovered,
+/// the Sun taken as the block's rings of uniform brightness.
 fn eclipse_light(n: vec3<f32>, height: f32) -> f32 {
     let axis = uniforms.eclipse_axis;
     let q = eclipse_surface_point(n, height) - uniforms.eclipse_moon;
@@ -719,18 +726,39 @@ fn eclipse_light(n: vec3<f32>, height: f32) -> f32 {
     let separation = atan(r / z) - atan(r / (z + uniforms.eclipse_moon_to_sun));
     let moon_radius = asin(uniforms.eclipse_moon_radius / length(q));
     let sun_radius = asin(uniforms.eclipse_sun_radius / length(q + uniforms.eclipse_moon_to_sun * axis));
-    let covered = disk_overlap(1.0, moon_radius / sun_radius, separation / sun_radius) / PI;
+    let moon = moon_radius / sun_radius;
+    let d = separation / sun_radius;
+    if d >= 1.0 + moon {
+        return 1.0;
+    }
+    var inner_radius = 0.0;
+    var inner_overlap = 0.0;
+    var covered = 0.0;
+    for (var i = 0; i < 4; i = i + 1) {
+        let radius = uniforms.eclipse_ring_radii[i];
+        let overlap = disk_overlap(radius, moon, d);
+        covered += uniforms.eclipse_ring_weights[i] * (overlap - inner_overlap)
+            / (PI * (radius * radius - inner_radius * inner_radius));
+        inner_radius = radius;
+        inner_overlap = overlap;
+    }
     return clamp(1.0 - covered, 0.0, 1.0);
 }
 
 /// What the eclipse leaves of every term that is sunlight at `n`, `height`
-/// above the ground: the light left re-encoded as the stored values are,
+/// above the ground: the umbra's brightness where nothing is left, rising on
+/// an eased curve to full light where the light left reaches the reach,
 /// scaled by the strength setting. Exactly one outside the gate.
 fn eclipse_shade(n: vec3<f32>, height: f32) -> f32 {
     if (uniforms.flags & FLAG_ECLIPSE) == 0u {
         return 1.0;
     }
-    return mix(1.0, pow(eclipse_light(n, height), 1.0 / 2.2), uniforms.eclipse_strength);
+    let x = clamp(eclipse_light(n, height) / uniforms.eclipse_reach, 0.0, 1.0);
+    let eased = smoothstep(0.0, 1.0, x);
+    // pow(0, y) is exp2(y * log2(0)), a NaN at a falloff of zero.
+    let curve = select(0.0, pow(eased, uniforms.eclipse_falloff), eased > 0.0);
+    let drawn = uniforms.eclipse_umbra + (1.0 - uniforms.eclipse_umbra) * curve;
+    return mix(1.0, drawn, uniforms.eclipse_strength);
 }
 
 /// The cosine of the Sun's angle from the zenith that the shells light the
@@ -838,7 +866,7 @@ fn fs_cloud(in: VertexOutput) -> @location(0) vec4<f32> {
     // exactly that call.
     let night_alpha = saturate(1.0 - pow(max(1.0 - cloud_density, 1e-6), depth));
     let day_alpha = cloud_density * uniforms.cloud_opacity;
-    return vec4<f32>(brightness, mix(night_alpha, day_alpha, sunlit * sunlight));
+    return vec4<f32>(brightness, mix(night_alpha, day_alpha, sunlit));
 }
 
 // ---------------------------------------------------------------------------

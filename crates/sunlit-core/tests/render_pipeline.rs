@@ -697,6 +697,7 @@ fn avg_luminance_region(pixels: &[u8], width: u32, x0: u32, y0: u32, x1: u32, y1
     clippy::cast_precision_loss,
     reason = "test viewport dimensions are small integers"
 )]
+#[expect(clippy::too_many_lines, reason = "one line per field of the block")]
 fn default_test_uniforms(size: u32) -> Uniforms {
     Uniforms {
         mvp: test_mvp(size, size),
@@ -800,6 +801,12 @@ fn default_test_uniforms(size: u32) -> Uniforms {
         eclipse_sun_radius: sunlit_core::scene::eclipse::SUN_RADIUS,
         eclipse_earth_radius: sunlit_core::scene::eclipse::EQUATORIAL_RADIUS,
         eclipse_earth_e2: sunlit_core::scene::eclipse::ECCENTRICITY_SQUARED,
+        eclipse_umbra: 0.0,
+        eclipse_reach: 1.0,
+        eclipse_falloff: 0.5,
+        _pad14: 0.0,
+        eclipse_ring_radii: sunlit_core::scene::eclipse::limb_rings().radii,
+        eclipse_ring_weights: sunlit_core::scene::eclipse::limb_rings().weights,
     }
 }
 
@@ -1029,6 +1036,13 @@ fn uniform_readback() {
     output[100] = uniforms.eclipse_sun_radius;
     output[101] = uniforms.eclipse_earth_radius;
     output[102] = uniforms.eclipse_earth_e2;
+    output[103] = uniforms.eclipse_umbra;
+    output[104] = uniforms.eclipse_reach;
+    output[105] = uniforms.eclipse_falloff;
+    for (var i = 0; i < 4; i = i + 1) {
+        output[106 + i] = uniforms.eclipse_ring_radii[i];
+        output[110 + i] = uniforms.eclipse_ring_weights[i];
+    }
 }
 ";
 
@@ -1037,7 +1051,7 @@ fn uniform_readback() {
 ///
 /// One row per value rather than one per field, so a field that moves is named
 /// by the row that fails instead of hiding inside a wider assertion.
-const PROBED_FIELDS: [(f32, &str); 103] = [
+const PROBED_FIELDS: [(f32, &str); 114] = [
     (1.0, "mvp[0][0]"),
     (2.0, "mvp[1][1]"),
     (3.0, "mvp[2][2]"),
@@ -1141,6 +1155,17 @@ const PROBED_FIELDS: [(f32, &str); 103] = [
     (109.1, "eclipse_sun_radius"),
     (0.95, "eclipse_earth_radius"),
     (0.0067, "eclipse_earth_e2"),
+    (0.21, "eclipse_umbra"),
+    (0.37, "eclipse_reach"),
+    (1.9, "eclipse_falloff"),
+    (0.11, "eclipse_ring_radii.x"),
+    (0.22, "eclipse_ring_radii.y"),
+    (0.33, "eclipse_ring_radii.z"),
+    (0.44, "eclipse_ring_radii.w"),
+    (0.55, "eclipse_ring_weights.x"),
+    (0.66, "eclipse_ring_weights.y"),
+    (0.77, "eclipse_ring_weights.z"),
+    (0.88, "eclipse_ring_weights.w"),
 ];
 
 #[allow(clippy::too_many_lines)]
@@ -1270,6 +1295,12 @@ fn uniform_buffer_field_offsets_match_wgsl() {
         eclipse_sun_radius: 109.1,
         eclipse_earth_radius: 0.95,
         eclipse_earth_e2: 0.0067,
+        eclipse_umbra: 0.21,
+        eclipse_reach: 0.37,
+        eclipse_falloff: 1.9,
+        _pad14: 0.0,
+        eclipse_ring_radii: [0.11, 0.22, 0.33, 0.44],
+        eclipse_ring_weights: [0.55, 0.66, 0.77, 0.88],
     };
 
     let uniform_buf = ctx
@@ -1357,7 +1388,8 @@ fn shared_rule_probe() {
 ";
 
 /// A second entry point beside it for the fourth rule, the light the Moon's
-/// shadow leaves, which takes points rather than one value per uniform.
+/// shadow leaves and the shade it is drawn with, which takes points rather
+/// than one value per uniform.
 const ECLIPSE_RULE_PROBE: &str = "
 @group(1) @binding(2) var<storage, read> eclipse_points: array<vec4<f32>>;
 @group(1) @binding(3) var<storage, read_write> eclipse_out: array<f32>;
@@ -1366,7 +1398,8 @@ const ECLIPSE_RULE_PROBE: &str = "
 fn eclipse_rule_probe() {
     for (var i = 0u; i < arrayLength(&eclipse_points); i = i + 1u) {
         let point = eclipse_points[i];
-        eclipse_out[i] = eclipse_light(point.xyz, point.w);
+        eclipse_out[2u * i] = eclipse_light(point.xyz, point.w);
+        eclipse_out[2u * i + 1u] = eclipse_shade(point.xyz, point.w);
     }
 }
 ";
@@ -1573,11 +1606,19 @@ fn the_shader_and_the_cpu_agree_on_the_four_shared_rules() {
 
 /// The fourth rule: `eclipse_light` against `scene::eclipse::light_left` at
 /// the points `surface_point` puts the same directions at, on the globe and at
-/// both shells' heights, at the peaks of a total and an annular eclipse.
+/// both shells' heights, at the peaks of a total and an annular eclipse, and
+/// `eclipse_shade` against `ShadowLook::shade` of the light the shader found,
+/// with every setting of the look away from where tuning starts.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 fn check_the_eclipse_rule(ctx: &RenderContext, shader: &wgpu::ShaderModule) {
     use sunlit_core::scene::eclipse;
 
+    let look = eclipse::ShadowLook {
+        strength: 0.8,
+        umbra: 0.15,
+        reach: 0.6,
+        falloff: 1.7,
+    };
     let pipeline = ctx
         .device
         .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1614,7 +1655,10 @@ fn check_the_eclipse_rule(ctx: &RenderContext, shader: &wgpu::ShaderModule) {
             eclipse_moon: shadow.moon.into(),
             eclipse_moon_to_sun: shadow.moon_to_sun,
             eclipse_axis: shadow.axis.into(),
-            eclipse_strength: 1.0,
+            eclipse_strength: look.strength,
+            eclipse_umbra: look.umbra,
+            eclipse_reach: look.reach,
+            eclipse_falloff: look.falloff,
             ..default_test_uniforms(64)
         };
         let uniform_buf = ctx
@@ -1631,7 +1675,7 @@ fn check_the_eclipse_rule(ctx: &RenderContext, shader: &wgpu::ShaderModule) {
                 contents: bytemuck::cast_slice(&points),
                 usage: wgpu::BufferUsages::STORAGE,
             });
-        let output_size = (points.len() * std::mem::size_of::<f32>()) as u64;
+        let output_size = (2 * points.len() * std::mem::size_of::<f32>()) as u64;
         let output_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("eclipse_rule_output"),
             size: output_size,
@@ -1675,18 +1719,27 @@ fn check_the_eclipse_rule(ctx: &RenderContext, shader: &wgpu::ShaderModule) {
         }
         ctx.queue.submit(std::iter::once(encoder.finish()));
         let data = common::read_buffer(&ctx.device, &ctx.queue, &output_buf, output_size);
-        let shader_light: &[f32] = bytemuck::cast_slice(&data);
+        let shader_out: &[f32] = bytemuck::cast_slice(&data);
 
         let mut darkest = 1.0_f32;
         let mut brightest = 0.0_f32;
-        for (point, shader) in points.iter().zip(shader_light) {
+        for (point, shader) in points.iter().zip(shader_out.chunks(2)) {
             let n = glam::Vec3::new(point[0], point[1], point[2]);
             let cpu = eclipse::light_left(&shadow, eclipse::surface_point(n, point[3]));
             assert!(
-                (shader - cpu).abs() < 2e-3,
+                (shader[0] - cpu).abs() < 2e-3,
                 "the light the shadow leaves at {n} and height {}, {kind:?}: the shader \
-                 says {shader}, scene::eclipse::light_left says {cpu}",
-                point[3]
+                 says {}, scene::eclipse::light_left says {cpu}",
+                point[3],
+                shader[0]
+            );
+            let shade = look.shade(shader[0]);
+            assert!(
+                (shader[1] - shade).abs() < 1e-4,
+                "the shade of a light left of {} at {n}, {kind:?}: the shader says {}, \
+                 ShadowLook::shade says {shade}",
+                shader[0],
+                shader[1]
             );
             darkest = darkest.min(cpu);
             brightest = brightest.max(cpu);
@@ -2964,6 +3017,16 @@ impl Shell {
 }
 
 fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
+    shell_pipeline_blending(ctx, shell, Some(shell.blend()))
+}
+
+/// The pipeline of `shell` writing through `blend`, or with `None` writing
+/// what its fragment shader returns.
+fn shell_pipeline_blending(
+    ctx: &RenderContext,
+    shell: Shell,
+    blend: Option<wgpu::BlendState>,
+) -> wgpu::RenderPipeline {
     let (vs_entry, fs_entry) = shell.entry_points();
     let layout = ctx
         .device
@@ -2987,7 +3050,7 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
                 entry_point: Some(fs_entry),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(shell.blend()),
+                    blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -3038,7 +3101,18 @@ fn render_shell_with(
     size: u32,
     bind_group: &wgpu::BindGroup,
 ) -> Vec<u8> {
-    let pipeline = shell_pipeline(ctx, shell);
+    render_shell_through(ctx, &shell_pipeline(ctx, shell), uniforms, size, bind_group)
+}
+
+/// Draw one shell through `pipeline` over the clear color from `bind_group`,
+/// and return the RGBA8 pixel data.
+fn render_shell_through(
+    ctx: &RenderContext,
+    pipeline: &wgpu::RenderPipeline,
+    uniforms: &Uniforms,
+    size: u32,
+    bind_group: &wgpu::BindGroup,
+) -> Vec<u8> {
     ctx.queue
         .write_buffer(&ctx.uniform_buffer, 0, bytemuck::cast_slice(&[*uniforms]));
 
@@ -3095,7 +3169,7 @@ fn render_shell_with(
             }),
             ..Default::default()
         });
-        pass.set_pipeline(&pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
         pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
         pass.set_index_buffer(ctx.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -3124,6 +3198,61 @@ fn cloud_pipeline_renders_with_alpha() {
         visible > 50,
         "Cloud pipeline should render visible pixels, got {visible}"
     );
+}
+
+/// Under the umbra the cloud deck keeps the opacity it has without the
+/// shadow, and only its brightness is darkened, as the ground under it is.
+#[test]
+fn under_the_umbra_the_clouds_keep_their_opacity_and_darken() {
+    use sunlit_core::scene::{eclipse, sky};
+
+    let ctx = render_ctx();
+    let found =
+        eclipse::nearest(time::macros::datetime!(2024-04-08 12:00 UTC)).expect("an eclipse");
+    let shadow = sky::shadow_at(found.peak);
+    let (latitude, longitude) = eclipse::shadow_center(&shadow);
+    let (lat, lon) = (latitude.to_radians(), longitude.to_radians());
+    let center = glam::Vec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos());
+    let eye = 1.5 * center;
+    let plain = Uniforms {
+        mvp: test_mvp_with_eye(CLOUD_CASE_SIZE, CLOUD_CASE_SIZE, eye),
+        eye_pos: eye.into(),
+        cloud_opacity: 0.6,
+        eclipse_moon: shadow.moon.into(),
+        eclipse_moon_to_sun: shadow.moon_to_sun,
+        eclipse_axis: shadow.axis.into(),
+        eclipse_strength: 1.0,
+        ..cloud_surface_uniforms((0.0, 1.0), (0.0, 1.0))
+    };
+    let shadowed = Uniforms {
+        flags: plain.flags | 32,
+        ..plain
+    };
+    let solid = |value| create_solid_texture(&ctx.device, &ctx.queue, [value, value, value, 255]);
+    let mask = create_solid_cube(&ctx.device, &ctx.queue, [[255, 255, 255, 255]; 6]);
+    let group = cloud_bind_group(&ctx, &solid(200), &solid(0), &mask);
+    let pipeline = shell_pipeline_blending(&ctx, Shell::Cloud, None);
+    let frame = |uniforms| render_shell_through(&ctx, &pipeline, uniforms, CLOUD_CASE_SIZE, &group);
+    let (lit, dark) = (frame(&plain), frame(&shadowed));
+
+    let middle = ((CLOUD_CASE_SIZE / 2 * CLOUD_CASE_SIZE + CLOUD_CASE_SIZE / 2) * 4) as usize;
+    assert!(
+        lit[middle + 3] > 0 && lit[middle] > 200,
+        "no lit cloud under the camera: {:?}",
+        &lit[middle..middle + 4]
+    );
+    assert!(
+        dark[middle] < lit[middle] / 4,
+        "the cloud under the umbra is drawn at {} against {} in the light",
+        dark[middle],
+        lit[middle]
+    );
+    for (index, (lit, dark)) in lit.chunks(4).zip(dark.chunks(4)).enumerate() {
+        assert_eq!(
+            lit[3], dark[3],
+            "the shadow moves the opacity of pixel {index}"
+        );
+    }
 }
 
 /// The two masks the land and ocean cloud cases draw over: every texel open

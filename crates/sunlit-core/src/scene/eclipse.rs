@@ -88,26 +88,129 @@ pub fn surface_point(n: Vec3, height: f32) -> Vec3 {
     normal_radius * Vec3::new(n.x, (1.0 - ECCENTRICITY_SQUARED) * n.y, n.z) + height * n
 }
 
-/// The share of sunlight that reaches `point`: the share of the Sun's disk
-/// the Moon's leaves uncovered, seen from there, taken as a uniform disk.
+/// The share of sunlight that reaches `point`: the share of the Sun's light
+/// the Moon's disk leaves uncovered, seen from there, with the Sun's limb
+/// darkened as [`limb_rings`] puts it.
 ///
 /// Measured in the frame of the axis, from differences of numbers the size
 /// of the Moon's distance, so it holds in f32 where the angle between the two
 /// directions would not. `sphere.wgsl`'s `eclipse_light` is its twin.
 #[must_use]
 pub fn light_left(shadow: &ShadowAxis, point: Vec3) -> f32 {
+    disks_seen_from(shadow, point).map_or(1.0, |(moon, separation)| {
+        rings_left(&limb_rings(), moon, separation)
+    })
+}
+
+/// The share of the Sun's disk the Moon's leaves uncovered at `point`, by
+/// area: the obscuration, which is what "covered" means in the panel.
+#[must_use]
+pub fn area_left(shadow: &ShadowAxis, point: Vec3) -> f32 {
+    disks_seen_from(shadow, point).map_or(1.0, |(moon, separation)| {
+        (1.0 - overlap_area(1.0, moon, separation) / PI).clamp(0.0, 1.0)
+    })
+}
+
+/// The Moon's angular radius and its center's angle from the Sun's, both in
+/// the Sun's angular radii, seen from `point`; `None` behind the Moon.
+fn disks_seen_from(shadow: &ShadowAxis, point: Vec3) -> Option<(f32, f32)> {
     let q = point - shadow.moon;
     let z = q.dot(shadow.axis);
     if z <= 0.0 {
-        return 1.0;
+        return None;
     }
     let r = (q - z * shadow.axis).length();
     let separation = (r / z).atan() - (r / (z + shadow.moon_to_sun)).atan();
     let moon_radius = (MOON_RADIUS / q.length()).asin();
     let sun_radius = (SUN_RADIUS / (q + shadow.moon_to_sun * shadow.axis).length()).asin();
-    let covered = overlap_area(1.0, moon_radius / sun_radius, separation / sun_radius) / PI;
+    Some((moon_radius / sun_radius, separation / sun_radius))
+}
+
+/// The light a Moon of radius `moon` leaves of a Sun of radius 1 made of
+/// `rings`, its center `separation` from the Sun's.
+fn rings_left(rings: &LimbRings, moon: f32, separation: f32) -> f32 {
+    if separation >= 1.0 + moon {
+        return 1.0;
+    }
+    let mut inner = (0.0, 0.0);
+    let mut covered = 0.0;
+    for (radius, weight) in rings.radii.into_iter().zip(rings.weights) {
+        let overlap = overlap_area(radius, moon, separation);
+        covered += weight * (overlap - inner.1) / (PI * (radius * radius - inner.0 * inner.0));
+        inner = (radius, overlap);
+    }
     (1.0 - covered).clamp(0.0, 1.0)
 }
+
+/// The Sun's disk as rings of uniform brightness: ring `i` reaches from the
+/// ring before it, or the center, out to `radii[i]` of the Sun's radius, and
+/// carries the share `weights[i]` of the disk's light.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LimbRings {
+    pub radii: [f32; 4],
+    pub weights: [f32; 4],
+}
+
+/// Rings of equal width in `mu`, the cosine of the angle between the line of
+/// sight and the Sun's surface normal, each weighted by the integral over it
+/// of the limb darkening at 550 nm, `0.3 + 0.93 mu - 0.23 mu^2` (Allen's
+/// Astrophysical Quantities). Four rings leave the light within 0.0053 of the
+/// law's over the sizes the Moon takes against the Sun.
+#[must_use]
+pub fn limb_rings() -> LimbRings {
+    // The law times mu, integrated from zero, as twice its value.
+    let integral = |mu: f64| mu * mu * (0.3 + mu * (0.62 - 0.115 * mu));
+    let edge = |ring: u8| 1.0 - f64::from(ring) / 4.0;
+    let mut rings = LimbRings {
+        radii: [0.0; 4],
+        weights: [0.0; 4],
+    };
+    for ring in 0..4 {
+        let (inner_mu, outer_mu) = (edge(ring), edge(ring + 1));
+        rings.radii[usize::from(ring)] = narrow((1.0 - outer_mu * outer_mu).sqrt());
+        rings.weights[usize::from(ring)] =
+            narrow((integral(inner_mu) - integral(outer_mu)) / integral(1.0));
+    }
+    rings
+}
+
+/// How the light left is drawn: the four settings of the Moon's shadow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShadowLook {
+    /// How much of the mapping is applied, 0 to 1.
+    pub strength: f32,
+    /// The brightness drawn where the Sun is covered.
+    pub umbra: f32,
+    /// The light left at which the shadow has faded out.
+    pub reach: f32,
+    /// The exponent on the eased light left: higher keeps it dark farther.
+    pub falloff: f32,
+}
+
+impl ShadowLook {
+    /// The brightness drawn where `light_left` is left, before the strength.
+    #[must_use]
+    pub fn drawn(self, light_left: f32) -> f32 {
+        let x = (light_left / self.reach.max(MIN_REACH)).clamp(0.0, 1.0);
+        let eased = x * x * (3.0 - 2.0 * x);
+        let curve = if eased > 0.0 {
+            eased.powf(self.falloff)
+        } else {
+            0.0
+        };
+        self.umbra + (1.0 - self.umbra) * curve
+    }
+
+    /// What multiplies every term that is sunlight where `light_left` is left.
+    #[must_use]
+    pub fn shade(self, light_left: f32) -> f32 {
+        1.0 + (self.drawn(light_left) - 1.0) * self.strength
+    }
+}
+
+/// The smallest reach the mapping divides by, which keeps a reach of zero
+/// from a config off a division by zero.
+pub const MIN_REACH: f32 = 1e-3;
 
 /// Whether the penumbra reaches the sphere of `radius` about the Earth's
 /// center, which is what decides whether a frame draws the shadow at all.
@@ -248,13 +351,13 @@ pub fn followed_point(shadow: &ShadowAxis) -> (f32, f32) {
     (point.latitude, point.longitude)
 }
 
-/// The share of the Sun covered at the shadow's center.
+/// The share of the Sun covered at the shadow's center, by area.
 #[must_use]
 pub fn covered_at_center(shadow: &ShadowAxis) -> f32 {
     let (latitude, longitude) = shadow_center(shadow);
     let (lat, lon) = (latitude.to_radians(), longitude.to_radians());
     let normal = Vec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos());
-    1.0 - light_left(shadow, surface_point(normal, 0.0))
+    1.0 - area_left(shadow, surface_point(normal, 0.0))
 }
 
 struct AxisPoint {
@@ -703,8 +806,24 @@ mod tests {
         }
     }
 
-    /// The same rule in f64 with the lens area worked from first principles.
-    fn light_left_f64(shadow: &ShadowAxis, point: Vec3) -> f64 {
+    /// The area two circles share, worked from first principles in f64.
+    fn lens_f64(r0: f64, r1: f64, d: f64) -> f64 {
+        if d >= r0 + r1 {
+            0.0
+        } else if d <= (r0 - r1).abs() {
+            std::f64::consts::PI * r0.min(r1).powi(2)
+        } else {
+            let a0 = ((d * d + r0 * r0 - r1 * r1) / (2.0 * d * r0)).acos();
+            let a1 = ((d * d + r1 * r1 - r0 * r0) / (2.0 * d * r1)).acos();
+            let kite =
+                0.5 * ((-d + r0 + r1) * (d + r0 - r1) * (d - r0 + r1) * (d + r0 + r1)).sqrt();
+            r0 * r0 * a0 + r1 * r1 * a1 - kite
+        }
+    }
+
+    /// The Moon's radius and its separation from the Sun's center, in the
+    /// Sun's radii, seen from `point`, in f64; `None` behind the Moon.
+    fn disks_f64(shadow: &ShadowAxis, point: Vec3) -> Option<(f64, f64)> {
         let (moon, axis, moon_to_sun) = (
             DVec3::from(shadow.moon),
             DVec3::from(shadow.axis),
@@ -713,24 +832,32 @@ mod tests {
         let past = DVec3::from(point) - moon;
         let depth = past.dot(axis);
         if depth <= 0.0 {
-            return 1.0;
+            return None;
         }
         let off_axis = (past - depth * axis).length();
         let sep = (off_axis / depth).atan() - (off_axis / (depth + moon_to_sun)).atan();
         let rm = (MOON_RADIUS_F64 / past.length()).asin();
         let rs = (SUN_RADIUS_F64 / (past + moon_to_sun * axis).length()).asin();
-        let area = if sep >= rm + rs {
-            0.0
-        } else if sep <= (rm - rs).abs() {
-            std::f64::consts::PI * rm.min(rs).powi(2)
-        } else {
-            let a0 = ((sep * sep + rs * rs - rm * rm) / (2.0 * sep * rs)).acos();
-            let a1 = ((sep * sep + rm * rm - rs * rs) / (2.0 * sep * rm)).acos();
-            let kite = 0.5
-                * ((-sep + rs + rm) * (sep + rs - rm) * (sep - rs + rm) * (sep + rs + rm)).sqrt();
-            rs * rs * a0 + rm * rm * a1 - kite
-        };
-        1.0 - area / (std::f64::consts::PI * rs * rs)
+        Some((rm / rs, sep / rs))
+    }
+
+    /// The light a Moon of radius `moon` leaves at `separation` of a Sun of
+    /// radius 1 under the 550 nm law, split into `rings` rings of equal width
+    /// in `mu` with the law's exact weights: the rule itself at four, a fine
+    /// integration at a thousand.
+    fn rings_left_f64(rings: u16, moon: f64, separation: f64) -> f64 {
+        let integral = |mu: f64| mu * mu * (0.3 + mu * (0.62 - 0.115 * mu));
+        let radius = |mu: f64| (1.0 - mu * mu).sqrt();
+        let mu = |ring: u16| 1.0 - f64::from(ring) / f64::from(rings);
+        let covered: f64 = (0..rings)
+            .map(|ring| {
+                let (inner, outer) = (radius(mu(ring)), radius(mu(ring + 1)));
+                let area = std::f64::consts::PI * (outer * outer - inner * inner);
+                let shared = lens_f64(outer, moon, separation) - lens_f64(inner, moon, separation);
+                (integral(mu(ring)) - integral(mu(ring + 1))) / integral(1.0) * shared / area
+            })
+            .sum();
+        (1.0 - covered).clamp(0.0, 1.0)
     }
 
     #[test]
@@ -741,12 +868,90 @@ mod tests {
         ] {
             let shadow = sky_shadow(eclipse_near(at).peak);
             for (offset, point) in across_the_shadow(&shadow, 400, 0.8) {
-                let f32_value = f64::from(light_left(&shadow, point));
-                let f64_value = light_left_f64(&shadow, point);
+                let (moon, separation) = disks_f64(&shadow, point).expect("past the Moon");
+                let light = f64::from(light_left(&shadow, point));
+                let light_f64 = rings_left_f64(4, moon, separation);
+                let area = f64::from(area_left(&shadow, point));
+                let area_f64 = 1.0 - lens_f64(1.0, moon, separation) / std::f64::consts::PI;
                 assert!(
-                    (f32_value - f64_value).abs() < 1e-3,
-                    "{f32_value} against {f64_value} at {offset} Earth radii at {at}"
+                    (light - light_f64).abs() < 1e-3 && (area - area_f64).abs() < 1e-3,
+                    "light {light} against {light_f64}, area {area} against {area_f64}, \
+                     at {offset} Earth radii at {at}"
                 );
+            }
+        }
+    }
+
+    /// Separations from the axis to just past the penumbra's edge.
+    fn separations(moon: f32) -> impl Iterator<Item = f32> {
+        const STEPS: u16 = 4000;
+        (0..=STEPS).map(move |step| (1.0 + moon) * 1.01 * f32::from(step) / f32::from(STEPS))
+    }
+
+    #[test]
+    fn the_limb_darkened_light_follows_the_law_and_falls_below_the_area_near_the_umbra() {
+        let rings = limb_rings();
+        for moon in [0.92_f32, 1.0, 1.08] {
+            let mut previous = 0.0_f32;
+            for separation in separations(moon) {
+                let light = rings_left(&rings, moon, separation);
+                let fine = rings_left_f64(1000, f64::from(moon), f64::from(separation));
+                assert!(
+                    (f64::from(light) - fine).abs() < 0.006,
+                    "{light} against the law's {fine} at a Moon of {moon} and {separation}"
+                );
+                assert!(light >= previous - 1e-6, "the light falls at {separation}");
+                previous = light;
+                if separation >= 1.0 + moon {
+                    assert!((light - 1.0).abs() < f32::EPSILON, "{light} past the edge");
+                }
+                if separation <= moon - 1.0 {
+                    assert!(light < 1e-6, "{light} inside the umbra at {separation}");
+                }
+                let area = 1.0 - overlap_area(1.0, moon, separation) / PI;
+                if area > 1e-4 && area < 0.3 {
+                    assert!(
+                        light < area,
+                        "{light} above the area's {area} at a Moon of {moon} and {separation}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_mapping_runs_from_the_umbra_to_full_light_at_the_reach_without_a_step() {
+        const STEPS: u16 = 60_000;
+        for (umbra, reach, falloff) in [
+            (0.0, 1.0, 0.5),
+            (0.2, 0.4, 2.0),
+            (0.5, 0.05, 0.25),
+            (0.1, 0.7, 3.0),
+        ] {
+            let look = ShadowLook {
+                strength: 1.0,
+                umbra,
+                reach,
+                falloff,
+            };
+            approx::assert_relative_eq!(look.drawn(0.0), umbra);
+            approx::assert_relative_eq!(look.drawn(reach), 1.0);
+            approx::assert_relative_eq!(look.drawn(1.0), 1.0);
+            let mut previous = look.drawn(0.0);
+            for step in 1..=STEPS {
+                let drawn = look.drawn(f32::from(step) / f32::from(STEPS));
+                assert!(
+                    drawn >= previous - 1e-6 && drawn - previous < 0.05,
+                    "{previous} to {drawn} at step {step} of {look:?}"
+                );
+                previous = drawn;
+            }
+            let none = ShadowLook {
+                strength: 0.0,
+                ..look
+            };
+            for light in [0.0, 0.01, 0.3, 1.0] {
+                assert!((none.shade(light) - 1.0).abs() < f32::EPSILON, "{look:?}");
             }
         }
     }

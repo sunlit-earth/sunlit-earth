@@ -1,8 +1,9 @@
 //! System tray wiring and single-instance enforcement.
 //!
-//! The tray icon itself is a `SystemTrayIcon` declared in `ui/tray.slint`, so
-//! Slint owns the platform integration (Shell notification area on Windows,
-//! `NSStatusItem` on macOS, `StatusNotifierItem` on Linux). What is left here
+//! The tray icon itself is a `SystemTrayIcon` declared in sunlit-ui's
+//! `ui/tray.slint`, so Slint owns the platform integration (Shell notification
+//! area on Windows, `NSStatusItem` on macOS, `StatusNotifierItem` on Linux).
+//! What is left here
 //! is the icon bytes, the callback wiring, and the single-instance mutex.
 
 use std::time::Duration;

@@ -110,6 +110,7 @@ cargo xtask manifests --version <version> --assets <dir> --out <dir>
 crates/sunlit-core/   headless: engine thread, wgpu renderer, WGSL shaders, scene and astronomy,
                       assets (textures, cloud fetcher, star blob), config, memory. No Slint.
 crates/sunlit-app/    Slint shell: window, tray, IPC, CLI. Package name sunlit-earth.
+crates/sunlit-ui/     the .slint sources under ui/ and their slint-build step, re-exported by sunlit-earth
 crates/xtask/         VM orchestration, release builds, the icon and star bakes
 assets/               icon sources and bake, the Linux desktop entry
 textures/             the Moon, the Milky Way and the 84 cube-map faces (day by month, night, mask), Git LFS;

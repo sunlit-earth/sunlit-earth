@@ -20,7 +20,7 @@ mod startup;
 
 pub use app::run;
 
-slint::include_modules!();
+pub use sunlit_ui::*;
 
 /// The scratch-directory helper, shared with `sunlit-core`'s own unit tests.
 ///

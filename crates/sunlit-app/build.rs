@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // Without a rerun-if line cargo reruns this script, and rebuilds the
+    // library, on a change to any file in the package, tests included.
+    println!("cargo:rerun-if-changed=build.rs");
     refuse_a_foreign_target_directory();
-
-    let config = slint_build::CompilerConfiguration::new().with_debug_info(true);
-    slint_build::compile_with_config("ui/main.slint", config).unwrap();
 
     // The exe icon. `embed-resource` compiles the resource script and tells
     // cargo to link the result; it no-ops for a non-Windows target, and the

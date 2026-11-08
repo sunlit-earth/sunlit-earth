@@ -112,7 +112,7 @@ afterwards:                  ( ⤡  Exit )
 
 - The whole pill is a button that leaves full screen, in both forms. "Exit" rather than a key name, because the people the pill is for click.
 - **The long form** shows for 10 s after entering, visible the whole time even when the other controls have hidden at 3 s. It names the key so the user learns it.
-- **Entered by key, no long form.** Whoever pressed F11 or ⌃⌘F knows the way out, so the pill starts short. Entered by the button, the menu or the green button, it starts long.
+- **Every entry starts long** (departure 1): F11, ⌃⌘F, the menu, the button and the green button alike.
 - **The short form** belongs to the controls: it shows and hides with them, so after 3 s of idle the picture is clean, and moving the mouse brings it back. With the time bar pinned it fades rather than hides, like the camera panel (decision 5).
 - With H, it hides with everything else; Escape and the key still work, and `show-button` brings it back.
 - Hovering it shows the hint "Exit full screen" with Esc and the platform key, and keeps the controls up like any control.
@@ -138,9 +138,9 @@ Why the top center: it is where the lost window frame was, the place people look
 
 ## Implementation steps
 
-1. **Confirm the plumbing.** A throwaway check on Windows that setting `full-screen` from `.slint` enters borderless full screen, that F11 pressed in full screen with the menu bar's `visible` false still reaches a `KeyBinding` in `preview-keys`, and that the native menu goes. Whether a `MenuItem`'s `activated` can tell its shortcut from a click: it cannot as far as the API shows, so F11 and ⌃⌘F are also `KeyBinding`s in `preview-keys`, which mark the entry as by key. If the native accelerator takes the key before the FocusScope sees it, every entry counts as not by key and the long form always shows; that goes in Departures.
+1. **Confirm the plumbing.** A throwaway check on Windows that setting `full-screen` from `.slint` enters borderless full screen, that F11 pressed in full screen with the menu bar's `visible` false still reaches a `KeyBinding` in `preview-keys`, and that the native menu goes. Whether a `MenuItem`'s `activated` can tell its shortcut from a click: it cannot, and Slint runs menu shortcuts before any `KeyBinding` (departure 1), so the long form always shows.
 2. **Icons.** Add `fullscreen.svg` (today's `frame.svg`), `fullscreen-exit.svg` and `guides.svg` (decision 4); remove `frame.svg` if nothing else uses it.
-3. **Layout.** In `main.slint`: `MenuBar { visible: !root.full-screen || Platform.os == OperatingSystemType.macos; }`, the panel and the splitter hidden in full screen, and `image-container` at x 0 and the full width. Callbacks `toggle-full-screen()` and `leave-full-screen()` on `MainWindow`, with an `entered-by-key` flag.
+3. **Layout.** In `main.slint`: `MenuBar { visible: !root.full-screen || Platform.os == OperatingSystemType.macos; }`, the panel and the splitter hidden in full screen, and `image-container` at x 0 and the full width. Callbacks `toggle-full-screen()` and `leave-full-screen()` on `MainWindow`.
 4. **Menu and keys.** The View entry of decision 2 on Windows and Linux, conditional on the platform the way Quit is. `KeyBinding`s for F11, ⌃⌘F on macOS, and the Escape order of decision 3 in `preview-keys`.
 5. **Footer.** The 2 by 2 grid, the full screen button and its `hovered-hint`, `hovered-y` per row, and the new hint texts in `OverlayHints`.
 6. **Idle hiding.** `idle-hidden`, the activity timestamp, the timer, the blockers, the cursor, and `visible` on every overlay reading the combined flag.
@@ -161,7 +161,7 @@ Why the top center: it is where the lost window frame was, the place people look
 - Each blocker of decision 5 keeps them up. With the time bar pinned nothing hides after 3 s, and the camera panel and the short pill are at their idle opacity.
 - The long pill is still visible at 9 s with the controls hidden, and gone at 10 s.
 - Escape's order: with the shortcut sheet open, the first Escape closes it and the window stays in full screen; the second leaves.
-- The pill: long for 10 s after an entry by button or menu, short after one by key, and a click on either form leaves.
+- The pill: long for 10 s after every entry, F11 and the button alike, short after, and a click on either form leaves.
 - H in full screen hides everything, idle never brings it back, and `show-button` idles out and returns on a move.
 
 The testing backend has no real window, so these drive `full-screen` as a property; whether the platform honored it is step 9's.
@@ -184,7 +184,15 @@ A case that sends F11 to the window and checks that its rectangle matches its mo
 
 ## Departures
 
-None yet.
+1. **The pill always starts long; by-key detection is impossible.** Step 1 read Slint 1.18.1 rather than running a throwaway check: `WindowInner::process_key_input` runs the menu bar's shortcuts before any focus scope sees a key, on every platform and with the bar's `visible` false too (`process_menubar_shortcuts`; `setup_menubar_shortcuts` filters on `enabled` alone), and on Windows nothing calls `TranslateAcceleratorW`, so the native accelerator never fires on its own. A `KeyBinding` for F11 in `preview-keys` would never run, and F11 is indistinguishable from a click on the View menu's entry. The one way around it was the winit backend's `on_winit_window_event` hook behind slint's `unstable-winit-030` feature; the user chose always-long over a winit hook. So decision 6's "entered by key, no long form" is dropped: the pill starts in its long form for 10 s however full screen was entered (F11, ⌃⌘F, the menu, the footer button, the green button, AppKit's entry), and there is no `entered-by-key` flag. The same reading confirmed the other half of step 1: the backend's resize handler calls `Window::set_fullscreen`, which sets the window item's `full-screen`, so a system entry reaches every binding and `changed full-screen` in `.slint`. That a menu bar on Windows goes when hidden is left to step 9.
+
+2. **The cursor is refreshed with a pointer move to where it is.** Slint picks the cursor only on pointer events, so `mouse-cursor: none` on `viewport-touch` would not hide a pointer at rest, nor bring it back on a key. `main.slint` calls `cursor-hidden-changed` with the pointer's position when idle starts or ends, and `full_screen::wire` dispatches a `PointerMoved` to that position, which makes Slint pick the cursor again; the activity check ignores a move to where the pointer already was. Public API, no winit access.
+
+3. **The geometry is saved on entering.** The plan has Quit in full screen keep the geometry saved before entering, but nothing saved it then: the geometry is written at quit, close and hide. `toggle-full-screen` calls `full-screen-entering`, which saves it, and `save_geometry` skips while in full screen. An entry by the system (the green button) saves nothing, so there the last saved geometry stays. The hides leave through `slint::Window::set_fullscreen(false)` rather than the `.slint` function, since that hands the change to the backend at once, before the hide.
+
+4. **Escape also closes the speeds and the pickers in the window**, not only in full screen: the order is the same in both, and full screen is simply the last thing it closes. A picker's own popup closes on Escape before `preview-keys` sees it; `TimeBar::close-transient` covers both cases in case it does not.
+
+5. **One shortcut sheet row, and a tighter card.** The sheet gains one row, the platform's full screen key with "Full screen; Esc leaves", rather than two: with two the 800 by 700 window's card no longer held its content without scrolling, which `test_the_shortcut_sheet_keeps_its_text_on_the_card` requires. Even one row overflowed by 2 px, so the card's padding went from 13 to 12 px and its column spacing from 10 to 9.
 
 ## Sources
 

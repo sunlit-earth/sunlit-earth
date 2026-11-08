@@ -610,7 +610,7 @@ fn connect(
 ///
 /// Called on the event loop.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 /// :param launch: what the second launch said about itself
 pub fn activate(window: &MainWindow, engine: &EngineLink, launch: &Launch) {
@@ -635,7 +635,7 @@ pub fn activate(window: &MainWindow, engine: &EngineLink, launch: &Launch) {
 
 /// Open the notice that the launched copy, another version, did not start.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param running: this instance's version
 /// :param launched: the version that was launched
 pub fn show_version_notice(window: &MainWindow, running: &str, launched: &str) {

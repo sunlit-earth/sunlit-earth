@@ -3,7 +3,7 @@
 //!
 //! Clients (the Slint shell, the `render` subcommand, tests) send commands and
 //! receive events. Nothing the engine does depends on a window existing, which
-//! is the whole point: hiding the settings window removes a client, it does not
+//! is the whole point: hiding the main window removes a client, it does not
 //! half-suspend the machinery.
 
 pub mod clock;

@@ -6450,7 +6450,7 @@ fn test_the_start_on_login_switch_shows_the_entry_it_is_given() {
     assert!(window.get_autostart_note().is_empty());
 }
 
-/// A tray icon wired to `window` the way the app wires it, with the settings
+/// A tray icon wired to `window` the way the app wires it, with the main
 /// window's auto-refresh change following into the tray as `app.rs` does.
 fn wired_tray(window: &MainWindow) -> sunlit_earth::TrayIcon {
     let tray = sunlit_earth::TrayIcon::new().expect("the testing backend creates a tray icon");
@@ -6471,7 +6471,7 @@ fn wired_tray(window: &MainWindow) -> sunlit_earth::TrayIcon {
 }
 
 /// Slint's tray backends draw no checkmark, so the state is in the titles:
-/// the mark is there exactly when auto-refresh is on, follows the settings
+/// the mark is there exactly when auto-refresh is on, follows the main
 /// window, and a toggle from the tray reaches the window.
 #[test]
 fn test_the_tray_auto_refresh_title_carries_the_mark() {

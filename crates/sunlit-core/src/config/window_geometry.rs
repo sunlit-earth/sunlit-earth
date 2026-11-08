@@ -1,4 +1,4 @@
-//! Where the settings window comes back, and whether that place still exists.
+//! Where the main window comes back, and whether that place still exists.
 //!
 //! Per-OS work that has nothing to do with TOML: the geometry is written back
 //! through the config module, but deciding that a saved position is still

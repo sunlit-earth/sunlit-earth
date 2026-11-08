@@ -452,7 +452,7 @@ fn signal_list(line: &str, key: &str) -> Option<Vec<String>> {
     Some(value.split(';').map(str::to_owned).collect())
 }
 
-/// Which window system the settings window is a client of, announced once as
+/// Which window system the main window is a client of, announced once as
 /// `SIGNAL:windowing <name>` after the first window exists.
 ///
 /// Read from the window's own raw handle rather than from the environment,

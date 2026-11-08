@@ -1,6 +1,6 @@
 //! What the app says about the screens a session has.
 //!
-//! Two readers, one model. The settings window's Displays group takes its combo
+//! Two readers, one model. The main window's Displays group takes its combo
 //! rows, its anchor and its layout diagram from here, and so do the `displays`
 //! subcommand and the IPC command of the same name. Everything is a pure
 //! function of a monitor list, so all of it is decided where a test can

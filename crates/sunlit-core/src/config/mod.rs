@@ -87,7 +87,7 @@ impl Default for QualityTier {
     }
 }
 
-/// The strongest camera mode the settings window offers.
+/// The strongest camera mode the main window offers.
 ///
 /// The spikes and the ghosts both reach their whole effect here, so the slider
 /// stops at one and [`AppConfig::sanitize`] clamps a file to it, the way the

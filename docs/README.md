@@ -9,7 +9,7 @@
 
 ## How the code works
 
-- [architecture.md](architecture.md): the crate split, the headless-first engine and its clients, `SceneParams`, the renderer's resources, the app and the settings window, quality tiers, texture resolution, memory reporting, environment knobs, dependencies, constraints
+- [architecture.md](architecture.md): the crate split, the headless-first engine and its clients, `SceneParams`, the renderer's resources, the app and the main window, quality tiers, texture resolution, memory reporting, environment knobs, dependencies, constraints
 - [rendering.md](rendering.md): the shaders and the draw order, then each layer of the sky (stars and planets, the Sun, the Moon, the Milky Way) and the clouds on the night side, with the measurements behind each
 - [testing.md](testing.md): the test layers, the conventions every layer follows, golden images, and the hosted CI workflows
 - [platforms.md](platforms.md): what each OS does today, the per-OS implementations, setting a wallpaper on Linux, and how the desktop e2e cases gate themselves

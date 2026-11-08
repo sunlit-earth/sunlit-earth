@@ -63,7 +63,7 @@ To render an image from the bundle, the executable is at `"/Applications/Sunlit 
 The main options are:
 
 - `--mode <tray|window>` selects tray or window mode.
-- `--tray-start <visible|hidden>` controls the initial settings window visibility in tray mode.
+- `--tray-start <visible|hidden>` controls the initial main window visibility in tray mode.
 - `--quality <low|medium|high>` overrides the saved quality tier for one run.
 - `--texture-resolution <8192|4096|2048>` overrides the texture width for one run.
 - `--software-rendering` requests a software adapter.
@@ -83,7 +83,7 @@ cargo app -- displays --out ./plan
 
 ## Start on login
 
-"Start on login", under "Auto-refresh wallpaper" in the settings window and in the tray menu, starts Sunlit Earth hidden in the tray when you log in. It is not a setting the app stores: it writes the system's own startup entry, and reads that entry back every time it is shown, so switching it off somewhere else is what the app shows next.
+"Start on login", under "Auto-refresh wallpaper" in the main window and in the tray menu, starts Sunlit Earth hidden in the tray when you log in. It is not a setting the app stores: it writes the system's own startup entry, and reads that entry back every time it is shown, so switching it off somewhere else is what the app shows next.
 
 - **Windows**: a `SunlitEarth` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It is listed in Task Manager's Startup apps and in Settings > Apps > Startup, and switching it off there shows as off in the app, with a note saying where.
 - **Linux**: `sunlit-earth.desktop` in `~/.config/autostart` (or `$XDG_CONFIG_HOME/autostart`). Plasma's and XFCE's autostart settings, Cinnamon's Startup Applications and GNOME Tweaks can all switch it off. sway, i3 and Hyprland start nothing from that folder, so the switch is disabled there and shows the line to add to the session's config instead: `exec <path to sunlit-earth> --tray-start hidden` for sway and i3, `exec-once = <path to sunlit-earth> --tray-start hidden` for Hyprland.

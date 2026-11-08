@@ -297,7 +297,7 @@ pub fn create_tray(
     Some(tray)
 }
 
-/// Show the settings window's auto-refresh state in the tray menu.
+/// Show the main window's auto-refresh state in the tray menu.
 ///
 /// :param tray: the tray icon
 /// :param enabled: whether auto-refresh is on
@@ -340,7 +340,7 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
         engine_link.send(EngineCommand::RenderWallpaperNow);
     });
 
-    // The tray menu item and the checkbox in the settings window are two views
+    // The tray menu item and the checkbox in the main window are two views
     // of the same setting, so the tray hands the change to the window and lets
     // the existing auto-refresh callback do the work.
     let window_weak = window.as_weak();
@@ -352,7 +352,7 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
         }
     });
 
-    // The same write and read as the settings window's switch. A failed write
+    // The same write and read as the main window's switch. A failed write
     // has no status line here, so it is a warning in the log, and the item
     // shows what the read after it found.
     let window_weak = window.as_weak();

@@ -1,6 +1,6 @@
 //! How many samples a frame is drawn with.
 //!
-//! Policy the settings window and the engine ask for before any GPU object
+//! Policy the main window and the engine ask for before any GPU object
 //! exists: which anti-aliasing options an adapter and a quality tier leave on
 //! offer and which sample count a request resolves to.
 

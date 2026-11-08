@@ -33,9 +33,9 @@ impl Default for CameraParams {
 
 /// The Earth lens a preset and a fresh config start from.
 pub(crate) const DEFAULT_CAMERA_FOV: f32 = 20.0;
-/// Narrowest Earth lens the settings window offers, in degrees.
+/// Narrowest Earth lens the main window offers, in degrees.
 pub(crate) const CAMERA_FOV_MIN: f32 = 10.0;
-/// Widest Earth lens the settings window offers, in degrees.
+/// Widest Earth lens the main window offers, in degrees.
 ///
 /// The perspective projection scales by `1 / tan(fov / 2)`, which reaches zero
 /// at 180 degrees and takes the whole scene to a point with it. 170 is as wide

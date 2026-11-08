@@ -25,7 +25,7 @@ use super::begin_publication;
 /// virtualized rectangle instead, so under mixed scaling every monitor's size
 /// and position would be wrong. winit does set
 /// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`, but only from `EventLoop::new`,
-/// which is reached when the settings window is built and never at all in a
+/// which is reached when the main window is built and never at all in a
 /// headless run: `sunlit-earth displays` and `render` create no window, and
 /// `displays` is precisely the command that exists to report these rectangles.
 /// So the declaration is made here rather than left to whoever creates a window
@@ -224,7 +224,7 @@ fn wide_to_string(field: &[u16]) -> String {
     String::from_utf16_lossy(&field[..end])
 }
 
-/// What to call a Windows monitor in the settings window.
+/// What to call a Windows monitor in the main window.
 ///
 /// `\\.\DISPLAY2` is what Windows answers with and is not what its own display
 /// settings show anybody, so the digit is lifted out of it and the position in

@@ -26,10 +26,10 @@ use crate::engine_client::EngineLink;
 
 thread_local! {
     /// Whether each of the app's other windows is on screen, asked when the
-    /// settings window hides.
+    /// main window hides.
     static OTHER_WINDOWS: RefCell<Vec<Box<dyn Fn() -> bool>>> = RefCell::new(Vec::new());
 
-    /// The settings window, asked whether it is on screen when another window
+    /// The main window, asked whether it is on screen when another window
     /// closes.
     static MAIN_WINDOW: RefCell<Option<slint::Weak<MainWindow>>> = const { RefCell::new(None) };
 
@@ -80,7 +80,7 @@ pub fn show(window: &MainWindow, engine: &EngineLink) {
 /// compositor decides, and most mark the window rather than raise it. On macOS
 /// [`show`] already activates the app.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 /// :param `startup_id`: the X11 startup notification id the launch carried
 pub fn show_and_focus(window: &MainWindow, engine: &EngineLink, startup_id: Option<&str>) {
@@ -111,7 +111,7 @@ fn raw_handle(window: &MainWindow) -> Option<raw_window_handle::RawWindowHandle>
 /// its first turn, and a start that hides the window on that turn keeps the
 /// accessory policy it launched with and never shows a Dock icon.
 ///
-/// :param window: the settings window, or the one window a launch that found
+/// :param window: the main window, or the one window a launch that found
 ///     an older version running opens
 /// :param `hides_at_once`: whether `--tray-start hidden` hides it again on the
 ///     first turn of the event loop
@@ -130,7 +130,7 @@ pub fn show_at_startup(
 
 /// Hide the window and turn the preview off.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 pub fn hide(window: &MainWindow, engine: &EngineLink) {
     if let Err(e) = window.hide() {
@@ -141,7 +141,7 @@ pub fn hide(window: &MainWindow, engine: &EngineLink) {
 
 /// Show the window if it is hidden and hide it if it is shown.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 /// :returns: whether the window is shown now
 pub fn toggle(window: &MainWindow, engine: &EngineLink) -> bool {
@@ -168,7 +168,7 @@ fn others_visible() -> Vec<bool> {
     OTHER_WINDOWS.with(|windows| windows.borrow().iter().map(|visible| visible()).collect())
 }
 
-/// Remember the settings window, which [`other_window_closed`] asks about.
+/// Remember the main window, which [`other_window_closed`] asks about.
 pub fn register_main_window(window: &MainWindow) {
     MAIN_WINDOW.with(|slot| *slot.borrow_mut() = Some(window.as_weak()));
 }
@@ -200,7 +200,7 @@ fn drops_dock_icon_after_close(
     !main_visible && !keeps_dock_icon(others_visible)
 }
 
-/// Count another of the app's windows in when the settings window hides.
+/// Count another of the app's windows in when the main window hides.
 ///
 /// :param `is_visible`: whether that window is on screen at the moment it is
 ///     asked
@@ -208,7 +208,7 @@ pub fn register_other_window(is_visible: impl Fn() -> bool + 'static) {
     OTHER_WINDOWS.with(|windows| windows.borrow_mut().push(Box::new(is_visible)));
 }
 
-/// Whether the app keeps its Dock icon once the settings window is hidden.
+/// Whether the app keeps its Dock icon once the main window is hidden.
 fn keeps_dock_icon(others_visible: impl IntoIterator<Item = bool>) -> bool {
     others_visible.into_iter().any(|visible| visible)
 }
@@ -487,7 +487,7 @@ mod tests {
         assert!(drops_dock_icon_after_close(false, []));
         assert!(
             !drops_dock_icon_after_close(true, [false]),
-            "the settings window is still on screen"
+            "the main window is still on screen"
         );
         assert!(
             !drops_dock_icon_after_close(false, [false, true]),

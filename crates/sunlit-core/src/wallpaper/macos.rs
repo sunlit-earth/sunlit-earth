@@ -59,7 +59,7 @@ struct Assignment {
     /// The key `display::macos::display_key` gives this monitor, which is what
     /// an `NSScreen` is matched back to.
     key: String,
-    /// What the settings window calls it, for the notes.
+    /// What the main window calls it, for the notes.
     label: String,
     path: PathBuf,
 }

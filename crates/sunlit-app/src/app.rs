@@ -278,7 +278,7 @@ fn register_auto_refresh_callback(
         let enabled = win.get_auto_refresh_enabled();
         let was_enabled = prev_enabled.replace(enabled);
 
-        // Keep the tray's mark in step with the settings window.
+        // Keep the tray's mark in step with the main window.
         if let Some(tray) = tray.as_ref() {
             crate::tray::follow_auto_refresh(tray, enabled);
         }
@@ -439,7 +439,7 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
     // One monitor list for the whole window: the Displays group's callbacks read
     // it, and the engine's `MonitorsChanged` event replaces it.
     let screens = displays::shared_monitors();
-    // The query the settings window and the preview's framing start from. The
+    // The query the main window and the preview's framing start from. The
     // engine re-queries on every publish and announces a layout that moved,
     // which is what replaces this list; `None` is a platform with no way to ask,
     // which leaves the Displays group with nothing to show and hides it, and
@@ -463,7 +463,7 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
         &screens,
     );
     let about = crate::about::AboutController::default();
-    about.register_settings_callback(&window);
+    about.register_main_window_callback(&window);
     crate::window_state::register_main_window(&window);
     crate::window_state::register_other_window(about.visibility());
     crate::activation::register_version_notice(&window);

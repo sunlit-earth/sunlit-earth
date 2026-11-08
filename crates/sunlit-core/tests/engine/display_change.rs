@@ -167,7 +167,7 @@ fn a_layout_that_changed_under_a_published_wallpaper_is_published_again() {
     );
 }
 
-/// Somebody who opened the settings window to look and never asked for a
+/// Somebody who opened the main window to look and never asked for a
 /// wallpaper does not get one because they moved a screen.
 #[test]
 fn a_layout_that_changed_with_nothing_on_the_desk_is_announced_and_not_published() {

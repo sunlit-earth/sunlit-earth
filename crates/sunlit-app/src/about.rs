@@ -67,8 +67,8 @@ pub struct AboutController {
 }
 
 impl AboutController {
-    /// Register the settings window's About callback.
-    pub fn register_settings_callback(&self, main_window: &MainWindow) {
+    /// Register the main window's About callback.
+    pub fn register_main_window_callback(&self, main_window: &MainWindow) {
         let about = self.clone();
         main_window.on_show_about(move || {
             let _ = about.show();
@@ -605,11 +605,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_callback_shows_the_version_and_all_three_documents() {
+    fn main_window_callback_shows_the_version_and_all_three_documents() {
         init();
         let main_window = MainWindow::new().expect("main window");
         let controller = AboutController::default();
-        controller.register_settings_callback(&main_window);
+        controller.register_main_window_callback(&main_window);
 
         main_window.invoke_show_about();
 

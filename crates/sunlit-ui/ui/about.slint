@@ -27,11 +27,12 @@ export component AboutWindow inherits Window {
     in property <string> mono-family;
 
     // Opened through the platform's own handler in `about.rs`. Every tab and
-    // the header link go through this one callback.
+    // the header links go through this one callback.
     callback open-url(url: string);
 
     out property <length> version-y: version-line.absolute-position.y;
 
+    property <string> website: "https://sunlit.earth";
     property <string> repository: "https://github.com/sunlit-earth/sunlit-earth";
     // The fluent ScrollView draws its bar over the flickable rather than
     // beside it, so a tab reserves the width whether the bar is showing.
@@ -51,7 +52,7 @@ export component AboutWindow inherits Window {
         padding: 16px;
         spacing: 12px;
 
-        // Fixed: the version, the copyright and the repository stay on screen
+        // Fixed: the version, the copyright and the links stay on screen
         // at any window size, and only the tab below scrolls.
         HorizontalLayout {
             spacing: 16px;
@@ -83,15 +84,37 @@ export component AboutWindow inherits Window {
                     text: "© 2026 Sebastian Straub";
                 }
 
-                Text {
-                    text: root.repository;
-                    color: Palette.accent-background;
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 6px;
 
-                    repository-link := TouchArea {
-                        mouse-cursor: pointer;
+                    Text {
+                        text: "sunlit.earth";
+                        color: Palette.accent-background;
 
-                        clicked => {
-                            root.open-url(root.repository);
+                        website-link := TouchArea {
+                            mouse-cursor: pointer;
+
+                            clicked => {
+                                root.open-url(root.website);
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "·";
+                    }
+
+                    Text {
+                        text: "Source code";
+                        color: Palette.accent-background;
+
+                        repository-link := TouchArea {
+                            mouse-cursor: pointer;
+
+                            clicked => {
+                                root.open-url(root.repository);
+                            }
                         }
                     }
                 }

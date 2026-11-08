@@ -2472,27 +2472,28 @@ fn capture_open_url(window: &sunlit_earth::AboutWindow) -> Rc<RefCell<Vec<String
 /// as wide as the tab and the link is a few characters at its left edge, so
 /// the centre is past the end of the text. The link's own glyphs are what the
 /// hit test is about.
-/// The header link goes through the same callback as the documents' links.
+/// The header links go through the same callback as the documents' links.
 #[test]
-fn test_the_repository_link_reaches_open_url() {
+fn test_the_header_links_reach_open_url() {
     let window = about_window();
-    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let captured = opened.clone();
-    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
+    let opened = capture_open_url(&window);
     materialize_about(&window);
 
-    let link: Vec<_> =
-        ElementHandle::find_by_element_id(&window, "AboutWindow::repository-link").collect();
-    assert_eq!(link.len(), 1, "expected one repository link");
-    link[0].mock_single_click(slint::platform::PointerEventButton::Left);
+    for (id, prefix) in [
+        ("AboutWindow::website-link", "https://sunlit.earth"),
+        ("AboutWindow::repository-link", "https://github.com/"),
+    ] {
+        let link = all_elements(&window, id);
+        assert_eq!(link.len(), 1, "expected one {id}");
+        link[0].mock_single_click(slint::platform::PointerEventButton::Left);
 
-    let opened = opened.borrow();
-    assert_eq!(opened.len(), 1, "{opened:?}");
-    assert!(
-        opened[0].starts_with("https://github.com/"),
-        "the header link opened {:?}",
-        opened[0]
-    );
+        let last = opened.borrow().last().cloned();
+        assert!(
+            last.as_deref().is_some_and(|url| url.starts_with(prefix)),
+            "{id} opened {last:?}"
+        );
+    }
+    assert_eq!(opened.borrow().len(), 2, "{:?}", opened.borrow());
 }
 
 /// An About window with all three documents in it, at a size a person would

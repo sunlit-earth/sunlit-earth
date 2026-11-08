@@ -24,6 +24,9 @@ use crate::commands::bundle::{self, APP_DIR, Arch, PACKAGE, Platform};
 /// The repository whose releases the manifests download from.
 pub const REPOSITORY: &str = "https://github.com/sunlit-earth/sunlit-earth";
 
+/// The project's website, which every manifest gives as its homepage.
+pub const HOMEPAGE: &str = "https://sunlit.earth";
+
 /// Where each manifest goes under `--out`, which is where it lives in its
 /// repository.
 pub const SCOOP_MANIFEST: &str = "bucket/sunlit-earth.json";
@@ -238,7 +241,7 @@ pub fn cask(release: &Release) -> Result<String, String> {
   url "{url}"
   name "{APP_NAME}"
   desc "{DESCRIPTION}"
-  homepage "{REPOSITORY}"
+  homepage "{HOMEPAGE}"
 
   livecheck do
     url "{REPOSITORY}"
@@ -279,7 +282,7 @@ pub fn formula(release: &Release) -> String {
     format!(
         r##"class {class} < Formula
   desc "{DESCRIPTION}"
-  homepage "{REPOSITORY}"
+  homepage "{HOMEPAGE}"
   version "{version}"
   license "{LICENSE}"
 
@@ -372,7 +375,7 @@ pub fn scoop(release: &Release) -> Result<String, String> {
     let manifest = ScoopManifest {
         version,
         description: DESCRIPTION,
-        homepage: REPOSITORY,
+        homepage: HOMEPAGE,
         license: LICENSE,
         notes: SCOOP_NOTES,
         architecture: ScoopArchitectures {
@@ -489,7 +492,7 @@ mod tests {
     /// literal but the homepage and the livecheck page.
     fn urls(text: &str) -> Vec<String> {
         text.split('"')
-            .filter(|part| part.starts_with("https://") && *part != REPOSITORY)
+            .filter(|part| part.starts_with("https://") && ![HOMEPAGE, REPOSITORY].contains(part))
             .map(str::to_owned)
             .collect()
     }
@@ -685,6 +688,20 @@ mod tests {
         for bad in ["", "beta", "0.2.0\"", "0.2.0 ", "0.2.0#{x}", "0.2/0"] {
             assert!(check_version(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn every_manifest_names_the_website_as_its_homepage() {
+        let fixture = Fixture::new("homepage", VERSION);
+        let release = fixture.release(VERSION);
+        let scoop: serde_json::Value =
+            serde_json::from_str(&scoop(&release).expect("the manifest")).expect("JSON");
+        assert_eq!(scoop["homepage"], HOMEPAGE);
+        assert_eq!(
+            string_after(&cask(&release).expect("the cask"), "homepage"),
+            HOMEPAGE
+        );
+        assert_eq!(string_after(&formula(&release), "homepage"), HOMEPAGE);
     }
 
     #[test]

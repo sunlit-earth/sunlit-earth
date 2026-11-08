@@ -80,8 +80,7 @@ pub fn wire(window: &MainWindow, link: &EngineLink, quality: QualityTier) -> sli
             if known.0 > 0 && known.1 > 0 {
                 let (width, height) = preview_target_size(known, quality);
                 let int = |value: u32| i32::try_from(value).unwrap_or(i32::MAX);
-                win.set_awaited_frame_width(int(width));
-                win.set_awaited_frame_height(int(height));
+                win.invoke_frame_awaited(int(width), int(height));
             }
         }
     };

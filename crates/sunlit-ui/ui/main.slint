@@ -381,10 +381,11 @@ export component MainWindow inherits Window {
     // the renderer reports its frames, and sets `switch-wait` to how long to
     // wait at most there; elsewhere the wait is all there is.
     in property <duration> switch-wait: 100ms;
-    // The frame size the size sent last comes back as, which Rust writes with
-    // every size it sends; zero while a switch waits for its first.
-    in-out property <int> awaited-frame-width;
-    in-out property <int> awaited-frame-height;
+    // The frame size the size sent last comes back as, which Rust gives
+    // `frame-awaited` with every size it sends; zero while a switch waits for
+    // its first.
+    out property <int> awaited-frame-width;
+    out property <int> awaited-frame-height;
     out property <bool> frame-current: root.awaited-frame-width > 0
         && root.frame-width == root.awaited-frame-width && root.frame-height == root.awaited-frame-height;
     out property <bool> switch-blank;
@@ -418,6 +419,14 @@ export component MainWindow inherits Window {
             root.switch-target = false;
         } else if root.full-screen {
             root.toggle-full-screen();
+        }
+    }
+
+    // A switch whose black frame is not yet on screen ends there, as when
+    // the window hides before it is.
+    public function cancel-switch() {
+        if root.switch-blank && !root.switch-flipped {
+            root.switch-blank = false;
         }
     }
 
@@ -479,7 +488,15 @@ export component MainWindow inherits Window {
         }
     }
 
-    changed frame-current => {
+    // The pair can go to zero and back to the frame shown before the change
+    // is seen, so the frame is checked where it is written as well.
+    public function frame-awaited(width: int, height: int) {
+        root.awaited-frame-width = width;
+        root.awaited-frame-height = height;
+        root.end-cover-on-current-frame();
+    }
+
+    function end-cover-on-current-frame() {
         if root.frame-current {
             root.old-frame-shown = false;
             if root.switch-cover {
@@ -487,6 +504,10 @@ export component MainWindow inherits Window {
                 root.switch-cover-fading = true;
             }
         }
+    }
+
+    changed frame-current => {
+        root.end-cover-on-current-frame();
     }
 
     Timer {

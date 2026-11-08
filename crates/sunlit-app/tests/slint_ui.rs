@@ -7602,3 +7602,103 @@ fn test_an_entry_by_the_system_starts_with_the_notice() {
         "one that comes during a switch takes it over"
     );
 }
+
+/// The blank waits for the window's new size only as long as the window has
+/// none: a resize after the flip ends it at once and sends the size.
+#[test]
+fn test_a_resize_after_the_switch_ends_the_blank_at_once() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.invoke_toggle_full_screen();
+    let_pass(128);
+    assert!(window.window().is_fullscreen() && window.get_switch_blank());
+    assert_eq!(window.get_awaited_frame_width(), 0);
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1920, 1080));
+    let_pass(32);
+    assert!(!window.get_switch_blank(), "well before the 500 ms bound");
+    assert!(window.get_awaited_frame_width() > 0, "and the size went");
+    assert_eq!(notices(&window), 1);
+}
+
+/// A second toggle before the black frame is on screen takes the first back:
+/// the window stays as it was and the blank goes with the wait.
+#[test]
+fn test_two_toggles_within_the_wait_leave_the_window_as_it_was() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.invoke_toggle_full_screen();
+    let_pass(32);
+    window.invoke_toggle_full_screen();
+    let_pass(112);
+    assert!(!window.window().is_fullscreen());
+    assert!(!window.get_switch_blank(), "no blank once the wait has run");
+    let_pass(SWITCH_SETTLES);
+    assert!(!window.window().is_fullscreen());
+    assert!(!window.get_old_frame_shown() && !window.get_switch_cover());
+    assert_eq!(notices(&window), 0);
+}
+
+/// Should no size go with a switch, the window asks for one every second
+/// until one has gone.
+#[test]
+fn test_a_switch_asks_for_the_size_again_until_one_goes() {
+    let (window, _sent) = wired_window();
+    let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = std::rc::Rc::clone(&asked);
+    window.on_viewport_jumped(move || counter.set(counter.get() + 1));
+    window.invoke_toggle_full_screen();
+    let_pass(SWITCH_SETTLES);
+    let at_settle = asked.get();
+    assert!(at_settle >= 1, "when the blank lifts");
+    let_pass(1000);
+    assert_eq!(asked.get(), at_settle + 1, "and after a second without one");
+    window.invoke_frame_awaited(1920, 1080);
+    let_pass(3000);
+    assert_eq!(asked.get(), at_settle + 1, "but not once one has gone");
+    assert_eq!(notices(&window), 1);
+}
+
+/// A hide before the black frame is on screen drops the switch, so the window
+/// does not turn full screen while hidden and show again that way.
+#[test]
+fn test_a_hide_during_the_wait_drops_the_switch() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.invoke_toggle_full_screen();
+    let_pass(48);
+    sunlit_earth::full_screen::leave(&window);
+    assert!(!window.get_switch_blank());
+    let_pass(SWITCH_SETTLES);
+    assert!(!window.window().is_fullscreen());
+    assert!(!window.get_switch_cover() && !window.get_old_frame_shown());
+
+    enter_full_screen(&window);
+    window.invoke_toggle_full_screen();
+    let_pass(48);
+    sunlit_earth::full_screen::leave(&window);
+    let_pass(SWITCH_SETTLES);
+    assert!(!window.window().is_fullscreen(), "and leaving still leaves");
+    assert!(!window.get_switch_blank());
+}
+
+/// When the size sent after a change by the system is the one the engine
+/// already draws, the awaited size goes to zero and back to the frame shown
+/// in one pass, and the cover still ends at once.
+#[test]
+fn test_a_system_entry_at_the_size_drawn_already_ends_the_cover() {
+    let (window, _sent) = wired_window();
+    deliver_frame(&window, 1280, 720);
+    window.invoke_frame_awaited(1280, 720);
+    let_pass(16);
+    assert!(window.get_frame_current());
+    let window_weak = window.as_weak();
+    window.on_viewport_jumped(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.invoke_frame_awaited(1280, 720);
+        }
+    });
+    window.window().set_fullscreen(true);
+    let_pass(16);
+    assert!(!window.get_switch_cover(), "the frame shown is the one");
+    let_pass(250);
+    assert_eq!(notices(&window), 0);
+}

@@ -80,7 +80,8 @@ fn watch_for_the_blank(window: &MainWindow) {
     window.on_blank_requested(move || armed.set(true));
 }
 
-/// Leave full screen if the window is in it, before it hides.
+/// Leave full screen if the window is in it, or drop a switch not yet made,
+/// before it hides.
 ///
 /// The window shows again windowed, and the geometry stays the one saved on
 /// entering, since the size the window reports right after this is still the
@@ -88,6 +89,7 @@ fn watch_for_the_blank(window: &MainWindow) {
 ///
 /// :param window: the main window
 pub fn leave(window: &MainWindow) {
+    window.invoke_cancel_switch();
     if window.window().is_fullscreen() {
         debug!("leaving full screen before the window hides");
         // Through the window rather than `leave-full-screen`, which hands the

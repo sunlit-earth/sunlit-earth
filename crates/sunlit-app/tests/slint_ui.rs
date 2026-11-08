@@ -8203,7 +8203,7 @@ fn test_the_menus_do_not_follow_the_sheet() {
     let mut depth = 0_usize;
     let mut callback_depth: Option<usize> = None;
     for line in MAIN[start..].lines() {
-        if callback_depth.is_none() && line.contains("=>") {
+        if callback_depth.is_none() && line.replace("<=>", "").contains("=>") {
             callback_depth = Some(depth);
         }
         if callback_depth.is_none() {

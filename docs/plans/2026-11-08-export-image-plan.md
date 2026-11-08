@@ -297,3 +297,8 @@ Round 2 (3d622f7..d5a4339): every round 1 fix confirmed, 0 majors and 3 minors, 
 - Minor: an export answered at shutdown was drawn at the clock, not the held instant; the hold is now lifted only around the wallpaper owed at exit, with an engine case in `readiness.rs`.
 - Minor: "The previous export is still stopping." stayed on the sheet after the job stopped; the job's final report now clears it.
 - Minor: the hidden window case covered only a refused IPC export. A job's report cannot reach the sheet in `slint_ui`, whose testing backend runs without an event loop, so `docs/testing.md` now says what the case covers instead of adding one.
+
+Round 3, revision 1 (c026d44..ae3eff3): earlier fixes intact, 0 majors and 2 minors, fixed by the orchestrator in the commit that records this round.
+
+- Minor: `test_the_menus_do_not_follow_the_sheet` took a two-way binding (`<=>`) for the start of a callback, so a `checked <=> root.export-sheet-open` would have passed it.
+- Minor: the `Hint` paragraph in `docs/architecture.md` told the padding's history and read as if the new top padding had been measured in the guest.

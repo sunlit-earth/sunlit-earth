@@ -7983,6 +7983,83 @@ fn test_enter_in_a_field_exports_and_never_cancels() {
     }
 }
 
+/// An IPC export closes the sheet it opened on a hidden window once it has
+/// its answer, so the scene is not left held; on a shown window the sheet
+/// stays open.
+#[test]
+fn test_an_ipc_export_on_a_hidden_window_lets_the_scene_go() {
+    for shown in [false, true] {
+        let (window, sent, link) = wired_window_and_link();
+        let screens = sunlit_earth::displays::shared_monitors();
+        sunlit_earth::export::register(&window, &link, &screens);
+        if shown {
+            window.show().expect("the window shows");
+        }
+        sunlit_earth::export::export_from_ipc(
+            "earth.png",
+            64,
+            64,
+            sunlit_core::config::ExportFormat::Png,
+            3,
+        );
+        assert!(window.get_export_sheet_open(), "the IPC export opens it");
+        sunlit_earth::export::textures_ready();
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+
+        assert_eq!(
+            window.get_export_sheet_open(),
+            shown,
+            "shown {shown}: the sheet after the refused export"
+        );
+        let expected: &[bool] = if shown { &[true] } else { &[true, false] };
+        assert_eq!(holds(&sent), expected, "shown {shown}");
+        if shown {
+            window.hide().expect("the window hides");
+        }
+    }
+}
+
+/// Closing the sheet lets the thumbnail go, and an export still stopping
+/// after a close keeps the reopened sheet from starting another, saying so.
+#[test]
+fn test_reopening_while_an_export_stops_says_so() {
+    use slint::platform::Key;
+
+    let (window, sent) = export_sheet();
+    let state = export_state(&window);
+    sunlit_earth::export::textures_ready();
+    let target =
+        std::env::temp_dir().join(format!("sunlit-export-stopping-{}.png", std::process::id()));
+    state.set_path(target.display().to_string().into());
+    let export = the_labelled(&window, "Export", AccessibleRole::Button);
+    export.invoke_accessible_default_action();
+    assert!(state.get_exporting(), "the export started");
+
+    let pixel = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(2, 2);
+    state.set_thumbnail(slint::Image::from_rgba8(pixel));
+    tap(&window, Key::Escape);
+    assert!(!window.get_export_sheet_open());
+    assert_eq!(
+        (
+            state.get_thumbnail().size().width,
+            state.get_thumbnail().size().height
+        ),
+        (0, 0),
+        "the thumbnail outlived the sheet"
+    );
+
+    choose(&window, "File", "Export Image…");
+    sunlit_earth::export::textures_ready();
+    assert!(!state.get_exporting());
+    the_labelled(&window, "Export", AccessibleRole::Button).invoke_accessible_default_action();
+    assert!(!state.get_exporting(), "a second export started");
+    assert_eq!(state.get_status(), "The previous export is still stopping.");
+
+    while sent.try_recv().is_ok() {}
+    sunlit_earth::export::shutdown();
+    assert!(!target.exists());
+}
+
 /// Esc, the × button and Close each close the sheet and let the scene go; a
 /// click on the backdrop does not.
 #[test]

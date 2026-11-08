@@ -264,6 +264,9 @@ struct Job {
     thread: Option<JoinHandle<()>>,
     /// The IPC command waiting for the outcome, if one asked for this export.
     ipc: bool,
+    /// Cancelled by closing the sheet, so what it reports is no longer the
+    /// business of whatever sheet is open now.
+    detached: bool,
     format: ExportFormat,
     size: (u32, u32),
 }
@@ -293,6 +296,9 @@ struct Controller {
     thumbnail_timer: Rc<slint::Timer>,
     thumbnail_shown: Option<(u32, u32)>,
     dialog_open: bool,
+    /// An IPC export arrived while the window was hidden, so the sheet goes
+    /// once that export has its answer.
+    close_when_answered: bool,
 }
 
 thread_local! {
@@ -318,6 +324,7 @@ pub fn register(window: &MainWindow, link: &EngineLink, screens: &SharedMonitors
             thumbnail_timer: Rc::new(slint::Timer::default()),
             thumbnail_shown: None,
             dialog_open: false,
+            close_when_answered: false,
         });
     });
     let state = window.global::<ExportState>();
@@ -400,7 +407,8 @@ pub fn shutdown() {
 /// Start an export the way the sheet's Export button does, with the fields
 /// set from an IPC `export-image` command, opening the sheet first if it is
 /// closed. The outcome is printed as `SIGNAL:exported path=<path>` or
-/// `SIGNAL:export_failed reason=<text>`.
+/// `SIGNAL:export_failed reason=<text>`. On a hidden window the sheet closes
+/// again once the export has its answer, so the scene is not left held.
 pub fn export_from_ipc(path: &str, width: u32, height: u32, format: ExportFormat, value: u8) {
     let started = with(|c| {
         let Some(window) = c.window() else {
@@ -409,6 +417,7 @@ pub fn export_from_ipc(path: &str, width: u32, height: u32, format: ExportFormat
         if !window.get_export_sheet_open() {
             c.open();
         }
+        c.close_when_answered = !window.window().is_visible();
         let state = window.global::<ExportState>();
         state.set_width_text(width.to_string().into());
         state.set_height_text(height.to_string().into());
@@ -519,10 +528,16 @@ impl Controller {
             return;
         }
         debug!("export sheet closed");
-        if let Some(job) = &self.job {
+        if let Some(job) = &mut self.job {
             job.cancel.store(true, Ordering::Relaxed);
+            job.detached = true;
         }
+        self.close_when_answered = false;
         self.thumbnail_timer.stop();
+        self.thumbnail_shown = None;
+        window
+            .global::<ExportState>()
+            .set_thumbnail(slint::Image::default());
         self.link.send(EngineCommand::Hold(false));
         window.set_export_sheet_open(false);
         crate::time_bar::refresh(&window);
@@ -613,7 +628,7 @@ impl Controller {
     /// Something in the sheet changed: the outcome of the last export goes,
     /// and the thumbnail follows the size once it has settled.
     fn changed(&mut self, window: &MainWindow) {
-        if self.job.is_none() {
+        if !self.exporting() {
             Self::clear_status(window);
         }
         self.schedule_thumbnail();
@@ -742,9 +757,34 @@ impl Controller {
                 } else if started.elapsed() > Duration::from_mins(2) || !is_open() {
                     keep.stop();
                     crate::ipc::signal("export_failed reason=the scene did not become ready");
+                    with(Controller::close_if_answered_hidden);
                 }
             },
         );
+    }
+
+    /// Whether an export started from the open sheet is running.
+    fn exporting(&self) -> bool {
+        self.job.as_ref().is_some_and(|job| !job.detached)
+    }
+
+    /// Close the sheet an IPC export opened on a hidden window, now that the
+    /// export has its answer, unless the window has been shown since.
+    fn close_if_answered_hidden(&mut self) {
+        if std::mem::take(&mut self.close_when_answered)
+            && self.window().is_some_and(|w| !w.window().is_visible())
+        {
+            self.close();
+        }
+    }
+
+    /// Say why an export did not start, in the sheet and to an IPC caller.
+    fn refuse(&mut self, window: &MainWindow, text: &str, ipc: bool) {
+        Self::show_status(window, text, false);
+        if ipc {
+            crate::ipc::signal(&format!("export_failed reason={text}"));
+            self.close_if_answered_hidden();
+        }
     }
 
     /// Export with what the sheet says now.
@@ -753,26 +793,28 @@ impl Controller {
             return;
         };
         let state = window.global::<ExportState>();
-        if self.job.is_some() {
+        if self.exporting() {
             if ipc {
                 crate::ipc::signal("export_failed reason=an export is already running");
             }
             return;
         }
-        let fail = |text: &str| {
-            Self::show_status(&window, text, false);
-            if ipc {
-                crate::ipc::signal(&format!("export_failed reason={text}"));
-            }
-        };
+        if self.job.is_some() {
+            self.refuse(&window, "The previous export is still stopping.", ipc);
+            return;
+        }
         let Some((width, height)) = Self::typed_size(&window) else {
-            fail("Type a width and a height of at least one pixel.");
+            self.refuse(
+                &window,
+                "Type a width and a height of at least one pixel.",
+                ipc,
+            );
             return;
         };
         let format = format_at(state.get_format_index());
         let target = export_target(&state.get_path(), format);
         if let Err(text) = check_target(&target) {
-            fail(&text);
+            self.refuse(&window, &text, ipc);
             return;
         }
         let image_format = match format {
@@ -791,7 +833,7 @@ impl Controller {
         let replies = match self.link.request_pixels(width, height) {
             Ok(replies) => replies,
             Err(e) => {
-                fail(&e.to_string());
+                self.refuse(&window, &e.to_string(), ipc);
                 return;
             }
         };
@@ -822,7 +864,7 @@ impl Controller {
         let thread = match spawned {
             Ok(thread) => thread,
             Err(e) => {
-                fail(&format!("The export could not start: {e}"));
+                self.refuse(&window, &format!("The export could not start: {e}"), ipc);
                 return;
             }
         };
@@ -831,6 +873,7 @@ impl Controller {
             cancel,
             thread: Some(thread),
             ipc,
+            detached: false,
             format,
             size: (width, height),
         });
@@ -842,7 +885,7 @@ impl Controller {
     }
 
     fn cancel(&mut self) {
-        let Some(job) = &self.job else {
+        let Some(job) = self.job.as_ref().filter(|job| !job.detached) else {
             return;
         };
         job.cancel.store(true, Ordering::Relaxed);
@@ -853,10 +896,15 @@ impl Controller {
     }
 
     fn report(&mut self, id: u64, report: Report) {
-        if self.job.as_ref().is_none_or(|job| job.id != id) {
+        let Some(detached) = self
+            .job
+            .as_ref()
+            .filter(|job| job.id == id)
+            .map(|job| job.detached)
+        else {
             return;
-        }
-        let window = self.window();
+        };
+        let window = if detached { None } else { self.window() };
         if let Report::Progress(fraction) = report {
             if let Some(window) = window {
                 let state = window.global::<ExportState>();
@@ -925,6 +973,9 @@ impl Controller {
                 }
             }
             Report::Progress(_) => {}
+        }
+        if !detached {
+            self.close_if_answered_hidden();
         }
     }
 }

@@ -179,6 +179,8 @@ The user tried the first build on 2026-11-08 and asked for eight changes, now wr
 13. **Docs** for the above (`usage.md`, `architecture.md`, `testing.md`), and the tests below updated.
 14. **The flash, confirmed by the user.** Nobody but the user can watch the screen. After step 11 the user opens and closes the sheet on the Windows desktop with the default renderer; if the window still flashes, the cause is elsewhere and revision 1 stops for investigation before Step 10.
 
+A ninth change, asked for by the user on 2026-11-08 after the other eight: every hover text in the app had padding on the left, the right and the bottom but none on top. `Hint` in `widgets.slint` now pads its text by 6 px on top as it does at the bottom. It affects every hover text, the settings panel's included, not only the sheet's; the user checks a one line and a multi line hover text in step 14.
+
 ## Tests
 
 Assert behavior, not constants.

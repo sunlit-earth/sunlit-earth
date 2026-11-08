@@ -235,3 +235,20 @@ cargo test
 5. **Ctrl going down lets go of a held E.** Slint hands a key release that matches an enabled menu shortcut to the menu and never to the focused element (`process_menubar_shortcuts` in i-slint-core 1.18.1 accepts both the press and the release and activates only on the press). With File > Export Image… on Ctrl+E, E let go while Ctrl is down never reached `preview-keys`, so a roll held through Ctrl went on after the key was up, which `test_a_held_key_let_go_under_a_modifier_stops_the_camera` caught. The shortcut stays, as the user chose it. `track-key` already lets go of a held Q when Ctrl goes down for the same reason with Quit on Ctrl+Q, and now does the same for E on every platform, since Export Image… is in File everywhere. The cost is that holding E and then pressing Ctrl stops the roll, as it already did for Q.
 
 6. **Case 19 does not watch the bar.** The e2e suite sees the app only through its `SIGNAL:` lines, and the plan's `export-image` command answers with the outcome alone, so "the sheet's progress reaches the end" is not asserted there. The controller sets the bar to its end on the same branch that prints `SIGNAL:exported`, and adding a progress line to the IPC contract for one assertion was not worth it. Case 19 checks the answer, the files' sizes and that they decode, and that nothing else is left in the folder.
+
+## Validation
+
+Round 1 (876964e..3d622f7): 3 majors and 3 minors, all fixed in b7cea96, a1029c2, 59dad28 and d5a4339.
+
+- Major: the time bar kept running under the hold with a live time setting.
+- Major: an IPC `export-image` on a hidden window left the scene held.
+- Major: Enter in a text field cancelled a running export.
+- Minor: a wallpaper owed at exit was drawn at the held instant when the app quit with the sheet open.
+- Minor: a sheet reopened while a cancelled job still stopped ignored Export silently, then showed the old job's "Cancelled."
+- Minor: the thumbnail stayed in `ExportState` after the sheet closed.
+
+Round 2 (3d622f7..d5a4339): every round 1 fix confirmed, 0 majors and 3 minors, fixed in 3b1fd0e, 6d2b918 and 7f63943.
+
+- Minor: an export answered at shutdown was drawn at the clock, not the held instant; the hold is now lifted only around the wallpaper owed at exit, with an engine case in `readiness.rs`.
+- Minor: "The previous export is still stopping." stayed on the sheet after the job stopped; the job's final report now clears it.
+- Minor: the hidden window case covered only a refused IPC export. A job's report cannot reach the sheet in `slint_ui`, whose testing backend runs without an event loop, so `docs/testing.md` now says what the case covers instead of adding one.

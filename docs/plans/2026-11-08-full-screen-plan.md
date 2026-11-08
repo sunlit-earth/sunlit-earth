@@ -194,6 +194,8 @@ A case that sends F11 to the window and checks that its rectangle matches its mo
 
 5. **One shortcut sheet row, and a tighter card.** The sheet gains one row, the platform's full screen key with "Full screen; Esc leaves", rather than two: with two the 800 by 700 window's card no longer held its content without scrolling, which `test_the_shortcut_sheet_keeps_its_text_on_the_card` requires. Even one row overflowed by 2 px, so the card's padding went from 13 to 12 px and its column spacing from 10 to 9.
 
+6. **The e2e case closes GNOME's overview.** The case reads the rectangle with `GetWindowRect` on Windows and `xdotool` with `xrandr` on X11, and presses the keys with `PostMessageW` and with `xdotool` through XTEST. A GNOME session logs in to its overview, where `_NET_ACTIVE_WINDOW` is unset and `xdotool windowactivate` exits 0 without activating anything, so F11 went to the overview and the case failed in GNOME on X11. Before a key, the helper now sets GNOME Shell's `OverviewActive` to false over D-Bus and checks that the app's window is the active one, failing with that reason when it is not. Step 9 in the Wayland sessions was not done: the guest has no tool that types into a Wayland client, so it is left to a person, as `docs/platforms.md` records.
+
 ## Sources
 
 - Apple, "Mac keyboard shortcuts": https://support.apple.com/102650

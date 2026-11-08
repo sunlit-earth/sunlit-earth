@@ -72,6 +72,22 @@ Settings… and Check for Updates…, when they come, go in File and Help on mac
 
 **The tray's Show / Hide.** The tray's first entry says Hide while the main window is on screen and Show while it is not, and toggles the window, as a left click on the icon does on Windows and Linux. On macOS a click on the status item opens its menu instead, so this entry is the one way there to hide the window other than its close button. The title follows every show and hide `window_state` makes, through a visibility listener; Slint rebuilds the tray menu when the property behind it changes, which the checkmark titles already rely on.
 
+## Full screen
+
+Full screen is winit's borderless full screen on the monitor the window is on, through Slint's `full-screen` property; `docs/architecture.md` has the app's side ([plans/2026-11-08-full-screen-plan.md](plans/2026-11-08-full-screen-plan.md)).
+
+- **Windows and Linux:** F11 toggles it, as in the browsers, Explorer and the GNOME apps. View has Enter Full Screen as its last entry, after a separator, with F11. The menu bar goes in full screen (`visible: false`), the native Win32 menu and the drawn one alike, and Slint still runs its shortcuts while it is hidden, which is how F11 leaves again.
+- **macOS:** ⌃⌘F, Apple's documented key for "use or stop using the app in full screen", as a `KeyBinding` in `preview-keys` (Slint maps `Control` to ⌘ and `Meta` to ⌃ on Apple platforms). The app adds no View entry of its own: AppKit adds Enter Full Screen to an app's View menu by itself when it finds no equivalent, and an entry built by Slint and `muda` (action `fireMenuItemAction:`) can never count as one, so ours would sit beside AppKit's. AppKit's entry and the green title bar button both use `toggleFullScreen:`, the native full screen with its own Space, which is what winit's `Borderless` is on macOS, and winit reports the change back into `full-screen`. The global menu bar is the system's and slides down at the top edge. F11 on a Mac is Show Desktop. Whether AppKit's entry is there, once, and with ⌃⌘F, is not observed: nobody here has a Mac, and `docs/macos-testing.md` asks.
+- **Everywhere:** Escape leaves once no list, picker, sheet or notice is open, and the exit pill and the camera panel's footer button leave on a click.
+
+**Observed on 2026-11-08.** `test_f11_fills_the_monitor_and_escape_restores_the_window` presses F11 and Escape into the window and compares its rectangle with its monitor's and with the one it had (`tests/common/window_rect.rs`: `PostMessageW` and `GetWindowRect` on Windows, `xdotool` and `xrandr` on X11). It passed in the Windows guest, in KDE on X11 and in GNOME on X11. GNOME logs in to its overview, where no window is active and `xdotool windowactivate` succeeds without activating anything, so the helper closes the overview through GNOME Shell's `OverviewActive` property first (plan departure 6). In the Linux guest, driven over SSH with `xdotool` and screenshots taken with Pillow's `ImageGrab`:
+
+- GNOME on X11: full screen fills the monitor without the drawn menu bar or the sidebar, the long pill shows, the controls are gone at 4 s with the long pill still up, the picture is clean at 11 s apart from the loading line, and a pointer move brings the controls back with the short pill. Escape and a second F11 each restore the window's rectangle.
+- KDE on X11 with two screens (`vm up linux --screens 2`): a window on the second screen fills that screen and no other, and comes back where it was. A maximized window comes back maximized, through Escape and through F11.
+- i3: a tiled window goes to the whole screen and back into its tile, maximized included.
+
+Not observed: Wayland (KDE, GNOME, sway), where no tool in the guest can press a key into the app and the e2e case skips; the cursor hiding, which a screenshot does not show; the tray's hide and Close Window in full screen; and the Windows desktop beyond the e2e case (the native menu bar going, maximized, the cursor).
+
 ## One wallpaper per screen
 
 A publish is a plan over every monitor the session has (see [architecture.md](architecture.md) for the shape of it and [rendering.md](rendering.md) for the geometry). What differs per platform is two thin functions: enumerate the monitors, and hand the desktop N files instead of one. That split is deliberate, because it is what makes a Linux guest with two heads evidence about the model rather than only about Linux.

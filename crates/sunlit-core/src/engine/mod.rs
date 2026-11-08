@@ -555,13 +555,15 @@ impl Engine {
                 self.drain.next = Duration::ZERO;
             }
             EngineCommand::Shutdown => {
-                self.held = None;
                 // A publish asked for in the same drain batch as the shutdown,
                 // or one still waiting for its tiles, is still someone's
                 // request, and there is no tick left to do it in or to wait
-                // in.
+                // in. The wallpaper shows the clock; an export keeps the held
+                // instant.
                 if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
+                    let held = self.held.take();
                     self.publish_wallpaper_at_exit();
+                    self.held = held;
                 }
                 // A caller waiting on an export is answered with what is
                 // resident rather than with a closed channel.

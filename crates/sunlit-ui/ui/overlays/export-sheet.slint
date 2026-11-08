@@ -1,0 +1,374 @@
+// File > Export Image…: a card over the whole main window that saves the view
+// as an image file. `export.rs` fills `ExportState` and answers its callbacks;
+// the backdrop takes every click and scroll, so while the card is open the
+// window behind it takes no input.
+
+import { Button, ComboBox, LineEdit, Slider, ProgressIndicator, Palette, ScrollView } from "std-widgets.slint";
+
+export global ExportState {
+    // The Size list: the monitors, the common sizes, and Custom last.
+    in property <[string]> sizes;
+    in-out property <int> size-index;
+    in-out property <string> width-text;
+    in-out property <string> height-text;
+    // 0 is PNG, 1 is JPEG, the order of `formats`.
+    in property <[string]> formats: ["PNG", "JPEG"];
+    in-out property <int> format-index;
+    // The PNG levels the slider offers, and the slider's position among them.
+    in property <[int]> png-levels: [1, 2, 3, 5, 6, 7, 8, 9];
+    in-out property <float> png-position: 2;
+    in-out property <float> jpeg-quality: 90;
+    in-out property <string> path;
+    in property <bool> replace-warning;
+    in property <image> thumbnail;
+    // Whether what the export draws is resident.
+    in property <bool> ready;
+    in property <bool> exporting;
+    in property <bool> cancelling;
+    in property <float> progress;
+    // The progress bar and the status line, shown from the start of an
+    // export until the next change in the sheet.
+    in property <bool> status-shown;
+    in property <bool> progress-shown;
+    in property <string> status;
+    in property <bool> saved;
+
+    callback size-chosen(int);
+    callback size-edited();
+    callback format-chosen(int);
+    callback path-edited();
+    callback browse();
+    callback export();
+    callback cancel();
+    callback show-in-folder();
+    // The × button, Close and Esc. Cancels a running export first.
+    callback close();
+
+    out property <int> png-level: png-levels[clamp(round(png-position), 0, png-levels.length - 1)];
+    out property <bool> can-export: ready && !exporting
+        && width-text.is-float() && width-text.to-float() >= 1
+        && height-text.is-float() && height-text.to-float() >= 1
+        && path != "";
+}
+
+component FieldLabel inherits Text {
+    color: Palette.foreground;
+    font-size: 12px;
+    vertical-alignment: center;
+}
+
+component CloseButton inherits Rectangle {
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    background: touch.pressed ? Palette.foreground.with-alpha(0.2)
+        : touch.has-hover ? Palette.foreground.with-alpha(0.1)
+        : transparent;
+
+    Image {
+        width: 12px;
+        height: 12px;
+        source: @image-url("../icons/close.svg");
+        colorize: Palette.foreground;
+    }
+
+    touch := TouchArea {
+        accessible-role: button;
+        accessible-label: "Close";
+        accessible-action-default => { root.clicked(); }
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ExportSheet inherits Rectangle {
+    out property <length> card-x: card.x;
+    out property <length> card-y: card.y;
+    out property <length> card-width: card.width;
+    out property <length> card-height: card.height;
+
+    background: #0000008c;
+
+    function export-or-cancel() {
+        if ExportState.exporting {
+            ExportState.cancel();
+        } else if ExportState.can-export {
+            ExportState.export();
+        }
+    }
+
+    init => {
+        keys.focus();
+    }
+
+    TouchArea {
+        scroll-event(event) => {
+            return accept;
+        }
+    }
+
+    keys := FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => { ExportState.close(); }
+        }
+
+        KeyBinding {
+            keys: @keys(Return);
+            activated => {
+                if ExportState.can-export {
+                    ExportState.export();
+                }
+            }
+        }
+
+        card := Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: max(8px, (parent.height - self.height) / 2);
+            width: min(520px, parent.width - 16px);
+            height: min(card-layout.preferred-height, parent.height - 16px);
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Palette.border;
+            background: Palette.background;
+            drop-shadow-blur: 22px;
+            drop-shadow-offset-y: 6px;
+            drop-shadow-color: #00000073;
+
+            TouchArea {
+                scroll-event(event) => {
+                    return accept;
+                }
+            }
+
+            card-layout := VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    vertical-stretch: 0;
+
+                    Text {
+                        text: "Export Image";
+                        color: Palette.foreground;
+                        font-size: 15px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    close-button := CloseButton {
+                        clicked => { ExportState.close(); }
+                    }
+                }
+
+                body := ScrollView {
+                    vertical-stretch: 1;
+                    min-height: 40px;
+                    preferred-height: body-layout.preferred-height;
+                    content-height: body-layout.preferred-height;
+
+                    body-layout := VerticalLayout {
+                        width: body.visible-width;
+                        spacing: 14px;
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            thumbnail-box := Rectangle {
+                                width: 168px;
+                                height: 112px;
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: Palette.border;
+                                background: #000000;
+                                clip: true;
+
+                                Image {
+                                    width: parent.width - 2px;
+                                    height: parent.height - 2px;
+                                    source: ExportState.thumbnail;
+                                    image-fit: contain;
+                                    accessible-role: image;
+                                    accessible-label: "What the export shows";
+                                }
+                            }
+
+                            GridLayout {
+                                spacing-horizontal: 10px;
+                                spacing-vertical: 10px;
+
+                                Row {
+                                    FieldLabel { text: "Size"; }
+                                    size-combo := ComboBox {
+                                        model: ExportState.sizes;
+                                        current-index <=> ExportState.size-index;
+                                        selected => { ExportState.size-chosen(self.current-index); }
+                                    }
+                                }
+
+                                Row {
+                                    FieldLabel { text: "Width"; }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+
+                                        width-edit := LineEdit {
+                                            min-width: 48px;
+                                            horizontal-stretch: 1;
+                                            input-type: number;
+                                            text <=> ExportState.width-text;
+                                            accessible-label: "Width";
+                                            edited => { ExportState.size-edited(); }
+                                            accepted => { root.export-or-cancel(); }
+                                        }
+
+                                        FieldLabel { text: "×"; }
+
+                                        height-edit := LineEdit {
+                                            min-width: 48px;
+                                            horizontal-stretch: 1;
+                                            input-type: number;
+                                            text <=> ExportState.height-text;
+                                            accessible-label: "Height";
+                                            edited => { ExportState.size-edited(); }
+                                            accepted => { root.export-or-cancel(); }
+                                        }
+
+                                        swap-button := Button {
+                                            text: "Swap";
+                                            clicked => {
+                                                let width = ExportState.width-text;
+                                                ExportState.width-text = ExportState.height-text;
+                                                ExportState.height-text = width;
+                                                ExportState.size-edited();
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Row {
+                                    FieldLabel { text: "Format"; }
+                                    format-combo := ComboBox {
+                                        model: ExportState.formats;
+                                        current-index <=> ExportState.format-index;
+                                        selected => { ExportState.format-chosen(self.current-index); }
+                                    }
+                                }
+
+                                Row {
+                                    setting-label := FieldLabel {
+                                        text: ExportState.format-index == 0 ? "Compression" : "Quality";
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        if ExportState.format-index == 0 : png-slider := Slider {
+                                            minimum: 0;
+                                            maximum: ExportState.png-levels.length - 1;
+                                            step: 1;
+                                            horizontal-stretch: 1;
+                                            value <=> ExportState.png-position;
+                                            accessible-label: "Compression";
+                                        }
+
+                                        if ExportState.format-index != 0 : jpeg-slider := Slider {
+                                            minimum: 1;
+                                            maximum: 100;
+                                            step: 1;
+                                            horizontal-stretch: 1;
+                                            value <=> ExportState.jpeg-quality;
+                                            accessible-label: "Quality";
+                                        }
+
+                                        setting-value := FieldLabel {
+                                            text: ExportState.format-index == 0 ? ExportState.png-level : round(ExportState.jpeg-quality);
+                                            min-width: 24px;
+                                            horizontal-alignment: right;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                FieldLabel { text: "Save to"; }
+
+                                path-edit := LineEdit {
+                                    horizontal-stretch: 1;
+                                    text <=> ExportState.path;
+                                    accessible-label: "Save to";
+                                    edited => { ExportState.path-edited(); }
+                                    accepted => { root.export-or-cancel(); }
+                                }
+
+                                browse-button := Button {
+                                    text: "Browse…";
+                                    clicked => { ExportState.browse(); }
+                                }
+                            }
+
+                            if ExportState.replace-warning : replace-warning := FieldLabel {
+                                text: "This file will be replaced.";
+                                color: Palette.foreground.with-alpha(0.75);
+                                horizontal-alignment: right;
+                            }
+                        }
+
+                        if ExportState.status-shown : VerticalLayout {
+                            spacing: 6px;
+
+                            if ExportState.progress-shown : ProgressIndicator {
+                                height: 6px;
+                                progress: ExportState.progress;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+
+                                status-line := FieldLabel {
+                                    text: ExportState.status;
+                                    color: Palette.foreground.with-alpha(0.75);
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+
+                                if ExportState.saved : show-folder-button := Button {
+                                    text: "Show in Folder";
+                                    clicked => { ExportState.show-in-folder(); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    vertical-stretch: 0;
+
+                    close-sheet-button := Button {
+                        text: "Close";
+                        clicked => { ExportState.close(); }
+                    }
+
+                    export-button := Button {
+                        text: ExportState.exporting ? "Cancel" : "Export";
+                        primary: !ExportState.exporting;
+                        enabled: ExportState.exporting ? !ExportState.cancelling : ExportState.can-export;
+                        clicked => { root.export-or-cancel(); }
+                    }
+                }
+            }
+        }
+    }
+}

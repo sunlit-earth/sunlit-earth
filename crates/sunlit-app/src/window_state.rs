@@ -161,6 +161,7 @@ pub fn toggle(window: &MainWindow, engine: &EngineLink) -> bool {
 ///
 /// :param engine: the engine whose preview follows the window
 pub fn hidden(engine: &EngineLink) {
+    crate::export::close();
     notify_visibility(false);
     engine.set_preview_enabled(false);
     platform::hidden(keeps_dock_icon(others_visible()));

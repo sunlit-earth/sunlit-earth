@@ -226,7 +226,10 @@ pub fn event_forwarder(
                 }
             });
         }
-        EngineEvent::TexturesReady => on_textures_ready(),
+        EngineEvent::TexturesReady => {
+            on_textures_ready();
+            let _ = slint::invoke_from_event_loop(crate::export::textures_ready);
+        }
         EngineEvent::MonitorsChanged(monitors) => {
             // The count first, so the suite can wait for the reaction instead
             // of sleeping and hoping. In the voice of `wallpaper_set`.
@@ -264,8 +267,12 @@ pub fn event_forwarder(
         }
         // The engine's own publish gate waits for the layer's first answer,
         // so no wallpaper the running app asks for needs this event. The
+        // export sheet does, since its exports are not publishes; the
         // one-shot commands read it to say why a picture has no clouds.
-        EngineEvent::CloudsSettled { .. } => {}
+        EngineEvent::CloudsSettled { .. } => {
+            crate::export::CLOUDS.settled.store(true, Ordering::Relaxed);
+            let _ = slint::invoke_from_event_loop(crate::export::clouds_settled);
+        }
         EngineEvent::Excursion(state) => {
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {

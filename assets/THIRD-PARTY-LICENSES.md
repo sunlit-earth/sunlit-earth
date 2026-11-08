@@ -135,7 +135,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `fnv 1.0.7`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/servo/rust-fnv
 - `foldhash 0.1.5`, [Zlib](#license-17), https://github.com/orlp/foldhash
 - `foldhash 0.2.0`, [Zlib](#license-17), https://github.com/orlp/foldhash
-- `font-types 0.11.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `font-types 0.12.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `fontdb 0.24.0`, [MIT](#license-13), https://github.com/RazrFalcon/fontdb
 - `fontique 0.11.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
@@ -287,6 +286,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `objc2-foundation 0.3.2`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-metal 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2-quartz-core 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
+- `objc2-uniform-type-identifiers 0.3.2`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
 - `once_cell 1.21.4`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/matklad/once_cell
 - `once_cell_polyfill 1.70.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/polyfill-rs/once_cell_polyfill
 - `option-ext 0.2.0`, [MPL-2.0](#license-14), https://github.com/soc/option-ext.git
@@ -318,6 +318,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `png 0.18.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/image-rs/image-png
 - `polling 3.11.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/smol-rs/polling
 - `pollster 0.4.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/zesterer/pollster
+- `pollster 1.0.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/zesterer/pollster
 - `portable-atomic 1.13.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/taiki-e/portable-atomic
 - `potential_utf 0.1.4`, [Unicode-3.0](#license-15), https://github.com/unicode-org/icu4x
 - `powerfmt 0.2.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/jhpratt/powerfmt
@@ -335,7 +336,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `raw-window-handle 0.6.2`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/rust-windowing/raw-window-handle
 - `rayon 1.11.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rayon-rs/rayon
 - `rayon-core 1.13.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rayon-rs/rayon
-- `read-fonts 0.39.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `read-fonts 0.41.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `recvmsg 1.0.0`, [0BSD](#license-1)
 - `regex-automata 0.4.14`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/regex
@@ -343,6 +343,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `renderdoc-sys 1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/ebkalderon/renderdoc-rs
 - `resize 0.8.9`, [MIT](#license-13), https://github.com/PistonDevelopers/resize.git
 - `resvg 0.48.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/resvg
+- `rfd 0.18.0`, [MIT](#license-13), https://github.com/PolyMeilex/rfd
 - `rgb 0.8.53`, [MIT](#license-13), https://github.com/kornelski/rust-rgb
 - `ring 0.17.14`, [Apache-2.0](#license-2) AND [ISC](#license-9), https://github.com/briansmith/ring
 - `rowan 0.17.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-analyzer/rowan
@@ -373,7 +374,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `simplecss 0.2.2`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/simplecss
 - `single-instance 0.3.3`, [MIT](#license-13), https://github.com/WLBF/single-instance
 - `siphasher 1.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/jedisct1/rust-siphash
-- `skrifa 0.42.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `skrifa 0.44.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `slab 0.4.12`, [MIT](#license-13), https://github.com/tokio-rs/slab
 - `slint 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint

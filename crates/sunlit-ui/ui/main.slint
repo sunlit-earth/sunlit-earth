@@ -4,6 +4,7 @@ import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } fr
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
 import { VersionNotice } from "overlays/version-notice.slint";
+import { ExportSheet } from "overlays/export-sheet.slint";
 import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 import { ExitPill } from "overlays/exit-pill.slint";
@@ -19,6 +20,7 @@ export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
 export { OverlayHints, OverlayStyle } from "overlays/common.slint";
 export { FrameGuide } from "overlays/frame-guides.slint";
 export { TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
+export { ExportState } from "overlays/export-sheet.slint";
 
 // The settings behind the Advanced section, one struct per group, nested the
 // way the panel nests its subsections. The nesting is the one statement of
@@ -319,6 +321,15 @@ export component MainWindow inherits Window {
     in-out property <bool> version-notice-open;
     in property <string> version-notice-running;
     in property <string> version-notice-launched;
+    // File > Export Image…, which Rust opens and closes through `export.rs`
+    // so the scene is held while it is open.
+    in-out property <bool> export-sheet-open;
+    callback open-export-sheet();
+    changed export-sheet-open => {
+        if !self.export-sheet-open {
+            preview-keys.focus();
+        }
+    }
     // The notice's "Quit Sunlit Earth" and the File menu's Quit, which end the
     // app like the tray's Quit.
     callback quit-app();
@@ -727,35 +738,47 @@ export component MainWindow inherits Window {
 
     // Native on Windows and macOS, drawn inside the window on Linux. Commands
     // that have a control in the panel call that control's callback. Only
-    // Quit, Enter Full Screen and Mouse and Keyboard have shortcuts, all of
-    // them keys a text field has no use for: a menu shortcut works in the
-    // whole window, so the preview's single letter keys would fire from a text
-    // field, and Ctrl + W moves the frame. In full screen the bar goes, apart
-    // from macOS's, which is the system's and which the system hides.
+    // Export Image…, Quit, Enter Full Screen and Mouse and Keyboard have
+    // shortcuts, all of them keys a text field has no use for: a menu shortcut
+    // works in the whole window, so the preview's single letter keys would
+    // fire from a text field, and Ctrl + W moves the frame. In full screen the
+    // bar goes, apart from macOS's, which is the system's and which the system
+    // hides.
     MenuBar {
         visible: !root.full-screen || Platform.os == OperatingSystemType.macos;
         Menu {
             title: "File";
             MenuItem {
+                enabled: !root.export-sheet-open;
+                title: "Export Image…";
+                shortcut: @keys(Control + E);
+                activated => { root.open-export-sheet(); }
+            }
+            MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Set as Wallpaper";
                 activated => { root.set-wallpaper(); }
             }
             MenuSeparator {}
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Revert to Saved";
                 activated => { root.reset(); }
             }
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Load Defaults";
                 activated => { root.load-defaults(); }
             }
             MenuSeparator {}
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Close Window";
                 activated => { root.close-window(); }
             }
             // macOS has Quit, with Command + Q, in the App menu Slint builds.
             if Platform.os != OperatingSystemType.macos : MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Quit";
                 shortcut: @keys(Control + Q);
                 activated => { root.quit-app(); }
@@ -764,6 +787,7 @@ export component MainWindow inherits Window {
         Menu {
             title: "View";
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Reset Camera";
                 activated => { root.reset-camera(); }
             }
@@ -772,14 +796,17 @@ export component MainWindow inherits Window {
             // 1.18 rebuilds the whole native menu on any such change, and on
             // Windows the rebuild flashes the preview white.
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Toggle Controls";
                 activated => { root.overlays-hidden = !root.overlays-hidden; }
             }
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Toggle Frame Guides";
                 activated => { root.guides-shown = !root.guides-shown; }
             }
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Toggle Time Bar Pin";
                 activated => { root.time-bar-pinned = !root.time-bar-pinned; }
             }
@@ -795,25 +822,30 @@ export component MainWindow inherits Window {
         Menu {
             title: "Help";
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Mouse and Keyboard";
                 shortcut: @keys(F1);
                 activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
             }
             MenuSeparator {}
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Website";
                 activated => { root.open-url(Links.website); }
             }
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Report an Issue…";
                 activated => { root.open-url(Links.new-issue); }
             }
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "Open Data Folder";
                 activated => { root.open-data-folder(); }
             }
             MenuSeparator {}
             MenuItem {
+                enabled: !root.export-sheet-open;
                 title: "About Sunlit Earth";
                 activated => { root.show-about(); }
             }
@@ -2510,9 +2542,13 @@ export component MainWindow inherits Window {
                 if down && (image-container.alt-down || event.modifiers.alt) {
                     image-container.release-keys-held-by-text();
                 }
-                // Ctrl + Q is the menu's Quit, and the window hands a release
-                // of Q under Ctrl to the menu rather than to the preview, so a
-                // held Q is let go here or it would roll on after it was.
+                // Ctrl + E is the menu's Export Image… and Ctrl + Q its Quit,
+                // and the window hands a release of E or Q under Ctrl to the
+                // menu rather than to the preview, so a held E or Q is let go
+                // here or it would roll on after it was.
+                if down {
+                    image-container.key-e = false;
+                }
                 if down && Platform.os != OperatingSystemType.macos {
                     image-container.key-q = false;
                 }
@@ -3019,12 +3055,20 @@ export component MainWindow inherits Window {
                 lit-zoom: image-container.wheel-turning || image-container.key-plus || image-container.key-minus;
                 lit-look: image-container.gesture == "look" || image-container.key-gesture == "look";
                 lit-frame: image-container.gesture == "frame" || image-container.key-gesture == "frame";
-                stick(which, x, y, seconds) => { root.camera-stick(which, x, y, seconds); }
+                stick(which, x, y, seconds) => {
+                    if !root.export-sheet-open {
+                        root.camera-stick(which, x, y, seconds);
+                    }
+                }
                 orbit-step(right, up) => { root.camera-orbit-step(right, up); }
                 roll(degrees) => { root.camera-roll(degrees); }
                 reset(which) => { root.camera-reset(which); }
                 zoom-step(direction) => { root.camera-zoom-step(direction); }
-                zoom-rate(direction, seconds) => { root.camera-zoom-rate(direction, seconds); }
+                zoom-rate(direction, seconds) => {
+                    if !root.export-sheet-open {
+                        root.camera-zoom-rate(direction, seconds);
+                    }
+                }
                 zoom-changed => { root.sliders-changed(); }
                 used(control) => { image-container.teach(control); }
                 show-shortcuts => {
@@ -3160,6 +3204,13 @@ export component MainWindow inherits Window {
                 font-size: 12px;
             }
         }
+    }
+
+    if root.export-sheet-open : export-sheet := ExportSheet {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
     }
 
     // The switch's first frame: black over the whole window and nothing on

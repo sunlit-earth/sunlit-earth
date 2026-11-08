@@ -77,6 +77,7 @@ pub fn reset_camera(window: &MainWindow) {
 ///
 /// :param window: the main window
 pub fn quit(window: &MainWindow) {
+    crate::export::close();
     save_geometry(window);
     debug!("quitting the event loop");
     slint::quit_event_loop().ok();

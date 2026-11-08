@@ -410,6 +410,29 @@ pub struct AppConfig {
     pub window_y: Option<i32>,
     pub window_width: Option<u32>,
     pub window_height: Option<u32>,
+
+    // File > Export Image…, saved after an export that succeeded.
+    /// The size last exported; `None` until the first export, which starts
+    /// from the anchor screen's size.
+    pub export_width: Option<u32>,
+    pub export_height: Option<u32>,
+    pub export_format: ExportFormat,
+    /// The PNG deflate level, 1 to 9.
+    pub export_png_compression: u8,
+    /// The JPEG quality, 1 to 100.
+    pub export_jpeg_quality: u8,
+    /// Where the last export went, without its extension; empty before the
+    /// first, which starts from the Pictures folder.
+    pub export_path: String,
+}
+
+/// The file format File > Export Image… writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Png,
+    Jpeg,
 }
 
 impl AppConfig {
@@ -523,6 +546,12 @@ impl Default for AppConfig {
             window_y: None,
             window_width: None,
             window_height: None,
+            export_width: None,
+            export_height: None,
+            export_format: ExportFormat::Png,
+            export_png_compression: 3,
+            export_jpeg_quality: 90,
+            export_path: String::new(),
         }
     }
 }
@@ -921,6 +950,12 @@ mod tests {
             window_y: Some(200),
             window_width: Some(1024),
             window_height: Some(768),
+            export_width: Some(5120),
+            export_height: Some(1440),
+            export_format: ExportFormat::Jpeg,
+            export_png_compression: 7,
+            export_jpeg_quality: 75,
+            export_path: "/pictures/globe".to_owned(),
         };
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
@@ -1065,6 +1100,7 @@ sky_fov = 111.0
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "one literal names every key")]
     fn save_and_load_round_trip() {
         let scratch = ScratchDir::new("config_roundtrip");
         let path = scratch.join("config.toml");
@@ -1160,6 +1196,12 @@ sky_fov = 111.0
             window_y: Some(75),
             window_width: Some(800),
             window_height: Some(600),
+            export_width: Some(800),
+            export_height: Some(1600),
+            export_format: ExportFormat::Jpeg,
+            export_png_compression: 9,
+            export_jpeg_quality: 60,
+            export_path: "/elsewhere/earth".to_owned(),
         };
 
         save_config_to(&config, &path);

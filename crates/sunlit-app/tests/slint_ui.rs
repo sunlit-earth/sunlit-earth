@@ -1892,6 +1892,7 @@ fn wired_window() -> (
     (window, sent)
 }
 
+/// [`wired_window`] and the link its callbacks send through.
 fn wired_window_and_link() -> (
     MainWindow,
     crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
@@ -7753,4 +7754,282 @@ fn test_a_system_entry_at_the_size_drawn_already_ends_the_cover() {
     assert!(!window.get_switch_cover(), "the frame shown is the one");
     let_pass(250);
     assert_eq!(notices(&window), 0);
+}
+
+// ---------------------------------------------------------------------------
+// The export sheet
+// ---------------------------------------------------------------------------
+
+/// A wired window with the export sheet's controller behind it and the sheet
+/// opened through File > Export Image….
+fn export_sheet() -> (
+    MainWindow,
+    crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+) {
+    let (window, sent, link) = wired_window_and_link();
+    let screens = sunlit_earth::displays::shared_monitors();
+    sunlit_earth::export::register(&window, &link, &screens);
+    choose(&window, "File", "Export Image…");
+    assert!(
+        window.get_export_sheet_open(),
+        "Export Image… opens the sheet"
+    );
+    (window, sent)
+}
+
+fn export_state(window: &MainWindow) -> sunlit_earth::ExportState<'_> {
+    window.global::<sunlit_earth::ExportState>()
+}
+
+/// The one element with this accessible label and role.
+fn the_labelled(window: &MainWindow, label: &str, role: AccessibleRole) -> ElementHandle {
+    let found: Vec<_> = labelled(window, label)
+        .into_iter()
+        .filter(|element| element.accessible_role() == Some(role))
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one {role:?} labelled {label}"
+    );
+    found.into_iter().next().expect("one element")
+}
+
+fn holds(sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>) -> Vec<bool> {
+    sent.try_iter()
+        .filter_map(|command| match command {
+            sunlit_core::engine::EngineCommand::Hold(hold) => Some(hold),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Opening the sheet holds the scene, and Export waits for it to be ready.
+#[test]
+fn test_export_waits_for_the_scene() {
+    let (window, sent) = export_sheet();
+    assert_eq!(holds(&sent), [true]);
+    let export = the_labelled(&window, "Export", AccessibleRole::Button);
+    assert_eq!(export.accessible_enabled(), Some(false));
+    sunlit_earth::export::textures_ready();
+    assert_eq!(export.accessible_enabled(), Some(true));
+}
+
+/// One slider, which is Compression for PNG and Quality for JPEG, and each
+/// format keeps its own value across a switch.
+#[test]
+fn test_the_slider_follows_the_format_and_each_keeps_its_value() {
+    let (window, _sent) = export_sheet();
+    let state = export_state(&window);
+    let choose_format = |index: i32| {
+        state.set_format_index(index);
+        state.invoke_format_chosen(index);
+    };
+    let sliders = |window: &MainWindow, label: &str| {
+        labelled(window, label)
+            .into_iter()
+            .filter(|element| element.accessible_role() == Some(AccessibleRole::Slider))
+            .count()
+    };
+
+    choose_format(0);
+    assert_eq!(sliders(&window, "Quality"), 0);
+    the_labelled(&window, "Compression", AccessibleRole::Slider).set_accessible_value("0");
+    let png = state.get_png_level();
+
+    choose_format(1);
+    assert_eq!(sliders(&window, "Compression"), 0);
+    the_labelled(&window, "Quality", AccessibleRole::Slider).set_accessible_value("42");
+    approx::assert_relative_eq!(state.get_jpeg_quality(), 42.0);
+
+    choose_format(0);
+    assert_eq!(state.get_png_level(), png);
+    choose_format(1);
+    approx::assert_relative_eq!(state.get_jpeg_quality(), 42.0);
+}
+
+/// A size no entry has selects Custom, one an entry has selects that entry,
+/// and Swap exchanges width and height.
+#[test]
+fn test_the_size_fields_pick_their_entry_and_swap() {
+    let (window, _sent) = export_sheet();
+    let state = export_state(&window);
+    let sizes: Vec<String> = slint::Model::iter(&state.get_sizes())
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(sizes.last().map(String::as_str), Some("Custom"));
+    let custom = i32::try_from(sizes.len() - 1).unwrap();
+
+    let width = the_labelled(&window, "Width", AccessibleRole::TextInput);
+    let height = the_labelled(&window, "Height", AccessibleRole::TextInput);
+    width.set_accessible_value("1234");
+    height.set_accessible_value("567");
+    assert_eq!(state.get_size_index(), custom);
+
+    width.set_accessible_value("1920");
+    height.set_accessible_value("1080");
+    let index = usize::try_from(state.get_size_index()).unwrap();
+    assert!(
+        sizes[index].contains("1920 × 1080"),
+        "{} is selected for 1920 × 1080",
+        sizes[index]
+    );
+
+    the_labelled(&window, "Swap", AccessibleRole::Button).invoke_accessible_default_action();
+    assert_eq!(state.get_width_text(), "1080");
+    assert_eq!(state.get_height_text(), "1920");
+}
+
+/// The path field takes edits while an export runs, its extension picks the
+/// format, and the warning under it appears for a file that exists.
+#[test]
+fn test_the_path_field_stays_editable_and_warns_before_replacing() {
+    let (window, _sent) = export_sheet();
+    let state = export_state(&window);
+    let warnings = |window: &MainWindow| labelled(window, "This file will be replaced.").len();
+
+    let existing =
+        std::env::temp_dir().join(format!("sunlit-export-sheet-{}.png", std::process::id()));
+    std::fs::write(&existing, b"").unwrap();
+    let field = the_labelled(&window, "Save to", AccessibleRole::TextInput);
+    field.set_accessible_value(existing.display().to_string());
+    let warned = warnings(&window);
+    std::fs::remove_file(&existing).unwrap();
+    assert_eq!(warned, 1, "no warning for a file that exists");
+    assert_eq!(state.get_format_index(), 0);
+
+    field.set_accessible_value(existing.with_extension("jpg").display().to_string());
+    assert_eq!(
+        warnings(&window),
+        0,
+        "a warning for a file that is not there"
+    );
+    assert_eq!(
+        state.get_format_index(),
+        1,
+        "the extension picks the format"
+    );
+
+    state.set_exporting(true);
+    assert_eq!(field.accessible_enabled(), Some(true));
+    field.set_accessible_value("/elsewhere/earth.png");
+    assert_eq!(state.get_path(), "/elsewhere/earth.png");
+    state.set_exporting(false);
+}
+
+/// Esc, the × button and Close each close the sheet and let the scene go; a
+/// click on the backdrop does not.
+#[test]
+fn test_the_sheet_closes_on_esc_and_its_buttons_but_not_the_backdrop() {
+    use slint::platform::Key;
+
+    let (window, sent) = export_sheet();
+    press_at(&window, slint::LogicalPosition::new(4.0, 200.0));
+    assert!(
+        window.get_export_sheet_open(),
+        "a click on the backdrop closed it"
+    );
+    tap(&window, Key::Escape);
+    assert!(!window.get_export_sheet_open(), "Esc left it open");
+    assert_eq!(holds(&sent), [true, false]);
+
+    choose(&window, "File", "Export Image…");
+    let closers = labelled(&window, "Close").len();
+    assert_eq!(closers, 2, "the × button and Close");
+    for index in 0..closers {
+        if !window.get_export_sheet_open() {
+            choose(&window, "File", "Export Image…");
+        }
+        labelled(&window, "Close")[index].invoke_accessible_default_action();
+        assert!(
+            !window.get_export_sheet_open(),
+            "Close button {index} left it open"
+        );
+    }
+    assert_eq!(holds(&sent), [true, false, true, false]);
+}
+
+/// While the sheet is open the menus are disabled, and nothing over the
+/// preview or the panel gets through: a click, a drag, the wheel and a
+/// preview shortcut change nothing. Closing it gives the preview the keyboard
+/// again.
+#[test]
+fn test_the_open_sheet_blocks_the_window_behind_it() {
+    let (window, sent) = export_sheet();
+    let (count, call) = counter();
+    window.on_set_wallpaper(call);
+    menu_texts(&window, "File")[0].mock_single_click(slint::platform::PointerEventButton::Left);
+    for item in menu_texts(&window, "Set as Wallpaper") {
+        item.mock_single_click(slint::platform::PointerEventButton::Left);
+    }
+    assert_eq!(*count.borrow(), 0, "a menu item worked under the sheet");
+    assert!(window.get_export_sheet_open());
+
+    let mut orientation = window.get_camera_orientation();
+    orientation.tilt = 120.0;
+    window.set_camera_orientation(orientation);
+    let position = window.get_camera_position();
+    let _ = sent.try_iter().count();
+
+    let globe = slint::LogicalPosition::new(900.0, 300.0);
+    let panel = slint::LogicalPosition::new(100.0, 300.0);
+    for at in [globe, panel] {
+        let to = slint::LogicalPosition::new(at.x + 80.0, at.y + 40.0);
+        press_at(&window, at);
+        hold_at(&window, at);
+        drag_to(&window, to);
+        release_at(&window, to);
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: at,
+                delta_x: 0.0,
+                delta_y: -400.0,
+            });
+    }
+    tap(&window, "n");
+    tap(&window, "+");
+    let_pass(400);
+    assert_eq!(window.get_camera_position(), position);
+    approx::assert_relative_eq!(window.get_camera_orientation().tilt, 120.0);
+    assert!(
+        sent.try_iter()
+            .all(|command| !matches!(command, sunlit_core::engine::EngineCommand::UpdateParams(_))),
+        "the scene changed under the sheet"
+    );
+
+    sunlit_earth::export::close();
+    assert!(!window.get_export_sheet_open());
+    tap(&window, "n");
+    let_pass(400);
+    approx::assert_relative_eq!(window.get_camera_orientation().tilt, 0.0);
+}
+
+/// At the main window's minimum width and a short height the card's Export
+/// and Close buttons are inside the window.
+#[test]
+fn test_the_cards_buttons_fit_the_smallest_window() {
+    let (window, _sent) = export_sheet();
+    let (width, height) = (window.get_window_min_width(), 320.0);
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(width, height));
+    window.window().request_redraw();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+    for label in ["Export", "Close"] {
+        for element in labelled(&window, label)
+            .into_iter()
+            .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
+        {
+            let at = element.absolute_position();
+            let size = element.size();
+            assert!(
+                at.x >= 0.0
+                    && at.y >= 0.0
+                    && at.x + size.width <= width + 0.5
+                    && at.y + size.height <= height + 0.5,
+                "{label} at {at:?} {size:?} is outside {width} × {height}"
+            );
+        }
+    }
 }

@@ -4,7 +4,7 @@ import { OverlayHint, OverlayHints, OverlayStyle, GestureTip, OverlayButton } fr
 import { CameraPanel, CameraStick, CameraReset } from "overlays/camera-panel.slint";
 import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
 import { VersionNotice } from "overlays/version-notice.slint";
-import { ExportSheet } from "overlays/export-sheet.slint";
+import { ExportSheet, ExportState } from "overlays/export-sheet.slint";
 import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 import { ExitPill } from "overlays/exit-pill.slint";
@@ -328,6 +328,15 @@ export component MainWindow inherits Window {
     changed export-sheet-open => {
         if !self.export-sheet-open {
             preview-keys.focus();
+        }
+    }
+    // A menu item chosen while the sheet is open closes it as Close does, then
+    // does its own job. No menu property may follow the sheet: on Windows Slint
+    // rebuilds the whole native menu when one changes, with the window's
+    // redraw switched off meanwhile.
+    function leave-export-sheet() {
+        if root.export-sheet-open {
+            ExportState.close();
         }
     }
     // The notice's "Quit Sunlit Earth" and the File menu's Quit, which end the
@@ -749,66 +758,89 @@ export component MainWindow inherits Window {
         Menu {
             title: "File";
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Export Image…";
                 shortcut: @keys(Control + E);
-                activated => { root.open-export-sheet(); }
+                activated => {
+                    if root.export-sheet-open {
+                        ExportState.close();
+                    } else {
+                        root.open-export-sheet();
+                    }
+                }
             }
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Set as Wallpaper";
-                activated => { root.set-wallpaper(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.set-wallpaper();
+                }
             }
             MenuSeparator {}
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Revert to Saved";
-                activated => { root.reset(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.reset();
+                }
             }
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Load Defaults";
-                activated => { root.load-defaults(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.load-defaults();
+                }
             }
             MenuSeparator {}
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Close Window";
-                activated => { root.close-window(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.close-window();
+                }
             }
             // macOS has Quit, with Command + Q, in the App menu Slint builds.
             if Platform.os != OperatingSystemType.macos : MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Quit";
                 shortcut: @keys(Control + Q);
-                activated => { root.quit-app(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.quit-app();
+                }
             }
         }
         Menu {
             title: "View";
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Reset Camera";
-                activated => { root.reset-camera(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.reset-camera();
+                }
             }
             MenuSeparator {}
             // Nothing in the menu may read a property that changes: Slint
             // 1.18 rebuilds the whole native menu on any such change, and on
             // Windows the rebuild flashes the preview white.
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Toggle Controls";
-                activated => { root.overlays-hidden = !root.overlays-hidden; }
+                activated => {
+                    root.leave-export-sheet();
+                    root.overlays-hidden = !root.overlays-hidden;
+                }
             }
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Toggle Frame Guides";
-                activated => { root.guides-shown = !root.guides-shown; }
+                activated => {
+                    root.leave-export-sheet();
+                    root.guides-shown = !root.guides-shown;
+                }
             }
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Toggle Time Bar Pin";
-                activated => { root.time-bar-pinned = !root.time-bar-pinned; }
+                activated => {
+                    root.leave-export-sheet();
+                    root.time-bar-pinned = !root.time-bar-pinned;
+                }
             }
             // macOS has AppKit's own Enter Full Screen in View, with ⌃⌘F. The
             // shortcut works with the bar hidden too.
@@ -822,32 +854,42 @@ export component MainWindow inherits Window {
         Menu {
             title: "Help";
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Mouse and Keyboard";
                 shortcut: @keys(F1);
-                activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
+                activated => {
+                    root.leave-export-sheet();
+                    root.shortcut-sheet-open = !root.shortcut-sheet-open;
+                }
             }
             MenuSeparator {}
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Website";
-                activated => { root.open-url(Links.website); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.open-url(Links.website);
+                }
             }
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Report an Issue…";
-                activated => { root.open-url(Links.new-issue); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.open-url(Links.new-issue);
+                }
             }
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "Open Data Folder";
-                activated => { root.open-data-folder(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.open-data-folder();
+                }
             }
             MenuSeparator {}
             MenuItem {
-                enabled: !root.export-sheet-open;
                 title: "About Sunlit Earth";
-                activated => { root.show-about(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.show-about();
+                }
             }
         }
     }

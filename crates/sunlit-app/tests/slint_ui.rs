@@ -8092,22 +8092,12 @@ fn test_the_sheet_closes_on_esc_and_its_buttons_but_not_the_backdrop() {
     assert_eq!(holds(&sent), [true, false, true, false]);
 }
 
-/// While the sheet is open the menus are disabled, and nothing over the
-/// preview or the panel gets through: a click, a drag, the wheel and a
-/// preview shortcut change nothing. Closing it gives the preview the keyboard
-/// again.
+/// While the sheet is open nothing over the preview or the panel gets
+/// through: a click, a drag, the wheel and a preview shortcut change nothing.
+/// Closing it gives the preview the keyboard again.
 #[test]
 fn test_the_open_sheet_blocks_the_window_behind_it() {
     let (window, sent) = export_sheet();
-    let (count, call) = counter();
-    window.on_set_wallpaper(call);
-    menu_texts(&window, "File")[0].mock_single_click(slint::platform::PointerEventButton::Left);
-    for item in menu_texts(&window, "Set as Wallpaper") {
-        item.mock_single_click(slint::platform::PointerEventButton::Left);
-    }
-    assert_eq!(*count.borrow(), 0, "a menu item worked under the sheet");
-    assert!(window.get_export_sheet_open());
-
     let mut orientation = window.get_camera_orientation();
     orientation.tilt = 120.0;
     window.set_camera_orientation(orientation);
@@ -8146,6 +8136,118 @@ fn test_the_open_sheet_blocks_the_window_behind_it() {
     tap(&window, "n");
     let_pass(400);
     approx::assert_relative_eq!(window.get_camera_orientation().tilt, 0.0);
+}
+
+/// Every item of every menu works with the sheet open, closing it.
+#[test]
+fn test_every_menu_item_works_under_the_sheet() {
+    let items = [
+        ("File", "Set as Wallpaper"),
+        ("File", "Revert to Saved"),
+        ("File", "Load Defaults"),
+        ("File", "Close Window"),
+        ("View", "Reset Camera"),
+        ("View", "Controls"),
+        ("View", "Frame Guides"),
+        ("View", "Pin Time Bar"),
+        ("Help", "Mouse and Keyboard"),
+        ("Help", "Website"),
+        ("Help", "Report an Issue…"),
+        ("Help", "Open Data Folder"),
+        ("Help", "About Sunlit Earth"),
+    ];
+    for (menu, item) in items {
+        let (window, _sent) = export_sheet();
+        choose(&window, menu, item);
+        assert!(
+            !window.get_export_sheet_open(),
+            "{menu} > {item} left the sheet open"
+        );
+    }
+}
+
+/// No property of the menu bar reads the sheet's state, so nothing in the
+/// native menu changes when the sheet opens or closes. Read from the source,
+/// since the drawn menu reports no item's enabled state; callback bodies may
+/// read it.
+#[test]
+fn test_the_menus_do_not_follow_the_sheet() {
+    const MAIN: &str = include_str!("../../sunlit-ui/ui/main.slint");
+    let start = MAIN
+        .find("    MenuBar {")
+        .expect("main.slint has a MenuBar");
+    let mut depth = 0_usize;
+    let mut callback_depth: Option<usize> = None;
+    for line in MAIN[start..].lines() {
+        if callback_depth.is_none() && line.contains("=>") {
+            callback_depth = Some(depth);
+        }
+        if callback_depth.is_none() {
+            assert!(
+                !line.contains("export-sheet") && !line.contains("ExportState"),
+                "a menu property follows the sheet: {}",
+                line.trim()
+            );
+        }
+        depth = (depth + line.matches('{').count()).saturating_sub(line.matches('}').count());
+        if callback_depth.is_some_and(|outer| depth <= outer) {
+            callback_depth = None;
+        }
+        if depth == 0 {
+            break;
+        }
+    }
+    assert_eq!(depth, 0, "the MenuBar block ends");
+}
+
+/// A menu item chosen while the sheet is open closes the sheet and lets the
+/// scene go before it does its own job; Export Image… and a second Ctrl + E
+/// only close it.
+#[test]
+fn test_a_menu_item_closes_the_sheet_first() {
+    use slint::platform::Key;
+
+    let (window, sent) = export_sheet();
+    let open_when_called = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&open_when_called);
+    let weak = window.as_weak();
+    window.on_set_wallpaper(move || {
+        let window = weak.upgrade().expect("the window");
+        seen.borrow_mut().push(window.get_export_sheet_open());
+    });
+    choose(&window, "File", "Set as Wallpaper");
+    assert_eq!(*open_when_called.borrow(), [false], "Set as Wallpaper");
+    assert!(!window.get_export_sheet_open());
+    assert_eq!(holds(&sent), [true, false]);
+
+    choose(&window, "File", "Export Image…");
+    let guides = window.get_guides_shown();
+    choose(&window, "View", "Frame Guides");
+    assert!(!window.get_export_sheet_open(), "Frame Guides left it open");
+    assert_ne!(
+        window.get_guides_shown(),
+        guides,
+        "Frame Guides did nothing"
+    );
+    assert_eq!(holds(&sent), [true, false]);
+
+    choose(&window, "File", "Export Image…");
+    choose(&window, "File", "Export Image…");
+    assert!(
+        !window.get_export_sheet_open(),
+        "Export Image… left it open"
+    );
+    assert_eq!(holds(&sent), [true, false]);
+
+    key_down(&window, Key::Control);
+    tap(&window, "e");
+    key_up(&window, Key::Control);
+    assert!(window.get_export_sheet_open(), "Ctrl + E did not open it");
+    key_down(&window, Key::Control);
+    tap(&window, "e");
+    key_up(&window, Key::Control);
+    assert!(!window.get_export_sheet_open(), "Ctrl + E left it open");
+    assert_eq!(holds(&sent), [true, false]);
 }
 
 /// At the main window's minimum width and a short height the card's Export

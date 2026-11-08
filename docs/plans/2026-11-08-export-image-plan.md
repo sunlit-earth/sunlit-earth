@@ -273,6 +273,10 @@ cargo test
 
 6. **Case 19 does not watch the bar.** The e2e suite sees the app only through its `SIGNAL:` lines, and the plan's `export-image` command answers with the outcome alone, so "the sheet's progress reaches the end" is not asserted there. The controller sets the bar to its end on the same branch that prints `SIGNAL:exported`, and adding a progress line to the IPC contract for one assertion was not worth it. Case 19 checks the answer, the files' sizes and that they decode, and that nothing else is left in the folder.
 
+7. **A View toggle flips before the sheet closes.** Decision 1 has a menu item close the sheet and then do its job. A checkable `MenuItem` flips its own `checked`, which the View toggles bind two ways to their properties, before its `activated` runs, so Controls, Frame Guides and Pin Time Bar change their property first and close the sheet in `activated`. Every other item closes the sheet first. Nothing the three toggles change reads the sheet or the hold, so the result is the same as in the other order.
+
+8. **Test 16 reads the menu bar's source for "no menu property changes".** The menu bar the testing backend draws reports every item as enabled whatever its `enabled` says (a `enabled: !root.export-sheet-open` put back on one item left a check over `accessible_enabled` passing), so a check of the drawn items cannot see the property the plan names. `test_the_menus_do_not_follow_the_sheet` instead reads the `MenuBar` block of `main.slint` and fails on any line outside a callback body that names `export-sheet` or `ExportState`, which covers `enabled`, `checked`, `title` and `shortcut` alike. `test_every_menu_item_works_under_the_sheet` chooses every item with the sheet open and checks that it closes the sheet, which a disabled item would not; both fail with that one binding put back.
+
 ## Validation
 
 Round 1 (876964e..3d622f7): 3 majors and 3 minors, all fixed in b7cea96, a1029c2, 59dad28 and d5a4339.

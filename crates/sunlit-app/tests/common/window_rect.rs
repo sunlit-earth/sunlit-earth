@@ -184,7 +184,10 @@ mod imp {
         let (x, y) = (value("X")?, value("Y")?);
         let window = [x, y, x + value("WIDTH")?, y + value("HEIGHT")?];
         let monitors = run("xrandr", &["--listmonitors"])?;
-        let (cx, cy) = ((window[0] + window[2]) / 2, (window[1] + window[3]) / 2);
+        let (cx, cy) = (
+            i32::midpoint(window[0], window[2]),
+            i32::midpoint(window[1], window[3]),
+        );
         let monitor = monitors
             .lines()
             .filter_map(monitor_of)

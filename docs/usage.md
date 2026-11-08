@@ -85,13 +85,24 @@ cargo app -- displays --out ./plan
 
 The main window has three menus. On Windows they are in the window's own menu bar, on Linux the app draws them at the top of the window, and on macOS they are in the menu bar at the top of the screen, after the App menu every Mac app has.
 
-- **File**: Set as Wallpaper, Revert to Saved and Load Defaults do what the panel's three buttons do. Close Window does what the window's close button does: with a tray icon the app keeps running, without one it quits. Quit (Ctrl+Q) ends the app and remembers where the window was and how large. On macOS Quit is in the App menu instead, as ⌘Q.
+- **File**: Export Image… (Ctrl+E) saves the view as a picture file (Exporting an image, below). Set as Wallpaper, Revert to Saved and Load Defaults do what the panel's three buttons do. Close Window does what the window's close button does: with a tray icon the app keeps running, without one it quits. Quit (Ctrl+Q) ends the app and remembers where the window was and how large. On macOS Quit is in the App menu instead, as ⌘Q.
 - **View**: Reset Camera puts north up and the look and the frame back to their defaults, as the N and the two ↺ on the camera panel do, and keeps the position and the zoom. Toggle Controls, Toggle Frame Guides and Toggle Time Bar Pin do what H, F and the time bar's pin do. On Windows and Linux, Enter Full Screen (F11) is the last entry. On macOS the app adds no entry of its own and relies on the Enter Full Screen that macOS adds to View by itself, which has yet to be seen on a Mac; ⌃⌘F and the green title bar button work either way.
 - **Help**: Mouse and Keyboard (F1) opens and closes the sheet of every gesture and key; F1 works anywhere in the window, a text field included. Website and Report an Issue… open the browser. Open Data Folder opens the folder that holds `config.toml`, the caches and the generated wallpapers (see App data below) in the file manager. About Sunlit Earth opens the About window.
 
 On macOS the App menu is the one the toolkit makes for every app. Its About opens macOS's standard panel with the version and the copyright; the app's own About window, with the licenses and attributions, is under Help. Its Hide (⌘H) hides the window without the tray menu noticing, so the tray's first entry still says Hide afterwards: choosing it once puts things right, and choosing it again shows the window.
 
 The tray menu has Show or Hide, whichever the window needs next, then Refresh Now, Auto-refresh and Start on login, then Website, About and Quit. On Windows and Linux a click on the tray icon also shows or hides the window; on macOS a click opens the menu.
+
+## Exporting an image
+
+File > Export Image… (Ctrl+E) opens a sheet over the main window that saves the view as a PNG or a JPEG. While it is open the window takes no other input and the scene stands still: the picture is the one the preview showed when the sheet opened, at that instant, and a running playback stays paused after the sheet closes. Close it with ×, Close or Esc to change the view; a click beside the card does nothing. Hiding the window or quitting closes it too and cancels a running export.
+
+- **Size**: each connected screen at its own resolution, the screen the preview is framed for first, then common sizes, then Custom. Width and height can be typed, and Swap exchanges them. The thumbnail shows how the view is framed at that aspect, which is what a portrait or a very wide picture crops. A size past what the GPU can render or read back at once is refused with a line that names the limit.
+- **Format**: PNG with a compression level from 1 (fastest, largest) to 9, or JPEG with a quality from 1 to 100. Each format keeps its own value.
+- **Save to**: a path field and Browse…, which opens the system's save dialog. The field can always be typed into or pasted into, so a desktop with no file picker still exports: Linux needs an XDG desktop portal with a file chooser, or zenity, for Browse… to open anything, and when nothing opens the sheet says "No file picker opened. Type the path above." A path without `.png`, `.jpg` or `.jpeg` gets the format's extension, choosing a format rewrites the extension in the field, and typing one picks the format. A typed path that names an existing file says it will be replaced.
+- **Export** is enabled once the scene has loaded what the picture needs, the clouds included when they are on. Enter exports, and during an export the button reads Cancel. The bar and the line under it stay with the outcome until the next change in the sheet.
+
+The folder and the name are remembered across restarts, starting as `sunlit-earth` in the Pictures folder (the home folder where there is none); a remembered folder that has gone falls back the same way and keeps the name. The size, the format and the two levels are remembered after each successful export.
 
 ## Start on login
 

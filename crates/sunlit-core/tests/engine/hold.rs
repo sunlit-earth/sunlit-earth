@@ -2,14 +2,17 @@
 //! instant the preview showed when it began, wallpaper publishes wait for the
 //! release, and readiness is announced afresh.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use sunlit_core::engine::clock::MockClock;
 use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind};
 use sunlit_core::engine::{EngineCommand, EngineEvent};
 use sunlit_core::scene::scene_time::SceneTime;
 
 use crate::groups::{Plain, plain};
-use crate::harness::{TIMEOUT, gpu, test_params};
+use crate::harness::{Harness, TIMEOUT, gpu, test_params};
+use crate::sinks::{RecordingSink, two_screens};
 use crate::test_support::{self, ScratchDir};
 use crate::tiles::{day_over, settled, start};
 
@@ -42,7 +45,7 @@ fn next_instant(group: &Plain, params: &sunlit_core::params::SceneParams) -> tim
     panic!("no preview frame within {TIMEOUT:?}");
 }
 
-fn hold(group: &Plain, hold: bool) {
+fn hold(group: &Harness, hold: bool) {
     group.engine.send(EngineCommand::Hold(hold));
     group.settle();
 }
@@ -221,5 +224,47 @@ fn a_hold_announces_readiness_when_the_tiles_land() {
             .iter()
             .all(|id| report.resident.contains(id) || report.failed.contains(id)),
         "TexturesReady before the tiles landed: {report:#?}"
+    );
+}
+
+/// A wallpaper still owed when the engine stops under a hold is drawn at the
+/// clock's instant, not the held one.
+#[test]
+fn a_publish_owed_at_exit_under_a_hold_draws_the_clock() {
+    let _gpu = gpu();
+    let sink = Arc::new(RecordingSink::new(two_screens()));
+    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
+    let (sink_for_config, clock_for_config) = (Arc::clone(&sink), Arc::clone(&clock));
+    let harness = Harness::start(move |config| {
+        config.wallpaper = sink_for_config;
+        config.clock = clock_for_config;
+        config.params.time = SceneTime::Live;
+    });
+    harness.wait_for_textures("the first view");
+    harness.settle();
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    harness
+        .wait_for_publish()
+        .expect("the recording sink accepts");
+    harness.settle();
+    let at_hold = sink.publications()[0].frames.clone();
+
+    hold(&harness, true);
+    harness.advance(&clock, Duration::from_secs(6 * 3600));
+    harness.settle();
+    harness.engine.send(EngineCommand::RenderWallpaperNow);
+    harness.settle();
+    assert_eq!(
+        sink.publications().len(),
+        1,
+        "the premise: the publish waits for the release"
+    );
+
+    harness.engine.shutdown();
+    let publications = sink.publications();
+    assert_eq!(publications.len(), 2, "the owed wallpaper did not go out");
+    assert!(
+        publications[1].frames != at_hold,
+        "the wallpaper owed at exit was drawn at the held instant"
     );
 }

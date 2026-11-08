@@ -555,6 +555,7 @@ impl Engine {
                 self.drain.next = Duration::ZERO;
             }
             EngineCommand::Shutdown => {
+                self.held = None;
                 // A publish asked for in the same drain batch as the shutdown,
                 // or one still waiting for its tiles, is still someone's
                 // request, and there is no tick left to do it in or to wait

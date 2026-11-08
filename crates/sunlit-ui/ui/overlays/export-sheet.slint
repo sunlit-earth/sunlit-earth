@@ -93,7 +93,13 @@ export component ExportSheet inherits Rectangle {
     function export-or-cancel() {
         if ExportState.exporting {
             ExportState.cancel();
-        } else if ExportState.can-export {
+        } else {
+            root.export-if-enabled();
+        }
+    }
+
+    function export-if-enabled() {
+        if ExportState.can-export {
             ExportState.export();
         }
     }
@@ -119,11 +125,7 @@ export component ExportSheet inherits Rectangle {
 
         KeyBinding {
             keys: @keys(Return);
-            activated => {
-                if ExportState.can-export {
-                    ExportState.export();
-                }
-            }
+            activated => { root.export-if-enabled(); }
         }
 
         card := Rectangle {
@@ -224,7 +226,7 @@ export component ExportSheet inherits Rectangle {
                                             text <=> ExportState.width-text;
                                             accessible-label: "Width";
                                             edited => { ExportState.size-edited(); }
-                                            accepted => { root.export-or-cancel(); }
+                                            accepted => { root.export-if-enabled(); }
                                         }
 
                                         FieldLabel { text: "×"; }
@@ -236,7 +238,7 @@ export component ExportSheet inherits Rectangle {
                                             text <=> ExportState.height-text;
                                             accessible-label: "Height";
                                             edited => { ExportState.size-edited(); }
-                                            accepted => { root.export-or-cancel(); }
+                                            accepted => { root.export-if-enabled(); }
                                         }
 
                                         swap-button := Button {
@@ -308,7 +310,7 @@ export component ExportSheet inherits Rectangle {
                                     text <=> ExportState.path;
                                     accessible-label: "Save to";
                                     edited => { ExportState.path-edited(); }
-                                    accepted => { root.export-or-cancel(); }
+                                    accepted => { root.export-if-enabled(); }
                                 }
 
                                 browse-button := Button {

@@ -7948,6 +7948,41 @@ fn test_the_path_field_stays_editable_and_warns_before_replacing() {
     state.set_exporting(false);
 }
 
+/// Enter in a field of the sheet exports when Export is enabled and never
+/// cancels a running export.
+#[test]
+fn test_enter_in_a_field_exports_and_never_cancels() {
+    use slint::platform::Key;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let (window, _sent) = export_sheet();
+    let state = export_state(&window);
+    let exports = Rc::new(Cell::new(0));
+    let cancels = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&exports);
+    state.on_export(move || counted.set(counted.get() + 1));
+    let counted = Rc::clone(&cancels);
+    state.on_cancel(move || counted.set(counted.get() + 1));
+    sunlit_earth::export::textures_ready();
+
+    for label in ["Width", "Height", "Save to"] {
+        let field = the_labelled(&window, label, AccessibleRole::TextInput);
+        press_at(&window, point_in(&field, 0.5, 0.5));
+        release_at(&window, point_in(&field, 0.5, 0.5));
+
+        let before = exports.get();
+        tap(&window, Key::Return);
+        assert_eq!(exports.get(), before + 1, "Enter in {label} did not export");
+
+        state.set_exporting(true);
+        tap(&window, Key::Return);
+        assert_eq!(cancels.get(), 0, "Enter in {label} cancelled the export");
+        assert_eq!(exports.get(), before + 1, "Enter in {label} exported again");
+        state.set_exporting(false);
+    }
+}
+
 /// Esc, the × button and Close each close the sheet and let the scene go; a
 /// click on the backdrop does not.
 #[test]

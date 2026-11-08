@@ -128,6 +128,18 @@ Why the top center: it is where the lost window frame was, the place people look
 - The tray's hide, IPC `hide-window`, Close Window and the close button leave full screen first, then save the geometry and hide. The window shows again windowed.
 - Quit while in full screen saves nothing new, since the geometry from before entering is what was saved last.
 
+### 8. The switch goes through black
+
+Added with the user on 2026-11-08 after trying the first build on Windows. Entering showed three things in turn: the windowed frame, sidebar included, stretched to the monitor by the system until the app drew at the new size (long enough to see in a debug build, a flicker in a release build); then the controls in place over the last windowed preview scaled up with `cover`; then, once the engine had rendered at the new size, the full picture, with a jump in framing unless the windowed preview had the monitor's aspect. The system's stretch cannot be stopped from the app, but what it stretches can be chosen.
+
+- **Before the switch,** a black cover is drawn over the whole window, and the switch happens only once that frame is on screen. The system then stretches black. The cover carries nothing else in that frame, since anything drawn on it would be stretched with it.
+- **The new size goes to the engine at once.** A full screen change is one jump, not a drag, so it skips the two-poll wait of `ViewportSettle`.
+- **On entering, the first full screen frame is black with a notice:** centered, in the overlays' text colors, a line saying the view is being rendered with an activity indicator, and under it that Esc leaves full screen (Esc or ⌃⌘F on macOS). The controls are drawn over it as usual, the exit pill in its long form included. This is for the case where rendering takes long or never finishes (a software adapter on a very large screen, a stuck engine): the user always sees what is happening and how to get out, and Esc, the key and the pill work throughout.
+- **The cover stays until a frame for the new size arrives,** then fades out over about 150 to 200 ms. There is no fallback to the old picture: the notice is what shows while waiting. "For the new size" means for the size last sent to the engine, not the window's, since the quality tier can cap the width.
+- **On leaving,** the same black frame covers the switch. Once windowed, the sidebar and menu draw at once, and the preview shows the last full screen frame scaled by the short edge, centered, so the Earth stays where it was, until the windowed frame replaces it. No notice: the window is back and nothing is lost by waiting.
+- **The idle clock** starts when the cover has gone, so the 3 s and the long pill's 10 s count from when the picture is visible.
+- **An entry by the system** (macOS's green button and AppKit's entry) cannot be covered beforehand, since macOS runs its own animation. The cover and notice start when `full-screen` turns true and behave as above from there.
+
 ### Not chosen
 
 - **An exit tab that appears only when the pointer touches the top edge.** Invisible to experts, but newcomers would not find it either.
@@ -151,6 +163,7 @@ Why the top center: it is where the lost window frame was, the place people look
    - Linux guest, KDE and GNOME on X11 and on Wayland, sway and i3: the same list, with the drawn menu bar.
    - Two screens in the Linux guest (`--screens 2`): full screen fills the screen the window is on.
    - macOS runner, as far as it can be driven, and `docs/macos-testing.md` for a person with a Mac: whether View has AppKit's Enter Full Screen, once only, and still after switching to another app and back and after pressing H, which rebuilds the menu; whether it shows ⌃⌘F, and that ⌃⌘F toggles once rather than twice; that the green button and AppKit's entry both hide the sidebar and the pill comes up long; that Escape leaves.
+10. **The switch through black (decision 8).** How to know the black frame is on screen before switching is decided in the step: a rendering notifier (`Window::set_rendering_notifier`) where the renderer supports one, otherwise a timer of a couple of frames; the software renderer and the e2e guests must work too. The immediate size send, the cover with the notice, the match of the arriving frame against the size sent, the fade, the short-edge scaling of the old frame on leaving, and the idle clock starting when the cover goes. Check on the Windows desktop in a debug and a release build that the stretched sidebar no longer shows, and in a guest with the software adapter that the notice shows while the first frame renders.
 
 ## Tests
 
@@ -163,6 +176,7 @@ Why the top center: it is where the lost window frame was, the place people look
 - Escape's order: with the shortcut sheet open, the first Escape closes it and the window stays in full screen; the second leaves.
 - The pill: long for 10 s after every entry, F11 and the button alike, short after, and a click on either form leaves.
 - H in full screen hides everything, idle never brings it back, and `show-button` idles out and returns on a move.
+- The switch (decision 8): a toggle shows the cover before `full-screen` changes; on entering, the notice shows until a frame of the size last sent arrives and the cover then fades, and a frame of another size does not end it; Escape leaves while the notice shows; on leaving, no notice, and the old frame is scaled by the short edge until the new one arrives; the idle clock starts when the cover has gone. A unit test that a full screen change sends the new size without waiting for a second poll.
 
 The testing backend has no real window, so these drive `full-screen` as a property; whether the platform honored it is step 9's.
 

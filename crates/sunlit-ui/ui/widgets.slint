@@ -54,14 +54,14 @@ export component Splitter inherits Rectangle {
 // where the background and the border come from, and which sizes the popup
 // from its children's preferred width. A `Text` reports the width it would
 // take unwrapped however narrow the element around it is, so the width here is
-// declared as a constraint and not only as a size; the height then follows
-// from the wrap at that width.
+// declared as a constraint and not only as a size: that unwrapped width, capped
+// at 300px. The height then follows from the wrap at that width.
 export component Hint inherits Rectangle {
     in property <string> text;
 
-    min-width: 300px;
-    max-width: 300px;
-    preferred-width: 300px;
+    min-width: min(300px, label.preferred-width + body.padding-left + body.padding-right);
+    max-width: self.min-width;
+    preferred-width: self.min-width;
     height: body.preferred-height;
 
     body := VerticalLayout {
@@ -70,7 +70,7 @@ export component Hint inherits Rectangle {
         padding-right: 9px;
         padding-bottom: 6px;
 
-        Text {
+        label := Text {
             text: root.text;
             color: Palette.foreground;
             wrap: word-wrap;

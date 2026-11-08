@@ -63,18 +63,14 @@ The card, as revision 1 leaves it (the progress bar and the status line are show
   - the thumbnail sits in a fixed square of its long edge, the picture letterboxed inside;
   - the Export button is as wide as the wider of Export and Cancel.
   The card is therefore always at its full height, and test 17 checks that height against the main window's minimum size.
-- **Hover texts** (revision 1). Every interactive element in the card has one, built like the settings panel's: Slint's `Tooltip` with the `Hint` content component from `widgets.slint`, which wraps, and within the constraints `widgets.slint` describes (a `Tooltip` claims a layout cell of its own, so it sits in an element that carries it, and two hover texts must not overlap). Plain sentences that say what the control does, in the panel's voice:
-  - ×: "Close Export Image. A running export is cancelled."
-  - Size: "The size of the image in pixels. The first entry is the main display's."
+- **Hover texts** (revision 1, shortened on 2026-11-09 after the user saw them). Every interactive element in the card except its buttons (×, Browse…, Close, Export or Cancel) has one, built like the settings panel's: Slint's `Tooltip` with the `Hint` content component from `widgets.slint`, which wraps, and within the constraints `widgets.slint` describes (a `Tooltip` claims a layout cell of its own, so it sits in an element that carries it, and two hover texts must not overlap). One short line each, saying what the control does, and no explanation of the formats themselves:
+  - Size: "The size of the image in pixels."
   - Width and height fields: "Width in pixels." and "Height in pixels."
-  - Swap: "Swap width and height, from landscape to portrait and back."
-  - Format: "The file format. PNG keeps every pixel; JPEG files are smaller."
-  - Compression: "How hard PNG compression works. Higher levels make smaller files and take longer; the picture is the same at every level."
-  - Quality: "How much detail JPEG keeps. Higher values look better and make larger files."
-  - Save to: "Where the image is saved. Type or paste a path, or click Browse… to choose one."
-  - Browse…: "Choose the folder and the file name in the system's save dialog."
-  - Close: as ×.
-  - Export: "Render the scene at this size and save it." While running, Cancel: "Stop the export. No file is written."
+  - Swap: "Swap width and height."
+  - Format: "The file format."
+  - Compression: "Higher levels make smaller files and take longer."
+  - Quality: "Higher values keep more detail and make larger files."
+  - Save to: "Where the image is saved."
 - **No other text.** No date line, no size estimate, no device limit.
 - **Keys.** Enter exports when Export is enabled. Esc and a second Ctrl+E cancel a running export and close the sheet.
 
@@ -207,7 +203,7 @@ Assert behavior, not constants.
 
 ### `slint_ui`
 
-15. `ExportSheet`: Export disabled until ready, enabled after; the slider reads Compression for PNG and Quality for JPEG and keeps each value across a switch; Custom selected after editing a size; Swap exchanges the two; the path field accepts edits while an export runs; the status line shows the replace hint with its icon for an existing file while idle and gives way to an export's phase and outcome; Esc, the × button and a second Ctrl+E close the sheet, a click on the backdrop does not; every interactive element has a hover text, checked the way the panel's are if the slint_ui tests check those, else by a test over the card's source.
+15. `ExportSheet`: Export disabled until ready, enabled after; the slider reads Compression for PNG and Quality for JPEG and keeps each value across a switch; Custom selected after editing a size; Swap exchanges the two; the path field accepts edits while an export runs; the status line shows the replace hint with its icon for an existing file while idle and gives way to an export's phase and outcome; Esc, the × button and a second Ctrl+E close the sheet, a click on the backdrop does not; every interactive element but the buttons has a hover text and the buttons have none, checked the way the panel's are if the slint_ui tests check those, else by a test over the card's source.
 16. `MainWindow` with `export-sheet-open`: no menu item's `enabled` changes when the sheet opens or closes; choosing a menu item (a View toggle, for one) closes the sheet and then does its job, and File > Export Image… only closes it; a click, a drag and the wheel over the preview and over the panel change nothing; a preview shortcut key does nothing; after closing, the preview has the focus again.
 17. At the main window's minimum size the card's buttons are inside the window.
 22. The card's size and the positions of its buttons, its slider and its path field are the same idle, running, done, after an error with a long text, with PNG and with JPEG, with the replace hint shown, and with a portrait and a wide size.

@@ -8287,10 +8287,10 @@ fn rectangle_of(element: &ElementHandle) -> (f32, f32, f32, f32) {
     (at.x, at.y, size.width, size.height)
 }
 
-/// Every control of the card has a hover text: it sits in one element that
-/// carries a `Tooltip` (`WithHint`, or the × button, which is its own), and no
-/// two of those overlap, so no two hover texts open together. The testing
-/// backend does not name the tooltip's own area.
+/// Every control of the card but its buttons (×, Browse…, Close, Export or
+/// Cancel) has a hover text: it sits in one `WithHint`, and no two of those
+/// overlap, so no two hover texts open together. The buttons have none. The
+/// testing backend does not name the tooltip's own area.
 #[test]
 fn test_every_control_of_the_card_has_a_hover_text() {
     let (window, _sent) = export_sheet();
@@ -8298,12 +8298,7 @@ fn test_every_control_of_the_card_has_a_hover_text() {
     let card = the_card(&window);
     let areas: Vec<_> = card
         .query_descendants()
-        .match_predicate(|element| {
-            matches!(
-                element.type_name().as_deref(),
-                Some("WithHint" | "CloseButton")
-            )
-        })
+        .match_predicate(|element| element.type_name().as_deref() == Some("WithHint"))
         .find_all()
         .iter()
         .map(rectangle_of)
@@ -8332,12 +8327,16 @@ fn test_every_control_of_the_card_has_a_hover_text() {
                 (*ax..=ax + aw).contains(&mid_x) && (*ay..=ay + ah).contains(&mid_y)
             })
             .count();
+        let label = control.accessible_label().unwrap_or_default();
+        let wanted = usize::from(!matches!(
+            label.as_str(),
+            "Close" | "Browse…" | "Export" | "Cancel"
+        ));
         assert_eq!(
             over,
-            1,
-            "{:?} '{}' has {over} hover texts",
+            wanted,
+            "{:?} '{label}' has {over} hover texts",
             control.accessible_role(),
-            control.accessible_label().unwrap_or_default()
         );
     }
     for (index, a) in areas.iter().enumerate() {

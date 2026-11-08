@@ -86,7 +86,6 @@ component WithHint inherits Rectangle {
 }
 
 component CloseButton inherits Rectangle {
-    in property <string> hint;
     callback clicked();
 
     width: 24px;
@@ -110,14 +109,9 @@ component CloseButton inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
-    Tooltip {
-        Hint { text: root.hint; }
-    }
 }
 
 export component ExportSheet inherits Rectangle {
-    property <string> close-hint: "Close Export Image. A running export is cancelled.";
-
     out property <length> card-x: card.x;
     out property <length> card-y: card.y;
     out property <length> card-width: card.width;
@@ -192,7 +186,6 @@ export component ExportSheet inherits Rectangle {
                     }
 
                     close-button := CloseButton {
-                        hint: root.close-hint;
                         clicked => { ExportState.close(); }
                     }
                 }
@@ -238,7 +231,7 @@ export component ExportSheet inherits Rectangle {
                                 Row {
                                     FieldLabel { text: "Size"; }
                                     WithHint {
-                                        hint: "The size of the image in pixels. The first entry is the main display's.";
+                                        hint: "The size of the image in pixels.";
 
                                         size-combo := ComboBox {
                                             model: ExportState.sizes;
@@ -285,7 +278,7 @@ export component ExportSheet inherits Rectangle {
 
                                         WithHint {
                                             horizontal-stretch: 0;
-                                            hint: "Swap width and height, from landscape to portrait and back.";
+                                            hint: "Swap width and height.";
 
                                             swap-button := Button {
                                                 text: "Swap";
@@ -303,7 +296,7 @@ export component ExportSheet inherits Rectangle {
                                 Row {
                                     FieldLabel { text: "Format"; }
                                     WithHint {
-                                        hint: "The file format. PNG keeps every pixel; JPEG files are smaller.";
+                                        hint: "The file format.";
 
                                         format-combo := ComboBox {
                                             model: ExportState.formats;
@@ -335,8 +328,8 @@ export component ExportSheet inherits Rectangle {
 
                                     WithHint {
                                         hint: ExportState.format-index == 0
-                                            ? "How hard PNG compression works. Higher levels make smaller files and take longer; the picture is the same at every level."
-                                            : "How much detail JPEG keeps. Higher values look better and make larger files.";
+                                            ? "Higher levels make smaller files and take longer."
+                                            : "Higher values keep more detail and make larger files.";
 
                                         HorizontalLayout {
                                             spacing: 8px;
@@ -388,7 +381,7 @@ export component ExportSheet inherits Rectangle {
                             FieldLabel { text: "Save to"; }
 
                             WithHint {
-                                hint: "Where the image is saved. Type or paste a path, or click Browse… to choose one.";
+                                hint: "Where the image is saved.";
 
                                 path-edit := LineEdit {
                                     horizontal-stretch: 1;
@@ -399,14 +392,10 @@ export component ExportSheet inherits Rectangle {
                                 }
                             }
 
-                            WithHint {
+                            browse-button := Button {
                                 horizontal-stretch: 0;
-                                hint: "Choose the folder and the file name in the system's save dialog.";
-
-                                browse-button := Button {
-                                    text: "Browse…";
-                                    clicked => { ExportState.browse(); }
-                                }
+                                text: "Browse…";
+                                clicked => { ExportState.browse(); }
                             }
                         }
 
@@ -466,43 +455,35 @@ export component ExportSheet inherits Rectangle {
                     spacing: 8px;
                     vertical-stretch: 0;
 
-                    WithHint {
-                        hint: root.close-hint;
-
-                        close-sheet-button := Button {
-                            text: "Close";
-                            clicked => { ExportState.close(); }
-                        }
+                    close-sheet-button := Button {
+                        text: "Close";
+                        clicked => { ExportState.close(); }
                     }
 
                     // Export and Cancel take one place, as wide as the wider.
-                    WithHint {
-                        hint: ExportState.exporting
-                            ? "Stop the export. No file is written."
-                            : "Render the scene at this size and save it.";
+                    Rectangle {
+                        min-width: max(export-button.preferred-width, cancel-button.preferred-width);
+                        preferred-width: self.min-width;
+                        min-height: export-button.preferred-height;
+                        preferred-height: self.min-height;
 
-                        Rectangle {
-                            min-width: max(export-button.preferred-width, cancel-button.preferred-width);
-                            min-height: export-button.preferred-height;
+                        export-button := Button {
+                            width: parent.width;
+                            height: parent.height;
+                            visible: !ExportState.exporting;
+                            text: "Export";
+                            primary: true;
+                            enabled: ExportState.can-export;
+                            clicked => { root.export-if-enabled(); }
+                        }
 
-                            export-button := Button {
-                                width: parent.width;
-                                height: parent.height;
-                                visible: !ExportState.exporting;
-                                text: "Export";
-                                primary: true;
-                                enabled: ExportState.can-export;
-                                clicked => { root.export-if-enabled(); }
-                            }
-
-                            cancel-button := Button {
-                                width: parent.width;
-                                height: parent.height;
-                                visible: ExportState.exporting;
-                                text: "Cancel";
-                                enabled: !ExportState.cancelling;
-                                clicked => { ExportState.cancel(); }
-                            }
+                        cancel-button := Button {
+                            width: parent.width;
+                            height: parent.height;
+                            visible: ExportState.exporting;
+                            text: "Cancel";
+                            enabled: !ExportState.cancelling;
+                            clicked => { ExportState.cancel(); }
                         }
                     }
                 }

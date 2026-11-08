@@ -74,6 +74,10 @@ const THUMBNAIL_SETTLE: Duration = Duration::from_millis(300);
 /// that fast.
 const NO_PICKER: Duration = Duration::from_millis(300);
 
+/// Why the sheet does not export while a job it let go of still runs; the
+/// job's end takes it off the sheet.
+const STOPPING: &str = "The previous export is still stopping.";
+
 /// The file name an export starts with before the first one.
 const DEFAULT_NAME: &str = "sunlit-earth";
 
@@ -800,7 +804,7 @@ impl Controller {
             return;
         }
         if self.job.is_some() {
-            self.refuse(&window, "The previous export is still stopping.", ipc);
+            self.refuse(&window, STOPPING, ipc);
             return;
         }
         let Some((width, height)) = Self::typed_size(&window) else {
@@ -974,7 +978,13 @@ impl Controller {
             }
             Report::Progress(_) => {}
         }
-        if !detached {
+        if detached {
+            if let Some(window) = self.window().filter(MainWindow::get_export_sheet_open)
+                && window.global::<ExportState>().get_status() == STOPPING
+            {
+                Self::clear_status(&window);
+            }
+        } else {
             self.close_if_answered_hidden();
         }
     }

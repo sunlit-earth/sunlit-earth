@@ -5181,7 +5181,7 @@ fn test_every_hint_names_the_keys_of_its_control() {
         .iter()
         .map(|(id, _)| *id)
         .chain(HINTS_WITHOUT_KEYS)
-        .chain(["help"])
+        .chain(["help", "full-screen", "exit-full-screen"])
         .collect();
     for id in &used {
         assert!(
@@ -5238,6 +5238,15 @@ fn test_every_hint_names_the_keys_of_its_control() {
             vec!["F1", "Ctrl", "?"]
         };
         assert_eq!(keys_of("help"), help, "the help hint (macOS: {macos})");
+        let full_screen = if macos {
+            vec!["⌃", "⌘", "F"]
+        } else {
+            vec!["F11"]
+        };
+        assert_eq!(keys_of("full-screen"), full_screen, "macOS: {macos}");
+        let mut exit = vec!["Esc"];
+        exit.extend(&full_screen);
+        assert_eq!(keys_of("exit-full-screen"), exit, "macOS: {macos}");
         for id in ["skip-back", "skip-forward"] {
             let body = hints.invoke_content(id.into()).body;
             assert!(
@@ -5367,7 +5376,7 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
                 .find_all();
             assert_eq!(
                 texts.len(),
-                21,
+                22,
                 "{what}: the sheet lists every gesture and key"
             );
             for text in &texts {
@@ -6861,4 +6870,365 @@ fn test_the_tray_says_quit() {
     for source in [TRAY, MAIN] {
         assert!(!source.contains("title: \"Exit\""));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Full screen
+// ---------------------------------------------------------------------------
+
+/// Enter full screen as the camera panel's button or a key does, and let the
+/// window settle.
+fn enter_full_screen(window: &MainWindow) {
+    window.invoke_toggle_full_screen();
+    let_pass(16);
+    assert!(window.window().is_fullscreen());
+}
+
+fn leave_full_screen(window: &MainWindow) {
+    window.invoke_leave_full_screen();
+    let_pass(16);
+    assert!(!window.window().is_fullscreen());
+}
+
+/// Move the pointer over the bare preview, to a point it was not at before.
+fn wiggle(window: &MainWindow) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a few pixels of offset from the mocked clock"
+    )]
+    let offset = (i_slint_backend_testing::get_mocked_time() % 97) as f32;
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(300.0 + offset, 2000.0),
+        });
+}
+
+fn press_the(window: &MainWindow, id: &str) {
+    press_at(window, point_in(&the_element(window, id), 0.5, 0.5));
+}
+
+/// Full screen hides the sidebar, the splitter and the drawn menu bar and
+/// gives the preview the whole window; leaving puts all of it back.
+#[test]
+fn test_full_screen_gives_the_preview_the_whole_window() {
+    let (window, _sent) = wired_window();
+    let width = window.window().size().to_logical(1.0).width;
+    let before = edges(&the_element(&window, "MainWindow::image-container"));
+    assert!(before[0] > 0.0, "the sidebar is left of the preview");
+
+    enter_full_screen(&window);
+    let [left, top, right, _] = edges(&the_element(&window, "MainWindow::image-container"));
+    approx::assert_relative_eq!(left, 0.0);
+    approx::assert_relative_eq!(top, 0.0);
+    approx::assert_relative_eq!(right, width);
+    approx::assert_relative_eq!(window.get_viewport_width(), width);
+
+    leave_full_screen(&window);
+    let after = edges(&the_element(&window, "MainWindow::image-container"));
+    for (after, before) in after.into_iter().zip(before) {
+        approx::assert_relative_eq!(after, before);
+    }
+}
+
+/// In full screen the controls, the frame guides and the cursor go after 3 s
+/// without activity, and a pointer move or a key brings them back at once. In
+/// the window they never go.
+#[test]
+fn test_the_controls_idle_out_in_full_screen_only() {
+    let (window, _sent) = wired_window();
+    let cursor_hidden = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&cursor_hidden);
+    window.on_cursor_hidden_changed(move |hidden, _, _| seen.borrow_mut().push(hidden));
+    window.set_guides_shown(true);
+
+    wiggle(&window);
+    let_pass(5000);
+    assert!(!window.get_full_screen_idle() && !window.get_idle_hidden());
+    assert!(window.get_guides_visible());
+
+    enter_full_screen(&window);
+    wiggle(&window);
+    let_pass(2800);
+    assert!(!window.get_idle_hidden(), "not before 3 s");
+    let_pass(300);
+    assert!(window.get_idle_hidden(), "the controls fade at 3 s");
+    let_pass(500);
+    assert!(window.get_idle_gone(), "and are gone once faded");
+    assert!(!window.get_guides_visible(), "the guides go with them");
+    assert_eq!(cursor_hidden.borrow().last(), Some(&true));
+
+    wiggle(&window);
+    assert!(
+        !window.get_idle_hidden() && !window.get_idle_gone(),
+        "a move brings them back"
+    );
+    assert!(window.get_guides_visible());
+    assert_eq!(cursor_hidden.borrow().last(), Some(&false));
+
+    let_pass(3500);
+    assert!(window.get_idle_gone());
+    tap(&window, "x");
+    assert!(!window.get_idle_hidden(), "so does a key");
+
+    let_pass(3500);
+    assert!(window.get_idle_gone());
+    leave_full_screen(&window);
+    assert!(
+        !window.get_full_screen_idle() && !window.get_idle_gone(),
+        "leaving clears it"
+    );
+    assert_eq!(cursor_hidden.borrow().last(), Some(&false));
+}
+
+/// Whatever is in use keeps the controls up: the pointer on a control, a drag
+/// on the globe, the shortcut sheet and the version notice.
+#[test]
+fn test_what_is_in_use_keeps_the_controls_up() {
+    let (window, _sent) = wired_window();
+    enter_full_screen(&window);
+    let still_up = |window: &MainWindow, what: &str| {
+        let_pass(4000);
+        assert!(
+            !window.get_full_screen_idle(),
+            "{what} keeps the controls up"
+        );
+    };
+
+    let panel = the_element(&window, "MainWindow::camera-panel");
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: point_in(&panel, 0.5, 0.5),
+        });
+    still_up(&window, "the pointer on the camera panel");
+
+    let bar = the_element(&window, "MainWindow::time-bar");
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: point_in(&bar, 0.5, 0.5),
+        });
+    still_up(&window, "the pointer on the time bar");
+
+    let globe = slint::LogicalPosition::new(300.0, 2000.0);
+    hold_at(&window, globe);
+    still_up(&window, "a drag on the globe");
+    release_at(&window, globe);
+
+    window.set_shortcut_sheet_open(true);
+    still_up(&window, "the shortcut sheet");
+    window.set_shortcut_sheet_open(false);
+
+    window.set_version_notice_open(true);
+    still_up(&window, "the version notice");
+    window.set_version_notice_open(false);
+
+    let_pass(4000);
+    assert!(window.get_idle_gone(), "with nothing in use they go");
+}
+
+/// With the time bar pinned nothing hides in full screen, but the cursor
+/// still does.
+#[test]
+fn test_a_pinned_time_bar_keeps_the_controls_and_not_the_cursor() {
+    let (window, _sent) = wired_window();
+    window.set_time_bar_pinned(true);
+    enter_full_screen(&window);
+    wiggle(&window);
+    let_pass(4000);
+    assert!(window.get_full_screen_idle(), "the cursor hides");
+    assert!(
+        !window.get_idle_hidden() && !window.get_idle_gone(),
+        "the controls stay"
+    );
+    assert!(window.get_exit_pill_shown(), "and so does the pill");
+}
+
+/// The long pill stays its 10 s although the controls have idled out at 3 s,
+/// and then goes with them.
+#[test]
+fn test_the_long_exit_pill_outlasts_the_idle_controls() {
+    let (window, _sent) = wired_window();
+    enter_full_screen(&window);
+    assert!(window.get_exit_pill_long() && window.get_exit_pill_shown());
+    let_pass(9000);
+    assert!(window.get_idle_gone());
+    assert!(
+        window.get_exit_pill_long() && window.get_exit_pill_shown(),
+        "still there at 9 s"
+    );
+    let_pass(1100);
+    assert!(!window.get_exit_pill_long());
+    assert!(
+        !window.get_exit_pill_shown(),
+        "gone at 10 s with the controls"
+    );
+    wiggle(&window);
+    assert!(
+        window.get_exit_pill_shown(),
+        "the short form comes back with them"
+    );
+}
+
+/// The pill starts long however full screen was entered, F11 and the button
+/// alike, a click on either form leaves, and the next entry starts long again.
+#[test]
+fn test_the_exit_pill_starts_long_on_every_entry_and_leaves_on_a_click() {
+    let (window, _sent) = wired_window();
+    assert!(!window.get_exit_pill_shown(), "no pill in the window");
+
+    tap(&window, slint::platform::Key::F11);
+    let_pass(16);
+    assert!(window.window().is_fullscreen(), "F11 enters");
+    assert!(window.get_exit_pill_long(), "long after F11");
+    press_the(&window, "MainWindow::exit-pill");
+    let_pass(16);
+    assert!(
+        !window.window().is_fullscreen(),
+        "a click on the long form leaves"
+    );
+
+    press_the(&window, "CameraPanel::full-screen-button");
+    let_pass(16);
+    assert!(window.window().is_fullscreen(), "the button enters");
+    assert!(window.get_exit_pill_long(), "long after the button");
+    let_pass(10_100);
+    wiggle(&window);
+    assert!(
+        window.get_exit_pill_shown() && !window.get_exit_pill_long(),
+        "short after 10 s"
+    );
+    press_the(&window, "MainWindow::exit-pill");
+    let_pass(16);
+    assert!(
+        !window.window().is_fullscreen(),
+        "a click on the short form leaves"
+    );
+
+    press_the(&window, "CameraPanel::full-screen-button");
+    let_pass(16);
+    assert!(window.get_exit_pill_long(), "long again on the next entry");
+    press_the(&window, "CameraPanel::full-screen-button");
+    let_pass(16);
+    assert!(!window.window().is_fullscreen(), "the button leaves again");
+}
+
+/// Escape closes what is open over the preview first and leaves full screen
+/// only once nothing is.
+#[test]
+fn test_escape_closes_the_sheet_before_it_leaves_full_screen() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    enter_full_screen(&window);
+    window.set_shortcut_sheet_open(true);
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert!(
+        !window.get_shortcut_sheet_open(),
+        "the first Esc closes the sheet"
+    );
+    assert!(window.window().is_fullscreen(), "and stays in full screen");
+
+    window.set_version_notice_open(true);
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert!(
+        !window.get_version_notice_open(),
+        "Esc closes the version notice"
+    );
+    assert!(window.window().is_fullscreen());
+
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert!(!window.window().is_fullscreen(), "the next Esc leaves");
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert!(
+        !window.window().is_fullscreen(),
+        "and one in the window does nothing"
+    );
+}
+
+/// Esc with the speeds open closes them and stays in full screen.
+#[test]
+fn test_escape_closes_the_speeds_before_it_leaves_full_screen() {
+    use slint::platform::Key;
+
+    let speeds = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "TimeBar::rates-list").count()
+    };
+    let (window, _sent) = wired_window();
+    enter_full_screen(&window);
+    open_the_bar(&window);
+    press_the(&window, "TimeBar::speed-readout");
+    let_pass(16);
+    assert_eq!(speeds(&window), 1, "the speed opens its menu");
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert_eq!(speeds(&window), 0, "Esc closes it");
+    assert!(window.window().is_fullscreen(), "and stays in full screen");
+}
+
+/// H in full screen hides everything, idling never brings it back, and the
+/// corner button idles out too and returns on a move.
+#[test]
+fn test_h_in_full_screen_hides_everything_and_idle_keeps_it_hidden() {
+    let (window, _sent) = wired_window();
+    enter_full_screen(&window);
+    tap(&window, "h");
+    assert!(window.get_overlays_hidden());
+    assert!(
+        !window.get_exit_pill_shown(),
+        "the pill hides with the rest"
+    );
+    let_pass(4000);
+    assert!(window.get_idle_gone(), "the corner button idles out");
+    wiggle(&window);
+    assert!(!window.get_idle_gone(), "and comes back on a move");
+    assert!(window.get_overlays_hidden(), "but nothing else does");
+    assert!(!window.get_exit_pill_shown());
+    tap(&window, "h");
+    assert!(window.get_exit_pill_shown(), "H brings the pill back");
+}
+
+/// The footer holds the aids in its top row and what changes the screen in
+/// its bottom one, inside the panel.
+#[test]
+fn test_the_camera_panel_footer_is_two_rows_of_two() {
+    let (window, _sent) = wired_window();
+    let panel = edges(&the_element(&window, "MainWindow::camera-panel"));
+    let [guides, help, hide, full] = [
+        "CameraPanel::guides-button",
+        "CameraPanel::help-button",
+        "CameraPanel::hide-button",
+        "CameraPanel::full-screen-button",
+    ]
+    .map(|id| edges(&the_element(&window, id)));
+    approx::assert_relative_eq!(guides[1], help[1]);
+    approx::assert_relative_eq!(hide[1], full[1]);
+    assert!(hide[1] >= guides[3], "the second row is below the first");
+    assert!(guides[2] <= help[0] && hide[2] <= full[0], "left to right");
+    approx::assert_relative_eq!(guides[0], hide[0]);
+    for button in [guides, help, hide, full] {
+        assert!(
+            button[0] >= panel[0] && button[2] <= panel[2] && button[3] <= panel[3],
+            "inside the panel"
+        );
+    }
+}
+
+/// Esc with the date picker open closes the picker and stays in full screen.
+#[test]
+fn test_escape_closes_a_picker_before_it_leaves_full_screen() {
+    let (window, _sent) = wired_window();
+    window.set_time_bar_pinned(true);
+    enter_full_screen(&window);
+    press_at(&window, point_in(&the_labeled(&window, "Date"), 0.5, 0.5));
+    assert_eq!(all_of(&window, "Dialog").len(), 1, "the date picker opens");
+    tap(&window, slint::platform::Key::Escape);
+    let_pass(16);
+    assert!(all_of(&window, "Dialog").is_empty(), "Esc closes it");
+    assert!(window.window().is_fullscreen(), "and stays in full screen");
 }

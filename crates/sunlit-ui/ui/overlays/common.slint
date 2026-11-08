@@ -62,6 +62,13 @@ export global OverlayHints {
         return ["F1"];
     }
 
+    public pure function full-screen-keys() -> [string] {
+        if is-macos {
+            return ["⌃", "⌘", "F"];
+        }
+        return ["F11"];
+    }
+
     public pure function content(id: string) -> HintContent {
         if id == "orbit" {
             return {
@@ -146,6 +153,12 @@ export global OverlayHints {
         }
         if id == "show" {
             return { title: "Show controls", keys: ["H"] };
+        }
+        if id == "full-screen" {
+            return { title: "Full screen", body: "Show the preview on the whole screen.", keys: full-screen-keys() };
+        }
+        if id == "exit-full-screen" {
+            return { title: "Exit full screen", keys: is-macos ? ["Esc", "or", "⌃", "⌘", "F"] : ["Esc", "or", "F11"] };
         }
         if id == "skip-back" || id == "skip-forward" {
             return {

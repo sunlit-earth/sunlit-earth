@@ -1,6 +1,7 @@
 // The camera panel in the preview's top right corner: the compass ring with
 // the orbit joystick inside, the zoom buttons and slider, the look and frame
-// joysticks, and the footer with the shortcut sheet and the hide button.
+// joysticks, and the footer with the frame guides, the shortcut sheet, the
+// hide button and full screen.
 //
 // It is always expanded. While the pointer is elsewhere, nothing of it is
 // held and it has not been used for a moment, it is idle: its background goes
@@ -37,6 +38,9 @@ export component CameraPanel inherits Rectangle {
     in property <bool> lit-frame;
     // Whether the frame guides are shown, which the guides button lights.
     in property <bool> guides-shown;
+    // Whether the window is in full screen, which turns the full screen
+    // button into the way out.
+    in property <bool> full-screen;
 
     // The control under the pointer, by its hint id, and the vertical middle
     // of that control in the panel's coordinates.
@@ -53,6 +57,7 @@ export component CameraPanel inherits Rectangle {
         : guides-button.hovered ? "guides"
         : help-button.hovered ? "help"
         : hide-button.hovered ? "hide"
+        : full-screen-button.hovered ? (root.full-screen ? "exit-full-screen" : "full-screen")
         : "";
     out property <length> hovered-y: hovered-hint == "north" || hovered-hint == "orbit" || hovered-hint == "roll" ? ring.y + ring.height / 2
         : hovered-hint == "zoom-in" ? zoom-column.y + zoom-in.y + zoom-in.height / 2
@@ -60,7 +65,8 @@ export component CameraPanel inherits Rectangle {
         : hovered-hint == "zoom" ? zoom-column.y + zoom-slider.y + zoom-slider.height / 2
         : hovered-hint == "look" || hovered-hint == "look-reset" ? look-row.y + look-row.height / 2
         : hovered-hint == "frame" || hovered-hint == "frame-reset" ? frame-row.y + frame-row.height / 2
-        : footer.y + footer.height / 2;
+        : hovered-hint == "guides" || hovered-hint == "help" ? footer.y + footer-top.y + footer-top.height / 2
+        : footer.y + footer-bottom.y + footer-bottom.height / 2;
 
     out property <bool> any-held: orbit.held || ring.held || zoom-in.held || zoom-out.held || zoom-slider.held || look.held || frame.held;
     out property <bool> idle: !self.hovered && !self.any-held && !self.recent;
@@ -78,6 +84,7 @@ export component CameraPanel inherits Rectangle {
     callback toggle-guides();
     callback show-shortcuts();
     callback hide-overlays();
+    callback toggle-full-screen();
 
     property <bool> orbit-arrow-hovered: up-arrow.hovered || down-arrow.hovered || left-arrow.hovered || right-arrow.hovered;
     property <bool> look-reset-hovered;
@@ -389,13 +396,14 @@ export component CameraPanel inherits Rectangle {
                 background: root.idle ? transparent : OverlayStyle.border;
             }
 
-            HorizontalLayout {
+            // The aids above, what changes the screen below.
+            footer-top := HorizontalLayout {
                 padding-top: 3px;
                 spacing: 6px;
                 alignment: center;
 
                 guides-button := OverlayButton {
-                    icon: @image-url("../icons/frame.svg");
+                    icon: @image-url("../icons/guides.svg");
                     on: root.guides-shown;
                     clicked => { root.toggle-guides(); }
                 }
@@ -404,12 +412,24 @@ export component CameraPanel inherits Rectangle {
                     icon: @image-url("../icons/help.svg");
                     clicked => { root.show-shortcuts(); }
                 }
+            }
+
+            footer-bottom := HorizontalLayout {
+                padding-top: 6px;
+                spacing: 6px;
+                alignment: center;
 
                 hide-button := OverlayButton {
                     icon: @image-url("../icons/eye.svg");
                     icon-width: 16px;
                     icon-height: 12px;
                     clicked => { root.hide-overlays(); }
+                }
+
+                full-screen-button := OverlayButton {
+                    icon: root.full-screen ? @image-url("../icons/fullscreen-exit.svg") : @image-url("../icons/fullscreen.svg");
+                    on: root.full-screen;
+                    clicked => { root.toggle-full-screen(); }
                 }
             }
         }

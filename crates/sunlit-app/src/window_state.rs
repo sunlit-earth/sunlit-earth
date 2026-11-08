@@ -128,11 +128,13 @@ pub fn show_at_startup(
     Ok(())
 }
 
-/// Hide the window and turn the preview off.
+/// Hide the window and turn the preview off. A window in full screen leaves it
+/// first, so it shows again windowed.
 ///
 /// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 pub fn hide(window: &MainWindow, engine: &EngineLink) {
+    crate::full_screen::leave(window);
     if let Err(e) = window.hide() {
         warn!("the window could not be hidden: {e}");
     }

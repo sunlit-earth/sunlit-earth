@@ -736,6 +736,7 @@ fn register_close_handler(window: &MainWindow, link: &EngineLink, use_tray: bool
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
                 crate::menu::save_geometry(&win);
+                crate::full_screen::leave(&win);
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_core::memory::log_memory_usage("after window hidden");

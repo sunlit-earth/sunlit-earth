@@ -1,0 +1,60 @@
+// The way out of full screen at the top center of the preview, shaped like
+// the folded time bar. The long form names the key for the first 10 s of
+// every entry; the short form stays with the controls.
+// A click on either leaves full screen.
+
+import { OverlayStyle, KeyCap } from "common.slint";
+
+export component ExitPill inherits Rectangle {
+    in property <bool> long;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    width: row.preferred-width;
+    height: 30px;
+    border-radius: 15px;
+    border-width: 1px;
+    border-color: OverlayStyle.border;
+    background: OverlayStyle.panel;
+    drop-shadow-blur: 22px;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-color: #00000073;
+    accessible-role: button;
+    accessible-label: "Exit full screen";
+    accessible-action-default => { root.clicked(); }
+
+    row := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: root.long ? 7px : 14px;
+        spacing: 7px;
+        alignment: center;
+
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 12px;
+            height: 12px;
+            source: @image-url("../icons/fullscreen-exit.svg");
+            colorize: touch.has-hover ? OverlayStyle.accent : OverlayStyle.fg;
+        }
+
+        label := Text {
+            vertical-alignment: center;
+            text: root.long ? "Exit full screen" : "Exit";
+            color: OverlayStyle.fg;
+            font-size: 12px;
+        }
+
+        if root.long : VerticalLayout {
+            alignment: center;
+
+            KeyCap {
+                text: "Esc";
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}

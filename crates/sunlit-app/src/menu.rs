@@ -13,13 +13,16 @@ use sunlit_core::config;
 use crate::{CameraReset, MainWindow};
 
 /// Wire the menu bar's own callbacks: Close Window, the web links, Open Data
-/// Folder and Reset Camera.
+/// Folder and Reset Camera, and through [`crate::full_screen::wire`] what
+/// Enter Full Screen and its F11 need.
 ///
 /// Quit calls `quit-app`, which the version notice shares and
 /// `activation::register_version_notice` wires to [`quit`].
 ///
 /// :param window: the main window
 pub fn wire(window: &MainWindow) {
+    crate::full_screen::wire(window);
+
     let window_weak = window.as_weak();
     window.on_close_window(move || {
         if let Some(win) = window_weak.upgrade() {
@@ -80,13 +83,19 @@ pub fn quit(window: &MainWindow) {
 }
 
 /// Store where the window is and how big, for the next start to open at, when
-/// it is [on screen](is_on_screen). Otherwise the geometry saved before stays.
+/// it is [on screen](is_on_screen) and not in full screen, whose size is the
+/// monitor's. Otherwise the geometry saved before stays, which for full
+/// screen is the window's as it was on entering.
 ///
 /// :param window: the main window
 pub fn save_geometry(window: &MainWindow) {
     let window = window.window();
     if !is_on_screen(window) {
         debug!("window not on screen, keeping the saved geometry");
+        return;
+    }
+    if window.is_fullscreen() {
+        debug!("window in full screen, keeping the saved geometry");
         return;
     }
     let size = window.size();

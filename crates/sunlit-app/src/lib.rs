@@ -4,6 +4,7 @@ pub mod autostart;
 pub mod camera_controls;
 pub mod displays;
 pub mod engine_client;
+pub mod full_screen;
 pub mod ipc;
 pub mod menu;
 pub mod mouse_math;

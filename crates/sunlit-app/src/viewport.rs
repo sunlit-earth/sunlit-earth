@@ -71,7 +71,7 @@ impl ViewportSettle {
 ///     decides the size of the frames that come back
 pub fn wire(window: &MainWindow, link: &EngineLink, quality: QualityTier) -> slint::Timer {
     let settle = Rc::new(RefCell::new(ViewportSettle::default()));
-    let send = {
+    let report = {
         let engine = link.clone();
         move |win: &MainWindow, size: Option<(u32, u32)>, known: (u32, u32)| {
             if let Some((width, height)) = size {
@@ -85,18 +85,18 @@ pub fn wire(window: &MainWindow, link: &EngineLink, quality: QualityTier) -> sli
             }
         }
     };
-    let send = Rc::new(send);
+    let report = Rc::new(report);
 
     let timer = slint::Timer::default();
     let window_weak = window.as_weak();
-    let (poll_settle, poll_send) = (Rc::clone(&settle), Rc::clone(&send));
+    let (poll_settle, poll_report) = (Rc::clone(&settle), Rc::clone(&report));
     timer.start(slint::TimerMode::Repeated, VIEWPORT_POLL, move || {
         let Some(win) = window_weak.upgrade() else {
             return;
         };
         let size = size_of(&win);
         if let Some(sent) = poll_settle.borrow_mut().observe(size) {
-            poll_send(&win, Some(sent), sent);
+            poll_report(&win, Some(sent), sent);
         }
     });
 
@@ -110,7 +110,7 @@ pub fn wire(window: &MainWindow, link: &EngineLink, quality: QualityTier) -> sli
         let sent = settle.borrow_mut().jump(size);
         // Also when the engine has the size already: the window has forgotten
         // which frame it waits for, and that frame is the one drawn for it.
-        send(&win, sent, size);
+        report(&win, sent, size);
     });
     timer
 }

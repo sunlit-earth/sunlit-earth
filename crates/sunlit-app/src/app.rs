@@ -11,7 +11,7 @@ use slint::ComponentHandle;
 use tracing::{debug, error, info, warn};
 
 use sunlit_core::assets::texture_loader;
-use sunlit_core::config::{self, AppConfig, QualityTier};
+use sunlit_core::config::{self, AppConfig};
 use sunlit_core::display;
 use sunlit_core::engine::{self, EngineCommand, EngineHandle};
 use sunlit_core::renderer;
@@ -22,7 +22,7 @@ use crate::displays;
 use crate::engine_client::{self, EngineLink};
 use crate::headless::{run_displays, run_render};
 use crate::logging::init_logging;
-use crate::startup::{effective_texture_resolution, engine_config};
+use crate::startup::{effective_texture_resolution, engine_config, quality_tier};
 use crate::ui_callbacks;
 
 /// The app id a Wayland compositor matches the window to its desktop entry by.
@@ -398,7 +398,6 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
         link,
         display_watch,
         first_refresh,
-        quality,
     } = running;
 
     init_ui(
@@ -460,7 +459,7 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
     // clamped on the way in (day-of-year, year index) reaches it too.
     link.push_params(&window);
 
-    let viewport_timer = crate::viewport::wire(&window, &link, quality);
+    let viewport_timer = crate::viewport::wire(&window, &link, quality_tier(&cli, config));
     let startup_refresh_timer = start_startup_refresh_timer(&link, first_refresh);
     register_close_handler(&window, &link, use_tray);
 
@@ -528,8 +527,6 @@ struct Running {
     /// Fires once, when the textures behind the first wallpaper have arrived.
     /// `None` when auto-refresh is off at startup, and then nothing waits.
     first_refresh: Option<crossbeam_channel::Receiver<()>>,
-    /// The tier the engine runs at, whose width cap sizes the preview frames.
-    quality: QualityTier,
 }
 
 /// Start the engine against this window, and the display watcher against the
@@ -587,7 +584,7 @@ fn start_engine(
         let _ = hint_tx.send(EngineCommand::DisplaysChanged);
     }));
 
-    let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
+    let quality = quality_tier(cli, config);
     let (aa_labels, aa_counts) =
         renderer::build_aa_options(engine.supported_sample_counts(), quality.max_sample_count());
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
@@ -599,7 +596,6 @@ fn start_engine(
         link,
         display_watch,
         first_refresh: auto_refresh_at_startup.then_some(refresh_rx),
-        quality,
     })
 }
 

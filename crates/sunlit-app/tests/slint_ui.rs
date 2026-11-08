@@ -6918,7 +6918,9 @@ const SWITCH_SETTLES: u64 = 100 + 500 + 32;
 fn deliver_frame(window: &MainWindow, width: i32, height: i32) {
     window.set_frame_width(width);
     window.set_frame_height(height);
-    window.set_frame_short_edge(width.min(height) as f32);
+    window.set_frame_short_edge(f32::from(
+        u16::try_from(width.min(height)).expect("a frame size"),
+    ));
 }
 
 /// Let a switch settle and the frame it waits for arrive, and the cover fade.
@@ -7586,5 +7588,17 @@ fn test_an_entry_by_the_system_starts_with_the_notice() {
     assert!(
         window.get_awaited_frame_width() > 0,
         "the size went at once"
+    );
+
+    finish_switch(&window);
+    window.window().set_fullscreen(false);
+    finish_switch(&window);
+    window.invoke_toggle_full_screen();
+    assert!(window.get_switch_blank());
+    window.window().set_fullscreen(true);
+    let_pass(16);
+    assert!(
+        !window.get_switch_blank() && window.get_switch_cover(),
+        "one that comes during a switch takes it over"
     );
 }

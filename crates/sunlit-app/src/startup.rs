@@ -83,6 +83,11 @@ pub(crate) fn effective_texture_resolution(cli: &Cli, config: &AppConfig) -> u32
         .map_or(config.texture_resolution, u32::from)
 }
 
+/// The quality tier this run renders at: the flag over the stored setting.
+pub(crate) fn quality_tier(cli: &Cli, config: &AppConfig) -> QualityTier {
+    cli.quality.map_or(config.quality_tier, QualityTier::from)
+}
+
 /// Build the engine configuration shared by every startup mode.
 pub(crate) fn engine_config(
     cli: &Cli,
@@ -90,7 +95,7 @@ pub(crate) fn engine_config(
     preview_size: (u32, u32),
     preview_enabled: bool,
 ) -> EngineConfig {
-    let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
+    let quality = quality_tier(cli, config);
     info!(?quality, "quality tier");
     let texture_resolution = effective_texture_resolution(cli, config);
 

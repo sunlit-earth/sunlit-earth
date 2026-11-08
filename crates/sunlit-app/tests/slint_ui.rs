@@ -6881,6 +6881,25 @@ fn test_the_tray_says_quit() {
     }
 }
 
+/// Esc hides the About window, wherever the keyboard is in it.
+#[test]
+fn test_escape_hides_the_about_window() {
+    use slint::platform::{Key, WindowEvent};
+
+    let window = about_window();
+    sunlit_earth::about::register_escape(&window);
+    open_tab(&window, 2);
+    assert!(window.window().is_visible());
+    let escape = slint::SharedString::from(Key::Escape);
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: escape.clone(),
+    });
+    window
+        .window()
+        .dispatch_event(WindowEvent::KeyReleased { text: escape });
+    assert!(!window.window().is_visible(), "Esc left the window shown");
+}
+
 // ---------------------------------------------------------------------------
 // Full screen
 // ---------------------------------------------------------------------------

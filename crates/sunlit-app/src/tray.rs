@@ -325,6 +325,7 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
     let engine_link = engine.clone();
     tray.on_toggle_window(move || {
         if let Some(win) = window_weak.upgrade() {
+            crate::menu::save_geometry(&win);
             if crate::window_state::toggle(&win, &engine_link) {
                 debug!("tray: window shown (icon clicked)");
                 sunlit_core::memory::log_memory_usage("after window shown");

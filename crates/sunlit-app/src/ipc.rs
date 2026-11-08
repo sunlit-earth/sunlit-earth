@@ -148,6 +148,7 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
                     debug!("ipc: hiding window");
+                    crate::menu::save_geometry(&win);
                     crate::window_state::hide(&win, &engine);
                 }
                 signal("window_hidden");

@@ -242,6 +242,13 @@ No new case. `test_tray_hide_show_cycle` and the cases that quit through IPC kee
 
 4. **The hand checks of step 9 go to the user.** Step 9's checks on the Windows desktop and the interactive ones in the Linux guest take over the user's screen and wallpaper, so the run left them out and ran only the e2e suite in the Linux guest (KDE on X11, GNOME on Wayland) and on the macOS runner. What remains for the user: on the Windows desktop, the native menu following the theme, every entry, Ctrl+Q quitting and the next start opening at the same position and size, Ctrl+Q with a text field focused, Ctrl+W still moving the frame, Q held and then Ctrl not leaving the roll running, the View titles flipping on H and F, the tray's Show / Hide title across the close button, a hide from the tray, an icon click and a second launch, and Revert to Saved sitting beside Load Defaults; in the Linux guest on KDE X11 and GNOME Wayland, the drawn menu bar and its keyboard navigation, Ctrl+Q with the preview and with a text field focused, Open Data Folder, and the pickers and the shortcut sheet opening below the bar; on a Mac, the App menu's About showing the copyright, ⌘Q and the geometry it keeps, the App menu's Hide against the tray's title, and AppKit's own Enter Full Screen.
 
+5. **A hide from the tray or through IPC saves the geometry too.** Decision 3 saves it on Quit when the window is on screen, and the close button in tray mode already saved it, but the tray's Show / Hide, the icon click and IPC `hide-window` hid the window without a save, so a move followed by Hide and then Quit from the tray lost the move. The tray's toggle and the IPC hide now call `menu::save_geometry` before hiding. The save sits in those two callers rather than in `window_state::hide`, because a `slint_ui` case calls `window_state::hide` directly and the tests have no per-test config path; the e2e suite's IPC hide writes to its isolated config. `save_geometry` also skips a minimized window, which Windows reports as visible at (-32000, -32000).
+
+## Validation
+
+- Round 1 (`ca634ac..cbccb0e`): 2 majors, 3 minors. A minimized window's geometry was saved on Quit; step 9's hand checks were not done (departure 4); the release readmes said Exit; two stale sentences in `docs/architecture.md`. All fixed in `3be37ba` and `ebcdb0f`.
+- Round 2 (`cbccb0e..ebcdb0f`): every round 1 fix verified, 0 majors, 1 minor: a hide from the tray did not save the geometry (departure 5). The "Failed to create system tray icon" lines on `slint_ui`'s stderr come from the two tray cases that show a window with no tray image set, and are harmless.
+
 ## Sources
 
 - [Apple HIG, the menu bar](https://developer.apple.com/design/human-interface-guidelines/the-menu-bar)

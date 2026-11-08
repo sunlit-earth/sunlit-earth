@@ -6470,6 +6470,19 @@ fn wired_tray(window: &MainWindow) -> sunlit_earth::TrayIcon {
     tray
 }
 
+/// Whether a case that shows the window beside a tray icon has to skip.
+///
+/// Once such a case shows the window, Slint creates the tray icon's platform
+/// item, and on macOS that panics anywhere but on the main thread, where no
+/// test runs.
+fn the_tray_cannot_follow_a_shown_window(case: &str) -> bool {
+    let skip = cfg!(target_os = "macos");
+    if skip {
+        println!("skipping {case}: on macOS the status item is made on the main thread only");
+    }
+    skip
+}
+
 /// Slint's tray backends draw no checkmark, so the state is in the titles:
 /// the mark is there exactly when auto-refresh is on, follows the main
 /// window, and a toggle from the tray reaches the window.
@@ -6755,6 +6768,9 @@ fn test_revert_to_saved_is_the_panels_reset() {
 fn test_the_tray_show_hide_title_follows_the_window() {
     use sunlit_earth::window_state;
 
+    if the_tray_cannot_follow_a_shown_window("test_the_tray_show_hide_title_follows_the_window") {
+        return;
+    }
     let window = create_window();
     let link = idle_link();
     let tray = wired_tray(&window);
@@ -6784,6 +6800,9 @@ fn test_the_tray_show_hide_title_follows_the_window() {
 fn test_close_window_hides_to_the_tray() {
     use sunlit_earth::window_state;
 
+    if the_tray_cannot_follow_a_shown_window("test_close_window_hides_to_the_tray") {
+        return;
+    }
     let window = create_window();
     let link = idle_link();
     let tray = wired_tray(&window);

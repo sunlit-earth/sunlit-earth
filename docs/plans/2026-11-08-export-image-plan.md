@@ -18,9 +18,12 @@ A separate window was considered and dropped. Slint 1.18 has no modal windows: i
 
 - **Look.** The card uses the settings panel's colors (`Palette`) and the std widgets, so it follows the system's light or dark scheme like the panel: `Palette.background` with a `Palette.border` border, 10 px radius, the version notice's drop shadow, a 15 px semibold heading. Backdrop `#0000008c`, as the other two overlays.
 - **Close button.** A × in the card's top right corner, in the heading's row: a 24 px hit area with a 12 px icon, `icons/close.svg` drawn like the other icons (black stroke, colorized with `Palette.foreground`), a faint hover and pressed background, and the accessible role of a button labeled "Close". It is in the top right on every platform, macOS included; matching each platform's habit is not worth the code. It does what the Close button and Esc do.
-- **Pointer.** The backdrop's `TouchArea` takes clicks and the scroll wheel, so nothing reaches the panel or the preview. A click on the backdrop does nothing; only the × button, Close and Esc dismiss the sheet.
-- **Keyboard.** Opening the sheet moves the focus into it, so the preview's `FocusScope` and its shortcuts receive nothing; closing it returns the focus to the preview.
-- **Menus.** Every `MenuItem` gets `enabled: !root.export-sheet-open`. The Linux menu bar is drawn in the window and the Windows and macOS ones are native, so the binding, not the backdrop, is what blocks them. On macOS the App menu Slint builds (About, Quit) stays enabled; Quit cancels a running export.
+- **Pointer.** The backdrop's `TouchArea` takes clicks and the scroll wheel, so nothing reaches the panel or the preview. A click on the backdrop does nothing; only the × button, Close, Esc, a second Ctrl+E and a menu item (below) dismiss the sheet.
+- **Keyboard.** Opening the sheet moves the focus into it, so the preview's `FocusScope` and its shortcuts receive nothing; closing it returns the focus to the preview. The menu item's shortcut, Ctrl+E as the menu shows it on each platform, toggles: a second press while the sheet is open closes it like Esc, cancelling a running export.
+- **Menus stay enabled, and choosing an item closes the sheet first** (revision 1). Any `MenuItem` chosen while the sheet is open closes the sheet as Close does, cancelling a running export and ending the hold, and then does its own job. File > Export Image… is the exception that only closes, which is what makes the second Ctrl+E work. Opening a menu without choosing an item leaves the sheet alone, since Slint reports no event for a native menu opening. On macOS the App menu Slint builds (About, Quit) bypasses the app's handlers; whether its Quit reaches the teardown that cancels a running export is the open question `docs/platforms.md` records.
+
+  The first build disabled every `MenuItem` while the sheet was open. On Windows that flashed the whole window white on open and on close, and a menu bar of grayed out entries that still opens is poor anyway. The likely cause, not yet confirmed: Slint's winit backend rebuilds the entire native menu whenever any menu property changes, with window redraw switched off through `WM_SETREDRAW` and only the menu bar redrawn afterwards (`i-slint-backend-winit` 1.18.1, `muda.rs` `rebuild_menu` and `win32_set_window_redraw`). Nothing can block a native menu bar the way the backdrop blocks the window: on Windows it is in the window frame, on macOS it is the global menu bar, and Slint offers no hook but the item properties whose change causes the rebuild. So no menu property may change when the sheet opens or closes.
+- **No white flash.** Opening and closing the sheet must not flash the window on any platform; the user confirms it on Windows once the menus no longer change (revision 1, step 14).
 - **Held input.** The app clears the preview's held keys and held zoom buttons when the sheet opens.
 - **Hiding the window** (Close Window, the title bar's close button, the tray's Show / Hide) closes the sheet first, cancelling a running export, so a hidden window never keeps the scene held (decision 3).
 - **Size.** The card is `min(520px, window width - 16px)` wide and must fit the main window's minimum size; if its content is taller than the window, the card's body scrolls and its buttons stay visible.
@@ -28,31 +31,52 @@ A separate window was considered and dropped. Slint 1.18 has no modal windows: i
 
 ### 2. Layout
 
-The placeholder the user looked at, `crates/sunlit-ui/ui/overlays/export-sheet.slint`, is the starting point:
+The card, as revision 1 leaves it (the progress bar and the status line are shown filled in; while idle the bar is invisible and its row stays):
 
 ```
-░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
-░░░░ ┌──────────────────────────────────────────────────┐ ░░░░
-░░░░ │ Export Image                                   × │ ░░░░
-░░░░ │ ┌──────────────┐ Size     [ DELL U2720Q · 3840 × 2160 ▾] │
-░░░░ │ │  framing     │ Width    [ 3840 ] × [ 2160 ] [Swap]     │
-░░░░ │ │  thumbnail   │ Format   [ PNG ▾]                │ ░░░░
-░░░░ │ └──────────────┘ Compression [=====|====]      6 │ ░░░░
-░░░░ │ Save to [ C:\Users\…\Pictures\sunlit-earth.png ] [Browse…] │
-░░░░ │ [██████████████░░░░░░░░░░░░░░] Saving…            │ ░░░░
-░░░░ │ Saved to sunlit-earth.png          [Show in Folder] │ ░░░░
-░░░░ │                               [Close]  [Export]  │ ░░░░
-░░░░ └──────────────────────────────────────────────────┘ ░░░░
-░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+┌──────────────────────────────────────────────────────────────┐
+│ Export Image                                               × │
+│                                                              │
+│ ┌────────────┐  Size         [ 3840 × 2160                ▾] │
+│ │            │               [ 3840 ] × [ 2160 ]    [ Swap ] │
+│ │ thumbnail  │  Format       [ PNG                        ▾] │
+│ │            │  Compression  [═══════●══════════════]      3 │
+│ └────────────┘                                               │
+│ Save to  [ C:\Users\…\Pictures\sunlit-earth.png ] [ Browse… ]│
+│                                                              │
+│ ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
+│ ⚠ sunlit-earth.png exists and will be replaced.              │
+│                                                              │
+│                                        [ Close ]  [ Export ] │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-- **Size.** A `ComboBox`: each connected monitor at its native resolution (monitors of one size merged into one entry naming them), the anchor screen first and the default; then 1920×1080, 2560×1440, 3840×2160, 5120×2880, 7680×4320, 2560×1600, 3440×1440, 1290×2796 (a phone, portrait), 2048×2048; then Custom. Width and height are fields of their own; editing either selects the entry that matches, else Custom. Swap exchanges them. There is no limit shown; decision 6 says what happens past one.
+- **Size.** A `ComboBox` of plain sizes, no names or comments (revision 1): first the main display's resolution, which is the anchor screen the preview is framed for, and the default; then 1920 × 1080, 2560 × 1440, 3840 × 2160, 5120 × 2880, 7680 × 4320, 2560 × 1600, 3440 × 1440, 1290 × 2796, 2048 × 2048, leaving out the one that equals the first entry; then Custom. Other monitors are not listed. Under it, without a label of its own, the row of the width and height fields and Swap (revision 1: the first build labeled that row "Width", which read as if it held one number). Editing either field selects the entry that matches, else Custom. Swap exchanges them. There is no limit shown; decision 6 says what happens past one.
 - **Thumbnail.** An `ExportPixels` render about 200 px on its long edge at the chosen aspect, redrawn when the aspect has been unchanged for 300 ms. The scene is frozen while the sheet is open (decision 3), so only the aspect matters. It shows what the short edge framing crops for a portrait or wide export, which the dimmed preview behind the card does not. It is the first thing to drop if the card does not fit the window's minimum size with it.
 - **Format.** A `ComboBox` with PNG and JPEG, so another format adds an entry rather than a control. Below it one slider whose meaning the format sets: Compression for PNG (decision 5), Quality for JPEG (1 to 100, default 90). Each format keeps its own value.
 - **Save to.** An editable path field and Browse…. Decision 4.
-- **Progress and status.** The bar and the status line appear when an export starts and stay with the outcome until the next change in the sheet. During an export Export reads Cancel.
+- **Progress and status.** The bar fills during an export and the status line shows its phase, then the outcome, until the next change in the sheet. During an export Export reads Cancel. A success reads "Saved to sunlit-earth.png"; there is no Show in Folder button (revision 1).
+- **The space is reserved from the start** (revision 1). The card is centered once and its size and every control's position stay put whatever happens in it: idle, running, done, an error, PNG or JPEG, a long status text, a portrait or a wide thumbnail. In particular:
+  - the progress bar's row is always laid out and the bar is invisible while idle, not absent;
+  - the status line always takes two lines of height, and a longer text is elided at the end;
+  - the label column is as wide as its widest label, so Compression and Quality swap without moving the slider, and the value next to the slider is as wide as three digits;
+  - the thumbnail sits in a fixed square of its long edge, the picture letterboxed inside;
+  - the Export button is as wide as the wider of Export and Cancel.
+  The card is therefore always at its full height, and test 17 checks that height against the main window's minimum size.
+- **Hover texts** (revision 1). Every interactive element in the card has one, built like the settings panel's: Slint's `Tooltip` with the `Hint` content component from `widgets.slint`, which wraps, and within the constraints `widgets.slint` describes (a `Tooltip` claims a layout cell of its own, so it sits in an element that carries it, and two hover texts must not overlap). Plain sentences that say what the control does, in the panel's voice:
+  - ×: "Close Export Image. A running export is cancelled."
+  - Size: "The size of the image in pixels. The first entry is the main display's."
+  - Width and height fields: "Width in pixels." and "Height in pixels."
+  - Swap: "Swap width and height, from landscape to portrait and back."
+  - Format: "The file format. PNG keeps every pixel; JPEG files are smaller."
+  - Compression: "How hard PNG compression works. Higher levels make smaller files and take longer; the picture is the same at every level."
+  - Quality: "How much detail JPEG keeps. Higher values look better and make larger files."
+  - Save to: "Where the image is saved. Type or paste a path, or click Browse… to choose one."
+  - Browse…: "Choose the folder and the file name in the system's save dialog."
+  - Close: as ×.
+  - Export: "Render the scene at this size and save it." While running, Cancel: "Stop the export. No file is written."
 - **No other text.** No date line, no size estimate, no device limit.
-- **Keys.** Enter exports when Export is enabled. Esc cancels a running export and closes the sheet.
+- **Keys.** Enter exports when Export is enabled. Esc and a second Ctrl+E cancel a running export and close the sheet.
 
 ### 3. The scene freezes while the sheet is open, and the export is what the preview shows
 
@@ -70,7 +94,8 @@ This replaces the research document's note that an export draws at the time sett
 ### 4. Save dialog and path
 
 - **rfd 0.18** with default features, `AsyncFileDialog::save_file()` from `slint::spawn_local`, parented on the main window. Filters in the order of the format list, the current format's first, so Windows' default extension is the current format's. The starting folder and the file name come from the path field.
-- **The path field is always editable**, also while an export runs (the running export keeps the path it started with), so a path can be typed or pasted, and desktops with no file picker still work. A recognized extension in it (`png`, `jpg`, `jpeg`, any case) selects the format; choosing a format rewrites the extension in the field. At export a path with no recognized extension gets the format's appended. A relative path, or a folder that does not exist, is an error in the status line. A typed path that names an existing file shows "This file will be replaced." under the field, since only the native dialog asks.
+- **The path field is always editable**, also while an export runs (the running export keeps the path it started with), so a path can be typed or pasted, and desktops with no file picker still work. A recognized extension in it (`png`, `jpg`, `jpeg`, any case) selects the format; choosing a format rewrites the extension in the field. At export a path with no recognized extension gets the format's appended. A relative path, or a folder that does not exist, is an error in the status line.
+- **Replacing a file** (revision 1). The native dialog asks before replacing a file, but a remembered name, a typed path or a pasted one never passes through it, so pressing Export twice on the same moment would replace the first file without a word. While the sheet is idle and the path (with the extension the export would add) names an existing file, the status line reads "sunlit-earth.png exists and will be replaced." with a small warning icon before it, `icons/warning.svg` drawn like the other icons, in an amber that reads on both color schemes. There is no confirmation step and nothing under the path field. An export's phase or outcome takes the status line over as before; once the sheet changes again, the hint comes back if it still applies.
 - **The cheap check.** If the dialog returns no path within 300 ms of opening, nobody cancelled that fast, so the status line says "No file picker opened. Type the path above." That covers a desktop with neither a portal FileChooser nor zenity. Nothing else is detected.
 - **The path is remembered** across restarts as `export_path` in the config, without its extension: whenever the dialog returns a path, and whenever an export succeeds. The field and every dialog start from it, folder and name, with the current format's extension. Before the first save the name is `sunlit-earth` in the Pictures folder (`dirs::picture_dir()`), else the home folder; a remembered folder that no longer exists falls back the same way and keeps the name.
 
@@ -143,7 +168,16 @@ Each step leaves `cargo test` and `cargo clippy --all-targets` green and is its 
 7. **Tray and Quit**: Show / Hide and Quit close the sheet and cancel a running export (decision 1).
 8. **IPC and e2e.** An `export-image <path> <width> <height> <png|jpeg> [quality]` IPC command that runs the sheet's export without the dialog and prints `SIGNAL:exported path=<path>` or `SIGNAL:export_failed reason=<text>`, and the e2e cases below.
 9. **Docs.**
-10. **Validation in the guests** (see Tests). Run by the supervising session with the user; the implementer's constraints forbid the VMs.
+10. **Validation in the guests** (see Tests). Run by the supervising session with the user; the implementer's constraints forbid the VMs. Runs after revision 1.
+
+### Revision 1
+
+The user tried the first build on 2026-11-08 and asked for eight changes, now written into decisions 1, 2 and 4: hover texts on every interactive element of the card, no white flash when the sheet opens or closes, a second Ctrl+E closing the sheet, the card's space reserved so nothing moves, no Show in Folder button, the replace notice moved into the status line with a warning icon, plain sizes in the size list with the main display's first, and no "Width" label on the row of the width and height fields. The user also considered a confirmation step for replacing a file and chose the status line hint instead.
+
+11. **Menus.** Remove the `enabled` bindings; route every `MenuItem`'s activation while the sheet is open through closing the sheet first, Export Image… only closing it. Ctrl+E toggles through that item. Departure 5 stays as it is.
+12. **The card.** Reserve the space (decision 2), drop Show in Folder, move the replace notice into the status line with `icons/warning.svg`, the size list as plain sizes with the main display's first and other monitors left out, the width and height row without a label, and the hover texts.
+13. **Docs** for the above (`usage.md`, `architecture.md`, `testing.md`), and the tests below updated.
+14. **The flash, confirmed by the user.** Nobody but the user can watch the screen. After step 11 the user opens and closes the sheet on the Windows desktop with the default renderer; if the window still flashes, the cause is elsewhere and revision 1 stops for investigation before Step 10.
 
 ## Tests
 
@@ -157,7 +191,7 @@ Assert behavior, not constants.
 4. A failing target folder returns an error and leaves nothing.
 5. Extension normalization: no extension, `.PNG`, `.jpeg`, `.jpg` with JPEG chosen, `.txt`, a dot in a folder name, a trailing dot.
 6. Format from a typed path, and the path after a format change.
-7. The preset list: one monitor, two of one size merged, the anchor first, no monitors at all, a monitor that matches a common size listed once.
+7. The preset list: the anchor's size first and listed once when it matches a common size, other monitors not listed, no monitors at all, and no entry but Custom holding anything other than digits and ×.
 8. The starting path: stored and its folder present, stored and its folder gone (the name survives), unset (`sunlit-earth`).
 9. The folder fallback when there is no Pictures folder.
 10. `check_export_fits`: past the side, past the buffer with a width not a multiple of 64, and within both.
@@ -171,9 +205,10 @@ Assert behavior, not constants.
 
 ### `slint_ui`
 
-15. `ExportSheet`: Export disabled until ready, enabled after; the slider reads Compression for PNG and Quality for JPEG and keeps each value across a switch; Custom selected after editing a size; Swap exchanges the two; the path field accepts edits while an export runs; the replace warning follows its property; Esc and the × button close the sheet, a click on the backdrop does not.
-16. `MainWindow` with `export-sheet-open`: menu items disabled; a click, a drag and the wheel over the preview and over the panel change nothing; a preview shortcut key does nothing; after closing, the preview has the focus again.
+15. `ExportSheet`: Export disabled until ready, enabled after; the slider reads Compression for PNG and Quality for JPEG and keeps each value across a switch; Custom selected after editing a size; Swap exchanges the two; the path field accepts edits while an export runs; the status line shows the replace hint with its icon for an existing file while idle and gives way to an export's phase and outcome; Esc, the × button and a second Ctrl+E close the sheet, a click on the backdrop does not; every interactive element has a hover text, checked the way the panel's are if the slint_ui tests check those, else by a test over the card's source.
+16. `MainWindow` with `export-sheet-open`: no menu item's `enabled` changes when the sheet opens or closes; choosing a menu item (a View toggle, for one) closes the sheet and then does its job, and File > Export Image… only closes it; a click, a drag and the wheel over the preview and over the panel change nothing; a preview shortcut key does nothing; after closing, the preview has the focus again.
 17. At the main window's minimum size the card's buttons are inside the window.
+22. The card's size and the positions of its buttons, its slider and its path field are the same idle, running, done, after an error with a long text, with PNG and with JPEG, with the replace hint shown, and with a portrait and a wide size.
 18. `AboutWindow`: Esc hides it.
 
 ### e2e (`crates/sunlit-app/tests/e2e.rs`)
@@ -184,7 +219,7 @@ Assert behavior, not constants.
 
 ### Step 10, in the guests and on the runner
 
-- **Windows** (`vm up windows`, and the desktop): overwrite an existing file through Browse, with `winit-software` and the default renderer (rfd #164); Browse into Downloads; the native menu bar is disabled while the sheet is open.
+- **Windows** (`vm up windows`, and the desktop): overwrite an existing file through Browse, with `winit-software` and the default renderer (rfd #164); Browse into Downloads; no white flash when the sheet opens or closes; choosing a native menu item while the sheet is open closes it first.
 - **Linux**, KDE, GNOME, XFCE and Cinnamon on X11, and KDE and GNOME on Wayland: the dialog opens parented on the main window, starts in the remembered folder after a restart, confirms an overwrite, and whether it appends the extension for each filter.
 - **sway and i3**: with the image as it is, then with no portal and no zenity (the status line hint appears and a typed path exports), then with the gtk portal but no `portals.conf` routing (record whether it hangs).
 - **macOS**: compiles on the runner; nobody can look at the sheet or the native menu bar.

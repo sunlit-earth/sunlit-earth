@@ -7911,30 +7911,54 @@ fn test_the_size_fields_pick_their_entry_and_swap() {
     assert_eq!(state.get_height_text(), "1920");
 }
 
-/// The path field takes edits while an export runs, its extension picks the
-/// format, and the warning under it appears for a file that exists.
+/// The path field takes edits while an export runs and its extension picks
+/// the format. While the sheet is idle the status line says that a file the
+/// path names will be replaced, with a warning icon, and an export's phase
+/// takes the line over.
 #[test]
 fn test_the_path_field_stays_editable_and_warns_before_replacing() {
     let (window, _sent) = export_sheet();
     let state = export_state(&window);
-    let warnings = |window: &MainWindow| labelled(window, "This file will be replaced.").len();
+    let icons = |window: &MainWindow| {
+        labelled(window, "Warning")
+            .into_iter()
+            .filter(|element| element.accessible_role() == Some(AccessibleRole::Image))
+            .count()
+    };
 
     let existing =
         std::env::temp_dir().join(format!("sunlit-export-sheet-{}.png", std::process::id()));
     std::fs::write(&existing, b"").unwrap();
     let field = the_labelled(&window, "Save to", AccessibleRole::TextInput);
     field.set_accessible_value(existing.display().to_string());
-    let warned = warnings(&window);
+    let notice = format!(
+        "{} exists and will be replaced.",
+        existing.file_name().unwrap().to_string_lossy()
+    );
+    let warned = (labelled(&window, &notice).len(), icons(&window));
     std::fs::remove_file(&existing).unwrap();
-    assert_eq!(warned, 1, "no warning for a file that exists");
+    assert_eq!(warned, (1, 1), "no notice and icon for a file that exists");
     assert_eq!(state.get_format_index(), 0);
+
+    state.set_exporting(true);
+    state.set_status_shown(true);
+    state.set_status("Saving…".into());
+    assert_eq!(
+        labelled(&window, &notice).len(),
+        0,
+        "the notice outlasted the export's start"
+    );
+    assert_eq!(icons(&window), 0);
+    state.set_status_shown(false);
+    state.set_exporting(false);
 
     field.set_accessible_value(existing.with_extension("jpg").display().to_string());
     assert_eq!(
-        warnings(&window),
-        0,
-        "a warning for a file that is not there"
+        state.get_replace_notice(),
+        "",
+        "a notice for a file that is not there"
     );
+    assert_eq!(icons(&window), 0);
     assert_eq!(
         state.get_format_index(),
         1,
@@ -8248,6 +8272,179 @@ fn test_a_menu_item_closes_the_sheet_first() {
     key_up(&window, Key::Control);
     assert!(!window.get_export_sheet_open(), "Ctrl + E left it open");
     assert_eq!(holds(&sent), [true, false]);
+}
+
+/// The card itself, which holds every control of the sheet.
+fn the_card(window: &MainWindow) -> ElementHandle {
+    let cards: Vec<_> = ElementHandle::find_by_element_id(window, "ExportSheet::card").collect();
+    assert_eq!(cards.len(), 1, "one card");
+    cards.into_iter().next().expect("the card")
+}
+
+fn rectangle_of(element: &ElementHandle) -> (f32, f32, f32, f32) {
+    let at = element.absolute_position();
+    let size = element.size();
+    (at.x, at.y, size.width, size.height)
+}
+
+/// Every control of the card has a hover text: it sits in one element that
+/// carries a `Tooltip` (`WithHint`, or the × button, which is its own), and no
+/// two of those overlap, so no two hover texts open together. The testing
+/// backend does not name the tooltip's own area.
+#[test]
+fn test_every_control_of_the_card_has_a_hover_text() {
+    let (window, _sent) = export_sheet();
+    sunlit_earth::export::textures_ready();
+    let card = the_card(&window);
+    let areas: Vec<_> = card
+        .query_descendants()
+        .match_predicate(|element| {
+            matches!(
+                element.type_name().as_deref(),
+                Some("WithHint" | "CloseButton")
+            )
+        })
+        .find_all()
+        .iter()
+        .map(rectangle_of)
+        .collect();
+    let controls: Vec<_> = card
+        .query_descendants()
+        .match_predicate(|element| {
+            matches!(
+                element.accessible_role(),
+                Some(
+                    AccessibleRole::Button
+                        | AccessibleRole::Combobox
+                        | AccessibleRole::TextInput
+                        | AccessibleRole::Slider
+                )
+            )
+        })
+        .find_all();
+    assert!(controls.len() >= 9, "{} controls", controls.len());
+    for control in controls {
+        let (x, y, width, height) = rectangle_of(&control);
+        let (mid_x, mid_y) = (x + width / 2.0, y + height / 2.0);
+        let over = areas
+            .iter()
+            .filter(|(ax, ay, aw, ah)| {
+                (*ax..=ax + aw).contains(&mid_x) && (*ay..=ay + ah).contains(&mid_y)
+            })
+            .count();
+        assert_eq!(
+            over,
+            1,
+            "{:?} '{}' has {over} hover texts",
+            control.accessible_role(),
+            control.accessible_label().unwrap_or_default()
+        );
+    }
+    for (index, a) in areas.iter().enumerate() {
+        for b in &areas[index + 1..] {
+            let apart = a.0 + a.2 <= b.0 + 0.5
+                || b.0 + b.2 <= a.0 + 0.5
+                || a.1 + a.3 <= b.1 + 0.5
+                || b.1 + b.3 <= a.1 + 0.5;
+            assert!(apart, "hover texts at {a:?} and {b:?} overlap");
+        }
+    }
+}
+
+/// The card and its controls stay where they are whatever happens in it:
+/// idle, running, done, after an error with a long text, PNG and JPEG, with
+/// the replace notice, and with a portrait and a wide size and thumbnail.
+#[test]
+fn test_nothing_in_the_card_moves() {
+    let (window, _sent) = export_sheet();
+    let state = export_state(&window);
+    sunlit_earth::export::textures_ready();
+    let places = |window: &MainWindow| {
+        let card = the_card(window);
+        let mut found = vec![("card".to_owned(), rectangle_of(&card))];
+        for element in card
+            .query_descendants()
+            .match_predicate(|element| {
+                matches!(
+                    element.accessible_role(),
+                    Some(
+                        AccessibleRole::Button
+                            | AccessibleRole::Combobox
+                            | AccessibleRole::TextInput
+                            | AccessibleRole::Slider
+                    )
+                )
+            })
+            .find_all()
+        {
+            let name = match element.accessible_label().unwrap_or_default().as_str() {
+                "Export" | "Cancel" => "Export or Cancel".to_owned(),
+                "Compression" | "Quality" => "slider".to_owned(),
+                label => label.to_owned(),
+            };
+            found.push((name, rectangle_of(&element)));
+        }
+        found
+    };
+    let idle = places(&window);
+    let check = |what: &str| {
+        let now = places(&window);
+        assert_eq!(
+            now.len(),
+            idle.len(),
+            "{what}: the controls changed: {now:?}"
+        );
+        for ((name, at), (_, was)) in now.iter().zip(&idle) {
+            let moved = [at.0 - was.0, at.1 - was.1, at.2 - was.2, at.3 - was.3]
+                .iter()
+                .any(|delta| delta.abs() > 0.5);
+            assert!(!moved, "{what}: {name} went from {was:?} to {at:?}");
+        }
+    };
+
+    state.set_exporting(true);
+    state.set_status_shown(true);
+    state.set_progress_shown(true);
+    state.set_progress(0.5);
+    state.set_status("Saving…".into());
+    check("running");
+
+    state.set_exporting(false);
+    state.set_progress(1.0);
+    state.set_status("Saved to sunlit-earth.png".into());
+    check("done");
+
+    state.set_status(
+        "The image could not be written: "
+            .repeat(12)
+            .trim_end()
+            .to_owned()
+            .into(),
+    );
+    check("a long error");
+
+    state.set_status_shown(false);
+    state.set_progress_shown(false);
+    state.set_replace_notice("sunlit-earth.png exists and will be replaced.".into());
+    check("the replace notice");
+    state.set_replace_notice("".into());
+
+    state.set_format_index(1);
+    state.invoke_format_chosen(1);
+    check("JPEG");
+    state.set_format_index(0);
+    state.invoke_format_chosen(0);
+    check("PNG");
+
+    for (width, height) in [(1080, 1920), (3440, 1440)] {
+        state.set_width_text(width.to_string().into());
+        state.set_height_text(height.to_string().into());
+        state.invoke_size_edited();
+        let small = sunlit_earth::export::thumbnail_size((width, height));
+        let pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(small.0, small.1);
+        state.set_thumbnail(slint::Image::from_rgba8(pixels));
+        check(&format!("{width} × {height}"));
+    }
 }
 
 /// At the main window's minimum width and a short height the card's Export

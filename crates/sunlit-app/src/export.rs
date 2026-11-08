@@ -37,18 +37,17 @@ use crate::{ExportState, MainWindow};
 /// (`docs/plans/2026-11-08-export-image-research.md`, Measurements).
 pub const PNG_LEVELS: [u8; 8] = [1, 2, 3, 5, 6, 7, 8, 9];
 
-/// The common sizes the Size list offers after the monitors, and how each is
-/// named.
-const COMMON_SIZES: [(u32, u32, &str); 9] = [
-    (1920, 1080, ""),
-    (2560, 1440, ""),
-    (3840, 2160, ""),
-    (5120, 2880, ""),
-    (7680, 4320, ""),
-    (2560, 1600, ""),
-    (3440, 1440, ""),
-    (1290, 2796, ", phone"),
-    (2048, 2048, ""),
+/// The common sizes the Size list offers after the main display's.
+const COMMON_SIZES: [(u32, u32); 9] = [
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+    (5120, 2880),
+    (7680, 4320),
+    (2560, 1600),
+    (3440, 1440),
+    (1290, 2796),
+    (2048, 2048),
 ];
 
 /// The size an export starts from with no monitor and no saved size.
@@ -89,52 +88,29 @@ pub struct Preset {
     pub size: Option<(u32, u32)>,
 }
 
-/// The Size list for these monitors: each size of monitor once, naming every
-/// monitor of that size, the anchor's first; then the common sizes no monitor
-/// already has; then Custom.
+/// The Size list: the main display's size first, the anchor the preview is
+/// framed for; then the common sizes but the one that equals it; then Custom.
+/// Other monitors are not listed.
 ///
 /// :param monitors: the session's monitors
 /// :param anchor: the stored anchor monitor's id, or `None` for the primary
 /// :returns: the list, Custom last
 #[must_use]
 pub fn presets(monitors: &[Monitor], anchor: Option<&str>) -> Vec<Preset> {
-    let mut groups: Vec<((u32, u32), Vec<&str>)> = Vec::new();
-    let anchor =
-        sunlit_core::display::layout::resolve_anchor(monitors, anchor).map(|anchor| anchor.index);
-    let order = anchor
-        .into_iter()
-        .chain((0..monitors.len()).filter(|&index| Some(index) != anchor));
-    for index in order {
-        let monitor = &monitors[index];
-        let size = (monitor.width, monitor.height);
-        if size.0 == 0 || size.1 == 0 {
-            continue;
-        }
-        match groups.iter_mut().find(|(seen, _)| *seen == size) {
-            Some((_, names)) => names.push(&monitor.label),
-            None => groups.push((size, vec![&monitor.label])),
-        }
-    }
-    let mut list: Vec<Preset> = groups
-        .iter()
-        .map(|((width, height), names)| Preset {
-            label: format!("{} · {width} × {height}", names.join(", ")),
-            size: Some((*width, *height)),
+    let main = sunlit_core::display::layout::resolve_anchor(monitors, anchor)
+        .map(|anchor| (monitors[anchor.index].width, monitors[anchor.index].height))
+        .filter(|&(width, height)| width > 0 && height > 0);
+    main.into_iter()
+        .chain(COMMON_SIZES.into_iter().filter(|&size| Some(size) != main))
+        .map(|(width, height)| Preset {
+            label: format!("{width} × {height}"),
+            size: Some((width, height)),
         })
-        .collect();
-    for (width, height, note) in COMMON_SIZES {
-        if groups.iter().all(|(size, _)| *size != (width, height)) {
-            list.push(Preset {
-                label: format!("{width} × {height}{note}"),
-                size: Some((width, height)),
-            });
-        }
-    }
-    list.push(Preset {
-        label: "Custom".to_owned(),
-        size: None,
-    });
-    list
+        .chain(std::iter::once(Preset {
+            label: "Custom".to_owned(),
+            size: None,
+        }))
+        .collect()
 }
 
 /// The entry of `presets` that is `size`, or Custom.
@@ -358,9 +334,6 @@ pub fn register(window: &MainWindow, link: &EngineLink, screens: &SharedMonitors
     });
     state.on_cancel(|| {
         with(Controller::cancel);
-    });
-    state.on_show_in_folder(|| {
-        with(Controller::show_in_folder);
     });
 }
 
@@ -630,10 +603,12 @@ impl Controller {
     }
 
     /// Something in the sheet changed: the outcome of the last export goes,
-    /// and the thumbnail follows the size once it has settled.
+    /// the replace notice comes back if it applies, and the thumbnail follows
+    /// the size once it has settled.
     fn changed(&mut self, window: &MainWindow) {
         if !self.exporting() {
             Self::clear_status(window);
+            Self::check_replace(window);
         }
         self.schedule_thumbnail();
     }
@@ -642,7 +617,6 @@ impl Controller {
         let state = window.global::<ExportState>();
         state.set_status_shown(false);
         state.set_progress_shown(false);
-        state.set_saved(false);
         state.set_status("".into());
         state.set_progress(0.0);
     }
@@ -658,7 +632,13 @@ impl Controller {
         let state = window.global::<ExportState>();
         let path = state.get_path();
         let target = export_target(&path, format_at(state.get_format_index()));
-        state.set_replace_warning(!path.trim().is_empty() && target.is_file());
+        let notice = match target.file_name() {
+            Some(name) if !path.trim().is_empty() && target.is_file() => {
+                format!("{} exists and will be replaced.", name.to_string_lossy())
+            }
+            _ => String::new(),
+        };
+        state.set_replace_notice(notice.into());
     }
 
     fn schedule_thumbnail(&mut self) {
@@ -718,17 +698,6 @@ impl Controller {
             });
         if let Err(e) = spawned {
             warn!("the thumbnail could not be drawn: {e}");
-        }
-    }
-
-    fn show_in_folder(&mut self) {
-        let Some(window) = self.window() else {
-            return;
-        };
-        let state = window.global::<ExportState>();
-        let target = export_target(&state.get_path(), format_at(state.get_format_index()));
-        if let Some(folder) = target.parent() {
-            crate::open::folder(folder);
         }
     }
 
@@ -883,7 +852,6 @@ impl Controller {
         });
         state.set_exporting(true);
         state.set_cancelling(false);
-        state.set_saved(false);
         state.set_progress(REQUESTED);
         Self::show_status(&window, "Rendering…", true);
     }
@@ -932,9 +900,6 @@ impl Controller {
         if let Some(thread) = job.thread.take() {
             let _ = thread.join();
         }
-        let open = window
-            .as_ref()
-            .is_some_and(MainWindow::get_export_sheet_open);
         let state = window.as_ref().map(ComponentHandle::global::<ExportState>);
         if let Some(state) = &state {
             state.set_exporting(false);
@@ -951,7 +916,6 @@ impl Controller {
                         |name| name.to_string_lossy().into_owned(),
                     );
                     Self::show_status(window, &format!("Saved to {name}"), true);
-                    state.set_saved(open);
                     Self::check_replace(window);
                 }
                 if job.ipc {
@@ -1177,39 +1141,33 @@ mod tests {
     }
 
     #[test]
-    fn one_monitor_comes_first_and_custom_last() {
+    fn the_main_display_comes_first_and_custom_last() {
         let list = presets(&[monitor("a", "Left", 2560, 1080, true)], None);
         assert_eq!(list[0].size, Some((2560, 1080)));
-        assert!(list[0].label.contains("Left"), "{}", list[0].label);
         assert_eq!(list.last().unwrap().size, None);
         assert!(list.len() > 3);
     }
 
     #[test]
-    fn two_monitors_of_one_size_are_one_entry_naming_both() {
-        let list = presets(
-            &[
-                monitor("a", "Left", 2560, 1080, true),
-                monitor("b", "Right", 2560, 1080, false),
-            ],
-            None,
-        );
-        let entries: Vec<_> = list
-            .iter()
-            .filter(|preset| preset.size == Some((2560, 1080)))
-            .collect();
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].label.contains("Left") && entries[0].label.contains("Right"));
+    fn other_monitors_are_not_listed() {
+        let monitors = [
+            monitor("a", "Left", 1680, 1050, true),
+            monitor("b", "Right", 2570, 1080, false),
+        ];
+        let list = presets(&monitors, None);
+        assert_eq!(list[0].size, Some((1680, 1050)));
+        assert!(!sizes(&list).contains(&Some((2570, 1080))));
     }
 
     #[test]
     fn the_anchor_comes_first() {
         let monitors = [
             monitor("a", "Left", 1680, 1050, true),
-            monitor("b", "Right", 2560, 1080, false),
+            monitor("b", "Right", 2570, 1080, false),
         ];
-        assert_eq!(presets(&monitors, Some("b"))[0].size, Some((2560, 1080)));
-        assert_eq!(presets(&monitors, None)[0].size, Some((1680, 1050)));
+        let list = presets(&monitors, Some("b"));
+        assert_eq!(list[0].size, Some((2570, 1080)));
+        assert!(!sizes(&list).contains(&Some((1680, 1050))));
     }
 
     #[test]
@@ -1225,14 +1183,29 @@ mod tests {
     }
 
     #[test]
-    fn a_monitor_of_a_common_size_is_listed_once() {
+    fn a_main_display_of_a_common_size_is_listed_once() {
         let list = presets(&[monitor("a", "Office", 3840, 2160, true)], None);
         let found = sizes(&list)
             .into_iter()
             .filter(|size| *size == Some((3840, 2160)))
             .count();
         assert_eq!(found, 1);
-        assert!(list[0].label.contains("Office"));
+        assert_eq!(list[0].size, Some((3840, 2160)));
+    }
+
+    #[test]
+    fn every_size_is_its_numbers_alone() {
+        let list = presets(&[monitor("a", "Office", 2570, 1080, true)], None);
+        for preset in &list[..list.len() - 1] {
+            assert!(
+                preset
+                    .label
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == ' ' || c == '×'),
+                "{}",
+                preset.label
+            );
+        }
     }
 
     #[test]

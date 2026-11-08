@@ -321,12 +321,13 @@ export component MainWindow inherits Window {
     callback open-data-folder();
     // The camera panel's three resets at once: north up, the look, the frame.
     callback reset-camera();
-    // The View menu's toggles say what choosing them does. Slint rebuilds the
-    // menu when a title it reads changes, so they follow H, F and the buttons
-    // over the preview too.
-    out property <string> controls-title: root.overlays-hidden ? "Show Controls" : "Hide Controls";
-    out property <string> guides-title: root.guides-shown ? "Hide Frame Guides" : "Show Frame Guides";
-    out property <string> time-bar-pin-title: root.time-bar-pinned ? "Unpin Time Bar" : "Pin Time Bar";
+    // The View menu's Controls check. A checkable item flips its own `checked`
+    // before `activated` runs, so it needs a two-way binding to keep following
+    // H and the buttons over the preview; these two handlers are that binding
+    // for the inverse of `overlays-hidden`.
+    out property <bool> controls-shown: !root.overlays-hidden;
+    changed overlays-hidden => { root.controls-shown = !root.overlays-hidden; }
+    changed controls-shown => { root.overlays-hidden = !root.controls-shown; }
 
     // "Start on login". The platform's autostart entry is the setting, so Rust
     // reads it and writes these; a toggle asks Rust to write the entry and
@@ -442,8 +443,9 @@ export component MainWindow inherits Window {
 
     // Native on Windows and macOS, drawn inside the window on Linux. Commands
     // that have a control in the panel call that control's callback. Only
-    // Quit has a shortcut: the preview's single letter keys would fire from a
-    // text field as menu accelerators, and Ctrl + W moves the frame.
+    // Quit and Mouse and Keyboard have shortcuts: a menu shortcut works in the
+    // whole window, so the preview's single letter keys would fire from a text
+    // field, and Ctrl + W moves the frame.
     MenuBar {
         Menu {
             title: "File";
@@ -480,23 +482,27 @@ export component MainWindow inherits Window {
             }
             MenuSeparator {}
             MenuItem {
-                title: root.controls-title;
-                activated => { root.overlays-hidden = !root.overlays-hidden; }
+                title: "Controls";
+                checkable: true;
+                checked <=> root.controls-shown;
             }
             MenuItem {
-                title: root.guides-title;
-                activated => { root.guides-shown = !root.guides-shown; }
+                title: "Frame Guides";
+                checkable: true;
+                checked <=> root.guides-shown;
             }
             MenuItem {
-                title: root.time-bar-pin-title;
-                activated => { root.time-bar-pinned = !root.time-bar-pinned; }
+                title: "Pin Time Bar";
+                checkable: true;
+                checked <=> root.time-bar-pinned;
             }
         }
         Menu {
             title: "Help";
             MenuItem {
                 title: "Mouse and Keyboard";
-                activated => { root.shortcut-sheet-open = true; }
+                shortcut: @keys(F1);
+                activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
             }
             MenuSeparator {}
             MenuItem {
@@ -2358,11 +2364,6 @@ export component MainWindow inherits Window {
             KeyBinding {
                 keys: @keys(N);
                 activated => { root.camera-reset(CameraReset.north); }
-            }
-
-            KeyBinding {
-                keys: @keys(F1);
-                activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
             }
 
             KeyBinding {

@@ -3023,8 +3023,8 @@ fn tap(window: &MainWindow, text: impl Into<slint::SharedString>) {
     key_up(window, text);
 }
 
-/// F1 opens the sheet and Esc closes it, and so does a click outside its
-/// card.
+/// F1 opens the sheet and closes it again, Esc closes it, and so does a click
+/// outside its card.
 #[test]
 fn test_f1_opens_the_shortcut_sheet_and_escape_closes_it() {
     use slint::platform::Key;
@@ -3037,6 +3037,9 @@ fn test_f1_opens_the_shortcut_sheet_and_escape_closes_it() {
     assert_eq!(sheets(&window), 0);
     tap(&window, Key::F1);
     assert_eq!(sheets(&window), 1, "F1 opens the sheet");
+    tap(&window, Key::F1);
+    assert_eq!(sheets(&window), 0, "F1 closes it");
+    tap(&window, Key::F1);
     tap(&window, Key::Escape);
     assert_eq!(sheets(&window), 0, "Esc closes it");
 
@@ -6660,52 +6663,65 @@ fn test_the_help_links_reach_open_url() {
     }
 }
 
-/// Each View toggle says what choosing it does, flips its property, and
-/// follows the property when something else flips it.
+/// Each View toggle is a check that flips its property, keeps following the
+/// property when something else flips it, and shows its mark while on.
 #[test]
-fn test_the_view_toggles_say_what_they_do() {
+fn test_the_view_toggles_are_checks() {
+    use slint::platform::PointerEventButton;
+
     type Get = fn(&MainWindow) -> bool;
     type Set = fn(&MainWindow, bool);
-    let cases: [(&str, &str, Get, Set); 3] = [
+    let cases: [(&str, Get, Set); 3] = [
         (
-            "Hide Controls",
-            "Show Controls",
-            |w| w.get_overlays_hidden(),
-            |w, v| w.set_overlays_hidden(v),
+            "Controls",
+            |w| !w.get_overlays_hidden(),
+            |w, v| w.set_overlays_hidden(!v),
         ),
         (
-            "Show Frame Guides",
-            "Hide Frame Guides",
+            "Frame Guides",
             |w| w.get_guides_shown(),
             |w, v| w.set_guides_shown(v),
         ),
         (
             "Pin Time Bar",
-            "Unpin Time Bar",
             |w| w.get_time_bar_pinned(),
             |w, v| w.set_time_bar_pinned(v),
         ),
     ];
-    for (off_title, on_title, get, set) in cases {
+    for (title, get, set) in cases {
         let window = create_window();
         set(&window, false);
-        choose(&window, "View", off_title);
-        assert!(get(&window), "{off_title} turned it on");
-        choose(&window, "View", on_title);
-        assert!(!get(&window), "{on_title} turned it off");
+        choose(&window, "View", title);
+        assert!(get(&window), "{title} turned it on");
+        choose(&window, "View", title);
+        assert!(!get(&window), "{title} turned it off");
         set(&window, true);
-        choose(&window, "View", on_title);
-        assert!(!get(&window), "the title followed the property");
+        // The event loop runs Controls' change handlers before any click can.
+        slint::platform::update_timers_and_animations();
+        choose(&window, "View", title);
+        assert!(!get(&window), "{title} followed the property");
     }
 
     let (window, _sent) = wired_window();
     window.set_overlays_hidden(false);
     window.set_guides_shown(false);
+    window.set_time_bar_pinned(false);
     click_the_globe(&window);
     tap(&window, "h");
     tap(&window, "f");
-    assert_eq!(window.get_controls_title(), "Show Controls");
-    assert_eq!(window.get_guides_title(), "Hide Frame Guides");
+    choose(&window, "View", "Controls");
+    assert!(!window.get_overlays_hidden(), "Controls followed H");
+    choose(&window, "View", "Frame Guides");
+    assert!(!window.get_guides_shown(), "Frame Guides followed F");
+
+    window.set_guides_shown(true);
+    window.set_time_bar_pinned(true);
+    menu_texts(&window, "View")[0].mock_single_click(PointerEventButton::Left);
+    assert_eq!(
+        menu_texts(&window, "✓").len(),
+        3,
+        "every check shows its mark"
+    );
 }
 
 /// Reset Camera runs the camera panel's three resets together: north up and

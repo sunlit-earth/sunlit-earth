@@ -28,22 +28,26 @@ pub enum EngineCommand {
     RenderWallpaperNow,
     /// Play, pause, skip or end the preview's excursion from the time
     /// setting. Only the preview follows it; every export draws at the
-    /// setting.
+    /// setting, or at the held instant while the scene is held.
     Excursion(ExcursionCommand),
+    /// Hold the scene still, or let it go. While held, the preview and every
+    /// export draw at the instant the preview showed when the hold began, a
+    /// running excursion is paused and stays paused, and wallpaper publishes
+    /// wait for the release. Taking the hold announces `TexturesReady` afresh.
+    Hold(bool),
     /// Render to a PNG file at an explicit size and report back.
     RenderToFile {
         path: PathBuf,
         width: u32,
         height: u32,
-        reply: Sender<Result<(), String>>,
+        reply: Sender<Result<(), ExportError>>,
     },
-    /// Render at an explicit size and hand the raw pixels back. Used by the
-    /// e2e `export-test` probe, which checks that the GPU path still works
-    /// while the window is hidden.
+    /// Render at an explicit size and hand the raw pixels back: the export
+    /// sheet's image and thumbnail, and the e2e `export-test` probe.
     ExportPixels {
         width: u32,
         height: u32,
-        reply: Sender<Result<Vec<u8>, String>>,
+        reply: Sender<Result<Vec<u8>, ExportError>>,
     },
     /// Reload the file-backed textures at a different width.
     ///
@@ -88,6 +92,82 @@ pub enum EngineCommand {
     Poke,
     /// Finish the current iteration and stop.
     Shutdown,
+}
+
+/// Why an export on request was not made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportError {
+    /// The device cannot render or read back an image of this size.
+    TooLarge(ExportLimit),
+    /// The render, the readback or the file failed; the text says which.
+    Failed(String),
+}
+
+/// Which of the device's limits an export of `width` by `height` is past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportLimit {
+    /// A side is longer than the largest texture the device makes.
+    Side {
+        width: u32,
+        height: u32,
+        max_side: u32,
+    },
+    /// The image is more than the device reads back at once; `largest_square`
+    /// is the side of the largest square image it does.
+    Readback {
+        width: u32,
+        height: u32,
+        largest_square: u32,
+    },
+}
+
+impl std::fmt::Display for ExportLimit {
+    /// The sentence the export sheet and the `render` subcommand show.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Side {
+                width,
+                height,
+                max_side,
+            } => write!(
+                f,
+                "{width} × {height} is larger than this GPU can render \
+                 ({max_side} pixels on a side)."
+            ),
+            Self::Readback {
+                width,
+                height,
+                largest_square,
+            } => write!(
+                f,
+                "{width} × {height} is more than this GPU can read back at once \
+                 ({largest_square} × {largest_square} is the largest square)."
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for ExportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge(limit) => limit.fmt(f),
+            Self::Failed(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for ExportError {}
+
+impl From<String> for ExportError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+impl From<crate::image_file::WriteError> for ExportError {
+    fn from(error: crate::image_file::WriteError) -> Self {
+        Self::Failed(error.to_string())
+    }
 }
 
 /// Things the engine tells its clients about.

@@ -43,7 +43,7 @@ use excursion::{Excursion, ExcursionCommand};
 use handle::AdapterReport;
 pub use handle::{EngineConfig, EngineHandle, start};
 pub use loading::TILES_NAMED_AFTER;
-pub use protocol::{EngineCommand, EngineEvent};
+pub use protocol::{EngineCommand, EngineEvent, ExportError, ExportLimit};
 use schedule::Schedule;
 use surface::SurfaceFeed;
 use tile_loader::{LoaderConfig, View, Watched};
@@ -194,6 +194,9 @@ struct Engine {
     /// The preview's time while it is away from the setting, running or
     /// paused.
     excursion: Option<Excursion>,
+    /// The instant the scene is held at, from `Hold(true)` to `Hold(false)`:
+    /// the preview and every export draw at it, and wallpaper publishes wait.
+    held: Option<time::OffsetDateTime>,
     /// The instant the last draw was drawn at, which the preview frame read
     /// back from it shows.
     drawn_instant: time::OffsetDateTime,
@@ -397,6 +400,7 @@ impl Engine {
             preview_screen,
             published: false,
             excursion: None,
+            held: None,
             drawn_instant,
             drawn_framing: (0.0, None),
             dirty: true,
@@ -501,6 +505,7 @@ impl Engine {
             }
             EngineCommand::RenderWallpaperNow => self.publish_asked = true,
             EngineCommand::Excursion(command) => self.excursion_command(command),
+            EngineCommand::Hold(hold) => self.hold(hold),
             EngineCommand::SetDisplayPlan { mode, anchor } => {
                 self.display_mode = mode;
                 self.anchor_monitor = anchor;
@@ -605,29 +610,65 @@ impl Engine {
         }
     }
 
-    /// The instant the preview shows now: the excursion's while there is
-    /// one, the time setting's otherwise.
+    /// Take the hold or let it go (`EngineCommand::Hold`).
+    ///
+    /// Taking it pins the instant the preview shows now and pauses a running
+    /// excursion, which stays paused after the release. The readiness latch
+    /// reopens and the frame is drawn again at the pinned instant, so
+    /// `TexturesReady` goes out afresh: on the next tick when everything is
+    /// resident, else when it lands. Letting go draws the setting again, and a
+    /// wallpaper asked for meanwhile goes out on the next tick.
+    fn hold(&mut self, hold: bool) {
+        if hold {
+            if self.held.is_none() {
+                if let Some(mut excursion) = self.excursion.filter(Excursion::is_running) {
+                    excursion.pause(self.clock.elapsed());
+                    self.set_excursion(Some(excursion));
+                }
+                self.held = Some(self.preview_instant());
+                debug!("the scene is held");
+            }
+            self.textures_ready = false;
+        } else if self.held.take().is_some() {
+            debug!("the scene is released");
+        }
+        self.dirty = true;
+        self.retime_sky();
+    }
+
+    /// The instant the preview shows now: the held one while the scene is
+    /// held, else the excursion's while there is one, the time setting's
+    /// otherwise.
     fn preview_instant(&self) -> time::OffsetDateTime {
+        if let Some(held) = self.held {
+            return held;
+        }
         match &self.excursion {
             Some(excursion) => excursion.instant_at(self.clock.elapsed()),
             None => self.params.time.instant(self.clock.now_utc()),
         }
     }
 
-    /// The instant every export draws at: the time setting's.
+    /// The instant of the time setting, which a wallpaper draws at.
     fn setting_instant(&self) -> time::OffsetDateTime {
         self.params.time.instant(self.clock.now_utc())
     }
 
-    /// The instant the month in force follows in a draw at `at`: the time
-    /// setting's while a wallpaper or an export waits for its tiles, since
-    /// they are of the setting's month and the set has one month, and `at`
-    /// otherwise. An excursion in another month is drawn from the setting's
-    /// month meanwhile, rather than the two months taking turns in force and
-    /// each turn starting the tile wait over.
+    /// The instant every export draws at: the held one while the scene is
+    /// held, the time setting's otherwise.
+    fn export_instant(&self) -> time::OffsetDateTime {
+        self.held.unwrap_or_else(|| self.setting_instant())
+    }
+
+    /// The instant the month in force follows in a draw at `at`: the exports'
+    /// while a wallpaper or an export waits for its tiles, since they are of
+    /// that instant's month and the set has one month, and `at` otherwise. An
+    /// excursion in another month is drawn from the setting's month
+    /// meanwhile, rather than the two months taking turns in force and each
+    /// turn starting the tile wait over.
     fn month_instant(&self, at: time::OffsetDateTime) -> time::OffsetDateTime {
         if self.outputs_waiting() {
-            self.setting_instant()
+            self.export_instant()
         } else {
             at
         }
@@ -756,7 +797,11 @@ impl Engine {
         // Live time keeps moving even when nothing else changes, so the
         // terminator and the sky have to be recomputed on a schedule of their
         // own.
-        if self.sky.due(now) && self.params.time.is_live() && self.excursion.is_none() {
+        if self.sky.due(now)
+            && self.params.time.is_live()
+            && self.excursion.is_none()
+            && self.held.is_none()
+        {
             self.dirty = true;
         }
 
@@ -821,9 +866,12 @@ impl Engine {
         //
         // One publish however many asked for it: a double-click on "Set as
         // Wallpaper", or the tray and IPC arriving together, are one wallpaper.
-        if std::mem::take(&mut self.publish_asked) || self.wallpaper_owed {
+        // A hold keeps the request for the release.
+        let free = self.held.is_none();
+        if free && (std::mem::take(&mut self.publish_asked) || self.wallpaper_owed) {
             self.publish_wallpaper();
-        } else if self.reexport
+        } else if free
+            && self.reexport
             && !self.renderer.textures_pending(&self.params)
             && !self.shots_pending()
         {
@@ -1042,8 +1090,8 @@ impl Engine {
     /// the setting's while a wallpaper or an export waits, as the month in
     /// force is (plan departure 9), and the preview's otherwise.
     fn want_tiles(&mut self, sky: &SkyState) {
-        let exports_sky = if self.excursion.is_some() {
-            sky::compute_sky_state_for(self.setting_instant())
+        let exports_sky = if self.excursion.is_some() && self.held.is_none() {
+            sky::compute_sky_state_for(self.export_instant())
         } else {
             sky.clone()
         };
@@ -1197,8 +1245,8 @@ impl Engine {
         if let Some(surface) = &mut self.surface {
             surface.drain(&mut self.renderer);
         }
-        let (outcome, sky) = self.draw(self.setting_instant(), false);
-        if self.excursion.is_some() {
+        let (outcome, sky) = self.draw(self.export_instant(), false);
+        if self.excursion.is_some() && self.held.is_none() {
             // The preview target now holds the setting's frame, and the
             // preview has to go back to the excursion's.
             self.dirty = true;

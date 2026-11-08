@@ -15,7 +15,7 @@ use tracing::error;
 
 use super::clock::{Clock, SystemClock};
 use super::wallpaper_sink::{self, WallpaperSink};
-use super::{Engine, EngineCommand, EngineEvent};
+use super::{Engine, EngineCommand, EngineEvent, ExportError};
 use crate::assets::cloud_source::CloudSource;
 use crate::assets::cube_layout::CubeTextures;
 use crate::assets::mailbox::TextureMailbox;
@@ -203,7 +203,7 @@ impl EngineHandle {
     }
 
     /// Render `width` x `height` pixels and block until they are ready.
-    pub fn export_pixels(&self, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    pub fn export_pixels(&self, width: u32, height: u32) -> Result<Vec<u8>, ExportError> {
         let (reply, replies) = bounded(1);
         self.tx
             .send(EngineCommand::ExportPixels {
@@ -211,10 +211,10 @@ impl EngineHandle {
                 height,
                 reply,
             })
-            .map_err(|_| "engine has stopped".to_owned())?;
+            .map_err(|_| ExportError::Failed("engine has stopped".to_owned()))?;
         replies
             .recv()
-            .map_err(|_| "engine stopped before answering".to_owned())?
+            .map_err(|_| ExportError::Failed("engine stopped before answering".to_owned()))?
     }
 
     /// Ask the engine thread for a memory report and block until it answers.
@@ -257,7 +257,12 @@ impl EngineHandle {
     }
 
     /// Render a PNG at `width` x `height` and block until it is written.
-    pub fn render_to_file(&self, path: PathBuf, width: u32, height: u32) -> Result<(), String> {
+    pub fn render_to_file(
+        &self,
+        path: PathBuf,
+        width: u32,
+        height: u32,
+    ) -> Result<(), ExportError> {
         let (reply, replies) = bounded(1);
         self.tx
             .send(EngineCommand::RenderToFile {
@@ -266,10 +271,10 @@ impl EngineHandle {
                 height,
                 reply,
             })
-            .map_err(|_| "engine has stopped".to_owned())?;
+            .map_err(|_| ExportError::Failed("engine has stopped".to_owned()))?;
         replies
             .recv()
-            .map_err(|_| "engine stopped before answering".to_owned())?
+            .map_err(|_| ExportError::Failed("engine stopped before answering".to_owned()))?
     }
 
     /// Stop the engine and wait for its thread.

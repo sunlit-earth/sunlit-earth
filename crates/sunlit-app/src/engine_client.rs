@@ -14,7 +14,7 @@ use crossbeam_channel::Sender;
 use slint::ComponentHandle;
 use tracing::info;
 
-use sunlit_core::engine::{EngineCommand, EngineEvent};
+use sunlit_core::engine::{EngineCommand, EngineEvent, ExportError};
 use sunlit_core::memory_report::MemoryReport;
 
 use crate::MainWindow;
@@ -103,7 +103,19 @@ impl EngineLink {
     }
 
     /// Render `width` x `height` pixels on the engine thread and wait for them.
-    pub fn export_pixels(&self, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    pub fn export_pixels(&self, width: u32, height: u32) -> Result<Vec<u8>, ExportError> {
+        self.request_pixels(width, height)?
+            .recv()
+            .map_err(|_| ExportError::Failed("engine stopped before answering".to_owned()))?
+    }
+
+    /// Ask the engine thread for `width` x `height` pixels, and hand back where
+    /// they will arrive.
+    pub fn request_pixels(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<crossbeam_channel::Receiver<Result<Vec<u8>, ExportError>>, ExportError> {
         let (reply, replies) = crossbeam_channel::bounded(1);
         self.tx
             .send(EngineCommand::ExportPixels {
@@ -111,10 +123,8 @@ impl EngineLink {
                 height,
                 reply,
             })
-            .map_err(|_| "engine has stopped".to_owned())?;
-        replies
-            .recv()
-            .map_err(|_| "engine stopped before answering".to_owned())?
+            .map_err(|_| ExportError::Failed("engine has stopped".to_owned()))?;
+        Ok(replies)
     }
 
     /// Ask the engine thread for a memory report and wait for it.

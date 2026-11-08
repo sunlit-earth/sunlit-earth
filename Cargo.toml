@@ -19,6 +19,7 @@ bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 pollster = "0.4"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg"] }
+png = "0.18"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["image", "rayon"] }
 dds = { version = "0.2", default-features = false }

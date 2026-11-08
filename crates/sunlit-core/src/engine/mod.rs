@@ -1426,28 +1426,6 @@ fn sky_interval(
         .map_or(SKY_INTERVAL, |pixel| pixel.clamp(SKY_FLOOR, SKY_INTERVAL))
 }
 
-/// Encode RGBA8 pixels as PNG and write them to `path`.
-///
-/// `Fast` and `Adaptive` are what `image`'s own extension-driven save used
-/// before this went through one writer: they are that encoder's defaults, and
-/// the name `CompressionType::Default` is a level rather than the default.
-/// Named here so an export keeps producing the bytes it always has.
-pub fn save_png(
-    path: &std::path::Path,
-    width: u32,
-    height: u32,
-    pixels: &[u8],
-) -> Result<(), String> {
-    crate::files::write_png(
-        path,
-        pixels,
-        width,
-        height,
-        crate::files::CompressionType::Fast,
-        crate::files::FilterType::Adaptive,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1568,15 +1546,5 @@ mod tests {
             "an excursion counts as a fixed time"
         );
         assert_eq!(sky_interval(&live, false, 0.0, true), SKY_INTERVAL);
-    }
-
-    /// The length check comes before the filesystem does, so this needs no
-    /// directory to write into and never reaches one.
-    #[test]
-    fn save_png_rejects_a_short_buffer() {
-        let path = std::path::Path::new("no-directory-is-touched/x.png");
-        let err = save_png(path, 4, 4, &[0; 8]).unwrap_err();
-        assert!(err.contains("size mismatch"), "unexpected error: {err}");
-        assert!(!path.exists());
     }
 }

@@ -361,7 +361,7 @@ fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
 
     if updating() {
         std::fs::create_dir_all(&dir).expect("create golden directory");
-        sunlit_core::engine::save_png(&path, window.width, window.height, &pixels)
+        sunlit_core::image_file::write_png(&path, &pixels, window.width, window.height)
             .expect("write golden");
         return;
     }
@@ -391,7 +391,7 @@ fn check_golden_in(name: &str, params: &SceneParams, window: Window) {
             .join(&adapter_key);
         std::fs::create_dir_all(&review).expect("create the review directory");
         let review_path = review.join(format!("{name}.png"));
-        sunlit_core::engine::save_png(&review_path, window.width, window.height, &pixels)
+        sunlit_core::image_file::write_png(&review_path, &pixels, window.width, window.height)
             .expect("write the review image");
         panic!(
             "golden reference {name} is missing at {}. This run's render is at {} \

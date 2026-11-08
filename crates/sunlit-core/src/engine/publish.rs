@@ -14,7 +14,7 @@ use crossbeam_channel::Sender;
 use tracing::{debug, error, info, warn};
 
 use super::wallpaper_sink::{Frame, JobImages, WallpaperJob};
-use super::{CLOUD_WAIT, Engine, EngineEvent, TILE_WAIT, join_notes, save_png, tile_output};
+use super::{CLOUD_WAIT, Engine, EngineEvent, TILE_WAIT, join_notes, tile_output};
 use crate::display::Monitor;
 use crate::display::layout::{self, Framing, OutputFraming, Rect};
 use crate::params::OutputParams;
@@ -605,8 +605,14 @@ impl Engine {
                 let _ = reply.send(pixels);
             }
             ExportReply::File { path, reply } => {
-                let written =
-                    pixels.and_then(|pixels| save_png(&path, export.width, export.height, &pixels));
+                let written = pixels.and_then(|pixels| {
+                    Ok(crate::image_file::write_png(
+                        &path,
+                        &pixels,
+                        export.width,
+                        export.height,
+                    )?)
+                });
                 let _ = reply.send(written);
             }
         }

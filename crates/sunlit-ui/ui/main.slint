@@ -337,16 +337,21 @@ export component MainWindow inherits Window {
     out property <bool> idle-hidden: root.full-screen-idle && !root.time-bar-pinned;
     out property <bool> idle-gone;
     // The exit pill's long form, which names the key for the first 10 s of
-    // every entry, and whether the pill shows at all.
+    // every entry, and whether the pill shows at all. Once short it fades
+    // out with idle controls, from whichever came later, and `exit-pill-gone`
+    // follows when that fade has run.
     out property <bool> exit-pill-long;
-    out property <bool> exit-pill-shown: root.full-screen && !root.overlays-hidden && (root.exit-pill-long || !root.idle-gone);
+    out property <bool> exit-pill-shown: root.full-screen && !root.overlays-hidden && !root.exit-pill-gone;
+    property <bool> exit-pill-gone;
+    property <bool> exit-pill-fading: root.idle-hidden && !root.exit-pill-long;
+    property <duration> exit-pill-short-at;
     // Before the window's geometry becomes the monitor's, so what is saved
     // is the window as it was.
     callback full-screen-entering();
     // The cursor hides with the idle controls and comes back with them. Slint
     // asks for the cursor again only on a pointer event, so Rust answers this
-    // with a move to where the pointer already is, in the preview's
-    // coordinates, which in full screen are the window's.
+    // with a move to where the pointer already is, in the window's
+    // coordinates.
     callback cursor-hidden-changed(hidden: bool, x: length, y: length);
     property <duration> active-at;
     property <duration> exit-pill-at;
@@ -372,6 +377,7 @@ export component MainWindow inherits Window {
         root.active-at = animation-tick();
         root.full-screen-idle = false;
         root.idle-gone = false;
+        root.exit-pill-gone = false;
     }
 
     changed full-screen => {
@@ -385,7 +391,10 @@ export component MainWindow inherits Window {
 
     changed full-screen-idle => {
         if viewport-touch.has-hover {
-            root.cursor-hidden-changed(root.full-screen-idle, viewport-touch.mouse-x, viewport-touch.mouse-y);
+            root.cursor-hidden-changed(
+                root.full-screen-idle,
+                viewport-touch.absolute-position.x + viewport-touch.mouse-x,
+                viewport-touch.absolute-position.y + viewport-touch.mouse-y);
         }
     }
 
@@ -404,7 +413,8 @@ export component MainWindow inherits Window {
 
     Timer {
         interval: 100ms;
-        running: root.full-screen && (!root.full-screen-idle || (root.idle-hidden && !root.idle-gone) || root.exit-pill-long);
+        running: root.full-screen && (!root.full-screen-idle || (root.idle-hidden && !root.idle-gone) || root.exit-pill-long
+            || (root.exit-pill-fading && !root.exit-pill-gone));
         triggered => {
             let now = animation-tick();
             if root.controls-busy {
@@ -418,6 +428,10 @@ export component MainWindow inherits Window {
             }
             if root.exit-pill-long && now - root.exit-pill-at >= root.exit-pill-long-for {
                 root.exit-pill-long = false;
+                root.exit-pill-short-at = now;
+            }
+            if root.exit-pill-fading && now - max(root.active-at + root.idle-after, root.exit-pill-short-at) >= root.idle-fade-out {
+                root.exit-pill-gone = true;
             }
         }
     }

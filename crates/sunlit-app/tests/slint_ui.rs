@@ -6912,10 +6912,15 @@ fn press_the(window: &MainWindow, id: &str) {
 /// gives the preview the whole window; leaving puts all of it back.
 #[test]
 fn test_full_screen_gives_the_preview_the_whole_window() {
+    let shown =
+        |window: &MainWindow, id: &str| ElementHandle::find_by_element_id(window, id).count();
     let (window, _sent) = wired_window();
     let width = window.window().size().to_logical(1.0).width;
     let before = edges(&the_element(&window, "MainWindow::image-container"));
     assert!(before[0] > 0.0, "the sidebar is left of the preview");
+    for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
+        assert_eq!(shown(&window, id), 1, "{id} in the window");
+    }
 
     enter_full_screen(&window);
     let [left, top, right, _] = edges(&the_element(&window, "MainWindow::image-container"));
@@ -6923,11 +6928,17 @@ fn test_full_screen_gives_the_preview_the_whole_window() {
     approx::assert_relative_eq!(top, 0.0);
     approx::assert_relative_eq!(right, width);
     approx::assert_relative_eq!(window.get_viewport_width(), width);
+    for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
+        assert_eq!(shown(&window, id), 0, "{id} in full screen");
+    }
 
     leave_full_screen(&window);
     let after = edges(&the_element(&window, "MainWindow::image-container"));
     for (after, before) in after.into_iter().zip(before) {
         approx::assert_relative_eq!(after, before);
+    }
+    for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
+        assert_eq!(shown(&window, id), 1, "{id} back in the window");
     }
 }
 
@@ -6981,8 +6992,9 @@ fn test_the_controls_idle_out_in_full_screen_only() {
     assert_eq!(cursor_hidden.borrow().last(), Some(&false));
 }
 
-/// Whatever is in use keeps the controls up: the pointer on a control, a drag
-/// on the globe, the shortcut sheet and the version notice.
+/// Whatever is in use keeps the controls up: the pointer on a control, a
+/// control or a drag held, the speeds or a picker open, the shortcut sheet
+/// and the version notice.
 #[test]
 fn test_what_is_in_use_keeps_the_controls_up() {
     let (window, _sent) = wired_window();
@@ -6994,27 +7006,65 @@ fn test_what_is_in_use_keeps_the_controls_up() {
             "{what} keeps the controls up"
         );
     };
+    let move_to = |window: &MainWindow, position: slint::LogicalPosition| {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+    };
+    let over = |window: &MainWindow, id: &str| point_in(&the_element(window, id), 0.5, 0.5);
+    let globe = slint::LogicalPosition::new(300.0, 2000.0);
 
-    let panel = the_element(&window, "MainWindow::camera-panel");
-    window
-        .window()
-        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
-            position: point_in(&panel, 0.5, 0.5),
-        });
+    move_to(&window, over(&window, "MainWindow::camera-panel"));
     still_up(&window, "the pointer on the camera panel");
 
-    let bar = the_element(&window, "MainWindow::time-bar");
-    window
-        .window()
-        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
-            position: point_in(&bar, 0.5, 0.5),
-        });
+    move_to(&window, over(&window, "MainWindow::time-bar"));
     still_up(&window, "the pointer on the time bar");
 
-    let globe = slint::LogicalPosition::new(300.0, 2000.0);
+    move_to(&window, over(&window, "MainWindow::exit-pill"));
+    still_up(&window, "the pointer on the exit pill");
+
+    let stick = over(&window, "CameraPanel::look");
+    hold_at(&window, stick);
+    move_to(&window, globe);
+    still_up(&window, "a camera panel control held");
+    release_at(&window, globe);
+
     hold_at(&window, globe);
     still_up(&window, "a drag on the globe");
     release_at(&window, globe);
+
+    window.set_overlays_hidden(true);
+    move_to(&window, over(&window, "MainWindow::show-button"));
+    still_up(&window, "the pointer on the corner button");
+    window.set_overlays_hidden(false);
+
+    window.set_time_bar_pinned(true);
+    press_at(&window, over(&window, "TimeBar::speed-readout"));
+    assert_eq!(
+        ElementHandle::find_by_element_id(&window, "TimeBar::rates-list").count(),
+        1,
+        "the speeds open"
+    );
+    // The bar closes the speeds 700 ms after the pointer leaves it, so they
+    // are only ever open for long under the pointer.
+    move_to(&window, over(&window, "TimeBar::rates-list"));
+    still_up(&window, "the speeds open");
+    tap(&window, slint::platform::Key::Escape);
+    move_to(&window, globe);
+    let_pass(4000);
+    assert!(
+        window.get_full_screen_idle(),
+        "Esc on the speeds under the pointer leaves nothing in use"
+    );
+
+    press_at(&window, point_in(&the_labeled(&window, "Date"), 0.5, 0.5));
+    assert_eq!(all_of(&window, "Dialog").len(), 1, "the date picker opens");
+    move_to(&window, globe);
+    still_up(&window, "a picker open");
+    tap(&window, slint::platform::Key::Escape);
+    let_pass(16);
+    assert!(all_of(&window, "Dialog").is_empty());
+    window.set_time_bar_pinned(false);
 
     window.set_shortcut_sheet_open(true);
     still_up(&window, "the shortcut sheet");
@@ -7029,10 +7079,14 @@ fn test_what_is_in_use_keeps_the_controls_up() {
 }
 
 /// With the time bar pinned nothing hides in full screen, but the cursor
-/// still does.
+/// still does. The camera panel and the short exit pill take their idle look
+/// as in the window.
 #[test]
 fn test_a_pinned_time_bar_keeps_the_controls_and_not_the_cursor() {
     let (window, _sent) = wired_window();
+    let idle_opacity = window
+        .global::<sunlit_earth::OverlayStyle>()
+        .get_idle_opacity();
     window.set_time_bar_pinned(true);
     enter_full_screen(&window);
     wiggle(&window);
@@ -7043,10 +7097,28 @@ fn test_a_pinned_time_bar_keeps_the_controls_and_not_the_cursor() {
         "the controls stay"
     );
     assert!(window.get_exit_pill_shown(), "and so does the pill");
+
+    let_pass(7000);
+    assert!(!window.get_exit_pill_long() && window.get_exit_pill_shown());
+    approx::assert_relative_eq!(
+        the_element(&window, "MainWindow::exit-pill").computed_opacity(),
+        idle_opacity,
+        epsilon = 1e-3
+    );
+    approx::assert_relative_eq!(
+        the_element(&window, "MainWindow::camera-panel").computed_opacity(),
+        1.0,
+        epsilon = 1e-3
+    );
+    approx::assert_relative_eq!(
+        the_element(&window, "CameraPanel::footer").computed_opacity(),
+        idle_opacity,
+        epsilon = 1e-3
+    );
 }
 
 /// The long pill stays its 10 s although the controls have idled out at 3 s,
-/// and then goes with them.
+/// and then fades out as they did.
 #[test]
 fn test_the_long_exit_pill_outlasts_the_idle_controls() {
     let (window, _sent) = wired_window();
@@ -7058,17 +7130,71 @@ fn test_the_long_exit_pill_outlasts_the_idle_controls() {
         window.get_exit_pill_long() && window.get_exit_pill_shown(),
         "still there at 9 s"
     );
-    let_pass(1100);
+    // Read every frame, as drawing would, since an animation runs from the
+    // first read after its value changed.
+    let pill = the_element(&window, "MainWindow::exit-pill");
+    let_pass(800);
+    let frames: Vec<(bool, f32)> = (0..40)
+        .map(|_| {
+            let_pass(32);
+            (window.get_exit_pill_shown(), pill.computed_opacity())
+        })
+        .collect();
     assert!(!window.get_exit_pill_long());
     assert!(
-        !window.get_exit_pill_shown(),
-        "gone at 10 s with the controls"
+        frames
+            .iter()
+            .any(|&(shown, opacity)| shown && 0.0 < opacity && opacity < 1.0),
+        "the pill fades out rather than vanishing: {frames:?}"
     );
+    assert!(!window.get_exit_pill_shown(), "gone once faded");
     wiggle(&window);
     assert!(
         window.get_exit_pill_shown(),
         "the short form comes back with them"
     );
+}
+
+/// The app's own wiring answers the cursor's change with a move to where the
+/// pointer already is, and that move is no activity: the window stays idle.
+#[test]
+fn test_the_cursor_refresh_does_not_wake_the_controls() {
+    let (window, _sent) = wired_window();
+    sunlit_earth::full_screen::wire(&window);
+    enter_full_screen(&window);
+    wiggle(&window);
+    let_pass(3200);
+    assert!(window.get_full_screen_idle(), "idle at 3 s");
+    let_pass(1000);
+    assert!(
+        window.get_full_screen_idle() && window.get_idle_gone(),
+        "still idle after the refresh"
+    );
+    wiggle(&window);
+    assert!(!window.get_full_screen_idle(), "a real move wakes them");
+}
+
+/// The geometry is asked for while the window is still windowed, so what is
+/// saved is the window's and not the monitor's.
+#[test]
+fn test_entering_full_screen_asks_for_the_geometry_while_windowed() {
+    let (window, _sent) = wired_window();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let record = Rc::clone(&seen);
+    let window_weak = window.as_weak();
+    window.on_full_screen_entering(move || {
+        let win = window_weak.upgrade().expect("the window");
+        record.borrow_mut().push(win.window().is_fullscreen());
+    });
+    enter_full_screen(&window);
+    leave_full_screen(&window);
+    tap(&window, slint::platform::Key::F11);
+    let_pass(16);
+    assert!(window.window().is_fullscreen());
+    tap(&window, slint::platform::Key::F11);
+    let_pass(16);
+    assert!(!window.window().is_fullscreen());
+    assert_eq!(*seen.borrow(), [false, false], "once per entry, windowed");
 }
 
 /// The pill starts long however full screen was entered, F11 and the button

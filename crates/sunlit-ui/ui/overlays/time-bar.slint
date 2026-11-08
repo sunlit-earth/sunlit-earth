@@ -361,6 +361,7 @@ export component TimeBar inherits Rectangle {
     public function close-transient() -> bool {
         if root.rates-open {
             root.rates-open = false;
+            root.rates-hovered = false;
             return true;
         }
         if date-picker.is-open || time-picker.is-open {

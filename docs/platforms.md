@@ -76,7 +76,7 @@ Settings… and Check for Updates…, when they come, go in File and Help on mac
 
 Full screen is winit's borderless full screen on the monitor the window is on, through Slint's `full-screen` property; `docs/architecture.md` has the app's side ([plans/2026-11-08-full-screen-plan.md](plans/2026-11-08-full-screen-plan.md)).
 
-- **Windows and Linux:** F11 toggles it, as in the browsers, Explorer and the GNOME apps. View has Enter Full Screen as its last entry, after a separator, with F11. The menu bar goes in full screen (`visible: false`), the native Win32 menu and the drawn one alike, and Slint still runs its shortcuts while it is hidden, which is how F11 leaves again.
+- **Windows and Linux:** F11 toggles it, as in the browsers, Explorer and the GNOME apps. View has Enter Full Screen as its last entry, after a separator, with F11. The menu bar is hidden in full screen (`visible: false`). The drawn one on Linux goes, as observed below; the native Win32 menu is expected to go the same way, since Slint passes `visible` on to it, but that has not been observed yet. Slint still runs the menu's shortcuts while it is hidden, which is how F11 leaves again.
 - **macOS:** ⌃⌘F, Apple's documented key for "use or stop using the app in full screen", as a `KeyBinding` in `preview-keys` (Slint maps `Control` to ⌘ and `Meta` to ⌃ on Apple platforms). The app adds no View entry of its own: AppKit adds Enter Full Screen to an app's View menu by itself when it finds no equivalent, and an entry built by Slint and `muda` (action `fireMenuItemAction:`) can never count as one, so ours would sit beside AppKit's. AppKit's entry and the green title bar button both use `toggleFullScreen:`, the native full screen with its own Space, which is what winit's `Borderless` is on macOS, and winit reports the change back into `full-screen`. The global menu bar is the system's and slides down at the top edge. F11 on a Mac is Show Desktop. Whether AppKit's entry is there, once, and with ⌃⌘F, is not observed: nobody here has a Mac, and `docs/macos-testing.md` asks.
 - **Everywhere:** Escape leaves once no list, picker, sheet or notice is open, and the exit pill and the camera panel's footer button leave on a click.
 
@@ -85,8 +85,9 @@ Full screen is winit's borderless full screen on the monitor the window is on, t
 - GNOME on X11: full screen fills the monitor without the drawn menu bar or the sidebar, the long pill shows, the controls are gone at 4 s with the long pill still up, the picture is clean at 11 s apart from the loading line, and a pointer move brings the controls back with the short pill. Escape and a second F11 each restore the window's rectangle.
 - KDE on X11 with two screens (`vm up linux --screens 2`): a window on the second screen fills that screen and no other, and comes back where it was. A maximized window comes back maximized, through Escape and through F11.
 - i3: a tiled window goes to the whole screen and back into its tile, maximized included.
+- The Windows desktop, by hand: the cursor hides with the idle controls and comes back with them, the tray's hide works while the window is in full screen, and so does closing the app.
 
-Not observed: Wayland (KDE, GNOME, sway), where no tool in the guest can press a key into the app and the e2e case skips; the cursor hiding, which a screenshot does not show; the tray's hide and Close Window in full screen; and the Windows desktop beyond the e2e case (the native menu bar going, maximized, the cursor).
+Not observed: Wayland (KDE, GNOME, sway), where no tool in the guest can press a key into the app and the e2e case skips; on Windows, whether the native menu bar goes in full screen and whether a maximized window comes back maximized.
 
 ## One wallpaper per screen
 

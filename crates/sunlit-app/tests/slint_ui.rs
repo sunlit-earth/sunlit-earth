@@ -7621,6 +7621,39 @@ fn test_a_resize_after_the_switch_ends_the_blank_at_once() {
     assert_eq!(notices(&window), 1);
 }
 
+/// The size poll reads nothing while the blank is up, however long the
+/// window takes to get its new size, so the size in between never goes and
+/// the cover cannot end on a frame of it.
+#[test]
+fn test_the_size_poll_waits_for_the_blank_to_lift() {
+    let (window, sent, _poll) = full_screen_window();
+    let_pass(500);
+    while sent.try_recv().is_ok() {}
+    let sizes = |sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>| {
+        sent.try_iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    sunlit_core::engine::EngineCommand::SetPreviewSize(..)
+                )
+            })
+            .count()
+    };
+
+    window.invoke_toggle_full_screen();
+    let_pass(128);
+    assert!(window.window().is_fullscreen() && window.get_switch_blank());
+    let_pass(448);
+    assert!(window.get_switch_blank(), "the window has no new size yet");
+    assert_eq!(sizes(&sent), 0, "no size went during the blank");
+    assert_eq!(window.get_awaited_frame_width(), 0);
+
+    let_pass(64);
+    assert!(!window.get_switch_blank());
+    assert_eq!(sizes(&sent), 1, "the size goes when the blank lifts");
+    assert!(window.get_awaited_frame_width() > 0);
+}
+
 /// A second toggle before the black frame is on screen takes the first back:
 /// the window stays as it was and the blank goes with the wait.
 #[test]

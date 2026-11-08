@@ -63,7 +63,8 @@ impl ViewportSettle {
 ///
 /// Slint has no size-changed callback that Rust can bind, and polling a pair
 /// of properties every 200 ms is far cheaper than any alternative. The poll runs
-/// for as long as the timer returned is kept.
+/// for as long as the timer returned is kept, and reads nothing while a
+/// full screen switch has the window blank.
 ///
 /// :param window: the main window
 /// :param link: the engine the sizes go to
@@ -93,6 +94,11 @@ pub fn wire(window: &MainWindow, link: &EngineLink, quality: QualityTier) -> sli
         let Some(win) = window_weak.upgrade() else {
             return;
         };
+        // Under a switch's blank the preview passes through sizes that are
+        // neither the old one nor the new; its size goes when the blank lifts.
+        if win.get_switch_blank() {
+            return;
+        }
         let size = size_of(&win);
         if let Some(sent) = poll_settle.borrow_mut().observe(size) {
             poll_report(&win, Some(sent), sent);

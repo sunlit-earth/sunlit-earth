@@ -1,3 +1,5 @@
+import { Links } from "links.slint";
+
 // System tray entry. A SystemTrayIcon is a top-level component with no window
 // of its own, so it is instantiated alongside MainWindow rather than inside it.
 // The `icon` is fed from Rust because it is generated procedurally rather than
@@ -16,30 +18,33 @@ export component TrayIcon inherits SystemTrayIcon {
     // Start on login, as the last read of the platform's entry found it.
     in-out property <bool> autostart-on: false;
     in property <bool> autostart-available: true;
+    // Whether the main window is on screen, which `window_state` reports.
+    in property <bool> window-shown: false;
 
     // None of Slint 1.18's tray backends draws `checked`, so the state is in
     // the title. Slint rebuilds the menu when a property read while building
     // it changes, so the titles follow the state on every platform.
     out property <string> auto-refresh-title: (root.auto-refresh-enabled ? "✓ " : "") + "Auto-refresh";
     out property <string> autostart-title: (root.autostart-on ? "✓ " : "") + "Start on login";
+    out property <string> window-title: root.window-shown ? "Hide" : "Show";
 
-    callback open-window();
     callback toggle-window();
     callback refresh-now();
     callback auto-refresh-toggled(bool);
     callback autostart-toggled(bool);
+    callback open-url(url: string);
     callback show-about();
-    callback exit-app();
+    callback quit();
 
-    // Left-click on the icon toggles the settings window (Windows and Linux;
-    // on macOS the attached menu takes precedence, which is why "Open" also
-    // exists as a menu entry).
+    // Left-click on the icon toggles the main window (Windows and Linux; on
+    // macOS the attached menu takes precedence, which is why Show / Hide is
+    // also a menu entry).
     clicked => { root.toggle-window(); }
 
     Menu {
         MenuItem {
-            title: "Open";
-            activated => { root.open-window(); }
+            title: root.window-title;
+            activated => { root.toggle-window(); }
         }
         MenuSeparator {}
         MenuItem {
@@ -63,12 +68,16 @@ export component TrayIcon inherits SystemTrayIcon {
         }
         MenuSeparator {}
         MenuItem {
+            title: "Website";
+            activated => { root.open-url(Links.website); }
+        }
+        MenuItem {
             title: "About";
             activated => { root.show-about(); }
         }
         MenuItem {
-            title: "Exit";
-            activated => { root.exit-app(); }
+            title: "Quit";
+            activated => { root.quit(); }
         }
     }
 }

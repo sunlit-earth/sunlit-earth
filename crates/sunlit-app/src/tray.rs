@@ -313,13 +313,11 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
     tray.set_autostart_available(window.get_autostart_available());
     crate::autostart::ui::register_tray(tray);
 
-    let window_weak = window.as_weak();
-    let engine_link = engine.clone();
-    tray.on_open_window(move || {
-        if let Some(win) = window_weak.upgrade() {
-            debug!("tray: showing window");
-            sunlit_core::memory::log_memory_usage("after window shown");
-            crate::window_state::show(&win, &engine_link);
+    tray.set_window_shown(window.window().is_visible());
+    let tray_weak = tray.as_weak();
+    crate::window_state::register_visibility_listener(move |shown| {
+        if let Some(tray) = tray_weak.upgrade() {
+            tray.set_window_shown(shown);
         }
     });
 
@@ -365,14 +363,19 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
         }
     });
 
+    tray.on_open_url(|url| crate::open::url(&url));
+
     let about = about.clone();
     tray.on_show_about(move || {
         let _ = about.show();
     });
 
-    tray.on_exit_app(|| {
-        debug!("tray: exit requested, executing quit_event_loop");
-        slint::quit_event_loop().ok();
+    let window_weak = window.as_weak();
+    tray.on_quit(move || {
+        debug!("tray: quit requested");
+        if let Some(win) = window_weak.upgrade() {
+            crate::menu::quit(&win);
+        }
     });
 }
 

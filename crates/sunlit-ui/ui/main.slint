@@ -6,9 +6,11 @@ import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
 import { VersionNotice } from "overlays/version-notice.slint";
 import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
+import { Links } from "links.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
+export { Links } from "links.slint";
 export { OlderVersionWindow } from "older-version.slint";
 export { TrayIcon } from "tray.slint";
 export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
@@ -308,8 +310,23 @@ export component MainWindow inherits Window {
     in-out property <bool> version-notice-open;
     in property <string> version-notice-running;
     in property <string> version-notice-launched;
-    // The notice's "Quit Sunlit Earth", which ends the app like the tray's Exit.
+    // The notice's "Quit Sunlit Earth" and the File menu's Quit, which end the
+    // app like the tray's Quit.
     callback quit-app();
+
+    // The menu bar's own callbacks. Close Window does what the title bar's
+    // close button does; the URL is one of `Links`.
+    callback close-window();
+    callback open-url(url: string);
+    callback open-data-folder();
+    // The camera panel's three resets at once: north up, the look, the frame.
+    callback reset-camera();
+    // The View menu's toggles say what choosing them does. Slint rebuilds the
+    // menu when a title it reads changes, so they follow H, F and the buttons
+    // over the preview too.
+    out property <string> controls-title: root.overlays-hidden ? "Show Controls" : "Hide Controls";
+    out property <string> guides-title: root.guides-shown ? "Hide Frame Guides" : "Show Frame Guides";
+    out property <string> time-bar-pin-title: root.time-bar-pinned ? "Unpin Time Bar" : "Pin Time Bar";
 
     // "Start on login". The platform's autostart entry is the setting, so Rust
     // reads it and writes these; a toggle asks Rust to write the entry and
@@ -405,10 +422,10 @@ export component MainWindow inherits Window {
     // Where the date and time pickers open, in the window. The testing
     // backend reports a popup's elements from the popup's own origin, so a
     // test reads the origin here.
-    out property <length> date-picker-x: image-container.x + time-bar.x + time-bar.date-picker-x;
-    out property <length> date-picker-y: image-container.y + time-bar.y + time-bar.date-picker-y;
-    out property <length> time-picker-x: image-container.x + time-bar.x + time-bar.time-picker-x;
-    out property <length> time-picker-y: image-container.y + time-bar.y + time-bar.time-picker-y;
+    out property <length> date-picker-x: time-bar.absolute-position.x + time-bar.date-picker-x;
+    out property <length> date-picker-y: time-bar.absolute-position.y + time-bar.date-picker-y;
+    out property <length> time-picker-x: time-bar.absolute-position.x + time-bar.time-picker-x;
+    out property <length> time-picker-y: time-bar.absolute-position.y + time-bar.time-picker-y;
 
     // What the splitter drag stores, and what the window opens at. The
     // sidebar's real width is this held between the panel's own floor and
@@ -422,6 +439,85 @@ export component MainWindow inherits Window {
     // The fluent ScrollView draws this on top of the flickable rather than
     // beside it, so the panel reserves it whether or not the bar is showing.
     property <length> scrollbar-width: 14px;
+
+    // Native on Windows and macOS, drawn inside the window on Linux. Commands
+    // that have a control in the panel call that control's callback. Only
+    // Quit has a shortcut: the preview's single letter keys would fire from a
+    // text field as menu accelerators, and Ctrl + W moves the frame.
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Set as Wallpaper";
+                activated => { root.set-wallpaper(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Revert to Saved";
+                activated => { root.reset(); }
+            }
+            MenuItem {
+                title: "Load Defaults";
+                activated => { root.load-defaults(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Close Window";
+                activated => { root.close-window(); }
+            }
+            // macOS has Quit, with Command + Q, in the App menu Slint builds.
+            if Platform.os != OperatingSystemType.macos : MenuItem {
+                title: "Quit";
+                shortcut: @keys(Control + Q);
+                activated => { root.quit-app(); }
+            }
+        }
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Reset Camera";
+                activated => { root.reset-camera(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: root.controls-title;
+                activated => { root.overlays-hidden = !root.overlays-hidden; }
+            }
+            MenuItem {
+                title: root.guides-title;
+                activated => { root.guides-shown = !root.guides-shown; }
+            }
+            MenuItem {
+                title: root.time-bar-pin-title;
+                activated => { root.time-bar-pinned = !root.time-bar-pinned; }
+            }
+        }
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "Mouse and Keyboard";
+                activated => { root.shortcut-sheet-open = true; }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Website";
+                activated => { root.open-url(Links.website); }
+            }
+            MenuItem {
+                title: "Report an Issue…";
+                activated => { root.open-url(Links.new-issue); }
+            }
+            MenuItem {
+                title: "Open Data Folder";
+                activated => { root.open-data-folder(); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "About Sunlit Earth";
+                activated => { root.show-about(); }
+            }
+        }
+    }
 
     // Controls panel on the left
     sidebar := Rectangle {
@@ -469,7 +565,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         Button {
-                            text: "Reset";
+                            text: "Revert to Saved";
                             min-width: 0;
                             preferred-width: 0;
                             clicked => { root.reset(); }
@@ -2105,6 +2201,12 @@ export component MainWindow inherits Window {
             if event.text == Key.Control || event.text == Key.ControlR {
                 if down && (image-container.alt-down || event.modifiers.alt) {
                     image-container.release-keys-held-by-text();
+                }
+                // Ctrl + Q is the menu's Quit, and the window hands a release
+                // of Q under Ctrl to the menu rather than to the preview, so a
+                // held Q is let go here or it would roll on after it was.
+                if down && Platform.os != OperatingSystemType.macos {
+                    image-container.key-q = false;
                 }
                 image-container.key-control = down;
                 if event.text == Key.Control {

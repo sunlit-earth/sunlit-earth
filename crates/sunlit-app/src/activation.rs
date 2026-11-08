@@ -644,13 +644,17 @@ pub fn show_version_notice(window: &MainWindow, running: &str, launched: &str) {
     window.set_version_notice_open(true);
 }
 
-/// Wire the notice's "Quit Sunlit Earth" to the same end as the tray's Exit.
+/// Wire the notice's "Quit Sunlit Earth", which the File menu's Quit shares,
+/// to the same end as the tray's Quit.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 pub fn register_version_notice(window: &MainWindow) {
-    window.on_quit_app(|| {
-        debug!("the version notice asked to quit");
-        slint::quit_event_loop().ok();
+    let window_weak = window.as_weak();
+    window.on_quit_app(move || {
+        debug!("the version notice or the menu asked to quit");
+        if let Some(win) = window_weak.upgrade() {
+            crate::menu::quit(&win);
+        }
     });
 }
 

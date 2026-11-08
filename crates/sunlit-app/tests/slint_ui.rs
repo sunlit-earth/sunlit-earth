@@ -3042,9 +3042,10 @@ fn test_f1_opens_the_shortcut_sheet_and_escape_closes_it() {
 
     tap(&window, Key::F1);
     assert_eq!(sheets(&window), 1);
+    let [_, top, right, _] = edges(&the_element(&window, "MainWindow::image-container"));
     press_at(
         &window,
-        slint::LogicalPosition::new(window.window().size().to_logical(1.0).width - 20.0, 20.0),
+        slint::LogicalPosition::new(right - 20.0, top + 20.0),
     );
     assert_eq!(sheets(&window), 0, "a click outside the card closes it");
 }
@@ -4944,6 +4945,33 @@ fn test_t_and_g_pick_what_play_runs() {
     );
 }
 
+/// The height of the menu bar the testing backend draws at the top of the
+/// window, as Linux does; Windows and macOS take it from outside the content.
+fn menu_bar_height(window: &MainWindow) -> f32 {
+    edges(&the_element(window, "MainWindow::sidebar"))[1]
+}
+
+/// Size the window so that what is under its drawn menu bar is `width` by
+/// `height`, the size a window of that size has where the menu is native.
+///
+/// :returns: the menu bar's height
+fn set_content_size(window: &MainWindow, width: u32, height: u32) -> f32 {
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(width, height));
+    let menu_bar = menu_bar_height(window);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a menu bar's height in whole pixels"
+    )]
+    let extra = menu_bar.ceil() as u32;
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(width, height + extra));
+    menu_bar
+}
+
 /// The left, top, right and bottom edges of an element in the window.
 fn edges(element: &ElementHandle) -> [f32; 4] {
     let at = element.absolute_position();
@@ -5281,9 +5309,7 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
         for (width, height) in SHEET_WINDOWS {
             let what = format!("{width} by {height} (macOS: {macos})");
             let window = create_window();
-            window
-                .window()
-                .set_size(slint::PhysicalSize::new(width, height));
+            let menu_bar = set_content_size(&window, width, height);
             window
                 .global::<sunlit_earth::OverlayHints>()
                 .set_is_macos(macos);
@@ -5295,8 +5321,8 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
             assert!(
                 left >= window_width - window.get_viewport_width() - 0.5
                     && right <= window_width + 0.5
-                    && top >= -0.5
-                    && bottom <= window_height + 0.5,
+                    && top >= menu_bar - 0.5
+                    && bottom <= menu_bar + window_height + 0.5,
                 "{what}: the card runs out of the preview"
             );
 
@@ -5794,9 +5820,7 @@ fn test_the_pickers_open_inside_the_preview() {
     window.set_time_bar_pinned(true);
     let (mut opened, mut wider) = (0, 0);
     for width in [520, 600, 700, 800, 1000] {
-        window
-            .window()
-            .set_size(slint::PhysicalSize::new(width, 700));
+        set_content_size(&window, width, 700);
         let preview = edges(&the_element(&window, "MainWindow::image-container"));
         let bar_top = edges(&the_element(&window, "MainWindow::time-bar"))[1];
         for label in ["Date", "Time"] {
@@ -6504,4 +6528,288 @@ fn test_the_tray_start_on_login_item_follows_the_entry() {
     );
     assert!(!tray.get_autostart_available());
     assert_eq!(tray.get_autostart_title(), "Start on login");
+}
+
+// ---------------------------------------------------------------------------
+// The menu bar and the tray's Show / Hide
+// ---------------------------------------------------------------------------
+
+/// The text elements with this accessible label, which is what the menu bar
+/// the testing backend draws, as Linux does, shows its menus and items as.
+fn menu_texts(window: &MainWindow, label: &str) -> Vec<ElementHandle> {
+    labelled(window, label)
+        .into_iter()
+        .filter(|element| element.accessible_role() == Some(AccessibleRole::Text))
+        .collect()
+}
+
+/// Open `menu` on the menu bar and click its `item`, as a person would.
+fn choose(window: &MainWindow, menu: &str, item: &str) {
+    use slint::platform::PointerEventButton;
+
+    assert!(
+        menu_texts(window, item).is_empty(),
+        "{item} shows before {menu} is opened"
+    );
+    let menus = menu_texts(window, menu);
+    assert_eq!(menus.len(), 1, "the menu bar has one {menu}");
+    menus[0].mock_single_click(PointerEventButton::Left);
+    let items = menu_texts(window, item);
+    assert_eq!(items.len(), 1, "{menu} has one {item}");
+    items[0].mock_single_click(PointerEventButton::Left);
+}
+
+/// A callback that counts its calls, and the count.
+fn counter() -> (Rc<RefCell<u32>>, impl Fn() + 'static) {
+    let count = Rc::new(RefCell::new(0));
+    let counted = Rc::clone(&count);
+    (count, move || *counted.borrow_mut() += 1)
+}
+
+/// Every entry of the menu bar whose command the panel or the preview also
+/// has reaches that command's callback, or its property.
+#[test]
+fn test_each_menu_entry_reaches_its_command() {
+    type Register = fn(&MainWindow, Box<dyn Fn()>);
+    let cases: [(&str, &str, Register); 5] = [
+        ("File", "Set as Wallpaper", |w, f| w.on_set_wallpaper(f)),
+        ("File", "Revert to Saved", |w, f| w.on_reset(f)),
+        ("File", "Load Defaults", |w, f| w.on_load_defaults(f)),
+        ("Help", "About Sunlit Earth", |w, f| w.on_show_about(f)),
+        ("Help", "Open Data Folder", |w, f| w.on_open_data_folder(f)),
+    ];
+    for (menu, item, register) in cases {
+        let window = create_window();
+        let (count, call) = counter();
+        register(&window, Box::new(call));
+        choose(&window, menu, item);
+        assert_eq!(*count.borrow(), 1, "{menu} > {item} reached its callback");
+    }
+
+    let window = create_window();
+    choose(&window, "Help", "Mouse and Keyboard");
+    assert!(window.get_shortcut_sheet_open(), "the shortcut sheet opens");
+}
+
+/// File has Quit, which ends the app through `quit-app`, everywhere but on
+/// macOS, where the App menu Slint builds has it.
+#[test]
+fn test_file_quits_except_on_macos() {
+    let window = create_window();
+    let (count, call) = counter();
+    window.on_quit_app(call);
+    if cfg!(target_os = "macos") {
+        let file = menu_texts(&window, "File");
+        file[0].mock_single_click(slint::platform::PointerEventButton::Left);
+        assert_eq!(menu_texts(&window, "Close Window").len(), 1);
+        assert!(menu_texts(&window, "Quit").is_empty(), "File has no Quit");
+    } else {
+        choose(&window, "File", "Quit");
+        assert_eq!(*count.borrow(), 1);
+    }
+}
+
+/// Ctrl + Q is Quit's shortcut and reaches it with the preview holding the
+/// keyboard, whose own Q rolls the globe; on macOS File has no Quit, so the
+/// keys stay the preview's.
+#[test]
+fn test_control_q_quits_from_the_preview() {
+    use slint::platform::Key;
+
+    let (window, _sent) = wired_window();
+    let (count, call) = counter();
+    window.on_quit_app(call);
+    click_the_globe(&window);
+    key_down(&window, Key::Control);
+    tap(&window, "q");
+    key_up(&window, Key::Control);
+    let expected = u32::from(!cfg!(target_os = "macos"));
+    assert_eq!(*count.borrow(), expected);
+}
+
+/// The website and the issue form go through `open-url` with the addresses
+/// `Links` holds, which is what the app hands to the opener.
+#[test]
+fn test_the_help_links_reach_open_url() {
+    for item in ["Website", "Report an Issue…"] {
+        let window = create_window();
+        let links = window.global::<sunlit_earth::Links>();
+        let expected = if item == "Website" {
+            links.get_website()
+        } else {
+            links.get_new_issue()
+        };
+        let opened: Rc<RefCell<Vec<slint::SharedString>>> = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&opened);
+        window.on_open_url(move |url| captured.borrow_mut().push(url));
+        choose(&window, "Help", item);
+        assert_eq!(*opened.borrow(), [expected], "{item}");
+    }
+}
+
+/// Each View toggle says what choosing it does, flips its property, and
+/// follows the property when something else flips it.
+#[test]
+fn test_the_view_toggles_say_what_they_do() {
+    type Get = fn(&MainWindow) -> bool;
+    type Set = fn(&MainWindow, bool);
+    let cases: [(&str, &str, Get, Set); 3] = [
+        (
+            "Hide Controls",
+            "Show Controls",
+            |w| w.get_overlays_hidden(),
+            |w, v| w.set_overlays_hidden(v),
+        ),
+        (
+            "Show Frame Guides",
+            "Hide Frame Guides",
+            |w| w.get_guides_shown(),
+            |w, v| w.set_guides_shown(v),
+        ),
+        (
+            "Pin Time Bar",
+            "Unpin Time Bar",
+            |w| w.get_time_bar_pinned(),
+            |w, v| w.set_time_bar_pinned(v),
+        ),
+    ];
+    for (off_title, on_title, get, set) in cases {
+        let window = create_window();
+        set(&window, false);
+        choose(&window, "View", off_title);
+        assert!(get(&window), "{off_title} turned it on");
+        choose(&window, "View", on_title);
+        assert!(!get(&window), "{on_title} turned it off");
+        set(&window, true);
+        choose(&window, "View", on_title);
+        assert!(!get(&window), "the title followed the property");
+    }
+
+    let (window, _sent) = wired_window();
+    window.set_overlays_hidden(false);
+    window.set_guides_shown(false);
+    click_the_globe(&window);
+    tap(&window, "h");
+    tap(&window, "f");
+    assert_eq!(window.get_controls_title(), "Show Controls");
+    assert_eq!(window.get_guides_title(), "Hide Frame Guides");
+}
+
+/// Reset Camera runs the camera panel's three resets together: north up and
+/// the look and the frame at their defaults once the eases have passed, with
+/// the position and the zoom where they were.
+#[test]
+fn test_reset_camera_puts_north_up_and_the_look_and_frame_back() {
+    let (window, _sent) = wired_window();
+    sunlit_earth::menu::wire(&window);
+    let defaults = window.get_defaults();
+    let mut orientation = window.get_camera_orientation();
+    orientation.tilt = 120.0;
+    orientation.yaw = defaults.camera_orientation.yaw + 20.0;
+    orientation.pitch = defaults.camera_orientation.pitch + 10.0;
+    window.set_camera_orientation(orientation);
+    let mut framing = window.get_framing();
+    framing.offset_x = defaults.framing.offset_x + 0.2;
+    framing.offset_y = defaults.framing.offset_y - 0.2;
+    window.set_framing(framing);
+    let mut position = window.get_camera_position();
+    position.longitude = 42.0;
+    position.zoom = 0.3;
+    window.set_camera_position(position.clone());
+
+    choose(&window, "View", "Reset Camera");
+    let_pass(1000);
+
+    let orientation = window.get_camera_orientation();
+    approx::assert_relative_eq!(orientation.tilt, 0.0);
+    approx::assert_relative_eq!(orientation.yaw, defaults.camera_orientation.yaw);
+    approx::assert_relative_eq!(orientation.pitch, defaults.camera_orientation.pitch);
+    let framing = window.get_framing();
+    approx::assert_relative_eq!(framing.offset_x, defaults.framing.offset_x);
+    approx::assert_relative_eq!(framing.offset_y, defaults.framing.offset_y);
+    let now = window.get_camera_position();
+    approx::assert_relative_eq!(now.longitude, position.longitude);
+    approx::assert_relative_eq!(now.zoom, position.zoom);
+    assert!(!window.get_camera_easing());
+}
+
+/// The panel's Revert to Saved is found by its label, as Load Defaults is,
+/// and runs the same command as the menu's.
+#[test]
+fn test_revert_to_saved_is_the_panels_reset() {
+    let window = create_window();
+    let (count, call) = counter();
+    window.on_reset(call);
+    let buttons: Vec<_> = labelled(&window, "Revert to Saved")
+        .into_iter()
+        .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
+        .collect();
+    assert_eq!(buttons.len(), 1);
+    buttons[0].invoke_accessible_default_action();
+    assert_eq!(*count.borrow(), 1);
+}
+
+/// The tray's first entry says what choosing it does to the main window,
+/// across every way the window is shown and hidden.
+#[test]
+fn test_the_tray_show_hide_title_follows_the_window() {
+    use sunlit_earth::window_state;
+
+    let window = create_window();
+    let link = idle_link();
+    let tray = wired_tray(&window);
+    assert_eq!(
+        tray.get_window_title(),
+        "Show",
+        "the window is not shown yet"
+    );
+
+    window_state::show(&window, &link);
+    assert_eq!(tray.get_window_title(), "Hide");
+    window_state::hide(&window, &link);
+    assert_eq!(tray.get_window_title(), "Show");
+    window_state::show(&window, &link);
+    window_state::hidden(&link);
+    assert_eq!(
+        tray.get_window_title(),
+        "Show",
+        "the close button's hide reaches the tray"
+    );
+}
+
+/// Close Window does what the close button does: with the tray-mode handler,
+/// which this test installs without the geometry write, the window hides and
+/// the tray's title turns to Show.
+#[test]
+fn test_close_window_hides_to_the_tray() {
+    use sunlit_earth::window_state;
+
+    let window = create_window();
+    let link = idle_link();
+    let tray = wired_tray(&window);
+    sunlit_earth::menu::wire(&window);
+    let handler_link = link.clone();
+    window.window().on_close_requested(move || {
+        window_state::hidden(&handler_link);
+        slint::CloseRequestResponse::HideWindow
+    });
+    window_state::show(&window, &link);
+    assert_eq!(tray.get_window_title(), "Hide");
+
+    choose(&window, "File", "Close Window");
+    assert!(!window.window().is_visible());
+    assert_eq!(tray.get_window_title(), "Show");
+}
+
+/// The tray's last entry is Quit, the word the File menu and the version
+/// notice use. The testing backend shows no tray menu, so this reads the
+/// source the tray is compiled from.
+#[test]
+fn test_the_tray_says_quit() {
+    const TRAY: &str = include_str!("../../sunlit-ui/ui/tray.slint");
+    const MAIN: &str = include_str!("../../sunlit-ui/ui/main.slint");
+    assert!(TRAY.contains("title: \"Quit\";"));
+    for source in [TRAY, MAIN] {
+        assert!(!source.contains("title: \"Exit\""));
+    }
 }

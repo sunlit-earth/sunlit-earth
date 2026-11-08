@@ -467,6 +467,7 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
     crate::window_state::register_main_window(&window);
     crate::window_state::register_other_window(about.visibility());
     crate::activation::register_version_notice(&window);
+    crate::menu::wire(&window);
     crate::autostart::ui::register(&window);
     {
         let window_weak = window.as_weak();
@@ -734,9 +735,7 @@ fn register_close_handler(window: &MainWindow, link: &EngineLink, use_tray: bool
         let engine_link = link.clone();
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
-                let size = win.window().size();
-                let pos = win.window().position();
-                config::save_window_geometry(pos.x, pos.y, size.width, size.height);
+                crate::menu::save_geometry(&win);
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_core::memory::log_memory_usage("after window hidden");
@@ -745,9 +744,12 @@ fn register_close_handler(window: &MainWindow, link: &EngineLink, use_tray: bool
             slint::CloseRequestResponse::HideWindow
         });
     } else {
-        window.window().on_close_requested(|| {
-            debug!("window closed, quitting event loop");
-            slint::quit_event_loop().ok();
+        let window_weak = window.as_weak();
+        window.window().on_close_requested(move || {
+            debug!("window closed, quitting");
+            if let Some(win) = window_weak.upgrade() {
+                crate::menu::quit(&win);
+            }
             slint::CloseRequestResponse::KeepWindowShown
         });
     }

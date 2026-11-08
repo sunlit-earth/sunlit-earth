@@ -1,10 +1,12 @@
-//! Showing and hiding the settings window.
+//! Showing and hiding the main window.
 //!
-//! Every place that does either goes through this module: the tray's "Open"
-//! and its icon click, the close button in tray mode, the deferred hide of
-//! `--tray-start hidden`, the IPC commands, a second launch, and on macOS the
-//! Dock's reopen. Showing the window also turns the preview on and hiding it
-//! turns the preview off, since nobody looks at a preview nobody can see.
+//! Every place that does either goes through this module: the tray's Show /
+//! Hide and its icon click, the close button and the menu's Close Window in
+//! tray mode, the deferred hide of `--tray-start hidden`, the IPC commands, a
+//! second launch, and on macOS the Dock's reopen. Showing the window also
+//! turns the preview on and hiding it turns the preview off, since nobody
+//! looks at a preview nobody can see, and every listener registered with
+//! [`register_visibility_listener`] hears which it was.
 //!
 //! On macOS the Dock icon follows the window. The bundle declares
 //! `LSUIElement`, so it starts as an accessory app with no Dock icon; showing
@@ -30,16 +32,38 @@ thread_local! {
     /// The settings window, asked whether it is on screen when another window
     /// closes.
     static MAIN_WINDOW: RefCell<Option<slint::Weak<MainWindow>>> = const { RefCell::new(None) };
+
+    /// Told whether the main window is on screen after each show and hide.
+    static VISIBILITY_LISTENERS: RefCell<Vec<VisibilityListener>> = RefCell::new(Vec::new());
+}
+
+type VisibilityListener = Box<dyn Fn(bool)>;
+
+/// Be told whether the main window is on screen each time this module shows
+/// or hides it.
+///
+/// :param listener: called with `true` after a show and `false` after a hide
+pub fn register_visibility_listener(listener: impl Fn(bool) + 'static) {
+    VISIBILITY_LISTENERS.with(|listeners| listeners.borrow_mut().push(Box::new(listener)));
+}
+
+fn notify_visibility(shown: bool) {
+    VISIBILITY_LISTENERS.with(|listeners| {
+        for listener in listeners.borrow().iter() {
+            listener(shown);
+        }
+    });
 }
 
 /// Show the window and turn the preview on.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 pub fn show(window: &MainWindow, engine: &EngineLink) {
     if let Err(e) = window.show() {
         warn!("the window could not be shown: {e}");
     }
+    notify_visibility(true);
     platform::shown();
     engine.set_preview_enabled(true);
     crate::autostart::ui::refresh(window);
@@ -98,6 +122,7 @@ pub fn show_at_startup(
 ) -> Result<(), slint::PlatformError> {
     window.show()?;
     if !hides_at_once {
+        notify_visibility(true);
         slint::Timer::single_shot(Duration::ZERO, platform::shown);
     }
     Ok(())
@@ -134,6 +159,7 @@ pub fn toggle(window: &MainWindow, engine: &EngineLink) -> bool {
 ///
 /// :param engine: the engine whose preview follows the window
 pub fn hidden(engine: &EngineLink) {
+    notify_visibility(false);
     engine.set_preview_enabled(false);
     platform::hidden(keeps_dock_icon(others_visible()));
 }
@@ -466,6 +492,38 @@ mod tests {
         assert!(
             !drops_dock_icon_after_close(false, [false, true]),
             "another window is still on screen"
+        );
+    }
+
+    #[test]
+    fn every_registered_listener_hears_each_show_and_hide() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::{notify_visibility, register_visibility_listener};
+
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        notify_visibility(true);
+
+        for name in ["first", "second"] {
+            let heard = Rc::clone(&heard);
+            register_visibility_listener(move |shown| heard.borrow_mut().push((name, shown)));
+        }
+        assert!(
+            heard.borrow().is_empty(),
+            "a listener heard what happened before it was registered"
+        );
+
+        notify_visibility(true);
+        notify_visibility(false);
+        assert_eq!(
+            *heard.borrow(),
+            [
+                ("first", true),
+                ("second", true),
+                ("first", false),
+                ("second", false)
+            ]
         );
     }
 

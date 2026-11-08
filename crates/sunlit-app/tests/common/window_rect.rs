@@ -36,6 +36,7 @@ impl MainWindow {
     }
 }
 
+#[cfg(any(windows, target_os = "linux"))]
 fn title() -> String {
     format!("Sunlit Earth {}", env!("CARGO_PKG_VERSION"))
 }

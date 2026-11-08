@@ -4,7 +4,7 @@
 
 The menu bar plan reserved File > Export Image… (Ctrl+E) for saving the current view as an image, which today only the `render` subcommand does. This document collects what the app already has, what limits an export, how to show progress while one runs, which save dialog to use, and how to keep the export window in front of the main window. The plan is [2026-11-08-export-image-plan.md](2026-11-08-export-image-plan.md).
 
-Everything below was read in the source of the versions in `Cargo.lock` (image 0.25.9, png 0.18.1, slint 1.18.1, winit 0.30.13, wgpu-types 28.0.0) or in the published rfd 0.18.0 crate, unless it is marked unverified. Nothing was run.
+Everything below was read in the source of the versions in `Cargo.lock` (image 0.25.9, png 0.18.1, slint 1.18.1, winit 0.30.13, wgpu-types 28.0.0) or in the published rfd 0.18.0 crate, unless it is marked unverified. Nothing was run but the measurements in their own section, which the plan's Step 1 took.
 
 ## What the app has today
 
@@ -102,6 +102,53 @@ That gives the owner relation and real input blocking on Windows only. Everywher
 
 Slint 1.18 has `KeyBinding` (the preview's shortcuts use it), so Esc in the About and Export windows is a binding each.
 
+## Measurements
+
+Taken for the plan's Step 1 on 2026-11-08 on the Windows desktop (Ryzen 7 5800X, Radeon RX 6800 XT) in a release build, with a throwaway harness in the `render` subcommand that was not committed. The scene was the desktop's own configuration with every tile pack already built, so no export waited for tiles; the cloud layer had no network and was not drawn. Each figure is one run, wall clock. `write_image` is `image_file::write_image` as committed in Step 2, so it includes the temporary file and the rename.
+
+ExportPixels, from the request to the pixels on the caller's thread, the first request at a size and a second one right after:
+
+| Size | First | Again |
+|---|---|---|
+| 1920×1080 | 36 ms | 3 ms |
+| 3840×2160 | 34 ms | 25 ms |
+| 7680×4320 | 87 ms | 89 ms |
+| 8192×8192 | 180 ms | 173 ms |
+
+PNG, time and file size. "Before" is `files::write_png` as it was (image's encoder, `Fast`, `Adaptive`, the whole image in one call). Level 1 is fdeflate through the stream writer, levels 2 to 9 flate2 through it, all with the adaptive filter.
+
+| Writer | 1920×1080 | 3840×2160 | 7680×4320 | 8192×8192 |
+|---|---|---|---|---|
+| before | 17 ms, 2.70 MB | 88 ms, 9.70 MB | 278 ms, 33.8 MB | 604 ms, 51.7 MB |
+| stream, fdeflate, `Sub` filter | 26 ms, 2.83 MB | 110 ms, 10.25 MB | 316 ms, 35.8 MB | 669 ms, 56.4 MB |
+| stream, flate2 level 1 | 50 ms, 3.05 MB | 194 ms, 11.06 MB | 638 ms, 38.6 MB | 1.41 s, 59.9 MB |
+| level 1 | 24 ms, 2.71 MB | 109 ms, 9.72 MB | 332 ms, 33.8 MB | 891 ms, 51.8 MB |
+| level 2 | 63 ms, 2.51 MB | 292 ms, 8.98 MB | 955 ms, 30.6 MB | 2.24 s, 46.2 MB |
+| level 3 | 122 ms, 2.37 MB | 543 ms, 8.43 MB | 1.92 s, 28.5 MB | 3.85 s, 42.5 MB |
+| level 4 | 141 ms, 2.38 MB | 663 ms, 8.46 MB | 2.32 s, 28.6 MB | 4.10 s, 42.7 MB |
+| level 5 | 191 ms, 2.34 MB | 908 ms, 8.31 MB | 3.26 s, 28.0 MB | 5.21 s, 41.7 MB |
+| level 6 | 463 ms, 2.27 MB | 1.96 s, 8.05 MB | 11.2 s, 27.0 MB | 12.5 s, 40.1 MB |
+| level 7 | 779 ms, 2.24 MB | 2.98 s, 7.95 MB | 15.4 s, 26.6 MB | 19.5 s, 39.4 MB |
+| level 8 | 1.26 s, 2.21 MB | 5.20 s, 7.85 MB | 21.7 s, 26.3 MB | 32.2 s, 38.8 MB |
+| level 9 | 1.69 s, 2.20 MB | 6.66 s, 7.79 MB | 29.6 s, 26.1 MB | 43.6 s, 38.5 MB |
+
+JPEG through `write_image`:
+
+| Quality | 1920×1080 | 3840×2160 | 7680×4320 | 8192×8192 |
+|---|---|---|---|---|
+| 75 | 63 ms, 0.21 MB | 263 ms, 0.66 MB | 1.43 s, 1.99 MB | 2.18 s, 3.32 MB |
+| 90 | 70 ms, 0.35 MB | 264 ms, 1.10 MB | 1.47 s, 3.14 MB | 2.35 s, 5.05 MB |
+| 100 | 103 ms, 1.04 MB | 298 ms, 3.17 MB | 1.58 s, 8.86 MB | 2.41 s, 12.1 MB |
+
+What follows from them:
+
+- **Level 4 is dropped.** Its file is larger than level 3's at every size, and it takes longer. Every other level is smaller than the one below it, so the slider offers 1, 2, 3, 5, 6, 7, 8 and 9.
+- **The default is level 3, not 6.** From 3 to 6 the file shrinks by 4 to 6 percent and the time grows four to six times: at 7680×4320 that is 1.9 s against 11 s. Level 3 is where the curve bends: 13 percent smaller than level 1 at 4K for half a second. Level 5 saves another 1.5 percent for 70 percent more time.
+- **fdeflate stays level 1.** flate2's own level 1 is twice as slow and 13 to 16 percent larger.
+- **The stream writer costs a little over the one call encoder at level 1**: 25 percent at 4K and 50 percent at 8192×8192, for the same size of file. That is the price of the progress bar and the cancel, and the wallpaper pays it too.
+- **The wallpaper loses nothing by moving from `Sub` to the adaptive filter.** At level 1 the adaptive filter was as fast or faster and 5 to 8 percent smaller.
+- **The render is a small part of an export.** ExportPixels at 4K is about 30 ms against 109 ms for the fastest PNG and 543 ms at the default; at 8K 90 ms against 332 ms and 1.9 s. A tile wait, up to `TILE_WAIT`, is what can make it long, and that is not measurable from inside. The progress bar therefore steps to 2 percent when the request goes out and to 10 percent when the pixels arrive, the encoder fills 10 to 98 percent, and the rename takes the last 2.
+
 ## Recommendation
 
 - Encode on a worker thread from `ExportPixels`, through a png `StreamWriter` and a progress-reporting `GenericImageView` for JPEG, both behind a cancelling writer into a temporary file that is renamed at the end.
@@ -114,4 +161,4 @@ Slint 1.18 has `KeyBinding` (the preview's shortcuts use it), so Esc in the Abou
 1. Whether the Windows overwrite freeze still happens with rfd 0.18, with a parent, and with the async dialog.
 2. What sway and i3 do with no portal, with zenity only, with neither, and with the gtk portal but no `portals.conf` routing.
 3. Whether a portal backend appends the extension of the chosen filter.
-4. How long the render, the readback and each encoder take at 4K, 8K and near the 67 MP cap in a release build. That sets the progress bar's fixed steps.
+4. Answered in Measurements: how long the render, the readback and each encoder take at 4K, 8K and at the 67 MP cap in a release build.

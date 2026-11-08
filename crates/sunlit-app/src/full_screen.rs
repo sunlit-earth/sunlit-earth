@@ -60,24 +60,66 @@ pub fn wire(window: &MainWindow) {
 /// report comes, `switch-wait` stays as the bound on it, for a window that
 /// draws nothing while it is covered or minimized.
 fn watch_for_the_blank(window: &MainWindow) {
-    let armed = Rc::new(Cell::new(false));
+    let reports = Rc::new(Cell::new(BlankReports::default()));
     let window_weak = window.as_weak();
-    let seen = Rc::clone(&armed);
+    let drawn = Rc::clone(&reports);
     let notifier = window.window().set_rendering_notifier(move |state, _| {
-        if matches!(state, slint::RenderingState::AfterRendering) && seen.take() {
-            let window_weak = window_weak.clone();
-            slint::Timer::single_shot(Duration::ZERO, move || {
-                if let Some(win) = window_weak.upgrade() {
-                    win.invoke_blank_presented();
-                }
-            });
+        if !matches!(state, slint::RenderingState::AfterRendering) {
+            return;
         }
+        let mut now = drawn.get();
+        let Some(switch) = now.drawn() else {
+            return;
+        };
+        drawn.set(now);
+        let window_weak = window_weak.clone();
+        let reports = Rc::clone(&drawn);
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            if !reports.get().is_current(switch) {
+                return;
+            }
+            if let Some(win) = window_weak.upgrade() {
+                win.invoke_blank_presented();
+            }
+        });
     });
     match notifier {
         Ok(()) => window.set_switch_wait(BLANK_REPORT_AT_MOST_MS),
         Err(e) => debug!("full screen: no frame reports ({e}), the switch waits a fixed time"),
     }
-    window.on_blank_requested(move || armed.set(true));
+    window.on_blank_requested(move || {
+        let mut now = reports.get();
+        now.requested();
+        reports.set(now);
+    });
+}
+
+/// Which switch a drawn frame shows the blank for. Every blank requested is
+/// a new switch, and the first frame drawn after it shows that blank. A
+/// switch can end without a frame drawn, on the wait or a hide, so the next
+/// frame drawn may show no blank at all; its report is then for a switch
+/// that is over, and a toggle before the report arrives must not take it as
+/// its own.
+#[derive(Debug, Default, Clone, Copy)]
+struct BlankReports {
+    switch: u64,
+    unreported: bool,
+}
+
+impl BlankReports {
+    fn requested(&mut self) {
+        self.switch += 1;
+        self.unreported = true;
+    }
+
+    /// A frame was drawn: the switch it reports, if one has had none yet.
+    fn drawn(&mut self) -> Option<u64> {
+        std::mem::take(&mut self.unreported).then_some(self.switch)
+    }
+
+    fn is_current(self, switch: u64) -> bool {
+        self.switch == switch
+    }
 }
 
 /// Leave full screen if the window is in it, or drop a switch not yet made,
@@ -95,5 +137,36 @@ pub fn leave(window: &MainWindow) {
         // Through the window rather than `leave-full-screen`, which hands the
         // change to the backend only on its next update, after the hide.
         window.window().set_fullscreen(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BlankReports;
+
+    #[test]
+    fn the_first_frame_after_a_request_reports_that_switch_once() {
+        let mut reports = BlankReports::default();
+        assert_eq!(reports.drawn(), None, "nothing requested");
+        reports.requested();
+        let switch = reports.drawn().expect("a report");
+        assert!(reports.is_current(switch));
+        assert_eq!(reports.drawn(), None, "only the first frame reports");
+    }
+
+    #[test]
+    fn a_report_for_a_switch_that_ended_unseen_is_not_the_next_ones() {
+        let mut reports = BlankReports::default();
+        reports.requested();
+        let stale = reports
+            .drawn()
+            .expect("a frame drawn after the switch ended");
+        reports.requested();
+        assert!(
+            !reports.is_current(stale),
+            "a toggle before the report arrives does not take it"
+        );
+        let next = reports.drawn().expect("the frame with the new blank");
+        assert!(reports.is_current(next));
     }
 }

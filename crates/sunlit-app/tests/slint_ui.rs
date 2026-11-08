@@ -6820,6 +6820,26 @@ fn test_close_window_hides_to_the_tray() {
     assert_eq!(tray.get_window_title(), "Show");
 }
 
+/// The window's geometry is saved only while a person can see it: not while
+/// it is hidden, and not while it is minimized, where Windows parks it far off
+/// screen although it still counts as visible.
+#[test]
+fn test_geometry_is_kept_only_from_a_window_on_screen() {
+    use sunlit_earth::menu::is_on_screen;
+
+    let window = create_window();
+    assert!(!is_on_screen(window.window()), "never shown");
+    window.show().unwrap();
+    assert!(is_on_screen(window.window()), "shown");
+    window.window().set_minimized(true);
+    assert!(window.window().is_visible());
+    assert!(!is_on_screen(window.window()), "minimized");
+    window.window().set_minimized(false);
+    assert!(is_on_screen(window.window()), "restored");
+    window.hide().unwrap();
+    assert!(!is_on_screen(window.window()), "hidden");
+}
+
 /// The tray's last entry is Quit, the word the File menu and the version
 /// notice use. The testing backend shows no tray menu, so this reads the
 /// source the tray is compiled from.

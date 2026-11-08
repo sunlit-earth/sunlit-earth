@@ -74,18 +74,33 @@ pub fn reset_camera(window: &MainWindow) {
 ///
 /// :param window: the main window
 pub fn quit(window: &MainWindow) {
-    if window.window().is_visible() {
-        save_geometry(window);
-    }
+    save_geometry(window);
     debug!("quitting the event loop");
     slint::quit_event_loop().ok();
 }
 
-/// Store where the window is and how big, for the next start to open at.
+/// Store where the window is and how big, for the next start to open at, when
+/// it is [on screen](is_on_screen). Otherwise the geometry saved before stays.
 ///
 /// :param window: the main window
 pub fn save_geometry(window: &MainWindow) {
-    let size = window.window().size();
-    let position = window.window().position();
+    let window = window.window();
+    if !is_on_screen(window) {
+        debug!("window not on screen, keeping the saved geometry");
+        return;
+    }
+    let size = window.size();
+    let position = window.position();
     config::save_window_geometry(position.x, position.y, size.width, size.height);
+}
+
+/// Whether the window's position and size are the ones a person sees.
+///
+/// A minimized window is still visible, but Windows parks it at
+/// (-32000, -32000), which the next start would reject as off screen.
+///
+/// :param window: the window to ask
+/// :returns: true when it is shown and not minimized
+pub fn is_on_screen(window: &slint::Window) -> bool {
+    window.is_visible() && !window.is_minimized()
 }

@@ -18,7 +18,7 @@ Running it
 
 Choose a view, click "Set as Wallpaper", and enable "Auto-refresh wallpaper"
 to keep the wallpaper up to date. Closing the window keeps the app running
-in the system tray; right-click the tray icon and choose Exit to quit.
+in the system tray; right-click the tray icon and choose Quit to end it.
 
 Settings, caches and log files are stored in %LOCALAPPDATA%\SunlitEarth.
 Run "sunlit-earth.exe --help" in a terminal for command line options.

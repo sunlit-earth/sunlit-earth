@@ -1,9 +1,10 @@
 import { Palette, ScrollView, TabWidget } from "std-widgets.slint";
 import { AboutBlock } from "widgets.slint";
+import { Links } from "links.slint";
 
 export component AboutWindow inherits Window {
     title: "About Sunlit Earth";
-    // The same SVG master the settings window takes, for the same reason:
+    // The same SVG master the main window takes, for the same reason:
     // Slint rasterizes at whatever size the surface asks for, and here the
     // header mark is one of those surfaces.
     icon: @image-url("../../../assets/icon/sunlit-earth.svg");
@@ -32,8 +33,8 @@ export component AboutWindow inherits Window {
 
     out property <length> version-y: version-line.absolute-position.y;
 
-    property <string> website: "https://sunlit.earth";
-    property <string> repository: "https://github.com/sunlit-earth/sunlit-earth";
+    property <string> website: Links.website;
+    property <string> repository: Links.repository;
     // The fluent ScrollView draws its bar over the flickable rather than
     // beside it, so a tab reserves the width whether the bar is showing.
     property <length> scrollbar-width: 14px;

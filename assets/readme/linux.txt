@@ -21,7 +21,7 @@ textures folder next to it.
 
 Choose a view, click "Set as Wallpaper", and enable "Auto-refresh wallpaper"
 to keep the wallpaper up to date. Closing the window keeps the app running
-in the tray; choose Exit in the tray icon's menu to quit. If your desktop
+in the tray; choose Quit in the tray icon's menu to end it. If your desktop
 has no tray, start it with "./sunlit-earth --mode window".
 
 To add Sunlit Earth to your application menu, run this from the same folder:

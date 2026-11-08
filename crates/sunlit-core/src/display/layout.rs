@@ -46,10 +46,10 @@ pub enum DisplayMode {
 }
 
 impl DisplayMode {
-    /// Every mode, in the order the settings window offers them.
+    /// Every mode, in the order the main window offers them.
     pub const ALL: [Self; 3] = [Self::OneScreen, Self::EveryScreen, Self::AcrossScreens];
 
-    /// What the settings window calls this.
+    /// What the main window calls this.
     ///
     /// One or two words, because the combo is narrow enough to cut a sentence
     /// off: the row's hint is where the sentence lives. `Mirror` and `Extend`

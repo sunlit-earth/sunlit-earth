@@ -119,7 +119,7 @@ pub(crate) fn display_key(id: u32) -> String {
     }
 }
 
-/// What to call a display in the settings window.
+/// What to call a display in the main window.
 ///
 /// Numbered the way the Windows labels are, and the built-in screen says so,
 /// because "Display 1" and "Display 2" do not say which one is the lid.

@@ -1,10 +1,12 @@
-//! Showing and hiding the settings window.
+//! Showing and hiding the main window.
 //!
-//! Every place that does either goes through this module: the tray's "Open"
-//! and its icon click, the close button in tray mode, the deferred hide of
-//! `--tray-start hidden`, the IPC commands, a second launch, and on macOS the
-//! Dock's reopen. Showing the window also turns the preview on and hiding it
-//! turns the preview off, since nobody looks at a preview nobody can see.
+//! Every place that does either goes through this module: the tray's Show /
+//! Hide and its icon click, the close button and the menu's Close Window in
+//! tray mode, the deferred hide of `--tray-start hidden`, the IPC commands, a
+//! second launch, and on macOS the Dock's reopen. Showing the window also
+//! turns the preview on and hiding it turns the preview off, since nobody
+//! looks at a preview nobody can see, and every listener registered with
+//! [`register_visibility_listener`] hears which it was.
 //!
 //! On macOS the Dock icon follows the window. The bundle declares
 //! `LSUIElement`, so it starts as an accessory app with no Dock icon; showing
@@ -24,22 +26,44 @@ use crate::engine_client::EngineLink;
 
 thread_local! {
     /// Whether each of the app's other windows is on screen, asked when the
-    /// settings window hides.
+    /// main window hides.
     static OTHER_WINDOWS: RefCell<Vec<Box<dyn Fn() -> bool>>> = RefCell::new(Vec::new());
 
-    /// The settings window, asked whether it is on screen when another window
+    /// The main window, asked whether it is on screen when another window
     /// closes.
     static MAIN_WINDOW: RefCell<Option<slint::Weak<MainWindow>>> = const { RefCell::new(None) };
+
+    /// Told whether the main window is on screen after each show and hide.
+    static VISIBILITY_LISTENERS: RefCell<Vec<VisibilityListener>> = RefCell::new(Vec::new());
+}
+
+type VisibilityListener = Box<dyn Fn(bool)>;
+
+/// Be told whether the main window is on screen each time this module shows
+/// or hides it.
+///
+/// :param listener: called with `true` after a show and `false` after a hide
+pub fn register_visibility_listener(listener: impl Fn(bool) + 'static) {
+    VISIBILITY_LISTENERS.with(|listeners| listeners.borrow_mut().push(Box::new(listener)));
+}
+
+fn notify_visibility(shown: bool) {
+    VISIBILITY_LISTENERS.with(|listeners| {
+        for listener in listeners.borrow().iter() {
+            listener(shown);
+        }
+    });
 }
 
 /// Show the window and turn the preview on.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 pub fn show(window: &MainWindow, engine: &EngineLink) {
     if let Err(e) = window.show() {
         warn!("the window could not be shown: {e}");
     }
+    notify_visibility(true);
     platform::shown();
     engine.set_preview_enabled(true);
     crate::autostart::ui::refresh(window);
@@ -56,7 +80,7 @@ pub fn show(window: &MainWindow, engine: &EngineLink) {
 /// compositor decides, and most mark the window rather than raise it. On macOS
 /// [`show`] already activates the app.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 /// :param `startup_id`: the X11 startup notification id the launch carried
 pub fn show_and_focus(window: &MainWindow, engine: &EngineLink, startup_id: Option<&str>) {
@@ -87,7 +111,7 @@ fn raw_handle(window: &MainWindow) -> Option<raw_window_handle::RawWindowHandle>
 /// its first turn, and a start that hides the window on that turn keeps the
 /// accessory policy it launched with and never shows a Dock icon.
 ///
-/// :param window: the settings window, or the one window a launch that found
+/// :param window: the main window, or the one window a launch that found
 ///     an older version running opens
 /// :param `hides_at_once`: whether `--tray-start hidden` hides it again on the
 ///     first turn of the event loop
@@ -98,6 +122,7 @@ pub fn show_at_startup(
 ) -> Result<(), slint::PlatformError> {
     window.show()?;
     if !hides_at_once {
+        notify_visibility(true);
         slint::Timer::single_shot(Duration::ZERO, platform::shown);
     }
     Ok(())
@@ -105,7 +130,7 @@ pub fn show_at_startup(
 
 /// Hide the window and turn the preview off.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 pub fn hide(window: &MainWindow, engine: &EngineLink) {
     if let Err(e) = window.hide() {
@@ -116,7 +141,7 @@ pub fn hide(window: &MainWindow, engine: &EngineLink) {
 
 /// Show the window if it is hidden and hide it if it is shown.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param engine: the engine whose preview follows the window
 /// :returns: whether the window is shown now
 pub fn toggle(window: &MainWindow, engine: &EngineLink) -> bool {
@@ -134,6 +159,7 @@ pub fn toggle(window: &MainWindow, engine: &EngineLink) -> bool {
 ///
 /// :param engine: the engine whose preview follows the window
 pub fn hidden(engine: &EngineLink) {
+    notify_visibility(false);
     engine.set_preview_enabled(false);
     platform::hidden(keeps_dock_icon(others_visible()));
 }
@@ -142,7 +168,7 @@ fn others_visible() -> Vec<bool> {
     OTHER_WINDOWS.with(|windows| windows.borrow().iter().map(|visible| visible()).collect())
 }
 
-/// Remember the settings window, which [`other_window_closed`] asks about.
+/// Remember the main window, which [`other_window_closed`] asks about.
 pub fn register_main_window(window: &MainWindow) {
     MAIN_WINDOW.with(|slot| *slot.borrow_mut() = Some(window.as_weak()));
 }
@@ -174,7 +200,7 @@ fn drops_dock_icon_after_close(
     !main_visible && !keeps_dock_icon(others_visible)
 }
 
-/// Count another of the app's windows in when the settings window hides.
+/// Count another of the app's windows in when the main window hides.
 ///
 /// :param `is_visible`: whether that window is on screen at the moment it is
 ///     asked
@@ -182,7 +208,7 @@ pub fn register_other_window(is_visible: impl Fn() -> bool + 'static) {
     OTHER_WINDOWS.with(|windows| windows.borrow_mut().push(Box::new(is_visible)));
 }
 
-/// Whether the app keeps its Dock icon once the settings window is hidden.
+/// Whether the app keeps its Dock icon once the main window is hidden.
 fn keeps_dock_icon(others_visible: impl IntoIterator<Item = bool>) -> bool {
     others_visible.into_iter().any(|visible| visible)
 }
@@ -461,11 +487,43 @@ mod tests {
         assert!(drops_dock_icon_after_close(false, []));
         assert!(
             !drops_dock_icon_after_close(true, [false]),
-            "the settings window is still on screen"
+            "the main window is still on screen"
         );
         assert!(
             !drops_dock_icon_after_close(false, [false, true]),
             "another window is still on screen"
+        );
+    }
+
+    #[test]
+    fn every_registered_listener_hears_each_show_and_hide() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use super::{notify_visibility, register_visibility_listener};
+
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        notify_visibility(true);
+
+        for name in ["first", "second"] {
+            let heard = Rc::clone(&heard);
+            register_visibility_listener(move |shown| heard.borrow_mut().push((name, shown)));
+        }
+        assert!(
+            heard.borrow().is_empty(),
+            "a listener heard what happened before it was registered"
+        );
+
+        notify_visibility(true);
+        notify_visibility(false);
+        assert_eq!(
+            *heard.borrow(),
+            [
+                ("first", true),
+                ("second", true),
+                ("first", false),
+                ("second", false)
+            ]
         );
     }
 

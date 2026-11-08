@@ -1,4 +1,4 @@
-//! Lazily created About window: the documents it shows and the link opener.
+//! Lazily created About window and the documents it shows.
 //!
 //! Three documents reach the window, all of them `include_str!`'d at compile
 //! time so nothing reads a path at runtime. The GPLv3 goes in as plain text,
@@ -67,8 +67,8 @@ pub struct AboutController {
 }
 
 impl AboutController {
-    /// Register the settings window's About callback.
-    pub fn register_settings_callback(&self, main_window: &MainWindow) {
+    /// Register the main window's About callback.
+    pub fn register_main_window_callback(&self, main_window: &MainWindow) {
         let about = self.clone();
         main_window.on_show_about(move || {
             let _ = about.show();
@@ -98,7 +98,7 @@ impl AboutController {
             window.set_third_party(document_model(THIRD_PARTY));
             window.set_license_text(LICENSE.into());
             window.set_mono_family(MONO_FAMILY.into());
-            window.on_open_url(|url| open_url(&url));
+            window.on_open_url(|url| crate::open::url(&url));
             window.window().on_close_requested(|| {
                 crate::window_state::other_window_closed();
                 slint::CloseRequestResponse::HideWindow
@@ -369,89 +369,6 @@ fn starts_a_list_item(trimmed: &str) -> bool {
     bulleted || ordered
 }
 
-/// Hand a URL to the platform's own handler.
-///
-/// `std::process::Command` rather than `ShellExecuteW`, which would be the
-/// idiomatic Win32 call and would cost a scoped `#[allow(unsafe_code)]` for a
-/// hyperlink. On Windows the opener is `cmd /C start`, whose console window is
-/// suppressed through the safe `creation_flags`.
-fn open_url(url: &str) {
-    if !is_web_url(url) {
-        tracing::warn!("refusing to open {url:?}: only http and https are opened");
-        return;
-    }
-    let spawned = platform_open(url);
-    if let Err(error) = spawned {
-        tracing::warn!("could not open {url:?}: {error}");
-    }
-}
-
-/// Whether a URL is one this program will hand to a shell.
-///
-/// Every URL in the window comes from a file compiled into the binary, so this
-/// guards nothing that is reachable today. It exists so that the
-/// argument-injection question is unaskable rather than answerable by reading
-/// the documents, and that takes more than a scheme check: the Windows opener
-/// goes through `cmd /C`, which reparses its argument and reads `&`, `|`, `<`,
-/// `>`, `^` and `%` as its own. So the rest of the URL has to be spelled out
-/// of a set that holds nothing a shell looks at.
-///
-/// What that set admits and what it costs, exactly. A path, a fragment, a
-/// port, userinfo and a query string of one parameter all pass, since `?` and
-/// `=` are in. A second query parameter does not, because `&` is out. Neither
-/// does a percent-escape, because `%` is out. `,` and `;` are out as well:
-/// they are legal in a URL and `start` reads both as argument delimiters, so a
-/// URL carrying one would be truncated there and the wrong page opened, which
-/// is a worse failure than a refusal. No URL in the shipped documents needs
-/// any of the four, and a test walks every one of them through this check.
-fn is_web_url(url: &str) -> bool {
-    /// URL characters that are not shell characters anywhere the opener runs.
-    const SAFE: &str = "-._~:/?#[]@+='";
-
-    match url.split_once("://") {
-        Some((scheme, rest)) => {
-            matches!(scheme, "http" | "https")
-                && !rest.is_empty()
-                && rest
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || SAFE.contains(c))
-        }
-        None => false,
-    }
-}
-
-#[cfg(windows)]
-fn platform_open(url: &str) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt as _;
-
-    /// `CREATE_NO_WINDOW`. A bare `start` flashes a console otherwise.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-    // The empty argument is `start`'s title parameter: without it `start`
-    // reads a quoted URL as the window title and opens nothing.
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map(|_| ())
-}
-
-#[cfg(target_os = "macos")]
-fn platform_open(url: &str) -> std::io::Result<()> {
-    std::process::Command::new("open")
-        .arg(url)
-        .spawn()
-        .map(|_| ())
-}
-
-#[cfg(all(not(windows), not(target_os = "macos")))]
-fn platform_open(url: &str) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open")
-        .arg(url)
-        .spawn()
-        .map(|_| ())
-}
-
 #[cfg(test)]
 mod tests {
     use slint::Model as _;
@@ -659,42 +576,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn only_http_and_https_urls_are_opened() {
-        for allowed in [
-            "http://example.invalid/x",
-            "https://example.invalid",
-            "https://spdx.org/licenses/MIT.html",
-            "https://example.invalid:8443/a/b#c",
-            "https://example.invalid/search?q=one",
-        ] {
-            assert!(is_web_url(allowed), "{allowed} should be opened");
-        }
-        for refused in [
-            "file:///etc/passwd",
-            "javascript:alert(1)",
-            "mailto:someone@example.invalid",
-            "https://",
-            "example.invalid",
-            "",
-            "https://example.invalid/a b",
-            // What `cmd /C` would read as its own rather than as a URL.
-            "https://example.invalid/x&calc",
-            "https://example.invalid/x|calc",
-            "https://example.invalid/x>out",
-            "https://example.invalid/x^y",
-            "https://example.invalid/%PATH%",
-            "https://example.invalid/\"x\"",
-            "https://example.invalid/$(x)",
-            "https://example.invalid/x\ny",
-            // Legal in a URL, and `start` reads both as argument delimiters.
-            "https://example.invalid/a,b",
-            "https://example.invalid/a;b",
-        ] {
-            assert!(!is_web_url(refused), "{refused} should be refused");
-        }
-    }
-
     /// Every URL the two markdown documents carry has to survive the check, or
     /// a link in the window would log a refusal instead of opening.
     #[test]
@@ -702,7 +583,7 @@ mod tests {
         for (name, document) in RENDERED {
             for link in links_in(document) {
                 assert!(
-                    is_web_url(&link),
+                    crate::open::is_web_url(&link),
                     "{name} carries {link}, which the opener refuses"
                 );
             }
@@ -724,11 +605,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_callback_shows_the_version_and_all_three_documents() {
+    fn main_window_callback_shows_the_version_and_all_three_documents() {
         init();
         let main_window = MainWindow::new().expect("main window");
         let controller = AboutController::default();
-        controller.register_settings_callback(&main_window);
+        controller.register_main_window_callback(&main_window);
 
         main_window.invoke_show_about();
 

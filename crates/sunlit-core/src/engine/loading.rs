@@ -1,4 +1,4 @@
-//! The loading line the settings window shows over the preview: the pack the
+//! The loading line the main window shows over the preview: the pack the
 //! transcoder is preparing, and otherwise the surface the frame waits for, a
 //! cube or the tiles in view.
 

@@ -297,7 +297,7 @@ pub fn create_tray(
     Some(tray)
 }
 
-/// Show the settings window's auto-refresh state in the tray menu.
+/// Show the main window's auto-refresh state in the tray menu.
 ///
 /// :param tray: the tray icon
 /// :param enabled: whether auto-refresh is on
@@ -313,13 +313,11 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
     tray.set_autostart_available(window.get_autostart_available());
     crate::autostart::ui::register_tray(tray);
 
-    let window_weak = window.as_weak();
-    let engine_link = engine.clone();
-    tray.on_open_window(move || {
-        if let Some(win) = window_weak.upgrade() {
-            debug!("tray: showing window");
-            sunlit_core::memory::log_memory_usage("after window shown");
-            crate::window_state::show(&win, &engine_link);
+    tray.set_window_shown(window.window().is_visible());
+    let tray_weak = tray.as_weak();
+    crate::window_state::register_visibility_listener(move |shown| {
+        if let Some(tray) = tray_weak.upgrade() {
+            tray.set_window_shown(shown);
         }
     });
 
@@ -327,6 +325,7 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
     let engine_link = engine.clone();
     tray.on_toggle_window(move || {
         if let Some(win) = window_weak.upgrade() {
+            crate::menu::save_geometry(&win);
             if crate::window_state::toggle(&win, &engine_link) {
                 debug!("tray: window shown (icon clicked)");
                 sunlit_core::memory::log_memory_usage("after window shown");
@@ -342,7 +341,7 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
         engine_link.send(EngineCommand::RenderWallpaperNow);
     });
 
-    // The tray menu item and the checkbox in the settings window are two views
+    // The tray menu item and the checkbox in the main window are two views
     // of the same setting, so the tray hands the change to the window and lets
     // the existing auto-refresh callback do the work.
     let window_weak = window.as_weak();
@@ -354,7 +353,7 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
         }
     });
 
-    // The same write and read as the settings window's switch. A failed write
+    // The same write and read as the main window's switch. A failed write
     // has no status line here, so it is a warning in the log, and the item
     // shows what the read after it found.
     let window_weak = window.as_weak();
@@ -365,14 +364,19 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
         }
     });
 
+    tray.on_open_url(|url| crate::open::url(&url));
+
     let about = about.clone();
     tray.on_show_about(move || {
         let _ = about.show();
     });
 
-    tray.on_exit_app(|| {
-        debug!("tray: exit requested, executing quit_event_loop");
-        slint::quit_event_loop().ok();
+    let window_weak = window.as_weak();
+    tray.on_quit(move || {
+        debug!("tray: quit requested");
+        if let Some(win) = window_weak.upgrade() {
+            crate::menu::quit(&win);
+        }
     });
 }
 

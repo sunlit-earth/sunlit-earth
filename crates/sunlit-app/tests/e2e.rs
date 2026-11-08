@@ -910,7 +910,7 @@ fn test_memory_report() {
 ///
 /// The first start has an empty cache directory, so the transcoder runs from
 /// nothing: the case waits for every pack to land, reads the loading line the
-/// settings window would show from the `loading_text` signals, and checks that
+/// main window would show from the `loading_text` signals, and checks that
 /// it named the packs on the way. The second start has the cache the first left
 /// behind and must neither name a pack nor touch one.
 ///

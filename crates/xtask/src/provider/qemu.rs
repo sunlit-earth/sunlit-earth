@@ -181,7 +181,7 @@ pub fn classify(identity: Option<&crate::runner::ProcessIdentity>, vm_name: &str
 ///
 /// A VNC viewer scales, unlike a basic `vmconnect` session, so there is nothing
 /// here to fit to the host's screen: what this has to be is large enough for the
-/// app's settings window and small enough to be a window on a laptop, and
+/// app's main window and small enough to be a window on a laptop, and
 /// 1920x1080 is both. [`console::RESOLUTION_ENV`] overrides it, the same
 /// variable and the same spelling the `Hyper-V` guest reads.
 pub const DEFAULT_CONSOLE: (u32, u32) = (1920, 1080);

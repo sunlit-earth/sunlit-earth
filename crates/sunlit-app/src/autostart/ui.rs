@@ -1,8 +1,8 @@
-//! The "Start on login" switch in the settings window and in the tray menu.
+//! The "Start on login" switch in the main window and in the tray menu.
 //!
 //! Both show one read of the entry and act through [`super::set`], which reads
 //! again after every write, so the two always show what the system holds. The
-//! entry is read at startup, every time the settings window is shown, and
+//! entry is read at startup, every time the main window is shown, and
 //! after every toggle from either place.
 
 use std::cell::RefCell;
@@ -79,9 +79,9 @@ pub fn register_tray(tray: &TrayIcon) {
     TRAY.with(|slot| *slot.borrow_mut() = Some(tray.as_weak()));
 }
 
-/// Show `state` in the settings window and the tray menu.
+/// Show `state` in the main window and the tray menu.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param state: what the entry says
 pub fn show(window: &MainWindow, state: &Autostart) {
     let view = view(state, super::this_exe().ok().as_deref());
@@ -98,7 +98,7 @@ pub fn show(window: &MainWindow, state: &Autostart) {
 
 /// Read the entry and show what it says.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 pub fn refresh(window: &MainWindow) {
     window.set_autostart_error(slint::SharedString::new());
     let state = super::read();
@@ -108,7 +108,7 @@ pub fn refresh(window: &MainWindow) {
 
 /// Turn the entry on or off, read it back, and show the read.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 /// :param on: whether to write the entry or remove it
 /// :returns: why the write failed, if it did
 pub fn toggle(window: &MainWindow, on: bool) -> Result<(), String> {
@@ -120,12 +120,12 @@ pub fn toggle(window: &MainWindow, on: bool) -> Result<(), String> {
     written
 }
 
-/// Wire the settings window's switch.
+/// Wire the main window's switch.
 ///
 /// A failed write leaves the switch where the read after it found the entry,
 /// and the line under it says why.
 ///
-/// :param window: the settings window
+/// :param window: the main window
 pub fn register(window: &MainWindow) {
     let window_weak = window.as_weak();
     window.on_autostart_toggled(move |on| {

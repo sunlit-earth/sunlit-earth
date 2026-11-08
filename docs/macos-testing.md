@@ -25,12 +25,13 @@ Which of the two routes worked, and what each one said, is itself a result worth
 
 ## What to look at
 
-- **The status item.** It should appear in the menu bar. Is it legible against a light menu bar and against a dark one? Does its Open entry bring the settings window to the front, including when the window was already open behind something else? Does Quit end the app rather than leaving the item behind?
-- **The wallpaper.** Change something in the settings window and let it publish. Does the desktop picture actually change? Check each screen if there is more than one, and each of the three display modes: One screen, Mirror, Extend.
+- **The status item.** It should appear in the menu bar. Is it legible against a light menu bar and against a dark one? Does its Show entry bring the main window to the front, including when the window was already open behind something else, and does the entry then say Hide? Does Quit end the app rather than leaving the item behind?
+- **The wallpaper.** Change something in the main window and let it publish. Does the desktop picture actually change? Check each screen if there is more than one, and each of the three display modes: One screen, Mirror, Extend.
 - **A second Space.** Make another Space and switch to it. Does it get the wallpaper too, or does it keep the old picture until something else touches it?
 - **Logging out and back in.** Does the wallpaper survive it? Does anything reset?
 - **`sunlit-earth displays`.** In Terminal, from the tarball or from `"/Applications/Sunlit Earth.app/Contents/MacOS/sunlit-earth" displays`. It prints the monitors the session has and the plan they come to, and the whole output is useful whether or not it looks right.
 - **The window itself.** Does it open at a sensible size, does the preview render, do the sliders move the picture, and does a Retina display make it blurry or sharp?
+- **The menu bar.** With the window in front, the menu bar at the top of the screen should show the Sunlit Earth menu, then File, View and Help. Does every entry do what its title says? File should have no Quit; the Sunlit Earth menu's Quit (⌘Q) is the one. Move and resize the window, quit with ⌘Q, and start the app again: does the window come back where it was and at that size? The Sunlit Earth menu's About should show a small panel with the version and "© 2026 Sebastian Straub", and Help's About Sunlit Earth the app's own About window. Does the View menu show an Enter Full Screen entry nobody asked for?
 
 ## What to send back
 

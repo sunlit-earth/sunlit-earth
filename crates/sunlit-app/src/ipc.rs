@@ -148,6 +148,7 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             slint::invoke_from_event_loop(move || {
                 if let Some(win) = ww.upgrade() {
                     debug!("ipc: hiding window");
+                    crate::menu::save_geometry(&win);
                     crate::window_state::hide(&win, &engine);
                 }
                 signal("window_hidden");
@@ -452,7 +453,7 @@ fn signal_list(line: &str, key: &str) -> Option<Vec<String>> {
     Some(value.split(';').map(str::to_owned).collect())
 }
 
-/// Which window system the settings window is a client of, announced once as
+/// Which window system the main window is a client of, announced once as
 /// `SIGNAL:windowing <name>` after the first window exists.
 ///
 /// Read from the window's own raw handle rather than from the environment,

@@ -2081,6 +2081,14 @@ mod tests {
         // The bundle starts with no Dock icon, so a hidden start at login never
         // shows one; the app gives itself the icon when its window shows.
         assert!(real.contains("<key>LSUIElement</key>\n\t<true/>"), "{real}");
+        // AppKit's standard About panel, which the App menu's About opens,
+        // takes its copyright line from this key.
+        assert!(
+            real.contains(
+                "<key>NSHumanReadableCopyright</key>\n\t<string>© 2026 Sebastian Straub</string>"
+            ),
+            "{real}"
+        );
 
         // A template with the placeholder taken out is a refusal, not a bundle
         // named after nothing.

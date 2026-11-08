@@ -38,7 +38,7 @@ const GAMMA_MAX: f32 = 3.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the switches of the settings window, not a parameter list"
+    reason = "the switches of the main window, not a parameter list"
 )]
 pub struct SceneParams {
     /// The camera as the settings hold it. In the Sun-fixed mode its longitude

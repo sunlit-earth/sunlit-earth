@@ -1,6 +1,6 @@
 # sunlit-core
 
-The headless heart of Sunlit Earth: the engine thread, the wgpu renderer, the scene model, and the configuration. No Slint, no window, no event loop. The settings window is one optional client of this crate, not its owner, which is what makes every test below possible without a desktop.
+The headless heart of Sunlit Earth: the engine thread, the wgpu renderer, the scene model, and the configuration. No Slint, no window, no event loop. The main window is one optional client of this crate, not its owner, which is what makes every test below possible without a desktop.
 
 The engine owns the GPU device and drives everything through injected boundaries: a `Clock` (so the soak test simulates 14 days in seconds), a `CloudSource` (so tests serve fixtures instead of hitting the network), and a `WallpaperSink` (so nothing touches the real desktop unless asked). Clients talk to it with `EngineCommand` and hear back through `EngineEvent`.
 

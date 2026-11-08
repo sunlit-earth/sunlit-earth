@@ -211,17 +211,44 @@ mod imp {
     /// Through XTEST to the focused window, after making it that: a key sent
     /// to a window directly arrives marked as synthetic, which toolkits may
     /// ignore.
+    ///
+    /// GNOME logs in to its overview, which holds the keyboard and leaves no
+    /// window active; `windowactivate` then succeeds without activating
+    /// anything, so the overview is closed first and the activation checked.
     pub(super) fn press(handle: &Handle, key: Key) -> Result<(), String> {
         let name = match key {
             Key::F11 => "F11",
             Key::Escape => "Escape",
         };
-        run(
-            "xdotool",
-            &["windowactivate", "--sync", &handle.0, "key", name],
-        )
-        .map(drop)
-        .ok_or_else(|| format!("xdotool could not press {name} in window {}", handle.0))
+        if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.contains("GNOME")) {
+            run(
+                "gdbus",
+                &[
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.gnome.Shell",
+                    "--object-path",
+                    "/org/gnome/Shell",
+                    "--method",
+                    "org.freedesktop.DBus.Properties.Set",
+                    "org.gnome.Shell",
+                    "OverviewActive",
+                    "<false>",
+                ],
+            );
+        }
+        run("xdotool", &["windowactivate", "--sync", &handle.0]);
+        let active = run("xdotool", &["getactivewindow"]);
+        if active.as_deref().map(str::trim) != Some(handle.0.as_str()) {
+            return Err(format!(
+                "window {} is not the active window ({active:?})",
+                handle.0
+            ));
+        }
+        run("xdotool", &["key", name])
+            .map(drop)
+            .ok_or_else(|| format!("xdotool could not press {name} in window {}", handle.0))
     }
 }
 

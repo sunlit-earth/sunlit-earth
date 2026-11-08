@@ -234,7 +234,9 @@ No new case. `test_tray_hide_show_cycle` and the cases that quit through IPC kee
 
 ## Departures
 
-None yet.
+1. **A held Q is let go when Ctrl goes down.** The preview does take Q under Ctrl: Q and E roll whatever modifiers are down, so the claim above that Ctrl+Q reaches nothing on the preview does not hold. And Slint's window matches menu bar shortcuts against both the press and the release of a key before the focused item sees either (`process_menubar_shortcuts` in `i-slint-core` 1.18.1's `window.rs`, on every platform, the native menus included), so with Quit's shortcut in place, Q held, Ctrl pressed and Q let go would hand the release to the menu and the roll would run on with no key down. The preview's Ctrl branch in `main.slint` now lets go of a held Q when Ctrl goes down, behind the same `Platform.os != macos` condition as the Quit item. The held-key test's Ctrl and Q case passes through that path.
+
+2. **Two tests stop short of the real path.** The testing backend shows no tray menu, so the tray's titles and its Website entry cannot be clicked from a test: the tray's Show / Hide title is read from its `window-title` property, the Quit wording is checked in `tray.slint`'s source, and the tray's `open-url` is not driven through a recorder. The drawn menu bar, on the other hand, can be clicked, so every menu bar test chooses its entry the way a person does. The Close Window test installs a tray-mode close handler of its own, without the geometry write, because `app.rs`'s handler saves to the real config file and the tests have no per-test config path.
 
 ## Sources
 

@@ -24,6 +24,11 @@
 //!   login entry, then answer like `autostart-status`
 //! - `autostart-status`: reports the entry as `SIGNAL:autostart state=<off|on|
 //!   off-by-system|unsupported> exe=<percent-encoded path>`
+//! - `export-image <path> <width> <height> <png|jpeg> [level or quality]`:
+//!   runs the export sheet's export without the save dialog, opening the sheet
+//!   if it is closed, and answers `SIGNAL:exported path=<path>` or
+//!   `SIGNAL:export_failed reason=<text>`
+//! - `export-cancel`: cancels the sheet's running export
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -118,6 +123,7 @@ impl IpcListener {
 }
 
 /// Parse and dispatch a single IPC command via `invoke_from_event_loop`.
+#[expect(clippy::too_many_lines, reason = "one arm per command")]
 fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, engine: &EngineLink) {
     match cmd {
         "quit" => {
@@ -227,10 +233,91 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             debug!("ipc: received {cmd} command");
             report_autostart(cmd, window_weak);
         }
+        "export-cancel" => {
+            debug!("ipc: received export-cancel command");
+            slint::invoke_from_event_loop(crate::export::cancel_from_ipc).ok();
+        }
+        _ if cmd.starts_with("export-image ") => {
+            debug!("ipc: received {cmd}");
+            match ExportRequest::parse(&cmd["export-image ".len()..]) {
+                Ok(request) => {
+                    slint::invoke_from_event_loop(move || {
+                        crate::export::export_from_ipc(
+                            &request.path,
+                            request.width,
+                            request.height,
+                            request.format,
+                            request.value,
+                        );
+                    })
+                    .ok();
+                }
+                Err(reason) => signal(&format!("export_failed reason={reason}")),
+            }
+        }
         "" => {}
         _ => {
             warn!("unknown ipc command: {cmd}");
         }
+    }
+}
+
+/// The arguments of an `export-image` command.
+#[derive(Debug, PartialEq, Eq)]
+struct ExportRequest {
+    path: String,
+    width: u32,
+    height: u32,
+    format: sunlit_core::config::ExportFormat,
+    /// The PNG level or the JPEG quality.
+    value: u8,
+}
+
+impl ExportRequest {
+    /// Read `<path> <width> <height> <png|jpeg> [value]` from the right, so
+    /// the path may hold spaces.
+    fn parse(arguments: &str) -> Result<Self, String> {
+        use sunlit_core::config::{AppConfig, ExportFormat};
+        let format_of = |word: &str| match word {
+            "png" => Some(ExportFormat::Png),
+            "jpeg" | "jpg" => Some(ExportFormat::Jpeg),
+            _ => None,
+        };
+        let usage = || {
+            "usage: export-image <path> <width> <height> <png|jpeg> [level or quality]".to_owned()
+        };
+        let arguments = arguments.trim();
+        let (rest, format, value) = match arguments.rsplit_once(' ') {
+            Some((rest, last)) if format_of(last).is_some() => (rest, format_of(last), None),
+            Some((rest, last)) => {
+                let (rest, word) = rest.trim_end().rsplit_once(' ').ok_or_else(usage)?;
+                (rest, format_of(word), Some(last))
+            }
+            None => return Err(usage()),
+        };
+        let format = format.ok_or_else(usage)?;
+        let mut words = rest.trim_end().rsplitn(3, ' ');
+        let height = words.next().and_then(|word| word.parse().ok());
+        let width = words.next().and_then(|word| word.parse().ok());
+        let path = words.next().map(str::trim).filter(|path| !path.is_empty());
+        let (Some(width), Some(height), Some(path)) = (width, height, path) else {
+            return Err(usage());
+        };
+        let defaults = AppConfig::default();
+        let value = match value {
+            Some(word) => word.parse().map_err(|_| usage())?,
+            None => match format {
+                ExportFormat::Png => defaults.export_png_compression,
+                ExportFormat::Jpeg => defaults.export_jpeg_quality,
+            },
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            width,
+            height,
+            format,
+            value,
+        })
     }
 }
 
@@ -515,6 +602,34 @@ pub(crate) fn signal(name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_export_request_reads_a_path_with_spaces_and_an_optional_value() {
+        use sunlit_core::config::ExportFormat;
+        let request = ExportRequest::parse(r"C:\My Pictures\earth.png 640 360 png").unwrap();
+        assert_eq!(request.path, r"C:\My Pictures\earth.png");
+        assert_eq!((request.width, request.height), (640, 360));
+        assert_eq!(request.format, ExportFormat::Png);
+
+        let request = ExportRequest::parse("/tmp/a b/earth 1920 1080 jpeg 75").unwrap();
+        assert_eq!(request.path, "/tmp/a b/earth");
+        assert_eq!(request.format, ExportFormat::Jpeg);
+        assert_eq!(request.value, 75);
+    }
+
+    #[test]
+    fn an_export_request_without_its_arguments_is_refused() {
+        for arguments in [
+            "",
+            "/tmp/earth.png",
+            "/tmp/earth.png 640 png",
+            "640 360 png",
+            "/tmp/e 640 360 gif",
+            "/tmp/e 640 360 png x",
+        ] {
+            assert!(ExportRequest::parse(arguments).is_err(), "{arguments:?}");
+        }
+    }
 
     /// Two screens side by side, the second of them primary.
     fn two_screens() -> Vec<sunlit_core::display::Monitor> {

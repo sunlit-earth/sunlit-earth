@@ -508,6 +508,7 @@ impl Controller {
 
         self.link.send(EngineCommand::Hold(true));
         window.set_export_sheet_open(true);
+        crate::time_bar::refresh(&window);
     }
 
     fn close(&mut self) {
@@ -524,6 +525,7 @@ impl Controller {
         self.thumbnail_timer.stop();
         self.link.send(EngineCommand::Hold(false));
         window.set_export_sheet_open(false);
+        crate::time_bar::refresh(&window);
     }
 
     /// Whether the cloud layer still owes the answer an export waits for.

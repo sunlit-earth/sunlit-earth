@@ -352,10 +352,16 @@ fn transport(window: &MainWindow) -> Transport {
     }
 }
 
-/// The instant on screen: the last frame's during an excursion, the time
-/// setting's otherwise.
+/// Whether the bar names the last frame's instant rather than the time
+/// setting's: during an excursion, and while the export sheet holds the scene.
+fn follows_the_frame(window: &MainWindow) -> bool {
+    window.get_time_bar().excursion || window.get_export_sheet_open()
+}
+
+/// The instant on screen: the last frame's when the bar follows the frame,
+/// the time setting's otherwise.
 fn on_screen(window: &MainWindow, now: OffsetDateTime) -> OffsetDateTime {
-    if window.get_time_bar().excursion
+    if follows_the_frame(window)
         && let Some(SceneTime::Fixed(at)) =
             SceneTime::from_config_string(&window.get_time_frame_instant())
     {
@@ -667,7 +673,7 @@ pub fn excursion_changed(window: &MainWindow, state: Option<ExcursionState>) {
 /// A frame that shows `instant` reached the window.
 pub fn frame_shown(window: &MainWindow, instant: OffsetDateTime) {
     window.set_time_frame_instant(SceneTime::fixed(instant).to_config_string().into());
-    if window.get_time_bar().excursion {
+    if follows_the_frame(window) {
         refresh(window);
     }
 }

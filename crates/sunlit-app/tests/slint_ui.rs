@@ -7815,6 +7815,37 @@ fn test_export_waits_for_the_scene() {
     assert_eq!(export.accessible_enabled(), Some(true));
 }
 
+/// With a live setting, the time bar names the held frame's instant while
+/// the sheet is open, however often the live tick refreshes it, and follows
+/// the clock again once the sheet closes.
+#[test]
+fn test_the_time_bar_names_the_held_instant() {
+    use time::macros::datetime;
+
+    let (window, _sent) = export_sheet();
+    let mut settings = window.get_datetime();
+    settings.use_custom = false;
+    window.set_datetime(settings);
+    sunlit_earth::time_bar::frame_shown(&window, datetime!(2026-05-10 03:00:07 UTC));
+    let shown = |window: &MainWindow| {
+        let view = window.get_time_bar();
+        (
+            view.year,
+            view.month,
+            view.day,
+            view.time_text,
+            view.seconds_text,
+        )
+    };
+    let held = (2026, 5, 10, "03:00".into(), ":07".into());
+    assert_eq!(shown(&window), held);
+    sunlit_earth::time_bar::refresh(&window);
+    assert_eq!(shown(&window), held, "the live tick moved the bar");
+
+    sunlit_earth::export::close();
+    assert_ne!(shown(&window), held, "the bar stayed at the held instant");
+}
+
 /// One slider, which is Compression for PNG and Quality for JPEG, and each
 /// format keeps its own value across a switch.
 #[test]

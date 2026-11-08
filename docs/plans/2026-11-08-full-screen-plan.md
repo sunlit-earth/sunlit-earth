@@ -212,6 +212,20 @@ A case that sends F11 to the window and checks that its rectangle matches its mo
 
 7. **The long pill fades out rather than going at 10 s.** The Tests section has the long pill "gone at 10 s" when the controls have already hidden, and so it was: the pill's visibility read `exit-pill-long || !idle-gone`, so with the controls long gone it vanished the moment the long form ended, the one thing in full screen that did not fade. Validation round 1 asked for the fade. The pill now has its own `exit-pill-gone`: once short, it fades with idle controls over `OverlayStyle.idle-fade` from whichever came later, the controls idling or the long form ending, and goes when that fade has run, about 10.5 s after entering with the mouse still. With the controls up at 10 s it still just shrinks to "Exit", as decision 6 has it.
 
+## Validation
+
+**Round 1**, 2026-11-08: 3 majors, 6 minors, all resolved. Every new `slint_ui` assertion was checked by mutating the code it guards and seeing the test fail, except where noted.
+
+- Major 1, `window_rect.rs`'s `title()` dead on macOS, failing CI's `-D warnings`: compiled only on Windows and Linux. A copy of the file with the macOS branch selected fails `rustc --edition 2024 -D warnings` ("function `title` is never used") before the gate and passes after; no other new code is behind a `cfg`.
+- Major 2, step 9 on the Windows desktop: the user's checks (cursor, tray hide, closing the app, all in full screen) are recorded in step 9 and `docs/platforms.md`. The native menu bar and maximized restore are still open.
+- Major 3, `slint_ui` gaps: the pinned case now runs past 10 s and checks the short pill and the camera panel's footer at `OverlayStyle.idle-opacity` with the panel itself at full opacity; the blockers case gained the exit pill, `show-button`, a held joystick, the speeds and the date picker; the layout case checks that the sidebar and the splitter are gone and come back. The new blockers case found a bug: Esc closing the speeds with the pointer on the list left `rates-hovered` set, so the bar counted as hovered and the controls never idled again until the pointer crossed the list; `close-transient` now clears it. Two blockers cannot fail on their own term, and the case says so rather than pretending: the speeds close 700 ms after the pointer leaves the bar, so they are only ever open for long under the pointer, and a held joystick keeps marking the panel used, so removing `rates-open` from `in-use` or `any-held` from the panel's `idle` leaves the case green. Both terms stay, since they cost nothing and cover the moments before those mechanisms catch up.
+- Minor 4, the cursor refresh in preview coordinates: `cursor-hidden-changed` now passes `viewport-touch`'s absolute position plus the pointer, the window's coordinates that `dispatch_event` takes.
+- Minor 5, the long pill vanishing at 10 s: departure 7. `docs/macos-testing.md` describes both outcomes.
+- Minor 6, `docs/usage.md`: View's Enter Full Screen, the footer's four buttons and the guides button's new icon, F11, ⌃⌘F and Esc in the keys, and a paragraph on full screen.
+- Minor 7, `docs/platforms.md` stated the Win32 menu's going as fact: now expected and not observed.
+- Minor 8, `test_the_cursor_refresh_does_not_wake_the_controls` wires the real `full_screen::wire`, idles out and lets the refresh run, and stays idle; it fails when the refresh moves the pointer by a pixel. Saving the geometry itself is not tested: `slint_ui` has no `SUNLIT_EARTH_CONFIG`, a never shown window saves nothing, and setting the variable from a test is process wide and unsafe in edition 2024. `test_entering_full_screen_asks_for_the_geometry_while_windowed` checks instead that `full-screen-entering` runs once per entry, by the button and by F11, while the window is still windowed, which is what lets `save_geometry` save; it fails with the call moved after `full-screen` flips.
+- Minor 9, `docs/macos-testing.md` asks about the status item's Hide and Close Window in full screen, then showing again: which Space, windowed, and the geometry.
+
 ## Sources
 
 - Apple, "Mac keyboard shortcuts": https://support.apple.com/102650

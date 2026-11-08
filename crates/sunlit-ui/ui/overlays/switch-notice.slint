@@ -1,0 +1,61 @@
+// What full screen shows until its first frame has rendered: that the view
+// is on its way, and how to leave in case it takes long or never comes.
+
+import { OverlayStyle, OverlayHints, KeyCap } from "common.slint";
+
+// Three dots that brighten in turn. Opacity rather than movement, since the
+// software renderer ignores rotation.
+component ActivityDots inherits HorizontalLayout {
+    property <duration> period: 1200ms;
+    spacing: 5px;
+    alignment: center;
+
+    for index in 3 : Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: 5px;
+        height: 5px;
+        border-radius: 2.5px;
+        background: OverlayStyle.dim;
+        opacity: 0.25 + 0.75 * max(0, sin(360deg * (animation-tick() / root.period) - index * 50deg));
+    }
+}
+
+export component SwitchNotice inherits VerticalLayout {
+    property <[string]> keys: OverlayHints.is-macos ? ["Esc", "or", "⌃", "⌘", "F"] : ["Esc"];
+    alignment: center;
+    spacing: 12px;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 10px;
+
+        Text {
+            text: "Rendering the view";
+            color: OverlayStyle.dim;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        ActivityDots { }
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 4px;
+
+            for key in root.keys : KeyCap {
+                text: key;
+            }
+        }
+
+        Text {
+            text: "leaves full screen";
+            color: OverlayStyle.dim;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}

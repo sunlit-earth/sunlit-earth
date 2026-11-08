@@ -13,6 +13,7 @@ pub mod session_end;
 pub mod time_bar;
 pub mod tray;
 pub mod ui_callbacks;
+pub mod viewport;
 pub mod window_state;
 
 mod app;

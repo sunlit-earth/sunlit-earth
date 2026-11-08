@@ -7,6 +7,7 @@ import { VersionNotice } from "overlays/version-notice.slint";
 import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
 import { ExitPill } from "overlays/exit-pill.slint";
+import { SwitchNotice } from "overlays/switch-notice.slint";
 import { Links } from "links.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
@@ -200,17 +201,24 @@ export component MainWindow inherits Window {
     // How the frame in `rendered-image` was framed: its size in pixels, the
     // short edge the settings are measured on there, and the anchor screen it
     // was framed for, zero for none known. They travel with the frame, so
-    // what follows them follows the frame shown, the old one shown with
-    // `cover` while a resize settles included.
+    // what follows them follows the frame shown, the old one shown scaled
+    // while a resize settles included.
     in property <int> frame-width;
     in property <int> frame-height;
     in property <float> frame-short-edge;
     in property <int> frame-screen-width;
     in property <int> frame-screen-height;
-    // The frame's short edge as `cover` displays it, in logical pixels: what
-    // the frame guides are sized from and what a slow drag is measured on.
-    out property <length> displayed-short-edge: root.frame-width > 0 && root.frame-height > 0
-        ? root.frame-short-edge * 1px * max(image-container.width / (root.frame-width * 1px), image-container.height / (root.frame-height * 1px))
+    // How large one of the frame's pixels is shown: as `cover` would, or,
+    // after leaving full screen until the windowed frame comes, so that the
+    // short edges meet and the Earth stays the size it was.
+    out property <float> frame-scale: root.frame-width <= 0 || root.frame-height <= 0 ? 0
+        : root.old-frame-shown
+        ? min(image-container.width, image-container.height) / (min(root.frame-width, root.frame-height) * 1px)
+        : max(image-container.width / (root.frame-width * 1px), image-container.height / (root.frame-height * 1px));
+    // The frame's short edge as displayed, in logical pixels: what the frame
+    // guides are sized from and what a slow drag is measured on.
+    out property <length> displayed-short-edge: root.frame-scale > 0
+        ? root.frame-short-edge * 1px * root.frame-scale
         : image-container.height;
     // The frame guides, off at every start and never saved: a framing aid
     // rather than a setting.
@@ -359,17 +367,158 @@ export component MainWindow inherits Window {
     property <duration> idle-after: 3s;
     property <duration> exit-pill-long-for: 10s;
 
+    // The switch goes through black. A toggle first puts `switch-blank` over
+    // the whole window, with nothing on it, and flips `full-screen` only once
+    // that frame is on screen, so what the system stretches to the new size
+    // is black. The blank goes when the window has its new size. Entering
+    // then shows `switch-cover`: black under the controls, with a notice
+    // that the view is rendering and how to leave, until the frame for the
+    // size last sent arrives, and fades. Leaving shows the last full screen
+    // frame scaled by the short edge until the windowed one arrives. A
+    // change by the system, macOS's green button, starts after the blank.
+    //
+    // Rust says the blank frame is on screen through `blank-presented` where
+    // the renderer reports its frames, and sets `switch-wait` to how long to
+    // wait at most there; elsewhere the wait is all there is.
+    in property <duration> switch-wait: 100ms;
+    // The frame size the size sent last comes back as, which Rust writes with
+    // every size it sends; zero while a switch waits for its first.
+    in-out property <int> awaited-frame-width;
+    in-out property <int> awaited-frame-height;
+    out property <bool> frame-current: root.awaited-frame-width > 0
+        && root.frame-width == root.awaited-frame-width && root.frame-height == root.awaited-frame-height;
+    out property <bool> switch-blank;
+    out property <bool> switch-cover;
+    out property <bool> switch-cover-fading;
+    out property <bool> old-frame-shown;
+    callback blank-requested();
+    callback viewport-jumped();
+    property <bool> switch-target;
+    property <bool> switch-flipped;
+    property <length> switch-from-width;
+    property <length> switch-from-height;
+    property <bool> known-full-screen;
+    property <duration> switch-settle-at-most: 500ms;
+    property <duration> cover-fade: 180ms;
+    property <bool> switching: root.switch-blank || root.switch-cover || root.switch-cover-fading;
+
     public function toggle-full-screen() {
-        if root.full-screen {
-            root.full-screen = false;
-        } else {
-            root.full-screen-entering();
-            root.full-screen = true;
+        if root.switch-blank && !root.switch-flipped {
+            root.switch-target = !root.switch-target;
+            return;
         }
+        root.switch-target = !root.full-screen;
+        root.switch-flipped = false;
+        root.switch-blank = true;
+        root.blank-requested();
     }
 
     public function leave-full-screen() {
-        root.full-screen = false;
+        if root.switch-blank && !root.switch-flipped {
+            root.switch-target = false;
+        } else if root.full-screen {
+            root.toggle-full-screen();
+        }
+    }
+
+    public function blank-presented() {
+        if !root.switch-blank || root.switch-flipped {
+            return;
+        }
+        if root.switch-target == root.full-screen {
+            root.switch-blank = false;
+            return;
+        }
+        if root.switch-target {
+            root.full-screen-entering();
+        }
+        root.switch-flipped = true;
+        root.switch-from-width = root.width;
+        root.switch-from-height = root.height;
+        root.known-full-screen = root.switch-target;
+        root.switched(root.switch-target);
+        root.full-screen = root.switch-target;
+    }
+
+    function switched(entering: bool) {
+        root.awaited-frame-width = 0;
+        root.awaited-frame-height = 0;
+        root.switch-cover = entering;
+        root.switch-cover-fading = false;
+        root.old-frame-shown = !entering;
+    }
+
+    function switch-settled() {
+        root.switch-flipped = false;
+        root.switch-blank = false;
+        root.viewport-jumped();
+    }
+
+    changed width => {
+        if root.switch-flipped && (root.width != root.switch-from-width || root.height != root.switch-from-height) {
+            root.switch-settled();
+        }
+    }
+    changed height => {
+        if root.switch-flipped && (root.width != root.switch-from-width || root.height != root.switch-from-height) {
+            root.switch-settled();
+        }
+    }
+
+    // Under the blank the preview passes through sizes that are neither the
+    // old one nor the new; once it is gone, every change goes at once until
+    // the frame for it has come.
+    changed viewport-width => {
+        if (root.switch-cover || root.old-frame-shown) && !root.switch-blank {
+            root.viewport-jumped();
+        }
+    }
+    changed viewport-height => {
+        if (root.switch-cover || root.old-frame-shown) && !root.switch-blank {
+            root.viewport-jumped();
+        }
+    }
+
+    changed frame-current => {
+        if root.frame-current {
+            root.old-frame-shown = false;
+            if root.switch-cover {
+                root.switch-cover = false;
+                root.switch-cover-fading = true;
+            }
+        }
+    }
+
+    Timer {
+        interval: root.switch-wait;
+        running: root.switch-blank && !root.switch-flipped;
+        triggered => { root.blank-presented(); }
+    }
+
+    Timer {
+        interval: root.switch-settle-at-most;
+        running: root.switch-flipped;
+        triggered => { root.switch-settled(); }
+    }
+
+    // A size goes to the engine without the blank too, but in case none went
+    // at all, the one there is goes after a while.
+    Timer {
+        interval: 1s;
+        running: (root.switch-cover || root.old-frame-shown) && !root.switch-blank && root.awaited-frame-width == 0;
+        triggered => { root.viewport-jumped(); }
+    }
+
+    // The idle clock and the long pill's 10 s count from when the picture
+    // shows.
+    Timer {
+        interval: root.cover-fade;
+        running: root.switch-cover-fading;
+        triggered => {
+            root.switch-cover-fading = false;
+            root.exit-pill-at = animation-tick();
+            root.note-activity();
+        }
     }
 
     // Pointer movement over the bare preview, a button, the wheel or a key.
@@ -381,6 +530,13 @@ export component MainWindow inherits Window {
     }
 
     changed full-screen => {
+        if root.full-screen != root.known-full-screen {
+            root.known-full-screen = root.full-screen;
+            root.switch-blank = false;
+            root.switch-flipped = false;
+            root.switched(root.full-screen);
+            root.viewport-jumped();
+        }
         root.exit-pill-long = root.full-screen;
         root.exit-pill-at = animation-tick();
         if root.full-screen {
@@ -400,11 +556,12 @@ export component MainWindow inherits Window {
 
     // What keeps the controls up: the pointer over one of them, one held, a
     // gesture or a key held on the globe, the speeds or a picker open, the
-    // shortcut sheet or the version notice.
+    // shortcut sheet or the version notice, and a switch until its cover goes.
     property <bool> controls-busy: !camera-panel.idle || time-bar.in-use
         || show-button.hovered || exit-pill.hovered
         || image-container.gesture != "" || image-container.any-key-held || image-container.wheel-turning
-        || root.shortcut-sheet-open || root.version-notice-open;
+        || root.shortcut-sheet-open || root.version-notice-open
+        || root.switching;
     changed controls-busy => {
         if root.controls-busy {
             root.note-activity();
@@ -426,7 +583,7 @@ export component MainWindow inherits Window {
             if root.idle-hidden && now - root.active-at >= root.idle-after + root.idle-fade-out {
                 root.idle-gone = true;
             }
-            if root.exit-pill-long && now - root.exit-pill-at >= root.exit-pill-long-for {
+            if root.exit-pill-long && !root.switching && now - root.exit-pill-at >= root.exit-pill-long-for {
                 root.exit-pill-long = false;
                 root.exit-pill-short-at = now;
             }
@@ -2120,10 +2277,12 @@ export component MainWindow inherits Window {
         background: black;
         clip: true;
 
-        Image {
+        preview-image := Image {
             source: rendered-image;
-            width: parent.width;
-            height: parent.height;
+            width: root.frame-scale > 0 ? root.frame-width * 1px * root.frame-scale : parent.width;
+            height: root.frame-scale > 0 ? root.frame-height * 1px * root.frame-scale : parent.height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
             image-fit: cover;
         }
 
@@ -2787,6 +2946,22 @@ export component MainWindow inherits Window {
             }
         }
 
+        // Black under the controls from entering full screen until the frame
+        // for the new size has come, which then fades in from under it.
+        switch-cover := Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: black;
+            visible: root.switch-cover || root.switch-cover-fading;
+            opacity: root.switch-cover ? 1 : 0;
+            animate opacity { duration: root.switch-cover ? 0ms : root.cover-fade; }
+
+            if root.switch-cover || root.switch-cover-fading : switch-notice := SwitchNotice {
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
         // Outside `controls`, since the long form stays while they are gone.
         // The short form goes with them, and with the time bar pinned it
         // fades as the camera panel does.
@@ -2965,5 +3140,15 @@ export component MainWindow inherits Window {
                 font-size: 12px;
             }
         }
+    }
+
+    // The switch's first frame: black over the whole window and nothing on
+    // it, since whatever it carries the system stretches to the new size.
+    if root.switch-blank : blank := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: black;
     }
 }

@@ -321,13 +321,6 @@ export component MainWindow inherits Window {
     callback open-data-folder();
     // The camera panel's three resets at once: north up, the look, the frame.
     callback reset-camera();
-    // The View menu's Controls check. A checkable item flips its own `checked`
-    // before `activated` runs, so it needs a two-way binding to keep following
-    // H and the buttons over the preview; these two handlers are that binding
-    // for the inverse of `overlays-hidden`.
-    out property <bool> controls-shown: !root.overlays-hidden;
-    changed overlays-hidden => { root.controls-shown = !root.overlays-hidden; }
-    changed controls-shown => { root.overlays-hidden = !root.controls-shown; }
 
     // "Start on login". The platform's autostart entry is the setting, so Rust
     // reads it and writes these; a toggle asks Rust to write the entry and
@@ -481,20 +474,20 @@ export component MainWindow inherits Window {
                 activated => { root.reset-camera(); }
             }
             MenuSeparator {}
+            // Nothing in the menu may read a property that changes: Slint
+            // 1.18 rebuilds the whole native menu on any such change, and on
+            // Windows the rebuild flashes the preview white.
             MenuItem {
-                title: "Controls";
-                checkable: true;
-                checked <=> root.controls-shown;
+                title: "Toggle Controls";
+                activated => { root.overlays-hidden = !root.overlays-hidden; }
             }
             MenuItem {
-                title: "Frame Guides";
-                checkable: true;
-                checked <=> root.guides-shown;
+                title: "Toggle Frame Guides";
+                activated => { root.guides-shown = !root.guides-shown; }
             }
             MenuItem {
-                title: "Pin Time Bar";
-                checkable: true;
-                checked <=> root.time-bar-pinned;
+                title: "Toggle Time Bar Pin";
+                activated => { root.time-bar-pinned = !root.time-bar-pinned; }
             }
         }
         Menu {

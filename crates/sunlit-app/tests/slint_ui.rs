@@ -1888,6 +1888,15 @@ fn wired_window() -> (
     MainWindow,
     crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
 ) {
+    let (window, sent, _link) = wired_window_and_link();
+    (window, sent)
+}
+
+fn wired_window_and_link() -> (
+    MainWindow,
+    crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+    sunlit_earth::engine_client::EngineLink,
+) {
     let window = create_window();
     window.set_advanced_open(true);
     window.set_time_zone_utc(true);
@@ -1907,7 +1916,7 @@ fn wired_window() -> (
     ui_callbacks::register_action_callbacks(&window, &link, &screens);
     sunlit_earth::time_bar::register(&window, &link);
     release_every_modifier(&window);
-    (window, sent)
+    (window, sent, link)
 }
 
 /// The camera the window's scene is drawn with at the instant it names.
@@ -5181,7 +5190,7 @@ fn test_every_hint_names_the_keys_of_its_control() {
         .iter()
         .map(|(id, _)| *id)
         .chain(HINTS_WITHOUT_KEYS)
-        .chain(["help"])
+        .chain(["help", "full-screen", "exit-full-screen"])
         .collect();
     for id in &used {
         assert!(
@@ -5238,6 +5247,15 @@ fn test_every_hint_names_the_keys_of_its_control() {
             vec!["F1", "Ctrl", "?"]
         };
         assert_eq!(keys_of("help"), help, "the help hint (macOS: {macos})");
+        let full_screen = if macos {
+            vec!["⌃", "⌘", "F"]
+        } else {
+            vec!["F11"]
+        };
+        assert_eq!(keys_of("full-screen"), full_screen, "macOS: {macos}");
+        let mut exit = vec!["Esc"];
+        exit.extend(&full_screen);
+        assert_eq!(keys_of("exit-full-screen"), exit, "macOS: {macos}");
         for id in ["skip-back", "skip-forward"] {
             let body = hints.invoke_content(id.into()).body;
             assert!(
@@ -5367,7 +5385,7 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
                 .find_all();
             assert_eq!(
                 texts.len(),
-                21,
+                22,
                 "{what}: the sheet lists every gesture and key"
             );
             for text in &texts {
@@ -6861,4 +6879,859 @@ fn test_the_tray_says_quit() {
     for source in [TRAY, MAIN] {
         assert!(!source.contains("title: \"Exit\""));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Full screen
+// ---------------------------------------------------------------------------
+
+/// A wired window that also sends the preview's size the way the app does,
+/// at the tier that caps no width. The timer is the size poll's.
+fn full_screen_window() -> (
+    MainWindow,
+    crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+    slint::Timer,
+) {
+    full_screen_window_at(sunlit_core::config::QualityTier::High)
+}
+
+fn full_screen_window_at(
+    quality: sunlit_core::config::QualityTier,
+) -> (
+    MainWindow,
+    crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
+    slint::Timer,
+) {
+    let (window, sent, link) = wired_window_and_link();
+    let poll = sunlit_earth::viewport::wire(&window, &link, quality);
+    (window, sent, poll)
+}
+
+/// How long a switch takes with nothing reporting frames, from the toggle to
+/// the window settled at its new size: the fixed wait for the black frame,
+/// and the bound on the wait for the new size, which the testing backend
+/// never gives the window.
+const SWITCH_SETTLES: u64 = 100 + 500 + 32;
+
+/// Hand the window a frame of `width` by `height`, as the engine's frames
+/// arrive.
+fn deliver_frame(window: &MainWindow, width: i32, height: i32) {
+    window.set_frame_width(width);
+    window.set_frame_height(height);
+    window.set_frame_short_edge(f32::from(
+        u16::try_from(width.min(height)).expect("a frame size"),
+    ));
+}
+
+/// Let a switch settle and the frame it waits for arrive, and the cover fade.
+fn finish_switch(window: &MainWindow) {
+    let_pass(SWITCH_SETTLES);
+    let (width, height) = (
+        window.get_awaited_frame_width(),
+        window.get_awaited_frame_height(),
+    );
+    assert!(width > 0 && height > 0, "a size went to the engine");
+    deliver_frame(window, width, height);
+    let_pass(250);
+    assert!(!window.get_switch_cover() && !window.get_switch_cover_fading());
+}
+
+/// Enter full screen as the camera panel's button or a key does, and let the
+/// window settle and its first frame arrive.
+fn enter_full_screen(window: &MainWindow) {
+    window.invoke_toggle_full_screen();
+    finish_switch(window);
+    assert!(window.window().is_fullscreen());
+}
+
+fn leave_full_screen(window: &MainWindow) {
+    window.invoke_leave_full_screen();
+    finish_switch(window);
+    assert!(!window.window().is_fullscreen());
+}
+
+/// Move the pointer over the bare preview, to a point it was not at before.
+fn wiggle(window: &MainWindow) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a few pixels of offset from the mocked clock"
+    )]
+    let offset = (i_slint_backend_testing::get_mocked_time() % 97) as f32;
+    window
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(300.0 + offset, 2000.0),
+        });
+}
+
+fn press_the(window: &MainWindow, id: &str) {
+    press_at(window, point_in(&the_element(window, id), 0.5, 0.5));
+}
+
+/// Full screen hides the sidebar, the splitter and the drawn menu bar and
+/// gives the preview the whole window; leaving puts all of it back.
+#[test]
+fn test_full_screen_gives_the_preview_the_whole_window() {
+    let shown =
+        |window: &MainWindow, id: &str| ElementHandle::find_by_element_id(window, id).count();
+    let (window, _sent, _poll) = full_screen_window();
+    let width = window.window().size().to_logical(1.0).width;
+    let before = edges(&the_element(&window, "MainWindow::image-container"));
+    assert!(before[0] > 0.0, "the sidebar is left of the preview");
+    for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
+        assert_eq!(shown(&window, id), 1, "{id} in the window");
+    }
+
+    enter_full_screen(&window);
+    let [left, top, right, _] = edges(&the_element(&window, "MainWindow::image-container"));
+    approx::assert_relative_eq!(left, 0.0);
+    approx::assert_relative_eq!(top, 0.0);
+    approx::assert_relative_eq!(right, width);
+    approx::assert_relative_eq!(window.get_viewport_width(), width);
+    for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
+        assert_eq!(shown(&window, id), 0, "{id} in full screen");
+    }
+
+    leave_full_screen(&window);
+    let after = edges(&the_element(&window, "MainWindow::image-container"));
+    for (after, before) in after.into_iter().zip(before) {
+        approx::assert_relative_eq!(after, before);
+    }
+    for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
+        assert_eq!(shown(&window, id), 1, "{id} back in the window");
+    }
+}
+
+/// In full screen the controls, the frame guides and the cursor go after 3 s
+/// without activity, and a pointer move or a key brings them back at once. In
+/// the window they never go.
+#[test]
+fn test_the_controls_idle_out_in_full_screen_only() {
+    let (window, _sent, _poll) = full_screen_window();
+    let cursor_hidden = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&cursor_hidden);
+    window.on_cursor_hidden_changed(move |hidden, _, _| seen.borrow_mut().push(hidden));
+    window.set_guides_shown(true);
+
+    wiggle(&window);
+    let_pass(5000);
+    assert!(!window.get_full_screen_idle() && !window.get_idle_hidden());
+    assert!(window.get_guides_visible());
+
+    enter_full_screen(&window);
+    wiggle(&window);
+    let_pass(2800);
+    assert!(!window.get_idle_hidden(), "not before 3 s");
+    let_pass(300);
+    assert!(window.get_idle_hidden(), "the controls fade at 3 s");
+    let_pass(500);
+    assert!(window.get_idle_gone(), "and are gone once faded");
+    assert!(!window.get_guides_visible(), "the guides go with them");
+    assert_eq!(cursor_hidden.borrow().last(), Some(&true));
+
+    wiggle(&window);
+    assert!(
+        !window.get_idle_hidden() && !window.get_idle_gone(),
+        "a move brings them back"
+    );
+    assert!(window.get_guides_visible());
+    assert_eq!(cursor_hidden.borrow().last(), Some(&false));
+
+    let_pass(3500);
+    assert!(window.get_idle_gone());
+    tap(&window, "x");
+    assert!(!window.get_idle_hidden(), "so does a key");
+
+    let_pass(3500);
+    assert!(window.get_idle_gone());
+    leave_full_screen(&window);
+    assert!(
+        !window.get_full_screen_idle() && !window.get_idle_gone(),
+        "leaving clears it"
+    );
+    assert_eq!(cursor_hidden.borrow().last(), Some(&false));
+}
+
+/// Whatever is in use keeps the controls up: the pointer on a control, a
+/// control or a drag held, the speeds or a picker open, the shortcut sheet
+/// and the version notice.
+#[test]
+fn test_what_is_in_use_keeps_the_controls_up() {
+    let (window, _sent, _poll) = full_screen_window();
+    enter_full_screen(&window);
+    let still_up = |window: &MainWindow, what: &str| {
+        let_pass(4000);
+        assert!(
+            !window.get_full_screen_idle(),
+            "{what} keeps the controls up"
+        );
+    };
+    let move_to = |window: &MainWindow, position: slint::LogicalPosition| {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+    };
+    let over = |window: &MainWindow, id: &str| point_in(&the_element(window, id), 0.5, 0.5);
+    let globe = slint::LogicalPosition::new(300.0, 2000.0);
+
+    move_to(&window, over(&window, "MainWindow::camera-panel"));
+    still_up(&window, "the pointer on the camera panel");
+
+    move_to(&window, over(&window, "MainWindow::time-bar"));
+    still_up(&window, "the pointer on the time bar");
+
+    move_to(&window, over(&window, "MainWindow::exit-pill"));
+    still_up(&window, "the pointer on the exit pill");
+
+    let stick = over(&window, "CameraPanel::look");
+    hold_at(&window, stick);
+    move_to(&window, globe);
+    still_up(&window, "a camera panel control held");
+    release_at(&window, globe);
+
+    hold_at(&window, globe);
+    still_up(&window, "a drag on the globe");
+    release_at(&window, globe);
+
+    window.set_overlays_hidden(true);
+    move_to(&window, over(&window, "MainWindow::show-button"));
+    still_up(&window, "the pointer on the corner button");
+    window.set_overlays_hidden(false);
+
+    window.set_time_bar_pinned(true);
+    press_at(&window, over(&window, "TimeBar::speed-readout"));
+    assert_eq!(
+        ElementHandle::find_by_element_id(&window, "TimeBar::rates-list").count(),
+        1,
+        "the speeds open"
+    );
+    // The bar closes the speeds 700 ms after the pointer leaves it, so they
+    // are only ever open for long under the pointer.
+    move_to(&window, over(&window, "TimeBar::rates-list"));
+    still_up(&window, "the speeds open");
+    tap(&window, slint::platform::Key::Escape);
+    move_to(&window, globe);
+    let_pass(4000);
+    assert!(
+        window.get_full_screen_idle(),
+        "Esc on the speeds under the pointer leaves nothing in use"
+    );
+
+    press_at(&window, point_in(&the_labeled(&window, "Date"), 0.5, 0.5));
+    assert_eq!(all_of(&window, "Dialog").len(), 1, "the date picker opens");
+    move_to(&window, globe);
+    still_up(&window, "a picker open");
+    tap(&window, slint::platform::Key::Escape);
+    let_pass(16);
+    assert!(all_of(&window, "Dialog").is_empty());
+    window.set_time_bar_pinned(false);
+
+    window.set_shortcut_sheet_open(true);
+    still_up(&window, "the shortcut sheet");
+    window.set_shortcut_sheet_open(false);
+
+    window.set_version_notice_open(true);
+    still_up(&window, "the version notice");
+    window.set_version_notice_open(false);
+
+    let_pass(4000);
+    assert!(window.get_idle_gone(), "with nothing in use they go");
+}
+
+/// With the time bar pinned nothing hides in full screen, but the cursor
+/// still does. The camera panel and the short exit pill take their idle look
+/// as in the window.
+#[test]
+fn test_a_pinned_time_bar_keeps_the_controls_and_not_the_cursor() {
+    let (window, _sent, _poll) = full_screen_window();
+    let idle_opacity = window
+        .global::<sunlit_earth::OverlayStyle>()
+        .get_idle_opacity();
+    window.set_time_bar_pinned(true);
+    enter_full_screen(&window);
+    wiggle(&window);
+    let_pass(4000);
+    assert!(window.get_full_screen_idle(), "the cursor hides");
+    assert!(
+        !window.get_idle_hidden() && !window.get_idle_gone(),
+        "the controls stay"
+    );
+    assert!(window.get_exit_pill_shown(), "and so does the pill");
+
+    let_pass(7000);
+    assert!(!window.get_exit_pill_long() && window.get_exit_pill_shown());
+    approx::assert_relative_eq!(
+        the_element(&window, "MainWindow::exit-pill").computed_opacity(),
+        idle_opacity,
+        epsilon = 1e-3
+    );
+    approx::assert_relative_eq!(
+        the_element(&window, "MainWindow::camera-panel").computed_opacity(),
+        1.0,
+        epsilon = 1e-3
+    );
+    approx::assert_relative_eq!(
+        the_element(&window, "CameraPanel::footer").computed_opacity(),
+        idle_opacity,
+        epsilon = 1e-3
+    );
+}
+
+/// The long pill stays its 10 s although the controls have idled out at 3 s,
+/// and then fades out as they did.
+#[test]
+fn test_the_long_exit_pill_outlasts_the_idle_controls() {
+    let (window, _sent, _poll) = full_screen_window();
+    enter_full_screen(&window);
+    assert!(window.get_exit_pill_long() && window.get_exit_pill_shown());
+    let_pass(9000);
+    assert!(window.get_idle_gone());
+    assert!(
+        window.get_exit_pill_long() && window.get_exit_pill_shown(),
+        "still there at 9 s"
+    );
+    // Read every frame, as drawing would, since an animation runs from the
+    // first read after its value changed.
+    let pill = the_element(&window, "MainWindow::exit-pill");
+    let_pass(800);
+    let frames: Vec<(bool, f32)> = (0..40)
+        .map(|_| {
+            let_pass(32);
+            (window.get_exit_pill_shown(), pill.computed_opacity())
+        })
+        .collect();
+    assert!(!window.get_exit_pill_long());
+    assert!(
+        frames
+            .iter()
+            .any(|&(shown, opacity)| shown && 0.0 < opacity && opacity < 1.0),
+        "the pill fades out rather than vanishing: {frames:?}"
+    );
+    assert!(!window.get_exit_pill_shown(), "gone once faded");
+    wiggle(&window);
+    assert!(
+        window.get_exit_pill_shown(),
+        "the short form comes back with them"
+    );
+}
+
+/// The app's own wiring answers the cursor's change with a move to where the
+/// pointer already is, and that move is no activity: the window stays idle.
+#[test]
+fn test_the_cursor_refresh_does_not_wake_the_controls() {
+    let (window, _sent, _poll) = full_screen_window();
+    sunlit_earth::full_screen::wire(&window);
+    enter_full_screen(&window);
+    wiggle(&window);
+    let_pass(3200);
+    assert!(window.get_full_screen_idle(), "idle at 3 s");
+    let_pass(1000);
+    assert!(
+        window.get_full_screen_idle() && window.get_idle_gone(),
+        "still idle after the refresh"
+    );
+    wiggle(&window);
+    assert!(!window.get_full_screen_idle(), "a real move wakes them");
+}
+
+/// The geometry is asked for while the window is still windowed, so what is
+/// saved is the window's and not the monitor's.
+#[test]
+fn test_entering_full_screen_asks_for_the_geometry_while_windowed() {
+    let (window, _sent, _poll) = full_screen_window();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let record = Rc::clone(&seen);
+    let window_weak = window.as_weak();
+    window.on_full_screen_entering(move || {
+        let win = window_weak.upgrade().expect("the window");
+        record.borrow_mut().push(win.window().is_fullscreen());
+    });
+    enter_full_screen(&window);
+    leave_full_screen(&window);
+    tap(&window, slint::platform::Key::F11);
+    finish_switch(&window);
+    assert!(window.window().is_fullscreen());
+    tap(&window, slint::platform::Key::F11);
+    finish_switch(&window);
+    assert!(!window.window().is_fullscreen());
+    assert_eq!(*seen.borrow(), [false, false], "once per entry, windowed");
+}
+
+/// The pill starts long however full screen was entered, F11 and the button
+/// alike, a click on either form leaves, and the next entry starts long again.
+#[test]
+fn test_the_exit_pill_starts_long_on_every_entry_and_leaves_on_a_click() {
+    let (window, _sent, _poll) = full_screen_window();
+    assert!(!window.get_exit_pill_shown(), "no pill in the window");
+
+    tap(&window, slint::platform::Key::F11);
+    finish_switch(&window);
+    assert!(window.window().is_fullscreen(), "F11 enters");
+    assert!(window.get_exit_pill_long(), "long after F11");
+    press_the(&window, "MainWindow::exit-pill");
+    finish_switch(&window);
+    assert!(
+        !window.window().is_fullscreen(),
+        "a click on the long form leaves"
+    );
+
+    press_the(&window, "CameraPanel::full-screen-button");
+    finish_switch(&window);
+    assert!(window.window().is_fullscreen(), "the button enters");
+    assert!(window.get_exit_pill_long(), "long after the button");
+    let_pass(10_100);
+    wiggle(&window);
+    assert!(
+        window.get_exit_pill_shown() && !window.get_exit_pill_long(),
+        "short after 10 s"
+    );
+    press_the(&window, "MainWindow::exit-pill");
+    finish_switch(&window);
+    assert!(
+        !window.window().is_fullscreen(),
+        "a click on the short form leaves"
+    );
+
+    press_the(&window, "CameraPanel::full-screen-button");
+    finish_switch(&window);
+    assert!(window.get_exit_pill_long(), "long again on the next entry");
+    press_the(&window, "CameraPanel::full-screen-button");
+    finish_switch(&window);
+    assert!(!window.window().is_fullscreen(), "the button leaves again");
+}
+
+/// Escape closes what is open over the preview first and leaves full screen
+/// only once nothing is.
+#[test]
+fn test_escape_closes_the_sheet_before_it_leaves_full_screen() {
+    use slint::platform::Key;
+
+    let (window, _sent, _poll) = full_screen_window();
+    enter_full_screen(&window);
+    window.set_shortcut_sheet_open(true);
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert!(
+        !window.get_shortcut_sheet_open(),
+        "the first Esc closes the sheet"
+    );
+    assert!(window.window().is_fullscreen(), "and stays in full screen");
+
+    window.set_version_notice_open(true);
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert!(
+        !window.get_version_notice_open(),
+        "Esc closes the version notice"
+    );
+    assert!(window.window().is_fullscreen());
+
+    tap(&window, Key::Escape);
+    finish_switch(&window);
+    assert!(!window.window().is_fullscreen(), "the next Esc leaves");
+    tap(&window, Key::Escape);
+    assert!(!window.get_switch_blank(), "no black in the window");
+    let_pass(SWITCH_SETTLES);
+    assert!(
+        !window.window().is_fullscreen(),
+        "and one in the window does nothing"
+    );
+}
+
+/// Esc with the speeds open closes them and stays in full screen.
+#[test]
+fn test_escape_closes_the_speeds_before_it_leaves_full_screen() {
+    use slint::platform::Key;
+
+    let speeds = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "TimeBar::rates-list").count()
+    };
+    let (window, _sent, _poll) = full_screen_window();
+    enter_full_screen(&window);
+    open_the_bar(&window);
+    press_the(&window, "TimeBar::speed-readout");
+    let_pass(16);
+    assert_eq!(speeds(&window), 1, "the speed opens its menu");
+    tap(&window, Key::Escape);
+    let_pass(16);
+    assert_eq!(speeds(&window), 0, "Esc closes it");
+    assert!(window.window().is_fullscreen(), "and stays in full screen");
+}
+
+/// H in full screen hides everything, idling never brings it back, and the
+/// corner button idles out too and returns on a move.
+#[test]
+fn test_h_in_full_screen_hides_everything_and_idle_keeps_it_hidden() {
+    let (window, _sent, _poll) = full_screen_window();
+    enter_full_screen(&window);
+    tap(&window, "h");
+    assert!(window.get_overlays_hidden());
+    assert!(
+        !window.get_exit_pill_shown(),
+        "the pill hides with the rest"
+    );
+    let_pass(4000);
+    assert!(window.get_idle_gone(), "the corner button idles out");
+    wiggle(&window);
+    assert!(!window.get_idle_gone(), "and comes back on a move");
+    assert!(window.get_overlays_hidden(), "but nothing else does");
+    assert!(!window.get_exit_pill_shown());
+    tap(&window, "h");
+    assert!(window.get_exit_pill_shown(), "H brings the pill back");
+}
+
+/// The footer holds the aids in its top row and what changes the screen in
+/// its bottom one, inside the panel.
+#[test]
+fn test_the_camera_panel_footer_is_two_rows_of_two() {
+    let (window, _sent, _poll) = full_screen_window();
+    let panel = edges(&the_element(&window, "MainWindow::camera-panel"));
+    let [guides, help, hide, full] = [
+        "CameraPanel::guides-button",
+        "CameraPanel::help-button",
+        "CameraPanel::hide-button",
+        "CameraPanel::full-screen-button",
+    ]
+    .map(|id| edges(&the_element(&window, id)));
+    approx::assert_relative_eq!(guides[1], help[1]);
+    approx::assert_relative_eq!(hide[1], full[1]);
+    assert!(hide[1] >= guides[3], "the second row is below the first");
+    assert!(guides[2] <= help[0] && hide[2] <= full[0], "left to right");
+    approx::assert_relative_eq!(guides[0], hide[0]);
+    for button in [guides, help, hide, full] {
+        assert!(
+            button[0] >= panel[0] && button[2] <= panel[2] && button[3] <= panel[3],
+            "inside the panel"
+        );
+    }
+}
+
+/// Esc with the date picker open closes the picker and stays in full screen.
+#[test]
+fn test_escape_closes_a_picker_before_it_leaves_full_screen() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.set_time_bar_pinned(true);
+    enter_full_screen(&window);
+    press_at(&window, point_in(&the_labeled(&window, "Date"), 0.5, 0.5));
+    assert_eq!(all_of(&window, "Dialog").len(), 1, "the date picker opens");
+    tap(&window, slint::platform::Key::Escape);
+    let_pass(16);
+    assert!(all_of(&window, "Dialog").is_empty(), "Esc closes it");
+    assert!(window.window().is_fullscreen(), "and stays in full screen");
+}
+
+fn notices(window: &MainWindow) -> usize {
+    ElementHandle::find_by_element_id(window, "MainWindow::switch-notice").count()
+}
+
+/// A toggle puts black over the whole window first and changes nothing else
+/// until that frame is on screen: after the fixed wait, or at once when the
+/// renderer reports it.
+#[test]
+fn test_a_switch_goes_black_before_full_screen_changes() {
+    let (window, _sent, _poll) = full_screen_window();
+    let blank = |window: &MainWindow| {
+        ElementHandle::find_by_element_id(window, "MainWindow::blank").count()
+    };
+    window.invoke_toggle_full_screen();
+    let_pass(48);
+    assert_eq!(blank(&window), 1, "black first");
+    assert_eq!(notices(&window), 0, "with nothing on it");
+    assert!(!window.window().is_fullscreen(), "still windowed");
+    let_pass(80);
+    assert!(window.window().is_fullscreen(), "then the switch");
+    assert_eq!(blank(&window), 1, "under black until the window settles");
+    let_pass(SWITCH_SETTLES);
+    assert_eq!(blank(&window), 0);
+    assert_eq!(notices(&window), 1, "then the notice");
+
+    window.invoke_toggle_full_screen();
+    assert_eq!(blank(&window), 1);
+    window.invoke_blank_presented();
+    let_pass(16);
+    assert!(
+        !window.window().is_fullscreen(),
+        "a reported frame switches without the wait"
+    );
+}
+
+/// On entering, the notice shows until a frame of the size sent last comes
+/// back, capped by the tier as the engine caps it, and the cover then fades.
+/// A frame of another size does not end it, and the idle clock and the long
+/// pill count from when the cover has gone.
+#[test]
+fn test_entering_shows_the_notice_until_the_frame_for_the_size_sent() {
+    let (window, sent, _poll) = full_screen_window_at(sunlit_core::config::QualityTier::Low);
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(2400, 1200));
+    let_pass(500);
+    deliver_frame(&window, 1280, 466);
+    while sent.try_recv().is_ok() {}
+
+    window.invoke_toggle_full_screen();
+    let_pass(SWITCH_SETTLES);
+    assert!(window.window().is_fullscreen());
+    let sizes: Vec<_> = sent
+        .try_iter()
+        .filter_map(|command| match command {
+            sunlit_core::engine::EngineCommand::SetPreviewSize(w, h) => Some((w, h)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sizes, [(2400, 1200)], "the new size went once, at once");
+    assert_eq!(
+        (
+            window.get_awaited_frame_width(),
+            window.get_awaited_frame_height()
+        ),
+        (1280, 640),
+        "and comes back at the tier's width"
+    );
+    assert_eq!(notices(&window), 1);
+    deliver_frame(&window, 2400, 1200);
+    let_pass(5000);
+    assert_eq!(
+        notices(&window),
+        1,
+        "a frame of another size does not end it"
+    );
+    assert!(
+        !window.get_full_screen_idle() && window.get_exit_pill_long(),
+        "nothing counts while it shows"
+    );
+
+    tap(&window, "x");
+    deliver_frame(&window, 1280, 640);
+    let_pass(16);
+    assert!(
+        window.get_switch_cover_fading(),
+        "the frame for the size ends it"
+    );
+    let_pass(250);
+    assert_eq!(notices(&window), 0, "and the cover fades away");
+    let_pass(2600);
+    assert!(!window.get_full_screen_idle(), "3 s from the cover's going");
+    let_pass(600);
+    assert!(window.get_full_screen_idle());
+    let_pass(6000);
+    assert!(window.get_exit_pill_long(), "and the pill's 10 s too");
+    let_pass(1000);
+    assert!(!window.get_exit_pill_long());
+}
+
+/// Esc leaves while the notice shows, as the key and the pill do.
+#[test]
+fn test_escape_leaves_while_the_notice_shows() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.invoke_toggle_full_screen();
+    let_pass(SWITCH_SETTLES);
+    assert_eq!(notices(&window), 1);
+    tap(&window, slint::platform::Key::Escape);
+    finish_switch(&window);
+    assert!(!window.window().is_fullscreen());
+    assert_eq!(notices(&window), 0);
+}
+
+/// On leaving there is no notice, and the last full screen frame shows with
+/// its short edge on the preview's until the windowed frame comes.
+#[test]
+fn test_leaving_shows_the_old_frame_by_its_short_edge() {
+    let (window, _sent, _poll) = full_screen_window();
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1000, 900));
+    let_pass(500);
+    enter_full_screen(&window);
+    deliver_frame(&window, 1000, 900);
+
+    window.invoke_leave_full_screen();
+    let_pass(SWITCH_SETTLES);
+    assert!(!window.window().is_fullscreen());
+    assert_eq!(notices(&window), 0, "no notice on leaving");
+    assert!(window.get_old_frame_shown());
+    let short_side = window
+        .get_viewport_width()
+        .min(window.get_viewport_height());
+    let [left, top, right, bottom] = edges(&the_element(&window, "MainWindow::preview-image"));
+    let [inner_left, inner_top, inner_right, inner_bottom] =
+        edges(&the_element(&window, "MainWindow::image-container"));
+    approx::assert_relative_eq!((right - left).min(bottom - top), short_side, epsilon = 0.5);
+    approx::assert_relative_eq!(left + right, inner_left + inner_right, epsilon = 0.5);
+    approx::assert_relative_eq!(top + bottom, inner_top + inner_bottom, epsilon = 0.5);
+    approx::assert_relative_eq!(window.get_displayed_short_edge(), short_side, epsilon = 0.5);
+
+    deliver_frame(
+        &window,
+        window.get_awaited_frame_width(),
+        window.get_awaited_frame_height(),
+    );
+    let_pass(16);
+    assert!(!window.get_old_frame_shown());
+    let image = edges(&the_element(&window, "MainWindow::preview-image"));
+    let inner = edges(&the_element(&window, "MainWindow::image-container"));
+    for (image, inner) in image.into_iter().zip(inner) {
+        approx::assert_relative_eq!(image, inner, epsilon = 0.5);
+    }
+}
+
+/// An entry by the system, macOS's green button, cannot be blacked out
+/// beforehand: the cover and the notice start when it comes, and the size
+/// goes at once.
+#[test]
+fn test_an_entry_by_the_system_starts_with_the_notice() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.window().set_fullscreen(true);
+    let_pass(16);
+    assert!(!window.get_switch_blank());
+    assert_eq!(notices(&window), 1);
+    assert!(
+        window.get_awaited_frame_width() > 0,
+        "the size went at once"
+    );
+
+    finish_switch(&window);
+    window.window().set_fullscreen(false);
+    finish_switch(&window);
+    window.invoke_toggle_full_screen();
+    assert!(window.get_switch_blank());
+    window.window().set_fullscreen(true);
+    let_pass(16);
+    assert!(
+        !window.get_switch_blank() && window.get_switch_cover(),
+        "one that comes during a switch takes it over"
+    );
+}
+
+/// The blank waits for the window's new size only as long as the window has
+/// none: a resize after the flip ends it at once and sends the size.
+#[test]
+fn test_a_resize_after_the_switch_ends_the_blank_at_once() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.invoke_toggle_full_screen();
+    let_pass(128);
+    assert!(window.window().is_fullscreen() && window.get_switch_blank());
+    assert_eq!(window.get_awaited_frame_width(), 0);
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(1920, 1080));
+    let_pass(32);
+    assert!(!window.get_switch_blank(), "well before the 500 ms bound");
+    assert!(window.get_awaited_frame_width() > 0, "and the size went");
+    assert_eq!(notices(&window), 1);
+}
+
+/// The size poll reads nothing while the blank is up, however long the
+/// window takes to get its new size, so the size in between never goes and
+/// the cover cannot end on a frame of it.
+#[test]
+fn test_the_size_poll_waits_for_the_blank_to_lift() {
+    let (window, sent, _poll) = full_screen_window();
+    let_pass(500);
+    while sent.try_recv().is_ok() {}
+    let sizes = |sent: &crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>| {
+        sent.try_iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    sunlit_core::engine::EngineCommand::SetPreviewSize(..)
+                )
+            })
+            .count()
+    };
+
+    window.invoke_toggle_full_screen();
+    let_pass(128);
+    assert!(window.window().is_fullscreen() && window.get_switch_blank());
+    let_pass(448);
+    assert!(window.get_switch_blank(), "the window has no new size yet");
+    assert_eq!(sizes(&sent), 0, "no size went during the blank");
+    assert_eq!(window.get_awaited_frame_width(), 0);
+
+    let_pass(64);
+    assert!(!window.get_switch_blank());
+    assert_eq!(sizes(&sent), 1, "the size goes when the blank lifts");
+    assert!(window.get_awaited_frame_width() > 0);
+}
+
+/// A second toggle before the black frame is on screen takes the first back:
+/// the window stays as it was and the blank goes with the wait.
+#[test]
+fn test_two_toggles_within_the_wait_leave_the_window_as_it_was() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.invoke_toggle_full_screen();
+    let_pass(32);
+    window.invoke_toggle_full_screen();
+    let_pass(112);
+    assert!(!window.window().is_fullscreen());
+    assert!(!window.get_switch_blank(), "no blank once the wait has run");
+    let_pass(SWITCH_SETTLES);
+    assert!(!window.window().is_fullscreen());
+    assert!(!window.get_old_frame_shown() && !window.get_switch_cover());
+    assert_eq!(notices(&window), 0);
+}
+
+/// Should no size go with a switch, the window asks for one every second
+/// until one has gone.
+#[test]
+fn test_a_switch_asks_for_the_size_again_until_one_goes() {
+    let (window, _sent) = wired_window();
+    let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = std::rc::Rc::clone(&asked);
+    window.on_viewport_jumped(move || counter.set(counter.get() + 1));
+    window.invoke_toggle_full_screen();
+    let_pass(SWITCH_SETTLES);
+    let at_settle = asked.get();
+    assert!(at_settle >= 1, "when the blank lifts");
+    let_pass(1000);
+    assert_eq!(asked.get(), at_settle + 1, "and after a second without one");
+    window.invoke_frame_awaited(1920, 1080);
+    let_pass(3000);
+    assert_eq!(asked.get(), at_settle + 1, "but not once one has gone");
+    assert_eq!(notices(&window), 1);
+}
+
+/// A hide before the black frame is on screen drops the switch, so the window
+/// does not turn full screen while hidden and show again that way.
+#[test]
+fn test_a_hide_during_the_wait_drops_the_switch() {
+    let (window, _sent, _poll) = full_screen_window();
+    window.invoke_toggle_full_screen();
+    let_pass(48);
+    sunlit_earth::full_screen::leave(&window);
+    assert!(!window.get_switch_blank());
+    let_pass(SWITCH_SETTLES);
+    assert!(!window.window().is_fullscreen());
+    assert!(!window.get_switch_cover() && !window.get_old_frame_shown());
+
+    enter_full_screen(&window);
+    window.invoke_toggle_full_screen();
+    let_pass(48);
+    sunlit_earth::full_screen::leave(&window);
+    let_pass(SWITCH_SETTLES);
+    assert!(!window.window().is_fullscreen(), "and leaving still leaves");
+    assert!(!window.get_switch_blank());
+}
+
+/// When the size sent after a change by the system is the one the engine
+/// already draws, the awaited size goes to zero and back to the frame shown
+/// in one pass, and the cover still ends at once.
+#[test]
+fn test_a_system_entry_at_the_size_drawn_already_ends_the_cover() {
+    let (window, _sent) = wired_window();
+    deliver_frame(&window, 1280, 720);
+    window.invoke_frame_awaited(1280, 720);
+    let_pass(16);
+    assert!(window.get_frame_current());
+    let window_weak = window.as_weak();
+    window.on_viewport_jumped(move || {
+        if let Some(win) = window_weak.upgrade() {
+            win.invoke_frame_awaited(1280, 720);
+        }
+    });
+    window.window().set_fullscreen(true);
+    let_pass(16);
+    assert!(!window.get_switch_cover(), "the frame shown is the one");
+    let_pass(250);
+    assert_eq!(notices(&window), 0);
 }

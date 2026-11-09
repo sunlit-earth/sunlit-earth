@@ -336,6 +336,8 @@ export component TimeBar inherits Rectangle {
         : root.middle-column + root.middle-width / 2;
     out property <bool> hovered: background-touch.has-hover || root.rates-hovered || self.hovered-hint != "";
     out property <bool> open: root.pinned || root.hover-open || root.track-held || root.rates-open || root.picker-open;
+    // Under the pointer, held, or with the speeds or a picker open.
+    out property <bool> in-use: root.hovered || root.track-held || root.rates-open || root.picker-open;
     // Where each picker stood when it last opened, in the bar's coordinates.
     out property <length> date-picker-x: root.picker-x(root.date-picker-size.width);
     out property <length> date-picker-y: root.picker-y(root.date-picker-size.height);
@@ -354,6 +356,21 @@ export component TimeBar inherits Rectangle {
     callback exact-time(int, int);
     callback tick();
     pure callback date-at(float) -> string;
+
+    // Close the speeds or an open picker, and say whether one was open.
+    public function close-transient() -> bool {
+        if root.rates-open {
+            root.rates-open = false;
+            root.rates-hovered = false;
+            return true;
+        }
+        if date-picker.is-open || time-picker.is-open {
+            date-picker.close();
+            time-picker.close();
+            return true;
+        }
+        return false;
+    }
 
     // What the open bar's parts report, written by them while it is open.
     property <bool> skip-back-hovered;

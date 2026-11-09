@@ -6,6 +6,8 @@ import { ShortcutSheet } from "overlays/shortcut-sheet.slint";
 import { VersionNotice } from "overlays/version-notice.slint";
 import { FrameGuides, FrameGuide } from "overlays/frame-guides.slint";
 import { TimeBar, TimeBarView, RateChoice, SeasonMark } from "overlays/time-bar.slint";
+import { ExitPill } from "overlays/exit-pill.slint";
+import { SwitchNotice } from "overlays/switch-notice.slint";
 import { Links } from "links.slint";
 
 export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
@@ -199,22 +201,29 @@ export component MainWindow inherits Window {
     // How the frame in `rendered-image` was framed: its size in pixels, the
     // short edge the settings are measured on there, and the anchor screen it
     // was framed for, zero for none known. They travel with the frame, so
-    // what follows them follows the frame shown, the old one shown with
-    // `cover` while a resize settles included.
+    // what follows them follows the frame shown, the old one shown scaled
+    // while a resize settles included.
     in property <int> frame-width;
     in property <int> frame-height;
     in property <float> frame-short-edge;
     in property <int> frame-screen-width;
     in property <int> frame-screen-height;
-    // The frame's short edge as `cover` displays it, in logical pixels: what
-    // the frame guides are sized from and what a slow drag is measured on.
-    out property <length> displayed-short-edge: root.frame-width > 0 && root.frame-height > 0
-        ? root.frame-short-edge * 1px * max(image-container.width / (root.frame-width * 1px), image-container.height / (root.frame-height * 1px))
+    // How large one of the frame's pixels is shown: as `cover` would, or,
+    // after leaving full screen until the windowed frame comes, so that the
+    // short edges meet and the Earth stays the size it was.
+    out property <float> frame-scale: root.frame-width <= 0 || root.frame-height <= 0 ? 0
+        : root.old-frame-shown
+        ? min(image-container.width, image-container.height) / (min(root.frame-width, root.frame-height) * 1px)
+        : max(image-container.width / (root.frame-width * 1px), image-container.height / (root.frame-height * 1px));
+    // The frame's short edge as displayed, in logical pixels: what the frame
+    // guides are sized from and what a slow drag is measured on.
+    out property <length> displayed-short-edge: root.frame-scale > 0
+        ? root.frame-short-edge * 1px * root.frame-scale
         : image-container.height;
     // The frame guides, off at every start and never saved: a framing aid
     // rather than a setting.
     in-out property <bool> guides-shown: false;
-    out property <bool> guides-visible: root.guides-shown && !root.overlays-hidden;
+    out property <bool> guides-visible: root.guides-shown && !root.overlays-hidden && !root.idle-gone;
     out property <FrameGuide> guide-screen: frame-guides.screen;
     out property <FrameGuide> guide-wide: frame-guides.wide;
     out property <FrameGuide> guide-classic: frame-guides.classic;
@@ -321,6 +330,288 @@ export component MainWindow inherits Window {
     callback open-data-folder();
     // The camera panel's three resets at once: north up, the look, the frame.
     callback reset-camera();
+
+    // Full screen is the window's own `full-screen`, which the system may
+    // also set, macOS's green button above all. Session state like the frame
+    // guides: never saved, and every start opens windowed.
+    //
+    // In full screen, 3 s without activity and with nothing keeping them up
+    // the controls fade out, the cursor hides, and the exit pill's short form
+    // goes with the controls. With the time bar pinned nothing hides; the
+    // cursor still does. `idle-hidden` is the controls' second reason to be
+    // gone beside `overlays-hidden`, and `idle-gone` follows it once the fade
+    // has run.
+    out property <bool> full-screen-idle;
+    out property <bool> idle-hidden: root.full-screen-idle && !root.time-bar-pinned;
+    out property <bool> idle-gone;
+    // The exit pill's long form, which names the key for the first 10 s of
+    // every entry, and whether the pill shows at all. Once short it fades
+    // out with idle controls, from whichever came later, and `exit-pill-gone`
+    // follows when that fade has run.
+    out property <bool> exit-pill-long;
+    out property <bool> exit-pill-shown: root.full-screen && !root.overlays-hidden && !root.exit-pill-gone;
+    property <bool> exit-pill-gone;
+    property <bool> exit-pill-fading: root.idle-hidden && !root.exit-pill-long;
+    property <duration> exit-pill-short-at;
+    // Before the window's geometry becomes the monitor's, so what is saved
+    // is the window as it was.
+    callback full-screen-entering();
+    // The cursor hides with the idle controls and comes back with them. Slint
+    // asks for the cursor again only on a pointer event, so Rust answers this
+    // with a move to where the pointer already is, in the window's
+    // coordinates.
+    callback cursor-hidden-changed(hidden: bool, x: length, y: length);
+    property <duration> active-at;
+    property <duration> exit-pill-at;
+    property <duration> idle-fade-out: OverlayStyle.idle-fade;
+    property <duration> idle-after: 3s;
+    property <duration> exit-pill-long-for: 10s;
+
+    // The switch goes through black. A toggle first puts `switch-blank` over
+    // the whole window, with nothing on it, and flips `full-screen` only once
+    // that frame is on screen, so what the system stretches to the new size
+    // is black. The blank goes when the window has its new size. Entering
+    // then shows `switch-cover`: black under the controls, with a notice
+    // that the view is rendering and how to leave, until the frame for the
+    // size last sent arrives, and fades. Leaving shows the last full screen
+    // frame scaled by the short edge until the windowed one arrives. A
+    // change by the system, macOS's green button, starts after the blank.
+    //
+    // Rust says the blank frame is on screen through `blank-presented` where
+    // the renderer reports its frames, and sets `switch-wait` to how long to
+    // wait at most there; elsewhere the wait is all there is.
+    in property <duration> switch-wait: 100ms;
+    // The frame size the size sent last comes back as, which Rust gives
+    // `frame-awaited` with every size it sends; zero while a switch waits for
+    // its first.
+    out property <int> awaited-frame-width;
+    out property <int> awaited-frame-height;
+    out property <bool> frame-current: root.awaited-frame-width > 0
+        && root.frame-width == root.awaited-frame-width && root.frame-height == root.awaited-frame-height;
+    out property <bool> switch-blank;
+    out property <bool> switch-cover;
+    out property <bool> switch-cover-fading;
+    out property <bool> old-frame-shown;
+    callback blank-requested();
+    callback viewport-jumped();
+    property <bool> switch-target;
+    property <bool> switch-flipped;
+    property <length> switch-from-width;
+    property <length> switch-from-height;
+    property <bool> known-full-screen;
+    property <duration> switch-settle-at-most: 500ms;
+    property <duration> cover-fade: 180ms;
+    property <bool> switching: root.switch-blank || root.switch-cover || root.switch-cover-fading;
+
+    public function toggle-full-screen() {
+        if root.switch-blank && !root.switch-flipped {
+            root.switch-target = !root.switch-target;
+            return;
+        }
+        root.switch-target = !root.full-screen;
+        root.switch-flipped = false;
+        root.switch-blank = true;
+        root.blank-requested();
+    }
+
+    public function leave-full-screen() {
+        if root.switch-blank && !root.switch-flipped {
+            root.switch-target = false;
+        } else if root.full-screen {
+            root.toggle-full-screen();
+        }
+    }
+
+    // A switch whose black frame is not yet on screen ends there, as when
+    // the window hides before it is.
+    public function cancel-switch() {
+        if root.switch-blank && !root.switch-flipped {
+            root.switch-blank = false;
+        }
+    }
+
+    public function blank-presented() {
+        if !root.switch-blank || root.switch-flipped {
+            return;
+        }
+        if root.switch-target == root.full-screen {
+            root.switch-blank = false;
+            return;
+        }
+        if root.switch-target {
+            root.full-screen-entering();
+        }
+        root.switch-flipped = true;
+        root.switch-from-width = root.width;
+        root.switch-from-height = root.height;
+        root.known-full-screen = root.switch-target;
+        root.switched(root.switch-target);
+        root.full-screen = root.switch-target;
+    }
+
+    function switched(entering: bool) {
+        root.awaited-frame-width = 0;
+        root.awaited-frame-height = 0;
+        root.switch-cover = entering;
+        root.switch-cover-fading = false;
+        root.old-frame-shown = !entering;
+    }
+
+    function switch-settled() {
+        root.switch-flipped = false;
+        root.switch-blank = false;
+        root.viewport-jumped();
+    }
+
+    changed width => {
+        if root.switch-flipped && (root.width != root.switch-from-width || root.height != root.switch-from-height) {
+            root.switch-settled();
+        }
+    }
+    changed height => {
+        if root.switch-flipped && (root.width != root.switch-from-width || root.height != root.switch-from-height) {
+            root.switch-settled();
+        }
+    }
+
+    // Under the blank the preview passes through sizes that are neither the
+    // old one nor the new; once it is gone, every change goes at once until
+    // the frame for it has come.
+    changed viewport-width => {
+        if (root.switch-cover || root.old-frame-shown) && !root.switch-blank {
+            root.viewport-jumped();
+        }
+    }
+    changed viewport-height => {
+        if (root.switch-cover || root.old-frame-shown) && !root.switch-blank {
+            root.viewport-jumped();
+        }
+    }
+
+    // The pair can go to zero and back to the frame shown before the change
+    // is seen, so the frame is checked where it is written as well.
+    public function frame-awaited(width: int, height: int) {
+        root.awaited-frame-width = width;
+        root.awaited-frame-height = height;
+        root.end-cover-on-current-frame();
+    }
+
+    function end-cover-on-current-frame() {
+        if root.frame-current {
+            root.old-frame-shown = false;
+            if root.switch-cover {
+                root.switch-cover = false;
+                root.switch-cover-fading = true;
+            }
+        }
+    }
+
+    changed frame-current => {
+        root.end-cover-on-current-frame();
+    }
+
+    Timer {
+        interval: root.switch-wait;
+        running: root.switch-blank && !root.switch-flipped;
+        triggered => { root.blank-presented(); }
+    }
+
+    Timer {
+        interval: root.switch-settle-at-most;
+        running: root.switch-flipped;
+        triggered => { root.switch-settled(); }
+    }
+
+    // A size goes to the engine without the blank too, but in case none went
+    // at all, the one there is goes after a while.
+    Timer {
+        interval: 1s;
+        running: (root.switch-cover || root.old-frame-shown) && !root.switch-blank && root.awaited-frame-width == 0;
+        triggered => { root.viewport-jumped(); }
+    }
+
+    // The idle clock and the long pill's 10 s count from when the picture
+    // shows.
+    Timer {
+        interval: root.cover-fade;
+        running: root.switch-cover-fading;
+        triggered => {
+            root.switch-cover-fading = false;
+            root.exit-pill-at = animation-tick();
+            root.note-activity();
+        }
+    }
+
+    // Pointer movement over the bare preview, a button, the wheel or a key.
+    public function note-activity() {
+        root.active-at = animation-tick();
+        root.full-screen-idle = false;
+        root.idle-gone = false;
+        root.exit-pill-gone = false;
+    }
+
+    changed full-screen => {
+        if root.full-screen != root.known-full-screen {
+            root.known-full-screen = root.full-screen;
+            root.switch-blank = false;
+            root.switch-flipped = false;
+            root.switched(root.full-screen);
+        }
+        root.exit-pill-long = root.full-screen;
+        root.exit-pill-at = animation-tick();
+        if root.full-screen {
+            preview-keys.focus();
+        }
+        root.note-activity();
+    }
+
+    changed full-screen-idle => {
+        if viewport-touch.has-hover {
+            root.cursor-hidden-changed(
+                root.full-screen-idle,
+                viewport-touch.absolute-position.x + viewport-touch.mouse-x,
+                viewport-touch.absolute-position.y + viewport-touch.mouse-y);
+        }
+    }
+
+    // What keeps the controls up: the pointer over one of them, one held, a
+    // gesture or a key held on the globe, the speeds or a picker open, the
+    // shortcut sheet or the version notice, and a switch until its cover goes.
+    property <bool> controls-busy: !camera-panel.idle || time-bar.in-use
+        || show-button.hovered || exit-pill.hovered
+        || image-container.gesture != "" || image-container.any-key-held || image-container.wheel-turning
+        || root.shortcut-sheet-open || root.version-notice-open
+        || root.switching;
+    changed controls-busy => {
+        if root.controls-busy {
+            root.note-activity();
+        }
+    }
+
+    Timer {
+        interval: 100ms;
+        running: root.full-screen && (!root.full-screen-idle || (root.idle-hidden && !root.idle-gone) || root.exit-pill-long
+            || (root.exit-pill-fading && !root.exit-pill-gone));
+        triggered => {
+            let now = animation-tick();
+            if root.controls-busy {
+                root.active-at = now;
+            }
+            if now - root.active-at >= root.idle-after {
+                root.full-screen-idle = true;
+            }
+            if root.idle-hidden && now - root.active-at >= root.idle-after + root.idle-fade-out {
+                root.idle-gone = true;
+            }
+            if root.exit-pill-long && !root.switching && now - root.exit-pill-at >= root.exit-pill-long-for {
+                root.exit-pill-long = false;
+                root.exit-pill-short-at = now;
+            }
+            if root.exit-pill-fading && now - max(root.active-at + root.idle-after, root.exit-pill-short-at) >= root.idle-fade-out {
+                root.exit-pill-gone = true;
+            }
+        }
+    }
 
     // "Start on login". The platform's autostart entry is the setting, so Rust
     // reads it and writes these; a toggle asks Rust to write the entry and
@@ -436,10 +727,13 @@ export component MainWindow inherits Window {
 
     // Native on Windows and macOS, drawn inside the window on Linux. Commands
     // that have a control in the panel call that control's callback. Only
-    // Quit and Mouse and Keyboard have shortcuts: a menu shortcut works in the
+    // Quit, Enter Full Screen and Mouse and Keyboard have shortcuts, all of
+    // them keys a text field has no use for: a menu shortcut works in the
     // whole window, so the preview's single letter keys would fire from a text
-    // field, and Ctrl + W moves the frame.
+    // field, and Ctrl + W moves the frame. In full screen the bar goes, apart
+    // from macOS's, which is the system's and which the system hides.
     MenuBar {
+        visible: !root.full-screen || Platform.os == OperatingSystemType.macos;
         Menu {
             title: "File";
             MenuItem {
@@ -489,6 +783,14 @@ export component MainWindow inherits Window {
                 title: "Toggle Time Bar Pin";
                 activated => { root.time-bar-pinned = !root.time-bar-pinned; }
             }
+            // macOS has AppKit's own Enter Full Screen in View, with ⌃⌘F. The
+            // shortcut works with the bar hidden too.
+            if Platform.os != OperatingSystemType.macos : MenuSeparator {}
+            if Platform.os != OperatingSystemType.macos : MenuItem {
+                title: "Enter Full Screen";
+                shortcut: @keys(F11);
+                activated => { root.toggle-full-screen(); }
+            }
         }
         Menu {
             title: "Help";
@@ -524,6 +826,7 @@ export component MainWindow inherits Window {
         y: 0;
         width: max(panel.min-width, min(root.panel-width, root.width - root.min-image-width));
         height: root.height;
+        visible: !root.full-screen;
         background: Palette.background.darker(0.2);
 
         VerticalLayout {
@@ -1977,25 +2280,29 @@ export component MainWindow inherits Window {
     splitter := Splitter {
         x: sidebar.width;
         height: 100%;
+        visible: !root.full-screen;
 
         moved(delta) => {
             root.panel-width = max(panel.min-width, min(root.panel-width + delta, root.width - root.min-image-width));
         }
     }
 
-    // Image fills the area right of the splitter
+    // Image fills the area right of the splitter, or the whole window in
+    // full screen.
     image-container := Rectangle {
-        x: splitter.x + splitter.width;
+        x: root.full-screen ? 0 : splitter.x + splitter.width;
         y: 0;
         width: root.width - self.x;
         height: root.height;
         background: black;
         clip: true;
 
-        Image {
+        preview-image := Image {
             source: rendered-image;
-            width: parent.width;
-            height: parent.height;
+            width: root.frame-scale > 0 ? root.frame-width * 1px * root.frame-scale : parent.width;
+            height: root.frame-scale > 0 ? root.frame-height * 1px * root.frame-scale : parent.height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
             image-fit: cover;
         }
 
@@ -2004,6 +2311,8 @@ export component MainWindow inherits Window {
             width: parent.width;
             height: parent.height;
             visible: root.guides-visible;
+            opacity: root.idle-hidden ? 0 : 1;
+            animate opacity { duration: root.idle-hidden ? root.idle-fade-out : 0ms; }
             short-edge: root.displayed-short-edge;
             screen-width: root.frame-screen-width;
             screen-height: root.frame-screen-height;
@@ -2364,9 +2673,36 @@ export component MainWindow inherits Window {
                 activated => { root.shortcut-sheet-open = !root.shortcut-sheet-open; }
             }
 
+            // The topmost transient thing first, and full screen only once
+            // none is open.
             KeyBinding {
                 keys: @keys(Escape);
-                activated => { root.shortcut-sheet-open = false; }
+                activated => {
+                    root.note-activity();
+                    if time-bar.close-transient() {
+                        return;
+                    }
+                    if root.shortcut-sheet-open {
+                        root.shortcut-sheet-open = false;
+                    } else if root.version-notice-open {
+                        root.version-notice-open = false;
+                    } else {
+                        root.leave-full-screen();
+                    }
+                }
+            }
+
+            // ⌃⌘F, in case AppKit's entry does not carry it. Elsewhere F11 is
+            // the View menu's, whose shortcuts run before any key reaches here.
+            KeyBinding {
+                keys: @keys(Meta + Control + F);
+                enabled: Platform.os == OperatingSystemType.macos;
+                activated => { root.toggle-full-screen(); }
+            }
+
+            capture-key-pressed(event) => {
+                root.note-activity();
+                return reject;
             }
 
             key-pressed(event) => {
@@ -2424,8 +2760,20 @@ export component MainWindow inherits Window {
         viewport-touch := TouchArea {
             width: parent.width;
             height: parent.height;
+            mouse-cursor: root.full-screen-idle ? MouseCursor.none : MouseCursor.default;
+
+            // Where the pointer was when it last counted as activity. A
+            // platform may report a move to where the pointer already is,
+            // and that is no activity.
+            property <length> active-x;
+            property <length> active-y;
 
             pointer-event(event) => {
+                if event.kind != PointerEventKind.move || self.mouse-x != self.active-x || self.mouse-y != self.active-y {
+                    self.active-x = self.mouse-x;
+                    self.active-y = self.mouse-y;
+                    root.note-activity();
+                }
                 if event.kind == PointerEventKind.down {
                     preview-keys.focus();
                 }
@@ -2477,6 +2825,7 @@ export component MainWindow inherits Window {
             }
 
             scroll-event(event) => {
+                root.note-activity();
                 root.mouse-scroll(event.delta-y / 1px);
                 image-container.wheel-at = animation-tick();
                 image-container.wheel-turning = true;
@@ -2590,114 +2939,17 @@ export component MainWindow inherits Window {
         }
         property <bool> ease-requested: root.camera-easing;
 
-        camera-panel := CameraPanel {
-            x: parent.width - self.width - 12px;
-            y: 12px;
-            tilt: root.camera-orientation.tilt;
-            zoom <=> root.camera-position.zoom;
-            default-zoom: root.defaults.camera-position.zoom;
-            look-modified: root.camera-orientation.yaw != root.defaults.camera-orientation.yaw
-                || root.camera-orientation.pitch != root.defaults.camera-orientation.pitch;
-            frame-modified: root.framing.offset-x != root.defaults.framing.offset-x
-                || root.framing.offset-y != root.defaults.framing.offset-y;
-            visible: !root.overlays-hidden;
-            lit-orbit: image-container.gesture == "orbit" || image-container.key-gesture == "orbit";
-            lit-roll: image-container.gesture == "roll" || image-container.key-q || image-container.key-e;
-            lit-zoom: image-container.wheel-turning || image-container.key-plus || image-container.key-minus;
-            lit-look: image-container.gesture == "look" || image-container.key-gesture == "look";
-            lit-frame: image-container.gesture == "frame" || image-container.key-gesture == "frame";
-            stick(which, x, y, seconds) => { root.camera-stick(which, x, y, seconds); }
-            orbit-step(right, up) => { root.camera-orbit-step(right, up); }
-            roll(degrees) => { root.camera-roll(degrees); }
-            reset(which) => { root.camera-reset(which); }
-            zoom-step(direction) => { root.camera-zoom-step(direction); }
-            zoom-rate(direction, seconds) => { root.camera-zoom-rate(direction, seconds); }
-            zoom-changed => { root.sliders-changed(); }
-            used(control) => { image-container.teach(control); }
-            show-shortcuts => {
-                root.shortcut-sheet-open = true;
-                preview-keys.focus();
-            }
-            guides-shown: root.guides-shown;
-            toggle-guides => { root.guides-shown = !root.guides-shown; }
-            hide-overlays => { root.overlays-hidden = true; }
-        }
-
-        show-button := OverlayButton {
-            x: parent.width - self.width - 12px;
-            y: 12px;
-            width: 32px;
-            height: 32px;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: OverlayStyle.border;
-            background: self.hovered ? OverlayStyle.faint : OverlayStyle.panel;
-            visible: root.overlays-hidden;
-            icon: @image-url("icons/eye-off.svg");
-            icon-width: 16px;
-            icon-height: 12px;
-            clicked => { root.overlays-hidden = false; }
-        }
-
-        time-bar := TimeBar {
-            x: (parent.width - self.width) / 2;
-            y: parent.height - self.height - 14px;
-            room: parent.width - 24px;
-            preview-left: -self.x;
-            preview-top: -self.y;
-            preview-width: parent.width;
-            visible: !root.overlays-hidden;
-            view: root.time-bar;
-            ladder: root.time-ladder;
-            longest-ladder: root.time-longest-ladder;
-            rates: root.time-rates;
-            seasons: root.time-seasons;
-            month-ticks: root.time-month-ticks;
-            shading: root.time-shading;
-            pinned <=> root.time-bar-pinned;
-            pointer-in: viewport-touch.has-hover || camera-panel.hovered-hint != "" || self.hovered;
-            toggle-play => { root.time-toggle-play(); }
-            rate-picked(rate) => { root.time-rate(rate); }
-            skip(forward, big) => { root.time-skip(forward, big); }
-            kind-picked(date) => { root.time-kind(date); }
-            now => { root.time-now(); }
-            end-excursion => { root.time-end(); }
-            zone => { root.time-zone-toggled(); }
-            track(year, x) => { root.time-track(year, x); }
-            exact-date(year, month, day) => { root.time-exact-date(year, month, day); }
-            exact-time(hour, minute) => { root.time-exact-time(hour, minute); }
-            tick => { root.time-tick(); }
-            date-at(x) => { return root.time-date-at(x); }
-        }
-
-        // A bar wider than the preview fades out where its edges are cut.
-        if time-bar.visible && time-bar.width > image-container.width : Rectangle {
-            y: time-bar.y;
-            height: time-bar.height;
-            opacity: time-bar.opacity;
-
-            bar-fade-left := Rectangle {
-                x: 0;
-                width: 28px;
-                background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0.9) 0%, OverlayStyle.panel.with-alpha(0) 100%);
-            }
-
-            bar-fade-right := Rectangle {
-                x: parent.width - self.width;
-                width: 28px;
-                background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0) 0%, OverlayStyle.panel.with-alpha(0.9) 100%);
-            }
-        }
-
         // The hover hint of whichever overlay control the pointer rests on,
         // after 450 ms: left of the camera panel for its controls, above the
-        // time bar for the bar's.
+        // time bar for the bar's, below the exit pill for its own.
         property <string> hint-id: root.shortcut-sheet-open ? ""
             : root.overlays-hidden ? (show-button.hovered ? "show" : "")
+            : exit-pill.hovered ? "exit-full-screen"
             : camera-panel.any-held ? ""
             : camera-panel.hovered-hint != "" ? camera-panel.hovered-hint
             : time-bar.hovered-hint;
-        property <bool> hint-over-bar: !root.overlays-hidden && camera-panel.hovered-hint == "" && time-bar.hovered-hint != "";
+        property <bool> hint-under-pill: !root.overlays-hidden && exit-pill.hovered;
+        property <bool> hint-over-bar: !root.overlays-hidden && !self.hint-under-pill && camera-panel.hovered-hint == "" && time-bar.hovered-hint != "";
         property <string> shown-hint;
         property <duration> hint-since;
         changed hint-id => {
@@ -2714,15 +2966,167 @@ export component MainWindow inherits Window {
             }
         }
 
-        if image-container.shown-hint != "" : hint := OverlayHint {
-            content: OverlayHints.content(image-container.shown-hint);
-            width: min(250px, image-container.width - 12px);
-            x: image-container.hint-over-bar
-                ? clamp(time-bar.x + time-bar.hovered-x - self.width / 2, 6px, parent.width - self.width - 6px)
-                : max(6px, camera-panel.x - self.width - 12px);
-            y: image-container.hint-over-bar
-                ? max(6px, time-bar.y - self.height - 8px)
-                : clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
+        // Black under the controls from entering full screen until the frame
+        // for the new size has come, which then fades in from under it.
+        switch-cover := Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: black;
+            visible: root.switch-cover || root.switch-cover-fading;
+            opacity: root.switch-cover ? 1 : 0;
+            animate opacity { duration: root.switch-cover ? 0ms : root.cover-fade; }
+
+            if root.switch-cover || root.switch-cover-fading : switch-notice := SwitchNotice {
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
+        // Outside `controls`, since the long form stays while they are gone.
+        // The short form goes with them, and with the time bar pinned it
+        // fades as the camera panel does.
+        exit-pill := ExitPill {
+            x: (parent.width - self.width) / 2;
+            y: 14px;
+            visible: root.exit-pill-shown;
+            long: root.exit-pill-long;
+            opacity: root.exit-pill-long || !root.full-screen-idle ? 1 : root.idle-hidden ? 0 : OverlayStyle.idle-opacity;
+            animate opacity { duration: root.full-screen-idle ? root.idle-fade-out : 0ms; }
+            clicked => { root.leave-full-screen(); }
+        }
+
+        // Everything drawn over the preview that idles out in full screen.
+        controls := Rectangle {
+            width: parent.width;
+            height: parent.height;
+            visible: !root.idle-gone;
+            opacity: root.idle-hidden ? 0 : 1;
+            animate opacity { duration: root.idle-hidden ? root.idle-fade-out : 0ms; }
+
+            camera-panel := CameraPanel {
+                x: parent.width - self.width - 12px;
+                y: 12px;
+                tilt: root.camera-orientation.tilt;
+                zoom <=> root.camera-position.zoom;
+                default-zoom: root.defaults.camera-position.zoom;
+                look-modified: root.camera-orientation.yaw != root.defaults.camera-orientation.yaw
+                    || root.camera-orientation.pitch != root.defaults.camera-orientation.pitch;
+                frame-modified: root.framing.offset-x != root.defaults.framing.offset-x
+                    || root.framing.offset-y != root.defaults.framing.offset-y;
+                visible: !root.overlays-hidden;
+                lit-orbit: image-container.gesture == "orbit" || image-container.key-gesture == "orbit";
+                lit-roll: image-container.gesture == "roll" || image-container.key-q || image-container.key-e;
+                lit-zoom: image-container.wheel-turning || image-container.key-plus || image-container.key-minus;
+                lit-look: image-container.gesture == "look" || image-container.key-gesture == "look";
+                lit-frame: image-container.gesture == "frame" || image-container.key-gesture == "frame";
+                stick(which, x, y, seconds) => { root.camera-stick(which, x, y, seconds); }
+                orbit-step(right, up) => { root.camera-orbit-step(right, up); }
+                roll(degrees) => { root.camera-roll(degrees); }
+                reset(which) => { root.camera-reset(which); }
+                zoom-step(direction) => { root.camera-zoom-step(direction); }
+                zoom-rate(direction, seconds) => { root.camera-zoom-rate(direction, seconds); }
+                zoom-changed => { root.sliders-changed(); }
+                used(control) => { image-container.teach(control); }
+                show-shortcuts => {
+                    root.shortcut-sheet-open = true;
+                    preview-keys.focus();
+                }
+                guides-shown: root.guides-shown;
+                toggle-guides => { root.guides-shown = !root.guides-shown; }
+                hide-overlays => { root.overlays-hidden = true; }
+                full-screen: root.full-screen;
+                toggle-full-screen => { root.toggle-full-screen(); }
+            }
+
+            show-button := OverlayButton {
+                x: parent.width - self.width - 12px;
+                y: 12px;
+                width: 32px;
+                height: 32px;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: OverlayStyle.border;
+                background: self.hovered ? OverlayStyle.faint : OverlayStyle.panel;
+                visible: root.overlays-hidden;
+                icon: @image-url("icons/eye-off.svg");
+                icon-width: 16px;
+                icon-height: 12px;
+                clicked => { root.overlays-hidden = false; }
+            }
+
+            time-bar := TimeBar {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - 14px;
+                room: parent.width - 24px;
+                preview-left: -self.x;
+                preview-top: -self.y;
+                preview-width: parent.width;
+                visible: !root.overlays-hidden;
+                view: root.time-bar;
+                ladder: root.time-ladder;
+                longest-ladder: root.time-longest-ladder;
+                rates: root.time-rates;
+                seasons: root.time-seasons;
+                month-ticks: root.time-month-ticks;
+                shading: root.time-shading;
+                pinned <=> root.time-bar-pinned;
+                pointer-in: viewport-touch.has-hover || camera-panel.hovered-hint != "" || self.hovered;
+                toggle-play => { root.time-toggle-play(); }
+                rate-picked(rate) => { root.time-rate(rate); }
+                skip(forward, big) => { root.time-skip(forward, big); }
+                kind-picked(date) => { root.time-kind(date); }
+                now => { root.time-now(); }
+                end-excursion => { root.time-end(); }
+                zone => { root.time-zone-toggled(); }
+                track(year, x) => { root.time-track(year, x); }
+                exact-date(year, month, day) => { root.time-exact-date(year, month, day); }
+                exact-time(hour, minute) => { root.time-exact-time(hour, minute); }
+                tick => { root.time-tick(); }
+                date-at(x) => { return root.time-date-at(x); }
+            }
+
+            // A bar wider than the preview fades out where its edges are cut.
+            if time-bar.visible && time-bar.width > image-container.width : Rectangle {
+                y: time-bar.y;
+                height: time-bar.height;
+                opacity: time-bar.opacity;
+
+                bar-fade-left := Rectangle {
+                    x: 0;
+                    width: 28px;
+                    background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0.9) 0%, OverlayStyle.panel.with-alpha(0) 100%);
+                }
+
+                bar-fade-right := Rectangle {
+                    x: parent.width - self.width;
+                    width: 28px;
+                    background: @linear-gradient(90deg, OverlayStyle.panel.with-alpha(0) 0%, OverlayStyle.panel.with-alpha(0.9) 100%);
+                }
+            }
+
+            if image-container.shown-hint != "" : hint := OverlayHint {
+                content: OverlayHints.content(image-container.shown-hint);
+                width: min(250px, image-container.width - 12px);
+                x: image-container.hint-over-bar
+                    ? clamp(time-bar.x + time-bar.hovered-x - self.width / 2, 6px, parent.width - self.width - 6px)
+                    : image-container.hint-under-pill
+                    ? clamp(exit-pill.x + (exit-pill.width - self.width) / 2, 6px, parent.width - self.width - 6px)
+                    : max(6px, camera-panel.x - self.width - 12px);
+                y: image-container.hint-over-bar
+                    ? max(6px, time-bar.y - self.height - 8px)
+                    : image-container.hint-under-pill
+                    ? exit-pill.y + exit-pill.height + 8px
+                    : clamp(root.overlays-hidden ? show-button.y : camera-panel.y + camera-panel.hovered-y - self.height / 2, 6px, parent.height - self.height - 6px);
+            }
+
+            // Below the exit pill while both show.
+            if image-container.tip-shown && !root.overlays-hidden : GestureTip {
+                x: (parent.width - self.width) / 2;
+                y: exit-pill.visible ? exit-pill.y + exit-pill.height + 8px : 14px;
+                room: parent.width - 12px;
+                mouse: image-container.tip-mouse;
+                text: image-container.tip-text;
+            }
         }
 
         if root.shortcut-sheet-open : shortcut-sheet := ShortcutSheet {
@@ -2738,14 +3142,6 @@ export component MainWindow inherits Window {
             launched: root.version-notice-launched;
             close => { root.version-notice-open = false; }
             quit => { root.quit-app(); }
-        }
-
-        if image-container.tip-shown && !root.overlays-hidden : GestureTip {
-            x: (parent.width - self.width) / 2;
-            y: 14px;
-            room: parent.width - 12px;
-            mouse: image-container.tip-mouse;
-            text: image-container.tip-text;
         }
 
         if loading-text != "" : Rectangle {
@@ -2764,5 +3160,15 @@ export component MainWindow inherits Window {
                 font-size: 12px;
             }
         }
+    }
+
+    // The switch's first frame: black over the whole window and nothing on
+    // it, since whatever it carries the system stretches to the new size.
+    if root.switch-blank : blank := Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        background: black;
     }
 }

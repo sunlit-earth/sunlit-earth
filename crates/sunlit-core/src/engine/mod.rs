@@ -1383,7 +1383,12 @@ fn join_notes(first: String, second: String) -> String {
 
 /// Clamp a requested preview size to the tier's cap, keeping the aspect ratio
 /// as closely as whole pixels allow, and never below one pixel either way.
-fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32) {
+///
+/// Every preview frame drawn after a [`EngineCommand::SetPreviewSize`] of
+/// `requested` has this size, which is how a client tells the frame for the
+/// size it sent last from one drawn before.
+#[must_use]
+pub fn preview_target_size(requested: (u32, u32), quality: QualityTier) -> (u32, u32) {
     let (mut w, mut h) = requested;
     let max_w = quality.max_preview_width();
     if w > max_w {

@@ -11,7 +11,7 @@ use slint::ComponentHandle;
 use tracing::{debug, error, info, warn};
 
 use sunlit_core::assets::texture_loader;
-use sunlit_core::config::{self, AppConfig, QualityTier};
+use sunlit_core::config::{self, AppConfig};
 use sunlit_core::display;
 use sunlit_core::engine::{self, EngineCommand, EngineHandle};
 use sunlit_core::renderer;
@@ -22,7 +22,7 @@ use crate::displays;
 use crate::engine_client::{self, EngineLink};
 use crate::headless::{run_displays, run_render};
 use crate::logging::init_logging;
-use crate::startup::{effective_texture_resolution, engine_config};
+use crate::startup::{effective_texture_resolution, engine_config, quality_tier};
 use crate::ui_callbacks;
 
 /// The app id a Wayland compositor matches the window to its desktop entry by.
@@ -37,9 +37,6 @@ const APP_ID: &str = "sunlit-earth";
 /// times, before the windowing signal gives up and answers `other`.
 const WINDOW_HANDLE_POLL: Duration = Duration::from_millis(50);
 const WINDOW_HANDLE_ATTEMPTS: u32 = 100;
-
-/// How often the app checks whether the preview viewport changed size.
-const VIEWPORT_POLL: Duration = Duration::from_millis(200);
 
 /// How long the auto-refresh interval must sit still before it is written.
 ///
@@ -332,58 +329,6 @@ fn send_auto_refresh(engine: &EngineLink, window: &MainWindow) {
     });
 }
 
-/// Which viewport sizes reach the engine: a size once two polls in a row have
-/// read it, and only when it is not the one sent last. A size still changing
-/// costs the engine no target rebuild until it rests.
-#[derive(Debug, Default)]
-struct ViewportSettle {
-    previous: Option<(u32, u32)>,
-    sent: Option<(u32, u32)>,
-}
-
-impl ViewportSettle {
-    /// Take one poll's reading and return the size to send, if any.
-    fn observe(&mut self, size: (u32, u32)) -> Option<(u32, u32)> {
-        let settled = self.previous.replace(size) == Some(size);
-        if !settled || size.0 == 0 || size.1 == 0 || self.sent == Some(size) {
-            return None;
-        }
-        self.sent = Some(size);
-        Some(size)
-    }
-}
-
-/// Poll the preview viewport size and tell the engine once a new size has
-/// settled.
-///
-/// Slint has no size-changed callback we can bind from Rust here, and polling
-/// a pair of properties every 200 ms is far cheaper than any alternative. The
-/// engine draws at the size it is sent, capped only by the quality tier, so a
-/// window resize or a splitter drag sends one command after the movement
-/// stops, rather than one per poll while it moves.
-fn start_viewport_timer(window: &MainWindow, link: &EngineLink) -> slint::Timer {
-    let timer = slint::Timer::default();
-    let window_weak = window.as_weak();
-    let engine = link.clone();
-    let settle = std::cell::RefCell::new(ViewportSettle::default());
-    timer.start(slint::TimerMode::Repeated, VIEWPORT_POLL, move || {
-        let Some(win) = window_weak.upgrade() else {
-            return;
-        };
-        let size = {
-            let scale = win.window().scale_factor();
-            (
-                ui_callbacks::slider_u32(win.get_viewport_width() * scale),
-                ui_callbacks::slider_u32(win.get_viewport_height() * scale),
-            )
-        };
-        if let Some((width, height)) = settle.borrow_mut().observe(size) {
-            engine.send(EngineCommand::SetPreviewSize(width, height));
-        }
-    });
-    timer
-}
-
 /// Run the windowed or tray-mode application.
 ///
 /// The order of the steps below is the whole of this function, and every one of
@@ -514,7 +459,7 @@ fn run_app(cli: Cli, config: &AppConfig, instance: Option<Instance>) -> ExitCode
     // clamped on the way in (day-of-year, year index) reaches it too.
     link.push_params(&window);
 
-    let viewport_timer = start_viewport_timer(&window, &link);
+    let viewport_timer = crate::viewport::wire(&window, &link, quality_tier(&cli, config));
     let startup_refresh_timer = start_startup_refresh_timer(&link, first_refresh);
     register_close_handler(&window, &link, use_tray);
 
@@ -639,7 +584,7 @@ fn start_engine(
         let _ = hint_tx.send(EngineCommand::DisplaysChanged);
     }));
 
-    let quality = cli.quality.map_or(config.quality_tier, QualityTier::from);
+    let quality = quality_tier(cli, config);
     let (aa_labels, aa_counts) =
         renderer::build_aa_options(engine.supported_sample_counts(), quality.max_sample_count());
     let link = EngineLink::new(engine.sender(), aa_labels, aa_counts);
@@ -736,6 +681,7 @@ fn register_close_handler(window: &MainWindow, link: &EngineLink, use_tray: bool
         window.window().on_close_requested(move || {
             if let Some(win) = window_weak.upgrade() {
                 crate::menu::save_geometry(&win);
+                crate::full_screen::leave(&win);
             }
             debug!("main window hidden (minimized to tray)");
             sunlit_core::memory::log_memory_usage("after window hidden");
@@ -885,69 +831,6 @@ fn run_event_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::ViewportSettle;
-
-    fn sent(readings: &[(u32, u32)]) -> Vec<(u32, u32)> {
-        let mut settle = ViewportSettle::default();
-        readings
-            .iter()
-            .filter_map(|&size| settle.observe(size))
-            .collect()
-    }
-
-    #[test]
-    fn a_steady_size_is_sent_once() {
-        assert_eq!(sent(&[(800, 600); 6]), [(800, 600)]);
-    }
-
-    #[test]
-    fn a_size_that_changes_on_every_poll_is_never_sent() {
-        let moving: Vec<_> = (0..20).map(|i| (800 + i * 7, 600)).collect();
-        assert_eq!(sent(&moving), []);
-    }
-
-    #[test]
-    fn a_size_that_changes_then_holds_for_one_poll_is_sent_once() {
-        assert_eq!(
-            sent(&[
-                (800, 600),
-                (800, 600),
-                (811, 600),
-                (823, 607),
-                (840, 610),
-                (840, 610),
-                (840, 610),
-            ]),
-            [(800, 600), (840, 610)]
-        );
-    }
-
-    #[test]
-    fn returning_to_the_size_sent_last_sends_nothing() {
-        assert_eq!(
-            sent(&[(800, 600), (800, 600), (900, 600), (800, 600), (800, 600)]),
-            [(800, 600)]
-        );
-    }
-
-    #[test]
-    fn a_zero_size_is_never_sent() {
-        assert_eq!(sent(&[(0, 0); 3]), []);
-        assert_eq!(sent(&[(0, 600); 3]), []);
-        assert_eq!(sent(&[(800, 0); 3]), []);
-        assert_eq!(
-            sent(&[
-                (800, 600),
-                (800, 600),
-                (0, 0),
-                (0, 0),
-                (800, 600),
-                (800, 600)
-            ]),
-            [(800, 600)]
-        );
-    }
-
     #[test]
     fn the_app_id_is_the_desktop_entry_it_is_matched_to() {
         let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -4,6 +4,7 @@ pub mod autostart;
 pub mod camera_controls;
 pub mod displays;
 pub mod engine_client;
+pub mod full_screen;
 pub mod ipc;
 pub mod menu;
 pub mod mouse_math;
@@ -12,6 +13,7 @@ pub mod session_end;
 pub mod time_bar;
 pub mod tray;
 pub mod ui_callbacks;
+pub mod viewport;
 pub mod window_state;
 
 mod app;

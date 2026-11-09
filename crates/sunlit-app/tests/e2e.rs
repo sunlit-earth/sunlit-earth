@@ -28,6 +28,7 @@ use common::process::{
     quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
     wait_with_timeout, wallpaper_supported,
 };
+use common::window_rect::{Key, MainWindow};
 
 #[cfg(target_os = "linux")]
 use common::desktop_linux::assert_the_desktop_holds_the_wallpaper;
@@ -627,6 +628,66 @@ fn test_tray_hide_show_cycle() {
 
     send_ipc_command(&socket_name, "show-window");
     stdout_watcher.wait_for_signal("window_shown", SIGNAL_REPLY);
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+}
+
+/// F11 fills the window's monitor, and Esc gives the window back the
+/// rectangle it had.
+///
+/// The rectangles are the desktop's, read from outside the app, so this is
+/// the platform honoring `full-screen` rather than the property flipping,
+/// which `slint_ui` covers.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_f11_fills_the_monitor_and_escape_restores_the_window() {
+    const CASE: &str = "test_f11_fills_the_monitor_and_escape_restores_the_window";
+    const SETTLE: Duration = Duration::from_secs(10);
+
+    let socket_name = unique_socket_name();
+    let (mut guard, _stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
+    let pid = guard.child_mut().id();
+    let found = {
+        let deadline = Instant::now() + SETTLE;
+        loop {
+            let window = MainWindow::find(pid);
+            if window.is_some() || Instant::now() >= deadline {
+                break window;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let Some((window, (before, monitor))) =
+        found.and_then(|window| window.rects().map(|rects| (window, rects)))
+    else {
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+        skip_case(
+            CASE,
+            "this session cannot read the window's rectangle (Wayland, macOS, or no xdotool)",
+        );
+        return;
+    };
+    assert_ne!(before, monitor, "the window starts windowed");
+    let wait_for = |wanted: [i32; 4], what: &str| {
+        let deadline = Instant::now() + SETTLE;
+        loop {
+            let now = window.rects().map(|(rect, _)| rect);
+            if now == Some(wanted) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: the window is at {now:?}, not {wanted:?}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+
+    window.press(Key::F11).expect("F11");
+    wait_for(monitor, "F11 fills the monitor");
+    window.press(Key::Escape).expect("Escape");
+    wait_for(before, "Esc restores the window");
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }

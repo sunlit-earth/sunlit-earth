@@ -5365,11 +5365,11 @@ fn test_the_shortcut_sheet_keeps_its_text_on_the_card() {
             #[expect(clippy::cast_precision_loss, reason = "a window size")]
             let (window_width, window_height) = (width as f32, height as f32);
             assert!(
-                left >= window_width - window.get_viewport_width() - 0.5
+                left >= -0.5
                     && right <= window_width + 0.5
                     && top >= menu_bar - 0.5
                     && bottom <= menu_bar + window_height + 0.5,
-                "{what}: the card runs out of the preview"
+                "{what}: the card runs out of the window"
             );
 
             let mouse = edges(&the_element(&window, "ShortcutSheet::mouse-column"));

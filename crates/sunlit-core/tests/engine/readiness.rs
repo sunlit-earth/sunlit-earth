@@ -908,6 +908,65 @@ fn a_publish_waiting_for_its_tiles_as_the_engine_stops_goes_out_with_what_is_res
     assert_eq!(sink.publications().len(), 1);
 }
 
+/// An export waiting for its tiles when the engine stops under a hold is
+/// drawn at the held instant, though the clock has moved on since.
+#[test]
+fn an_export_answered_as_the_engine_stops_under_a_hold_keeps_the_held_instant() {
+    let _gpu = gpu();
+    let mut scene = view();
+    scene.time = sunlit_core::scene::scene_time::SceneTime::Live;
+    let rig = rig("engine_ready_stop_held", &scene, |_| {});
+    settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    rig.harness.engine.send(EngineCommand::Hold(true));
+    rig.harness.settle();
+    rig.gate.shut();
+
+    let engine = &rig.harness.engine;
+    let held = std::thread::scope(|scope| {
+        let (done, answer) = crossbeam_channel::bounded(1);
+        scope.spawn(move || {
+            let _ = done.send(engine.export_pixels(SCREEN.0, SCREEN.1));
+        });
+        assert!(
+            answer.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the premise: the export waits for its tiles"
+        );
+        rig.harness.advance(&rig.clock, TILE_WAIT);
+        answer
+            .recv_timeout(TIMEOUT)
+            .expect("an answer")
+            .expect("pixels")
+    });
+
+    rig.harness
+        .advance(&rig.clock, Duration::from_secs(6 * 3600));
+    let (reply, replies) = crossbeam_channel::bounded(1);
+    rig.harness.engine.send(EngineCommand::ExportPixels {
+        width: SCREEN.0,
+        height: SCREEN.1,
+        reply,
+    });
+    rig.harness.settle();
+    assert!(
+        replies.try_recv().is_err(),
+        "the premise: the export waits for its tiles"
+    );
+    let Rig {
+        dir: _dir, harness, ..
+    } = rig;
+    harness.engine.shutdown();
+    let at_exit = replies
+        .try_recv()
+        .expect("an answer at shutdown")
+        .expect("pixels");
+    assert!(
+        at_exit == held,
+        "the export answered at shutdown was drawn at the clock's instant"
+    );
+}
+
 /// A tile that fails its read counts as resident: the textures are ready and
 /// a publish goes out without the clock moving, drawn from the floor there.
 #[test]

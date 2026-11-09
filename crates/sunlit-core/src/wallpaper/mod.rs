@@ -296,19 +296,16 @@ pub(crate) fn begin_publication() -> Result<Publication, String> {
 impl Publication {
     /// Encode one RGBA8 image into this generation and answer with its path.
     ///
-    /// Written atomically: the PNG is encoded into a temporary file in the same
-    /// directory and then renamed onto its final name, so a reader watching the
-    /// destination sees the whole file or no file, never a truncated one. The
-    /// temporary name carries the process id and a counter, the discipline
-    /// the tile packs use for the same reason, and it is
-    /// removed if the encode fails. The destination is a name no publish has used
-    /// before, so the rename creates it rather than replacing a file some shell
-    /// may hold open.
+    /// Written atomically by [`crate::image_file::write_image`], so a reader
+    /// watching the destination sees the whole file or no file, never a
+    /// truncated one. The destination is a name no publish has used before, so
+    /// the rename creates it rather than replacing a file some shell may hold
+    /// open.
     ///
-    /// Fast compression (`CompressionType::Fast`), because the user waits for
-    /// the "Set as Wallpaper" operation to complete and a larger file is the
-    /// cheaper half of that trade. Windows preserves PNG wallpapers losslessly
-    /// (no JPEG transcode).
+    /// The fastest compression, because the user waits for the "Set as
+    /// Wallpaper" operation to complete and a larger file is the cheaper half
+    /// of that trade. Windows preserves PNG wallpapers losslessly (no JPEG
+    /// transcode).
     pub(crate) fn write(
         &mut self,
         suffix: &str,
@@ -319,15 +316,7 @@ impl Publication {
         let path = self.dir.join(format!("{suffix}.png"));
         debug!(path = %path.display(), width, height, "saving wallpaper PNG");
 
-        let temp = unfinished(&path);
-        if let Err(e) = encode_png(&temp, pixels, width, height) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(e);
-        }
-        if let Err(e) = std::fs::rename(&temp, &path) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(format!("Failed to put the wallpaper PNG in place: {e}"));
-        }
+        crate::image_file::write_png(&path, pixels, width, height)?;
 
         self.files.push(path.clone());
         Ok(path)
@@ -505,26 +494,6 @@ fn sweep_legacy_files(root: &Path) {
             let _ = std::fs::remove_file(&path);
         }
     }
-}
-
-/// A name for the not-yet-finished version of `path`, unique to this writer.
-fn unfinished(path: &Path) -> PathBuf {
-    crate::files::unfinished(path, ".tmp")
-}
-
-/// Encode one RGBA8 image as a PNG at `path`.
-///
-/// Fast compression and the cheapest filter: see [`Publication::write`] for
-/// what the user is waiting on while this runs.
-fn encode_png(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
-    crate::files::write_png(
-        path,
-        pixels,
-        width,
-        height,
-        crate::files::CompressionType::Fast,
-        crate::files::FilterType::Sub,
-    )
 }
 
 #[cfg(test)]

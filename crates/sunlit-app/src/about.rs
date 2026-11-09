@@ -99,6 +99,7 @@ impl AboutController {
             window.set_license_text(LICENSE.into());
             window.set_mono_family(MONO_FAMILY.into());
             window.on_open_url(|url| crate::open::url(&url));
+            register_escape(&window);
             window.window().on_close_requested(|| {
                 crate::window_state::other_window_closed();
                 slint::CloseRequestResponse::HideWindow
@@ -110,6 +111,17 @@ impl AboutController {
         }
         Ok(())
     }
+}
+
+/// Let Esc hide `window` the way its close button does.
+pub fn register_escape(window: &AboutWindow) {
+    let weak = window.as_weak();
+    window.on_dismiss(move || {
+        if let Some(window) = weak.upgrade() {
+            let _ = window.hide();
+            crate::window_state::other_window_closed();
+        }
+    });
 }
 
 /// `AboutBlock::kind` for a paragraph, the one kind that carries no depth.

@@ -1790,3 +1790,144 @@ fn test_plasmashell_survives_rapid_republishing() {
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }
+
+// ---------------------------------------------------------------------------
+// Export Image over IPC
+// ---------------------------------------------------------------------------
+
+/// Send `export-image` and wait for its answer, `SIGNAL:exported path=<path>`
+/// or `SIGNAL:export_failed reason=<text>`, returning the line.
+fn export_over_ipc(socket_name: &str, watcher: &StdoutWatcher, arguments: &str) -> String {
+    let from = watcher.line_count();
+    send_ipc_command(socket_name, &format!("export-image {arguments}"));
+    watcher.wait_for_signal_line_from("export", from, PUBLISH)
+}
+
+/// A PNG and a JPEG exported over IPC are files of the size asked for that
+/// decode, and the IPC answer names the file written.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_export_image_writes_a_png_and_a_jpeg_of_the_size_asked() {
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
+    let folder = TempDirGuard::new();
+
+    for (name, format, width, height) in [
+        ("earth.png", "png 3", 640, 360),
+        ("earth.jpg", "jpeg 90", 360, 640),
+    ] {
+        let target = folder.path().join(name);
+        let line = export_over_ipc(
+            &socket_name,
+            &stdout_watcher,
+            &format!("{} {width} {height} {format}", target.display()),
+        );
+        assert!(
+            line.contains(&format!("SIGNAL:exported path={}", target.display())),
+            "the {format} export did not answer with its path: {line}"
+        );
+        let image = image::open(&target)
+            .unwrap_or_else(|e| panic!("{} does not decode: {e}", target.display()));
+        assert_eq!(
+            image.dimensions(),
+            (width, height),
+            "{} has the wrong size",
+            target.display()
+        );
+    }
+    let leftovers: Vec<_> = fs::read_dir(folder.path())
+        .expect("the export folder")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "earth.png" && name != "earth.jpg")
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "files left beside the exports: {leftovers:?}"
+    );
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+}
+
+/// An export wider than any GPU renders fails with the sentence that names
+/// the limit, writes nothing, and the app goes on answering.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_export_image_past_the_device_side_fails_and_the_app_keeps_running() {
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
+    let folder = TempDirGuard::new();
+    let target = folder.path().join("too-wide.png");
+
+    let line = export_over_ipc(
+        &socket_name,
+        &stdout_watcher,
+        &format!("{} 100000 100 png", target.display()),
+    );
+    assert!(
+        line.contains("SIGNAL:export_failed reason=")
+            && line.contains("is larger than this GPU can render"),
+        "an export past the device side was not refused with the limit: {line}"
+    );
+    assert!(
+        !target.exists(),
+        "the refused export wrote {}",
+        target.display()
+    );
+
+    let memory = query_memory(&socket_name, &stdout_watcher);
+    assert!(
+        memory.rss_bytes > 0,
+        "the app stopped answering after the refusal"
+    );
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+}
+
+/// `export-cancel` during a large export ends it as cancelled and leaves
+/// neither the image nor its temporary file.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_export_cancel_during_a_large_export_leaves_no_file() {
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
+    let folder = TempDirGuard::new();
+
+    // A small export first, so the scene is ready and the large one starts on
+    // the controller's first look rather than after a wait of unknown length.
+    let warm = folder.path().join("warm.png");
+    let line = export_over_ipc(
+        &socket_name,
+        &stdout_watcher,
+        &format!("{} 64 64 png", warm.display()),
+    );
+    assert!(
+        line.contains("SIGNAL:exported"),
+        "the warm-up export failed: {line}"
+    );
+    fs::remove_file(&warm).expect("remove the warm-up export");
+
+    let target = folder.path().join("large.png");
+    let from = stdout_watcher.line_count();
+    send_ipc_command(
+        &socket_name,
+        &format!("export-image {} 7680 4320 png 9", target.display()),
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    send_ipc_command(&socket_name, "export-cancel");
+    let line = stdout_watcher.wait_for_signal_line_from("export", from, PUBLISH);
+    assert!(
+        line.contains("SIGNAL:export_failed reason=cancelled"),
+        "the export was not cancelled: {line}"
+    );
+    let left: Vec<_> = fs::read_dir(folder.path())
+        .expect("the export folder")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    assert!(left.is_empty(), "the cancelled export left {left:?}");
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+}

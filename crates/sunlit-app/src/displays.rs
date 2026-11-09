@@ -442,7 +442,7 @@ impl sunlit_core::engine::wallpaper_sink::WallpaperSink for DirectorySink {
         let mut written = Vec::new();
         if let Some(canvas) = job.canvas() {
             let path = self.dir.join("canvas.png");
-            sunlit_core::engine::save_png(&path, canvas.width, canvas.height, &canvas.pixels)?;
+            sunlit_core::image_file::write_png(&path, &canvas.pixels, canvas.width, canvas.height)?;
             written.push(path);
         }
         for index in 0..job.monitors.len() {
@@ -450,7 +450,7 @@ impl sunlit_core::engine::wallpaper_sink::WallpaperSink for DirectorySink {
                 continue;
             };
             let path = self.dir.join(format!("screen-{}.png", index + 1));
-            sunlit_core::engine::save_png(&path, frame.width, frame.height, &frame.pixels)?;
+            sunlit_core::image_file::write_png(&path, &frame.pixels, frame.width, frame.height)?;
             written.push(path);
         }
         for path in &written {

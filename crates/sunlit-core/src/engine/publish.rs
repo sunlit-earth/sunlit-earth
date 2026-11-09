@@ -14,7 +14,9 @@ use crossbeam_channel::Sender;
 use tracing::{debug, error, info, warn};
 
 use super::wallpaper_sink::{Frame, JobImages, WallpaperJob};
-use super::{CLOUD_WAIT, Engine, EngineEvent, TILE_WAIT, join_notes, save_png, tile_output};
+use super::{
+    CLOUD_WAIT, Engine, EngineEvent, ExportError, ExportLimit, TILE_WAIT, join_notes, tile_output,
+};
 use crate::display::Monitor;
 use crate::display::layout::{self, Framing, OutputFraming, Rect};
 use crate::params::OutputParams;
@@ -49,9 +51,22 @@ enum Placement {
 pub(super) enum ExportReply {
     File {
         path: PathBuf,
-        reply: Sender<Result<(), String>>,
+        reply: Sender<Result<(), ExportError>>,
     },
-    Pixels(Sender<Result<Vec<u8>, String>>),
+    Pixels(Sender<Result<Vec<u8>, ExportError>>),
+}
+
+impl ExportReply {
+    fn refuse(self, error: ExportError) {
+        match self {
+            Self::File { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
+            Self::Pixels(reply) => {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
 }
 
 /// A `RenderToFile` or `ExportPixels` request waiting for its tiles.
@@ -101,6 +116,10 @@ impl Engine {
     }
 
     fn publish(&mut self, exiting: bool) {
+        if self.held.is_some() && !exiting {
+            self.publish_asked = true;
+            return;
+        }
         // The month is judged before the textures are: a publish can arrive
         // in a tick with nothing dirty, after the date crossed into the next
         // month, and would otherwise find the old month's floor ready.
@@ -373,7 +392,8 @@ impl Engine {
             return Err("this session has no screen with any pixels on it".to_owned());
         }
         for group in &groups {
-            self.check_export_fits(group.width, group.height)?;
+            self.check_export_fits(group.width, group.height)
+                .map_err(wallpaper_limit)?;
         }
 
         if self.display_mode == layout::DisplayMode::AcrossScreens {
@@ -457,31 +477,17 @@ impl Engine {
 
     /// Refuse a render this device cannot make, before it is attempted.
     ///
-    /// Both limits are reachable in the span mode and neither fails in a way
-    /// anybody could read: past the texture dimension wgpu refuses the texture,
-    /// and past the buffer size it panics in the readback.
-    pub(super) fn check_export_fits(&self, width: u32, height: u32) -> Result<(), String> {
+    /// Both limits are reachable in the span mode and by an export of a size
+    /// typed in, and neither fails in a way anybody could read: past the
+    /// texture dimension wgpu refuses the texture, and past the buffer size it
+    /// panics in the readback.
+    pub(super) fn check_export_fits(&self, width: u32, height: u32) -> Result<(), ExportLimit> {
         let (max_dimension, max_buffer) = self.renderer.export_limits();
-        if width > max_dimension || height > max_dimension {
-            return Err(format!(
-                "a {width}x{height} wallpaper is larger than this GPU renders \
-                 ({max_dimension} pixels on a side); one screen at a time will still work"
-            ));
+        let fits = export_fits(width, height, max_dimension, max_buffer);
+        if fits.is_ok() {
+            debug!(width, height, "an export within the device's limits");
         }
-        // The readback buffer, not the image: `read_texture_rgba8` pads every
-        // row out to 256 bytes, so a width that is not a multiple of 64 pixels
-        // costs more than four bytes each. The guard exists to turn an
-        // oversized readback into a sentence instead of a panic, which it can
-        // only do if it counts the same bytes the allocation does.
-        let bytes = (u64::from(width) * 4).next_multiple_of(256) * u64::from(height);
-        if bytes > max_buffer {
-            return Err(format!(
-                "a {width}x{height} wallpaper reads back {bytes} bytes, and this GPU \
-                 takes {max_buffer} at once"
-            ));
-        }
-        debug!(width, height, bytes, "wallpaper export budget");
-        Ok(())
+        fits
     }
 
     /// Replay the current scene with one screen's framing.
@@ -520,6 +526,11 @@ impl Engine {
     /// with what is resident in their place. The floors are the caller's to
     /// wait for, through `TexturesReady`.
     pub(super) fn export(&mut self, width: u32, height: u32, reply: ExportReply) {
+        if let Err(limit) = self.check_export_fits(width, height) {
+            warn!(width, height, %limit, "an export is past the device's limits");
+            reply.refuse(ExportError::TooLarge(limit));
+            return;
+        }
         let export = WaitingExport {
             width,
             height,
@@ -599,17 +610,76 @@ impl Engine {
                  the nearest one it does"
             );
         }
-        let pixels = self.export_framed(&framing, export.width, export.height);
+        let pixels = self
+            .export_framed(&framing, export.width, export.height)
+            .map_err(ExportError::Failed);
         match export.reply {
             ExportReply::Pixels(reply) => {
                 let _ = reply.send(pixels);
             }
             ExportReply::File { path, reply } => {
-                let written =
-                    pixels.and_then(|pixels| save_png(&path, export.width, export.height, &pixels));
+                let written = pixels.and_then(|pixels| {
+                    Ok(crate::image_file::write_png(
+                        &path,
+                        &pixels,
+                        export.width,
+                        export.height,
+                    )?)
+                });
                 let _ = reply.send(written);
             }
         }
+    }
+}
+
+/// Whether a render of `width` by `height` fits a device whose textures are at
+/// most `max_side` on a side and whose buffers hold at most `max_buffer`
+/// bytes.
+///
+/// The readback buffer is what is counted, not the image: `read_texture_rgba8`
+/// pads every row out to 256 bytes, so a width that is not a multiple of 64
+/// pixels costs more than four bytes each. The guard exists to turn an
+/// oversized readback into a sentence instead of a panic, which it can only do
+/// if it counts the same bytes the allocation does.
+fn export_fits(width: u32, height: u32, max_side: u32, max_buffer: u64) -> Result<(), ExportLimit> {
+    if width > max_side || height > max_side {
+        return Err(ExportLimit::Side {
+            width,
+            height,
+            max_side,
+        });
+    }
+    let readback =
+        |width: u32, height: u32| (u64::from(width) * 4).next_multiple_of(256) * u64::from(height);
+    if readback(width, height) > max_buffer {
+        let mut largest_square = max_side;
+        while largest_square > 0 && readback(largest_square, largest_square) > max_buffer {
+            largest_square -= 1;
+        }
+        return Err(ExportLimit::Readback {
+            width,
+            height,
+            largest_square,
+        });
+    }
+    Ok(())
+}
+
+/// What a wallpaper's status says about a render past the device's limits.
+fn wallpaper_limit(limit: ExportLimit) -> String {
+    match limit {
+        ExportLimit::Side {
+            width,
+            height,
+            max_side,
+        } => format!(
+            "a {width}x{height} wallpaper is larger than this GPU renders \
+             ({max_side} pixels on a side); one screen at a time will still work"
+        ),
+        ExportLimit::Readback { width, height, .. } => format!(
+            "a {width}x{height} wallpaper is more than this GPU reads back at once; \
+             one screen at a time will still work"
+        ),
     }
 }
 
@@ -642,4 +712,55 @@ fn clamp_note(framing: &OutputFraming) -> String {
         "a derived lens hit the renderer's limit"
     );
     note.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIDE: u32 = 16_384;
+    const BUFFER: u64 = 256 << 20;
+
+    #[test]
+    fn a_side_past_the_texture_limit_is_refused() {
+        assert_eq!(
+            export_fits(20_000, 1000, SIDE, BUFFER),
+            Err(ExportLimit::Side {
+                width: 20_000,
+                height: 1000,
+                max_side: SIDE
+            })
+        );
+        assert!(matches!(
+            export_fits(100, SIDE + 1, SIDE, BUFFER),
+            Err(ExportLimit::Side { .. })
+        ));
+    }
+
+    #[test]
+    fn the_readback_counts_the_padded_rows() {
+        let Err(ExportLimit::Readback { largest_square, .. }) =
+            export_fits(12_000, 6_000, SIDE, BUFFER)
+        else {
+            panic!("12000 x 6000 is past 256 MiB");
+        };
+        assert!(export_fits(largest_square, largest_square, SIDE, BUFFER).is_ok());
+        assert!(export_fits(largest_square + 1, largest_square + 1, SIDE, BUFFER).is_err());
+
+        let (width, height) = (8190, 8193);
+        assert!(
+            u64::from(width) * 4 * u64::from(height) <= BUFFER,
+            "the premise: four bytes a pixel would fit"
+        );
+        assert!(matches!(
+            export_fits(width, height, SIDE, BUFFER),
+            Err(ExportLimit::Readback { .. })
+        ));
+    }
+
+    #[test]
+    fn sizes_within_both_limits_pass() {
+        assert_eq!(export_fits(3840, 2160, SIDE, BUFFER), Ok(()));
+        assert_eq!(export_fits(8192, 8192, SIDE, BUFFER), Ok(()));
+    }
 }

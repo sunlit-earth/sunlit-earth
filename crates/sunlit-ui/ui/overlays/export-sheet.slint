@@ -1,0 +1,493 @@
+// File > Export Image…: a card over the whole main window that saves the view
+// as an image file. `export.rs` fills `ExportState` and answers its callbacks;
+// the backdrop takes every click and scroll, so while the card is open the
+// window behind it takes no input.
+
+import { Button, ComboBox, LineEdit, Slider, ProgressIndicator, Palette, ScrollView } from "std-widgets.slint";
+import { Hint } from "../widgets.slint";
+
+export global ExportState {
+    // The Size list: the main display's size, the common sizes, and Custom
+    // last.
+    in property <[string]> sizes;
+    in-out property <int> size-index;
+    in-out property <string> width-text;
+    in-out property <string> height-text;
+    // 0 is PNG, 1 is JPEG, the order of `formats`.
+    in property <[string]> formats: ["PNG", "JPEG"];
+    in-out property <int> format-index;
+    // The PNG levels the slider offers, and the slider's position among them.
+    in property <[int]> png-levels: [1, 2, 3, 5, 6, 7, 8, 9];
+    in-out property <float> png-position: 2;
+    in-out property <float> jpeg-quality: 90;
+    in-out property <string> path;
+    // "<name> exists and will be replaced." while the path names a file, else
+    // empty. The status line shows it while it shows no export's phase or
+    // outcome.
+    in property <string> replace-notice;
+    in property <image> thumbnail;
+    // Whether what the export draws is resident.
+    in property <bool> ready;
+    in property <bool> exporting;
+    in property <bool> cancelling;
+    in property <float> progress;
+    // An export's phase or outcome in the status line, and whether the bar
+    // shows, from the start of an export until the next change in the sheet.
+    in property <bool> status-shown;
+    in property <bool> progress-shown;
+    in property <string> status;
+
+    callback size-chosen(int);
+    callback size-edited();
+    callback format-chosen(int);
+    callback path-edited();
+    callback browse();
+    callback export();
+    callback cancel();
+    // The × button, Close and Esc. Cancels a running export first.
+    callback close();
+
+    out property <int> png-level: png-levels[clamp(round(png-position), 0, png-levels.length - 1)];
+    out property <bool> can-export: ready && !exporting
+        && width-text.is-float() && width-text.to-float() >= 1
+        && height-text.is-float() && height-text.to-float() >= 1
+        && path != "";
+}
+
+component FieldLabel inherits Text {
+    color: Palette.foreground;
+    font-size: 12px;
+    vertical-alignment: center;
+}
+
+// A control and its hover text. A `Tooltip` would claim a layout cell of its
+// own, so the control sits in a Rectangle that carries it and takes the
+// control's size.
+component WithHint inherits Rectangle {
+    in property <string> hint;
+
+    min-width: content.min-width;
+    preferred-width: content.preferred-width;
+    max-width: content.max-width;
+    min-height: content.min-height;
+    preferred-height: content.preferred-height;
+    max-height: content.max-height;
+
+    content := HorizontalLayout {
+        width: 100%;
+        height: 100%;
+
+        @children
+    }
+
+    Tooltip {
+        Hint { text: root.hint; }
+    }
+}
+
+component CloseButton inherits Rectangle {
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    background: touch.pressed ? Palette.foreground.with-alpha(0.2)
+        : touch.has-hover ? Palette.foreground.with-alpha(0.1)
+        : transparent;
+
+    Image {
+        width: 12px;
+        height: 12px;
+        source: @image-url("../icons/close.svg");
+        colorize: Palette.foreground;
+    }
+
+    touch := TouchArea {
+        accessible-role: button;
+        accessible-label: "Close";
+        accessible-action-default => { root.clicked(); }
+        clicked => { root.clicked(); }
+    }
+
+}
+
+export component ExportSheet inherits Rectangle {
+    out property <length> card-x: card.x;
+    out property <length> card-y: card.y;
+    out property <length> card-width: card.width;
+    out property <length> card-height: card.height;
+
+    background: #0000008c;
+
+    function export-if-enabled() {
+        if ExportState.can-export {
+            ExportState.export();
+        }
+    }
+
+    init => {
+        keys.focus();
+    }
+
+    TouchArea {
+        scroll-event(event) => {
+            return accept;
+        }
+    }
+
+    keys := FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => { ExportState.close(); }
+        }
+
+        KeyBinding {
+            keys: @keys(Return);
+            activated => { root.export-if-enabled(); }
+        }
+
+        card := Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: max(8px, (parent.height - self.height) / 2);
+            width: min(520px, parent.width - 16px);
+            height: min(card-layout.preferred-height, parent.height - 16px);
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Palette.border;
+            background: Palette.background;
+            drop-shadow-blur: 22px;
+            drop-shadow-offset-y: 6px;
+            drop-shadow-color: #00000073;
+
+            TouchArea {
+                scroll-event(event) => {
+                    return accept;
+                }
+            }
+
+            card-layout := VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    vertical-stretch: 0;
+
+                    Text {
+                        text: "Export Image";
+                        color: Palette.foreground;
+                        font-size: 15px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    close-button := CloseButton {
+                        clicked => { ExportState.close(); }
+                    }
+                }
+
+                body := ScrollView {
+                    vertical-stretch: 1;
+                    min-height: 40px;
+                    preferred-height: body-layout.preferred-height;
+                    content-height: body-layout.preferred-height;
+
+                    body-layout := VerticalLayout {
+                        width: body.visible-width;
+                        spacing: 14px;
+
+                        HorizontalLayout {
+                            spacing: 16px;
+
+                            // A square, so a portrait or a wide thumbnail is
+                            // letterboxed in the same place.
+                            thumbnail-box := Rectangle {
+                                width: 144px;
+                                height: 144px;
+                                border-radius: 4px;
+                                border-width: 1px;
+                                border-color: Palette.border;
+                                background: #000000;
+                                clip: true;
+
+                                Image {
+                                    width: parent.width - 2px;
+                                    height: parent.height - 2px;
+                                    source: ExportState.thumbnail;
+                                    image-fit: contain;
+                                    accessible-role: image;
+                                    accessible-label: "What the export shows";
+                                }
+                            }
+
+                            GridLayout {
+                                spacing-horizontal: 10px;
+                                spacing-vertical: 10px;
+
+                                Row {
+                                    FieldLabel { text: "Size"; }
+                                    WithHint {
+                                        hint: "The size of the image in pixels.";
+
+                                        size-combo := ComboBox {
+                                            model: ExportState.sizes;
+                                            current-index <=> ExportState.size-index;
+                                            selected => { ExportState.size-chosen(self.current-index); }
+                                        }
+                                    }
+                                }
+
+                                Row {
+                                    HorizontalLayout {
+                                        col: 1;
+                                        spacing: 6px;
+
+                                        WithHint {
+                                            hint: "Width in pixels.";
+
+                                            width-edit := LineEdit {
+                                                min-width: 48px;
+                                                horizontal-stretch: 1;
+                                                input-type: number;
+                                                text <=> ExportState.width-text;
+                                                accessible-label: "Width";
+                                                edited => { ExportState.size-edited(); }
+                                                accepted => { root.export-if-enabled(); }
+                                            }
+                                        }
+
+                                        FieldLabel { text: "×"; }
+
+                                        WithHint {
+                                            hint: "Height in pixels.";
+
+                                            height-edit := LineEdit {
+                                                min-width: 48px;
+                                                horizontal-stretch: 1;
+                                                input-type: number;
+                                                text <=> ExportState.height-text;
+                                                accessible-label: "Height";
+                                                edited => { ExportState.size-edited(); }
+                                                accepted => { root.export-if-enabled(); }
+                                            }
+                                        }
+
+                                        WithHint {
+                                            horizontal-stretch: 0;
+                                            hint: "Swap width and height.";
+
+                                            swap-button := Button {
+                                                text: "Swap";
+                                                clicked => {
+                                                    let width = ExportState.width-text;
+                                                    ExportState.width-text = ExportState.height-text;
+                                                    ExportState.height-text = width;
+                                                    ExportState.size-edited();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Row {
+                                    FieldLabel { text: "Format"; }
+                                    WithHint {
+                                        hint: "The file format.";
+
+                                        format-combo := ComboBox {
+                                            model: ExportState.formats;
+                                            current-index <=> ExportState.format-index;
+                                            selected => { ExportState.format-chosen(self.current-index); }
+                                        }
+                                    }
+                                }
+
+                                Row {
+                                    // As wide as the wider of the two names, so
+                                    // the slider stays put when the format changes.
+                                    Rectangle {
+                                        min-width: max(compression-label.preferred-width, quality-label.preferred-width);
+                                        min-height: compression-label.preferred-height;
+
+                                        compression-label := FieldLabel {
+                                            x: 0;
+                                            visible: ExportState.format-index == 0;
+                                            text: "Compression";
+                                        }
+
+                                        quality-label := FieldLabel {
+                                            x: 0;
+                                            visible: ExportState.format-index != 0;
+                                            text: "Quality";
+                                        }
+                                    }
+
+                                    WithHint {
+                                        hint: ExportState.format-index == 0
+                                            ? "Higher levels make smaller files and take longer."
+                                            : "Higher values keep more detail and make larger files.";
+
+                                        HorizontalLayout {
+                                            spacing: 8px;
+
+                                            if ExportState.format-index == 0 : png-slider := Slider {
+                                                minimum: 0;
+                                                maximum: ExportState.png-levels.length - 1;
+                                                step: 1;
+                                                horizontal-stretch: 1;
+                                                value <=> ExportState.png-position;
+                                                accessible-label: "Compression";
+                                            }
+
+                                            if ExportState.format-index != 0 : jpeg-slider := Slider {
+                                                minimum: 1;
+                                                maximum: 100;
+                                                step: 1;
+                                                horizontal-stretch: 1;
+                                                value <=> ExportState.jpeg-quality;
+                                                accessible-label: "Quality";
+                                            }
+
+                                            // As wide as three digits.
+                                            Rectangle {
+                                                min-width: three-digits.preferred-width;
+                                                horizontal-stretch: 0;
+
+                                                three-digits := FieldLabel {
+                                                    visible: false;
+                                                    text: "100";
+                                                }
+
+                                                setting-value := FieldLabel {
+                                                    width: parent.width;
+                                                    height: parent.height;
+                                                    text: ExportState.format-index == 0 ? ExportState.png-level : round(ExportState.jpeg-quality);
+                                                    horizontal-alignment: right;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            FieldLabel { text: "Save to"; }
+
+                            WithHint {
+                                hint: "Where the image is saved.";
+
+                                path-edit := LineEdit {
+                                    horizontal-stretch: 1;
+                                    text <=> ExportState.path;
+                                    accessible-label: "Save to";
+                                    edited => { ExportState.path-edited(); }
+                                    accepted => { root.export-if-enabled(); }
+                                }
+                            }
+
+                            browse-button := Button {
+                                horizontal-stretch: 0;
+                                text: "Browse…";
+                                clicked => { ExportState.browse(); }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 6px;
+
+                            progress-bar := ProgressIndicator {
+                                height: 6px;
+                                visible: ExportState.progress-shown;
+                                progress: ExportState.progress;
+                            }
+
+                            // Two lines high whatever it holds.
+                            status-box := Rectangle {
+                                height: two-lines.preferred-height;
+
+                                two-lines := FieldLabel {
+                                    visible: false;
+                                    text: "X\nX";
+                                }
+
+                                HorizontalLayout {
+                                    width: 100%;
+                                    height: 100%;
+                                    spacing: 6px;
+
+                                    if !ExportState.status-shown && ExportState.replace-notice != "" : VerticalLayout {
+                                        alignment: start;
+                                        padding-top: 1px;
+
+                                        warning-icon := Image {
+                                            width: 14px;
+                                            height: 14px;
+                                            source: @image-url("../icons/warning.svg");
+                                            colorize: Palette.color-scheme == ColorScheme.dark ? #f0b43c : #b36b00;
+                                            accessible-role: image;
+                                            accessible-label: "Warning";
+                                        }
+                                    }
+
+                                    status-line := FieldLabel {
+                                        text: ExportState.status-shown ? ExportState.status : ExportState.replace-notice;
+                                        color: Palette.foreground.with-alpha(0.75);
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: top;
+                                        wrap: word-wrap;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    vertical-stretch: 0;
+
+                    close-sheet-button := Button {
+                        text: "Close";
+                        clicked => { ExportState.close(); }
+                    }
+
+                    // Export and Cancel take one place, as wide as the wider.
+                    Rectangle {
+                        min-width: max(export-button.preferred-width, cancel-button.preferred-width);
+                        preferred-width: self.min-width;
+                        min-height: export-button.preferred-height;
+                        preferred-height: self.min-height;
+
+                        export-button := Button {
+                            width: parent.width;
+                            height: parent.height;
+                            visible: !ExportState.exporting;
+                            text: "Export";
+                            primary: true;
+                            enabled: ExportState.can-export;
+                            clicked => { root.export-if-enabled(); }
+                        }
+
+                        cancel-button := Button {
+                            width: parent.width;
+                            height: parent.height;
+                            visible: ExportState.exporting;
+                            text: "Cancel";
+                            enabled: !ExportState.cancelling;
+                            clicked => { ExportState.cancel(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

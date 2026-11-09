@@ -19,6 +19,7 @@ bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 pollster = "0.4"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg"] }
+png = "0.18"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 jxl-oxide = { version = "0.12", default-features = false, features = ["image", "rayon"] }
 dds = { version = "0.2", default-features = false }
@@ -44,6 +45,7 @@ tracing-appender = "0.2"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_warn"] }
 single-instance = "0.3"
 interprocess = "2"
+rfd = "0.18"
 crossbeam-channel = "0.5"
 rayon = "1"
 windows-sys = "0.59"

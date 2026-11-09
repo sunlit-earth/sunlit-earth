@@ -32,6 +32,7 @@ mod display_plan;
 mod excursion;
 mod groups;
 mod harness;
+mod hold;
 mod lifecycle;
 mod loading;
 mod memory;

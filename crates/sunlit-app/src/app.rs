@@ -247,6 +247,7 @@ fn init_ui(
     crate::time_bar::register(window, link);
     ui_callbacks::register_action_callbacks(window, link, screens);
     ui_callbacks::register_display_callbacks(window, link, screens);
+    crate::export::register(window, link, screens);
 }
 
 /// Wire the auto-refresh controls to the engine's scheduler and the tray mark.
@@ -558,6 +559,9 @@ fn start_engine(
     let mut engine_config = engine_config(cli, config, (800, 600), true);
     engine_config.on_event = on_event;
     engine_config.monitors = displays::monitors_of(screens);
+    crate::export::CLOUDS
+        .has_source
+        .store(engine_config.cloud.is_some(), Ordering::Relaxed);
     let engine: EngineHandle = match engine::start(engine_config) {
         Ok(engine) => engine,
         Err(e) => {
@@ -718,6 +722,7 @@ fn tear_down(
     sunlit_core::memory::log_memory_usage("before exit");
 
     engine.shutdown();
+    crate::export::shutdown();
     if let Some(watcher) = display_watch {
         watcher.stop();
     }

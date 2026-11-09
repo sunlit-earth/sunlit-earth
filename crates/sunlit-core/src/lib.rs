@@ -12,6 +12,7 @@ pub mod display;
 pub mod engine;
 mod files;
 pub mod geometry;
+pub mod image_file;
 pub mod memory;
 pub mod memory_report;
 pub mod params;

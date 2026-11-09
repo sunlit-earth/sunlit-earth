@@ -3,6 +3,7 @@ import { AboutBlock } from "widgets.slint";
 import { Links } from "links.slint";
 
 export component AboutWindow inherits Window {
+    forward-focus: keys;
     title: "About Sunlit Earth";
     // The same SVG master the main window takes, for the same reason:
     // Slint rasterizes at whatever size the surface asks for, and here the
@@ -30,6 +31,8 @@ export component AboutWindow inherits Window {
     // Opened through the platform's own handler in `about.rs`. Every tab and
     // the header links go through this one callback.
     callback open-url(url: string);
+    // Esc, which hides the window the way its close button does.
+    callback dismiss();
 
     out property <length> version-y: version-line.absolute-position.y;
 
@@ -49,153 +52,78 @@ export component AboutWindow inherits Window {
     property <length> attributions-column: attributions-scroll.visible-width - 24px - root.scrollbar-width;
     property <length> third-party-column: third-party-scroll.visible-width - 24px - root.scrollbar-width;
 
-    VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
-
-        // Fixed: the version, the copyright and the links stay on screen
-        // at any window size, and only the tab below scrolls.
-        HorizontalLayout {
-            spacing: 16px;
-            vertical-stretch: 0;
-
-            Image {
-                source: @image-url("../../../assets/icon/sunlit-earth.svg");
-                width: 72px;
-                height: 72px;
-                vertical-alignment: center;
-            }
-
-            VerticalLayout {
-                alignment: center;
-                spacing: 2px;
-                horizontal-stretch: 1;
-
-                Text {
-                    text: "Sunlit Earth";
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                version-line := Text {
-                    text: "Version " + root.version;
-                }
-
-                Text {
-                    text: "© 2026 Sebastian Straub";
-                }
-
-                HorizontalLayout {
-                    alignment: start;
-                    spacing: 6px;
-
-                    Text {
-                        text: "sunlit.earth";
-                        color: Palette.accent-background;
-
-                        website-link := TouchArea {
-                            mouse-cursor: pointer;
-
-                            clicked => {
-                                root.open-url(root.website);
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: "·";
-                    }
-
-                    Text {
-                        text: "Source code";
-                        color: Palette.accent-background;
-
-                        repository-link := TouchArea {
-                            mouse-cursor: pointer;
-
-                            clicked => {
-                                root.open-url(root.repository);
-                            }
-                        }
-                    }
-                }
-            }
+    keys := FocusScope {
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => { root.dismiss(); }
         }
 
-        TabWidget {
-            vertical-stretch: 1;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
 
-            Tab {
-                title: "Attributions";
+            // Fixed: the version, the copyright and the links stay on screen
+            // at any window size, and only the tab below scrolls.
+            HorizontalLayout {
+                spacing: 16px;
+                vertical-stretch: 0;
 
-                // One element per block rather than one `StyledText` for the
-                // document, because `StyledText` cannot lay a document out:
-                // it stacks paragraphs with no gap between them, it has no
-                // font size to give a heading, and its list bullet is literal
-                // text glued to the paragraph, so a wrapped line gets no
-                // hanging indent. `about::parse_blocks` cuts the document into
-                // blocks and each block's inline markdown is parsed on its
-                // own, which is also why no block can hold a construct Slint's
-                // subset rejects.
-                attributions-scroll := ScrollView {
-                    VerticalLayout {
-                        width: 100%;
-                        padding: 12px;
-                        padding-right: 12px + root.scrollbar-width;
+                Image {
+                    source: @image-url("../../../assets/icon/sunlit-earth.svg");
+                    width: 72px;
+                    height: 72px;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: "Sunlit Earth";
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    version-line := Text {
+                        text: "Version " + root.version;
+                    }
+
+                    Text {
+                        text: "© 2026 Sebastian Straub";
+                    }
+
+                    HorizontalLayout {
                         alignment: start;
-                        spacing: 8px;
+                        spacing: 6px;
 
-                        for block in root.attributions : VerticalLayout {
-                            // The item's text keeps the whole column, so every
-                            // wrapped line of it starts under the first.
-                            property <length> indent: block.kind == 2
-                                ? block.depth * root.nesting-step + root.bullet-column
-                                : 0px;
+                        Text {
+                            text: "sunlit.earth";
+                            color: Palette.accent-background;
 
-                            preferred-width: root.attributions-column;
-                            // A section break reads heavier than the gap
-                            // between two lines of the same section.
-                            padding-top: block.kind == 1 ? 8px : 0px;
-                            padding-left: self.indent;
+                            website-link := TouchArea {
+                                mouse-cursor: pointer;
 
-                            if block.kind == 1 : attributions-heading := Text {
-                                text: block.heading;
-                                font-weight: 700;
-                                font-size: block.depth == 1 ? 18px : 16px;
-                            }
-
-                            if block.kind == 0 : attributions-paragraph := StyledText {
-                                text: block.body;
-                                preferred-width: root.attributions-column - parent.indent;
-
-                                link-clicked(link) => {
-                                    root.open-url(link);
+                                clicked => {
+                                    root.open-url(root.website);
                                 }
                             }
+                        }
 
-                            if block.kind == 2 : attributions-item := StyledText {
-                                text: block.body;
-                                preferred-width: root.attributions-column - parent.indent;
+                        Text {
+                            text: "·";
+                        }
 
-                                link-clicked(link) => {
-                                    root.open-url(link);
-                                }
+                        Text {
+                            text: "Source code";
+                            color: Palette.accent-background;
 
-                                // Drawn into the margin the padding leaves
-                                // rather than laid out beside the text: a
-                                // `StyledText` reports the height of one line
-                                // unless it is a layout's own child, so a
-                                // bullet in a `HorizontalLayout` next to it
-                                // would leave every wrapped item one line tall
-                                // and spilling over the block below.
-                                attributions-bullet := Text {
-                                    x: -root.bullet-column;
-                                    // Beside the first line: a child of a
-                                    // non-layout element is centered in it
-                                    // otherwise, which for a wrapped item is
-                                    // the middle of the paragraph.
-                                    y: 0px;
-                                    text: "\u{2022}";
+                            repository-link := TouchArea {
+                                mouse-cursor: pointer;
+
+                                clicked => {
+                                    root.open-url(root.repository);
                                 }
                             }
                         }
@@ -203,80 +131,162 @@ export component AboutWindow inherits Window {
                 }
             }
 
-            Tab {
-                title: "License";
+            TabWidget {
+                vertical-stretch: 1;
 
-                ScrollView {
-                    horizontal-scrollbar-policy: as-needed;
+                Tab {
+                    title: "Attributions";
 
-                    // No `width: 100%`: the viewport takes the layout's own
-                    // preferred width, which is the longest unwrapped line,
-                    // and that is what gives the tab something to scroll.
-                    VerticalLayout {
-                        padding: 12px;
-                        alignment: start;
+                    // One element per block rather than one `StyledText` for the
+                    // document, because `StyledText` cannot lay a document out:
+                    // it stacks paragraphs with no gap between them, it has no
+                    // font size to give a heading, and its list bullet is literal
+                    // text glued to the paragraph, so a wrapped line gets no
+                    // hanging indent. `about::parse_blocks` cuts the document into
+                    // blocks and each block's inline markdown is parsed on its
+                    // own, which is also why no block can hold a construct Slint's
+                    // subset rejects.
+                    attributions-scroll := ScrollView {
+                        VerticalLayout {
+                            width: 100%;
+                            padding: 12px;
+                            padding-right: 12px + root.scrollbar-width;
+                            alignment: start;
+                            spacing: 8px;
 
-                        license-body := Text {
-                            text: root.license-text;
-                            wrap: no-wrap;
-                            font-family: root.mono-family;
-                            font-size: 12px;
+                            for block in root.attributions : VerticalLayout {
+                                // The item's text keeps the whole column, so every
+                                // wrapped line of it starts under the first.
+                                property <length> indent: block.kind == 2
+                                    ? block.depth * root.nesting-step + root.bullet-column
+                                    : 0px;
+
+                                preferred-width: root.attributions-column;
+                                // A section break reads heavier than the gap
+                                // between two lines of the same section.
+                                padding-top: block.kind == 1 ? 8px : 0px;
+                                padding-left: self.indent;
+
+                                if block.kind == 1 : attributions-heading := Text {
+                                    text: block.heading;
+                                    font-weight: 700;
+                                    font-size: block.depth == 1 ? 18px : 16px;
+                                }
+
+                                if block.kind == 0 : attributions-paragraph := StyledText {
+                                    text: block.body;
+                                    preferred-width: root.attributions-column - parent.indent;
+
+                                    link-clicked(link) => {
+                                        root.open-url(link);
+                                    }
+                                }
+
+                                if block.kind == 2 : attributions-item := StyledText {
+                                    text: block.body;
+                                    preferred-width: root.attributions-column - parent.indent;
+
+                                    link-clicked(link) => {
+                                        root.open-url(link);
+                                    }
+
+                                    // Drawn into the margin the padding leaves
+                                    // rather than laid out beside the text: a
+                                    // `StyledText` reports the height of one line
+                                    // unless it is a layout's own child, so a
+                                    // bullet in a `HorizontalLayout` next to it
+                                    // would leave every wrapped item one line tall
+                                    // and spilling over the block below.
+                                    attributions-bullet := Text {
+                                        x: -root.bullet-column;
+                                        // Beside the first line: a child of a
+                                        // non-layout element is centered in it
+                                        // otherwise, which for a wrapped item is
+                                        // the middle of the paragraph.
+                                        y: 0px;
+                                        text: "\u{2022}";
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-            }
 
-            Tab {
-                title: "Third-party";
+                Tab {
+                    title: "License";
 
-                // The same block layout the attributions get, spelled out
-                // again rather than shared: element ids are static, so one
-                // component used by both tabs would leave a test unable to
-                // say which tab's rows it found.
-                third-party-scroll := ScrollView {
-                    VerticalLayout {
-                        width: 100%;
-                        padding: 12px;
-                        padding-right: 12px + root.scrollbar-width;
-                        alignment: start;
-                        spacing: 8px;
+                    ScrollView {
+                        horizontal-scrollbar-policy: as-needed;
 
-                        for block in root.third-party : VerticalLayout {
-                            property <length> indent: block.kind == 2
-                                ? block.depth * root.nesting-step + root.bullet-column
-                                : 0px;
+                        // No `width: 100%`: the viewport takes the layout's own
+                        // preferred width, which is the longest unwrapped line,
+                        // and that is what gives the tab something to scroll.
+                        VerticalLayout {
+                            padding: 12px;
+                            alignment: start;
 
-                            preferred-width: root.third-party-column;
-                            padding-top: block.kind == 1 ? 8px : 0px;
-                            padding-left: self.indent;
-
-                            if block.kind == 1 : third-party-heading := Text {
-                                text: block.heading;
-                                font-weight: 700;
-                                font-size: block.depth == 1 ? 18px : 16px;
+                            license-body := Text {
+                                text: root.license-text;
+                                wrap: no-wrap;
+                                font-family: root.mono-family;
+                                font-size: 12px;
                             }
+                        }
+                    }
+                }
 
-                            if block.kind == 0 : third-party-paragraph := StyledText {
-                                text: block.body;
-                                preferred-width: root.third-party-column - parent.indent;
+                Tab {
+                    title: "Third-party";
 
-                                link-clicked(link) => {
-                                    root.open-url(link);
+                    // The same block layout the attributions get, spelled out
+                    // again rather than shared: element ids are static, so one
+                    // component used by both tabs would leave a test unable to
+                    // say which tab's rows it found.
+                    third-party-scroll := ScrollView {
+                        VerticalLayout {
+                            width: 100%;
+                            padding: 12px;
+                            padding-right: 12px + root.scrollbar-width;
+                            alignment: start;
+                            spacing: 8px;
+
+                            for block in root.third-party : VerticalLayout {
+                                property <length> indent: block.kind == 2
+                                    ? block.depth * root.nesting-step + root.bullet-column
+                                    : 0px;
+
+                                preferred-width: root.third-party-column;
+                                padding-top: block.kind == 1 ? 8px : 0px;
+                                padding-left: self.indent;
+
+                                if block.kind == 1 : third-party-heading := Text {
+                                    text: block.heading;
+                                    font-weight: 700;
+                                    font-size: block.depth == 1 ? 18px : 16px;
                                 }
-                            }
 
-                            if block.kind == 2 : third-party-body := StyledText {
-                                text: block.body;
-                                preferred-width: root.third-party-column - parent.indent;
+                                if block.kind == 0 : third-party-paragraph := StyledText {
+                                    text: block.body;
+                                    preferred-width: root.third-party-column - parent.indent;
 
-                                link-clicked(link) => {
-                                    root.open-url(link);
+                                    link-clicked(link) => {
+                                        root.open-url(link);
+                                    }
                                 }
 
-                                third-party-bullet := Text {
-                                    x: -root.bullet-column;
-                                    y: 0px;
-                                    text: "\u{2022}";
+                                if block.kind == 2 : third-party-body := StyledText {
+                                    text: block.body;
+                                    preferred-width: root.third-party-column - parent.indent;
+
+                                    link-clicked(link) => {
+                                        root.open-url(link);
+                                    }
+
+                                    third-party-bullet := Text {
+                                        x: -root.bullet-column;
+                                        y: 0px;
+                                        text: "\u{2022}";
+                                    }
                                 }
                             }
                         }

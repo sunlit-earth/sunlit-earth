@@ -8171,9 +8171,9 @@ fn test_every_menu_item_works_under_the_sheet() {
         ("File", "Load Defaults"),
         ("File", "Close Window"),
         ("View", "Reset Camera"),
-        ("View", "Controls"),
-        ("View", "Frame Guides"),
-        ("View", "Pin Time Bar"),
+        ("View", "Toggle Controls"),
+        ("View", "Toggle Frame Guides"),
+        ("View", "Toggle Time Bar Pin"),
         ("Help", "Mouse and Keyboard"),
         ("Help", "Website"),
         ("Help", "Report an Issue…"),
@@ -8246,12 +8246,15 @@ fn test_a_menu_item_closes_the_sheet_first() {
 
     choose(&window, "File", "Export Image…");
     let guides = window.get_guides_shown();
-    choose(&window, "View", "Frame Guides");
-    assert!(!window.get_export_sheet_open(), "Frame Guides left it open");
+    choose(&window, "View", "Toggle Frame Guides");
+    assert!(
+        !window.get_export_sheet_open(),
+        "Toggle Frame Guides left it open"
+    );
     assert_ne!(
         window.get_guides_shown(),
         guides,
-        "Frame Guides did nothing"
+        "Toggle Frame Guides did nothing"
     );
     assert_eq!(holds(&sent), [true, false]);
 

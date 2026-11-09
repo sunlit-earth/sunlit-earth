@@ -596,11 +596,12 @@ export component MainWindow inherits Window {
 
     // What keeps the controls up: the pointer over one of them, one held, a
     // gesture or a key held on the globe, the speeds or a picker open, the
-    // shortcut sheet or the version notice, and a switch until its cover goes.
+    // shortcut sheet, the export sheet or the version notice, and a switch
+    // until its cover goes.
     property <bool> controls-busy: !camera-panel.idle || time-bar.in-use
         || show-button.hovered || exit-pill.hovered
         || image-container.gesture != "" || image-container.any-key-held || image-container.wheel-turning
-        || root.shortcut-sheet-open || root.version-notice-open
+        || root.shortcut-sheet-open || root.export-sheet-open || root.version-notice-open
         || root.switching;
     changed controls-busy => {
         if root.controls-busy {
@@ -848,7 +849,10 @@ export component MainWindow inherits Window {
             if Platform.os != OperatingSystemType.macos : MenuItem {
                 title: "Enter Full Screen";
                 shortcut: @keys(F11);
-                activated => { root.toggle-full-screen(); }
+                activated => {
+                    root.leave-export-sheet();
+                    root.toggle-full-screen();
+                }
             }
         }
         Menu {

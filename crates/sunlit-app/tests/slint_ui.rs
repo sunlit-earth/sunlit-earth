@@ -7073,8 +7073,8 @@ fn test_the_controls_idle_out_in_full_screen_only() {
 }
 
 /// Whatever is in use keeps the controls up: the pointer on a control, a
-/// control or a drag held, the speeds or a picker open, the shortcut sheet
-/// and the version notice.
+/// control or a drag held, the speeds or a picker open, the shortcut sheet,
+/// the export sheet and the version notice.
 #[test]
 fn test_what_is_in_use_keeps_the_controls_up() {
     let (window, _sent, _poll) = full_screen_window();
@@ -7149,6 +7149,10 @@ fn test_what_is_in_use_keeps_the_controls_up() {
     window.set_shortcut_sheet_open(true);
     still_up(&window, "the shortcut sheet");
     window.set_shortcut_sheet_open(false);
+
+    window.set_export_sheet_open(true);
+    still_up(&window, "the export sheet");
+    window.set_export_sheet_open(false);
 
     window.set_version_notice_open(true);
     still_up(&window, "the version notice");
@@ -8180,7 +8184,11 @@ fn test_every_menu_item_works_under_the_sheet() {
         ("Help", "Open Data Folder"),
         ("Help", "About Sunlit Earth"),
     ];
-    for (menu, item) in items {
+    let full_screen = [("View", "Enter Full Screen")];
+    let items = items
+        .iter()
+        .chain(full_screen.iter().filter(|_| !cfg!(target_os = "macos")));
+    for &(menu, item) in items {
         let (window, _sent) = export_sheet();
         choose(&window, menu, item);
         assert!(

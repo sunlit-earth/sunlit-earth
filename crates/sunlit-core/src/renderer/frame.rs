@@ -62,6 +62,7 @@ mod tests {
             planets: [planet; 5],
             moon_position: glam::Vec3::new(0.0, 0.0, 60.0),
             moon_rotation: glam::Mat3::IDENTITY,
+            shadow: crate::scene::eclipse::ShadowAxis::away_from_the_earth(),
         }
     }
 

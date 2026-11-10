@@ -20,7 +20,7 @@ macro_rules! uniform_block {
     ) => {
         /// GPU-side uniform buffer layout, matching the WGSL `Uniforms` struct.
         ///
-        /// Total: 608 bytes (must be a multiple of 16 for uniform alignment).
+        /// Total: 704 bytes (must be a multiple of 16 for uniform alignment).
         #[repr(C)]
         #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
         #[expect(
@@ -54,7 +54,8 @@ uniform_block! {
     terminator_width: f32 as f32,
     /// Bit 0 is diffuse shading; bit 2 says the cube drawn alone is the night
     /// floor; bits 3 and 4 light the shells over the globe as day or as night
-    /// everywhere instead of by the Sun.
+    /// everywhere instead of by the Sun; bit 5 says the Moon's penumbra reaches
+    /// the shells this frame, so the eclipse fields below are filled.
     flags: u32 as u32,
     diffuse_floor: f32 as f32,
     diffuse_ramp: f32 as f32,
@@ -179,9 +180,35 @@ uniform_block! {
     _pad12: f32 as f32,
     night_ocean_shift: [f32; 3] as vec3,
     _pad13: f32 as f32,
+    /// The Moon's center and the distance from it to the Sun's, in world space
+    /// in Earth radii, and the unit axis from the Sun through the Moon.
+    eclipse_moon: [f32; 3] as vec3,
+    eclipse_moon_to_sun: f32 as f32,
+    eclipse_axis: [f32; 3] as vec3,
+    /// The shadow strength setting, 0 to 1.
+    eclipse_strength: f32 as f32,
+    /// The Moon's and the Sun's true radii, WGS84's equatorial radius and its
+    /// eccentricity squared: constants, carried here so the shader holds no
+    /// copy of them to drift.
+    eclipse_moon_radius: f32 as f32,
+    eclipse_sun_radius: f32 as f32,
+    eclipse_earth_radius: f32 as f32,
+    eclipse_earth_e2: f32 as f32,
+    /// The shadow's look: the brightness drawn where the Sun is covered, the
+    /// light left at which the shadow has faded out, and the exponent on the
+    /// eased light left between the two.
+    eclipse_umbra: f32 as f32,
+    eclipse_reach: f32 as f32,
+    eclipse_falloff: f32 as f32,
+    _pad14: f32 as f32,
+    /// The Sun's limb darkening as four rings of uniform brightness: their
+    /// outer radii in the Sun's and their shares of its light, constants
+    /// carried here for the reason the radii above are.
+    eclipse_ring_radii: [f32; 4] as vec4,
+    eclipse_ring_weights: [f32; 4] as vec4,
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 608);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 704);
 
 #[cfg(test)]
 mod tests {
@@ -195,6 +222,7 @@ mod tests {
             "f32" | "u32" => (4, 4),
             "vec2" => (8, 8),
             "vec3" => (12, 16),
+            "vec4" => (16, 16),
             "mat3x3" => (48, 16),
             "mat4x4" => (64, 16),
             other => panic!("no uniform layout rule for {other}"),

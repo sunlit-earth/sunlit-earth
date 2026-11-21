@@ -181,7 +181,7 @@ fn create_render_context() -> RenderContext {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("test_pipeline_layout"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
 
@@ -196,7 +196,7 @@ fn create_render_context() -> RenderContext {
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::buffer_layout()],
+            buffers: &[Some(Vertex::buffer_layout())],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -217,8 +217,8 @@ fn create_render_context() -> RenderContext {
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
@@ -2759,7 +2759,7 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("test_shell_pipeline_layout"),
-            bind_group_layouts: &[&ctx.bind_group_layout],
+            bind_group_layouts: &[Some(&ctx.bind_group_layout)],
             immediate_size: 0,
         });
     ctx.device
@@ -2769,7 +2769,7 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
             vertex: wgpu::VertexState {
                 module: &ctx.shader,
                 entry_point: Some(vs_entry),
-                buffers: &[Vertex::buffer_layout()],
+                buffers: &[Some(Vertex::buffer_layout())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2790,8 +2790,8 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

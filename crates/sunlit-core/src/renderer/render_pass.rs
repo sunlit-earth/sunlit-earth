@@ -761,7 +761,9 @@ pub(super) fn read_texture_rgba8_into(
         .map_err(|_| "the readback never reported whether it was mapped".to_owned())?
         .map_err(|e| format!("the readback buffer could not be mapped: {e}"))?;
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .map_err(|e| format!("the readback buffer could not be read: {e}"))?;
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
     for row in 0..height {
         let start = (row * bytes_per_row) as usize;

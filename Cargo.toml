@@ -12,8 +12,8 @@ repository = "https://github.com/sunlit-earth/sunlit-earth"
 slint = "~1.19"
 raw-window-handle = "0.6"
 slint-build = "~1.19"
-wgpu = { version = "28", features = ["counters"] }
-naga = { version = "28", default-features = false }
+wgpu = { version = "30", features = ["counters"] }
+naga = { version = "30", default-features = false }
 glam = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }

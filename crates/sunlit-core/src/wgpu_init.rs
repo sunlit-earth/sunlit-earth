@@ -45,6 +45,19 @@ fn instance_flags(base: wgpu::InstanceFlags, without_validation: bool) -> wgpu::
     }
 }
 
+/// FXC on Direct3D 12 whatever the machine has. wgpu's default picks DXC
+/// when a `dxcompiler.dll` is on the search path, so two users of one build
+/// would get different shader translations, and the WARP goldens are FXC's.
+fn backend_options() -> wgpu::BackendOptions {
+    wgpu::BackendOptions {
+        dx12: wgpu::Dx12BackendOptions {
+            shader_compiler: wgpu::Dx12Compiler::Fxc,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 /// The process's wgpu instance, created on first use.
 ///
 /// Public so the integration-test harnesses go through the same one; every
@@ -59,13 +72,14 @@ pub fn instance() -> &'static wgpu::Instance {
             clippy::disallowed_methods,
             reason = "the one call site the rule exists to protect"
         )]
-        wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
             flags: instance_flags(
                 wgpu::InstanceFlags::default(),
                 WITHOUT_VALIDATION.load(Ordering::Relaxed),
             )
             .with_env(),
-            ..Default::default()
+            backend_options: backend_options(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         })
     })
 }
@@ -261,6 +275,14 @@ mod tests {
             base | wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::GPU_BASED_VALIDATION
         );
         assert_eq!(instance_flags(base, false), base);
+    }
+
+    #[test]
+    fn direct3d_12_compiles_shaders_with_fxc() {
+        assert!(matches!(
+            backend_options().dx12.shader_compiler,
+            wgpu::Dx12Compiler::Fxc
+        ));
     }
 
     #[test]

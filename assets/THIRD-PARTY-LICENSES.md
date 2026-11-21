@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 533 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
+Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 524 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
 
 ## Packages
 
@@ -47,11 +47,10 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `atspi-common 0.13.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/odilia-app/atspi
 - `atspi-proxies 0.13.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/odilia-app/atspi
 - `base64 0.23.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/marshallpierce/rust-base64
-- `bit-set 0.8.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/contain-rs/bit-set
-- `bit-vec 0.8.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/contain-rs/bit-vec
+- `bit-set 0.10.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/contain-rs/bit-set
+- `bit-vec 0.9.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/contain-rs/bit-vec
 - `bitflags 1.3.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bitflags/bitflags
 - `bitflags 2.13.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bitflags/bitflags
-- `block 0.1.6`, [MIT](#license-13), http://github.com/SSheldon/rust-block
 - `block-buffer 0.12.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/RustCrypto/utils
 - `block2 0.5.1`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `block2 0.6.2`, [MIT](#license-13), https://github.com/madsmtm/objc2
@@ -75,7 +74,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `clap_lex 1.1.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/clap-rs/clap
 - `clipboard-win 5.4.3`, [BSL-1.0](#license-5), https://github.com/DoumanAsh/clipboard-win
 - `clru 0.6.3`, [MIT](#license-13), https://github.com/marmeladema/clru-rs
-- `codespan-reporting 0.12.0`, [Apache-2.0](#license-2), https://github.com/brendanzab/codespan
+- `codespan-reporting 0.13.1`, [Apache-2.0](#license-2), https://github.com/brendanzab/codespan
 - `color_quant 1.1.0`, [MIT](#license-13), https://github.com/image-rs/color_quant.git
 - `colorchoice 1.0.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-cli/anstyle.git
 - `concurrent-queue 2.5.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/smol-rs/concurrent-queue
@@ -84,11 +83,9 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `const-oid 0.10.3`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/RustCrypto/formats
 - `convert_case 0.10.0`, [MIT](#license-13), https://github.com/rutrum/convert-case
 - `core-foundation 0.9.4`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/core-foundation-rs
-- `core-foundation 0.10.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/core-foundation-rs
 - `core-foundation-sys 0.8.7`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/core-foundation-rs
 - `core-graphics 0.23.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/core-foundation-rs
 - `core-graphics-types 0.1.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/core-foundation-rs
-- `core-graphics-types 0.2.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/core-foundation-rs
 - `countme 3.0.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/matklad/countme
 - `cpufeatures 0.3.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/RustCrypto/utils
 - `crc32fast 1.5.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/srijs/rust-crc32fast
@@ -135,7 +132,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `flate2 1.1.11`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/flate2-rs
 - `float-cmp 0.9.0`, [MIT](#license-13), https://github.com/mikedilger/float-cmp
 - `fnv 1.0.7`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/servo/rust-fnv
-- `foldhash 0.1.5`, [Zlib](#license-17), https://github.com/orlp/foldhash
 - `foldhash 0.2.0`, [Zlib](#license-17), https://github.com/orlp/foldhash
 - `font-types 0.12.7`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `fontdb 0.24.0`, [MIT](#license-13), https://github.com/RazrFalcon/fontdb
@@ -160,7 +156,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `gif 0.14.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/image-rs/image-gif
 - `glam 0.25.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bitshifter/glam-rs
 - `glam 0.30.10`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bitshifter/glam-rs
-- `glow 0.16.0`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/grovesNL/glow
+- `glow 0.17.0`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/grovesNL/glow
 - `glow 0.18.0`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/grovesNL/glow
 - `glutin 0.32.3`, [Apache-2.0](#license-2), https://github.com/rust-windowing/glutin
 - `glutin-winit 0.5.0`, [MIT](#license-13), https://github.com/rust-windowing/glutin
@@ -168,17 +164,13 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `glutin_glx_sys 0.6.1`, [Apache-2.0](#license-2), https://github.com/rust-windowing/glutin
 - `glutin_wgl_sys 0.6.1`, [Apache-2.0](#license-2), https://github.com/rust-windowing/glutin
 - `gpu-allocator 0.28.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/Traverse-Research/gpu-allocator
-- `gpu-descriptor 0.3.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/zakarumych/gpu-descriptor
-- `gpu-descriptor-types 0.2.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/zakarumych/gpu-descriptor
 - `half 2.7.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/VoidStarKat/half-rs
 - `harfrust 0.12.0`, [MIT](#license-13), https://github.com/harfbuzz/harfrust
 - `hashbrown 0.14.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/hashbrown
-- `hashbrown 0.15.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/hashbrown
 - `hashbrown 0.16.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/hashbrown
 - `hashbrown 0.17.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/hashbrown
 - `heck 0.5.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/withoutboats/heck
 - `hex 0.4.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/KokaKiwi/rust-hex
-- `hexf-parse 0.2.1`, [CC0-1.0](#license-6), https://github.com/lifthrasiir/hexf
 - `htmlparser 0.2.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/jdrouet/htmlparser.git
 - `http 1.5.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/hyperium/http
 - `httparse 1.10.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/seanmonstar/httparse
@@ -249,18 +241,17 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `lyon_geom 1.0.20`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/nical/lyon
 - `lyon_path 1.0.19`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/nical/lyon
 - `mach2 0.6.0`, [BSD-2-Clause](#license-3) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/JohnTitor/mach2
-- `malloc_buf 0.0.6`, [MIT](#license-13), https://github.com/SSheldon/malloc_buf
 - `matchers 0.2.0`, [MIT](#license-13), https://github.com/hawkw/matchers
 - `memchr 2.8.3`, [Unlicense](#license-16) OR [MIT](#license-13), https://github.com/BurntSushi/memchr
 - `memmap2 0.9.12`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/RazrFalcon/memmap2-rs
 - `memoffset 0.6.5`, [MIT](#license-13), https://github.com/Gilnaa/memoffset
 - `memoffset 0.9.1`, [MIT](#license-13), https://github.com/Gilnaa/memoffset
-- `metal 0.33.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/metal-rs
 - `miniz_oxide 0.8.9`, [MIT](#license-13) OR [Zlib](#license-17) OR [Apache-2.0](#license-2), https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 - `miniz_oxide 0.9.1`, [MIT](#license-13) OR [Zlib](#license-17) OR [Apache-2.0](#license-2), https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 - `moxcms 0.8.1`, [BSD-3-Clause](#license-4) OR [Apache-2.0](#license-2), https://github.com/awxkee/moxcms.git
 - `muda 0.21.2`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/tauri-apps/muda
-- `naga 28.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `naga 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `naga-types 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
 - `natord 1.0.9`, [MIT](#license-13), https://github.com/lifthrasiir/rust-natord
 - `nix 0.23.2`, [MIT](#license-13), https://github.com/nix-rust/nix
 - `nu-ansi-term 0.50.3`, [MIT](#license-13), https://github.com/nushell/nu-ansi-term
@@ -269,7 +260,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `num_enum 0.7.6`, [BSD-3-Clause](#license-4) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/illicitonion/num_enum
 - `num_enum_derive 0.7.6`, [BSD-3-Clause](#license-4) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/illicitonion/num_enum
 - `num_threads 0.1.8`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/jhpratt/num_threads
-- `objc 0.2.7`, [MIT](#license-13), http://github.com/SSheldon/rust-objc
 - `objc-sys 0.3.5`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2 0.5.3`, [MIT](#license-13), https://github.com/madsmtm/objc2
 - `objc2 0.6.5`, [MIT](#license-13), https://github.com/madsmtm/objc2
@@ -303,7 +293,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `parley_data 0.12.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
 - `parley_emoji 0.12.0`, [MIT](#license-13), https://github.com/linebender/parley
 - `parley_engine 0.12.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
-- `paste 1.0.15`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/dtolnay/paste
 - `pastey 0.2.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/as1100k/pastey
 - `percent-encoding 2.3.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/rust-url/
 - `phf 0.14.0`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
@@ -336,6 +325,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `quote 1.0.47`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/dtolnay/quote
 - `range-alloc 0.1.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/range-alloc
 - `raw-window-handle 0.6.2`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/rust-windowing/raw-window-handle
+- `raw-window-metal 1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-windowing/raw-window-metal
 - `rayon 1.12.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rayon-rs/rayon
 - `rayon-core 1.13.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rayon-rs/rayon
 - `read-fonts 0.41.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
@@ -391,7 +381,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `snafu-derive 0.8.9`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/shepmaster/snafu
 - `softbuffer 0.4.8`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-windowing/softbuffer
 - `spin_on 0.1.1`, [Apache-2.0](#license-2) OR [MIT](#license-13)
-- `spirv 0.3.0+sdk-1.3.268.0`, [Apache-2.0](#license-2), https://github.com/gfx-rs/rspirv
+- `spirv 0.4.0+sdk-1.4.341.0`, [Apache-2.0](#license-2), https://github.com/gfx-rs/rspirv
 - `stable_deref_trait 1.2.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/storyyeller/stable_deref_trait
 - `static_assertions 1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/nvzqz/static-assertions-rs
 - `strict-num 0.1.1`, [MIT](#license-13), https://github.com/RazrFalcon/strict-num
@@ -474,12 +464,13 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `webbrowser 1.2.7`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/amodm/webbrowser-rs
 - `webpki-roots 1.0.12`, [CDLA-Permissive-2.0](#license-7), https://github.com/rustls/webpki-roots
 - `weezl 0.1.12`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/image-rs/weezl
-- `wgpu 28.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
-- `wgpu-core 28.0.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
-- `wgpu-core-deps-apple 28.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
-- `wgpu-core-deps-windows-linux-android 28.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
-- `wgpu-hal 28.0.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
-- `wgpu-types 28.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `wgpu 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `wgpu-core 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `wgpu-core-deps-apple 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `wgpu-core-deps-windows-linux-android 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `wgpu-hal 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `wgpu-naga-bridge 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
+- `wgpu-types 30.0.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
 - `widestring 0.4.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/starkat99/widestring-rs.git
 - `widestring 1.2.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/VoidStarKat/widestring-rs
 - `winapi 0.3.9`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/retep998/winapi-rs

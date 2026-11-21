@@ -121,6 +121,7 @@ Each step is one commit on a branch in `.worktrees/`, and each ends with `cargo 
 3. **Network access goes through cargo 1.94.0.** The host firewall refuses sockets to cargo 1.100.0 (WSAEACCES), so lockfile updates and registry fetches ran through `cargo +1.94.0` with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=allow`, and every build and test ran `--offline` on 1.100.0. The lockfile is the same either way; only the process differs from the plan.
 
 4. **The shortcut sheet's card is three pixels tighter.** Slint 1.19 puts `SystemUi` ahead of `SansSerif` in its fallback families (`i-slint-common` `sharedfontique::FALLBACK_FAMILIES`), which is the default font fix: on Windows text is now set in Segoe UI rather than Arial, whose taller lines make the sheet's two wrapped keyboard rows taller. At 800 by 700 the card then scrolled by 9 pixels, which `test_the_shortcut_sheet_keeps_its_text_on_the_card` forbids. The card layout's spacing drops from 9 to 6 pixels and its top and bottom padding from 12 to 10, which leaves 2 pixels to spare there, as two earlier plans tightened the same card for the same test. The plan expected the font change to need no code; this is the one place it did.
+5. **No look at the windows on a desktop in step 3.** The app's GUI may not be launched on the machine this upgrade was made on, so the windows and sheets step 3 lists were not looked at there. With edition 1.19 the UI compiled with no binding loop and no warning, and the `slint_ui` cases, which measure the sheet, the overlays, the time bar, the export sheet and the About tabs, all passed unchanged. What a person would have seen is left to the e2e runs in step 8 and to step 9 on the Windows desktop.
 
 ## Results
 
@@ -128,6 +129,7 @@ Each step is one commit on a branch in `.worktrees/`, and each ends with `cargo 
 |---|---|---|---|---|
 | 1 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Baseline on `main` was the same count. |
 | 2 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Both `scrolls_to_the_end_of_its_document` tests pass with the workaround still in. One failure before departure 4, the shortcut sheet at 800 by 700. Licenses re-baked. |
+| 3 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Edition 1.19 reported no binding loop and no warning. |
 
 ## Risks
 

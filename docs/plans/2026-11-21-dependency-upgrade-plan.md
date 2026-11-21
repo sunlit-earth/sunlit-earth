@@ -130,6 +130,7 @@ Each step is one commit on a branch in `.worktrees/`, and each ends with `cargo 
 | 1 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Baseline on `main` was the same count. |
 | 2 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Both `scrolls_to_the_end_of_its_document` tests pass with the workaround still in. One failure before departure 4, the shortcut sheet at 800 by 700. Licenses re-baked. |
 | 3 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Edition 1.19 reported no binding loop and no warning. |
+| 4 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | About widths removed (the two scroll cases pass), View checks back with their tests, tray prefix dropped (the tray cases read the bound state), `older-version.slint`'s stated width removed: the window measured 440 by 168 with the body three lines tall with and without it, and the older version case now checks that the body wraps and the window holds its button. The optional gesture row rework was not attempted. |
 
 ## Risks
 

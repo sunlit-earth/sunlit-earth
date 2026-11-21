@@ -6366,13 +6366,40 @@ fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
 }
 
 /// A launch beside an older version says so in a window of its own, which
-/// names this version, and "Close" hides it.
+/// names this version, is tall enough for its wrapped text and its button,
+/// and "Close" hides it.
 #[test]
 fn test_the_older_version_window_names_this_version_and_close_hides_it() {
     init();
     let window = sunlit_earth::activation::older_version_window().unwrap();
     window.show().unwrap();
     assert!(window.window().is_visible());
+
+    let labelled_as = |prefix: &str| {
+        ElementQuery::from_root(&window)
+            .find_all()
+            .into_iter()
+            .find(|element| {
+                element
+                    .accessible_label()
+                    .is_some_and(|label| label.starts_with(prefix))
+            })
+            .unwrap_or_else(|| panic!("an element labelled {prefix:?}"))
+    };
+    let heading = labelled_as("An older version is already running");
+    let body = labelled_as("An older version of Sunlit Earth");
+    assert!(
+        body.size().height > heading.size().height,
+        "the body wraps onto more than one line: {:?}",
+        body.size()
+    );
+    let button = labelled_as("Close");
+    #[expect(clippy::cast_precision_loss, reason = "a window height")]
+    let window_height = window.window().size().height as f32 / window.window().scale_factor();
+    assert!(
+        button.absolute_position().y + button.size().height <= window_height,
+        "the window holds its button"
+    );
 
     let labels: Vec<String> = ElementQuery::from_root(&window)
         .find_all()

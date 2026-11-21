@@ -6508,15 +6508,14 @@ fn the_tray_cannot_follow_a_shown_window(case: &str) -> bool {
     skip
 }
 
-/// Slint's tray backends draw no checkmark, so the state is in the titles:
-/// the mark is there exactly when auto-refresh is on, follows the main
-/// window, and a toggle from the tray reaches the window.
+/// The tray's Auto-refresh check follows the main window, and a toggle from
+/// the tray reaches the window.
 #[test]
-fn test_the_tray_auto_refresh_title_carries_the_mark() {
+fn test_the_tray_auto_refresh_check_follows_the_window() {
     let window = create_window();
     window.set_auto_refresh_enabled(false);
     let tray = wired_tray(&window);
-    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
+    assert!(!tray.get_auto_refresh_enabled());
 
     let checkbox = labelled(&window, "Auto-refresh wallpaper")
         .into_iter()
@@ -6524,7 +6523,10 @@ fn test_the_tray_auto_refresh_title_carries_the_mark() {
         .expect("the auto-refresh check box");
     checkbox.invoke_accessible_default_action();
     assert!(window.get_auto_refresh_enabled());
-    assert_eq!(tray.get_auto_refresh_title(), "✓ Auto-refresh");
+    assert!(
+        tray.get_auto_refresh_enabled(),
+        "the check followed the window"
+    );
 
     tray.set_auto_refresh_enabled(false);
     tray.invoke_auto_refresh_toggled(false);
@@ -6532,7 +6534,6 @@ fn test_the_tray_auto_refresh_title_carries_the_mark() {
         !window.get_auto_refresh_enabled(),
         "the tray's toggle reached the window"
     );
-    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
 }
 
 /// "Start on login" in the tray follows each read of the entry and is
@@ -6552,11 +6553,10 @@ fn test_the_tray_start_on_login_item_follows_the_entry() {
         },
     );
     assert!(tray.get_autostart_on());
-    assert_eq!(tray.get_autostart_title(), "✓ Start on login");
     assert!(tray.get_autostart_available());
 
     autostart::ui::show(&window, &Autostart::Off);
-    assert_eq!(tray.get_autostart_title(), "Start on login");
+    assert!(!tray.get_autostart_on());
 
     autostart::ui::show(
         &window,
@@ -6565,7 +6565,7 @@ fn test_the_tray_start_on_login_item_follows_the_entry() {
         },
     );
     assert!(!tray.get_autostart_available());
-    assert_eq!(tray.get_autostart_title(), "Start on login");
+    assert!(!tray.get_autostart_on());
 }
 
 // ---------------------------------------------------------------------------

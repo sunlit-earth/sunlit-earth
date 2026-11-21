@@ -806,9 +806,10 @@ export component MainWindow inherits Window {
                     root.close-window();
                 }
             }
-            // macOS has Quit, with Command + Q, in the App menu Slint builds.
-            if Platform.os != OperatingSystemType.macos : MenuItem {
-                title: "Quit";
+            // On macOS Slint moves the roles quit and about into the App menu.
+            MenuItem {
+                title: Platform.os == OperatingSystemType.macos ? "Quit Sunlit Earth" : "Quit";
+                role: quit;
                 shortcut: @keys(Control + Q);
                 activated => {
                     root.leave-export-sheet();
@@ -891,6 +892,7 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem {
                 title: "About Sunlit Earth";
+                role: about;
                 activated => {
                     root.leave-export-sheet();
                     root.show-about();
@@ -2595,8 +2597,6 @@ export component MainWindow inherits Window {
                 // here or it would roll on after it was.
                 if down {
                     image-container.key-e = false;
-                }
-                if down && Platform.os != OperatingSystemType.macos {
                     image-container.key-q = false;
                 }
                 image-container.key-control = down;

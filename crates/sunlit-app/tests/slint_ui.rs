@@ -6656,27 +6656,47 @@ fn test_each_menu_entry_reaches_its_command() {
     assert!(window.get_shortcut_sheet_open(), "the shortcut sheet opens");
 }
 
-/// File has Quit, which ends the app through `quit-app`, everywhere but on
-/// macOS, where the App menu Slint builds has it.
+/// File has Quit, which ends the app through `quit-app`. The testing backend
+/// keeps it there on macOS as well, where the winit backend moves it into
+/// the App menu by its role, under the title macOS gives that entry.
 #[test]
-fn test_file_quits_except_on_macos() {
+fn test_file_quits() {
     let window = create_window();
     let (count, call) = counter();
     window.on_quit_app(call);
-    if cfg!(target_os = "macos") {
-        let file = menu_texts(&window, "File");
-        file[0].mock_single_click(slint::platform::PointerEventButton::Left);
-        assert_eq!(menu_texts(&window, "Close Window").len(), 1);
-        assert!(menu_texts(&window, "Quit").is_empty(), "File has no Quit");
+    let title = if cfg!(target_os = "macos") {
+        "Quit Sunlit Earth"
     } else {
-        choose(&window, "File", "Quit");
-        assert_eq!(*count.borrow(), 1);
+        "Quit"
+    };
+    choose(&window, "File", title);
+    assert_eq!(*count.borrow(), 1);
+}
+
+/// Quit and About carry the roles that put them in the macOS App menu, which
+/// only the winit backend on macOS acts on and no test can see.
+#[test]
+fn test_quit_and_about_carry_their_menu_roles() {
+    const MAIN: &str = include_str!("../../sunlit-ui/ui/main.slint");
+    for (title, role) in [
+        ("\"Quit\"", "role: quit;"),
+        ("\"About Sunlit Earth\"", "role: about;"),
+    ] {
+        let at = MAIN
+            .find(title)
+            .unwrap_or_else(|| panic!("{title} is in main.slint"));
+        let item = &MAIN[at..];
+        let item = &item[..item.find("activated").expect("the item has activated")];
+        assert!(
+            item.lines().any(|line| line.trim() == role),
+            "{title} has {role}"
+        );
     }
 }
 
 /// Ctrl + Q is Quit's shortcut and reaches it with the preview holding the
-/// keyboard, whose own Q rolls the globe; on macOS File has no Quit, so the
-/// keys stay the preview's.
+/// keyboard, whose own Q rolls the globe. On macOS the winit backend reports
+/// ⌘ as Ctrl, so this is ⌘Q there.
 #[test]
 fn test_control_q_quits_from_the_preview() {
     use slint::platform::Key;
@@ -6688,8 +6708,7 @@ fn test_control_q_quits_from_the_preview() {
     key_down(&window, Key::Control);
     tap(&window, "q");
     key_up(&window, Key::Control);
-    let expected = u32::from(!cfg!(target_os = "macos"));
-    assert_eq!(*count.borrow(), expected);
+    assert_eq!(*count.borrow(), 1);
 }
 
 /// The website and the issue form go through `open-url` with the addresses

@@ -2590,6 +2590,7 @@ fn adapter_line_height(window: &MainWindow, renderer_info: &str) -> f32 {
 // A `Text` whose family and content the test drives, so the width it reports
 // is the width the font gives that string.
 slint::slint! {
+    #[edition = "1.19"]
     export component FamilyProbe inherits Window {
         in property <string> family;
         in property <string> body;
@@ -5296,6 +5297,7 @@ fn test_a_wrapping_gesture_keeps_its_hint_around_it() {
 // A wrapping `Text` in the sheet's description font, whose minimum width is
 // the width of the longest word of what it holds.
 slint::slint! {
+    #[edition = "1.19"]
     export component WordProbe inherits Window {
         in property <string> body;
         out property <length> longest-word: probe.min-width;
@@ -6094,6 +6096,7 @@ fn test_the_speed_hint_names_the_speed() {
 // A key cap in a row narrower than its label asks for, beside text that would
 // take every pixel the cap gives up, and the label alone in the cap's font.
 slint::slint! {
+    #[edition = "1.19"]
     import { KeyCap } from "../sunlit-ui/ui/overlays/common.slint";
     export component SqueezedCap inherits Window {
         out property <length> cap-width: cap.width;

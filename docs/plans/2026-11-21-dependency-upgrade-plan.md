@@ -114,6 +114,21 @@ Each step is one commit on a branch in `.worktrees/`, and each ends with `cargo 
 9. **On the Windows desktop with a GPU**, by the user: the View menu checks flip without flicker, the About tabs reach their end, the tray checks show, and the app idles at the same CPU when hidden.
 10. **Docs and release.** Roadmap entries closed or reworded, `docs/testing.md` if a test changed, CHANGELOG. The version bump and tag follow the release steps in `CLAUDE.md`.
 
+## Departures
+
+1. **Tile packs rebuild once.** The semver compatible `cargo update` of step 1 moved jxl-grid to 0.6.2, jxl-modular to 0.11.3, jxl-oxide to 0.12.6, jxl-render to 0.12.4 and image to 0.25.10. Those versions are part of `DECODER_VERSIONS`, which keys the tile packs, so every user's packs are rebuilt once on the first start after the release. Holding the decoders back would have meant pinning five crates below their compatible releases for no gain beyond skipping one rebuild, so the update stays and the CHANGELOG says so in step 10.
+2. **Clippy fixes outside the plan's file list.** Clippy 1.100 pedantic found new lints in about 40 files the plan did not name (`as_chunks`, `assert_eq` on empties, `map_or_default`, `midpoint`, `Duration` units, and two `float_cmp` expectations that no longer fire). rustc 1.100 also deprecates the atomics' `fetch_update`, so `activation.rs` and a test in `cloud_fetcher.rs` call `try_update` instead. All of them are mechanical and the plan already counted new lints as its own to fix; this records that they reached well beyond the files listed.
+3. **Network access goes through cargo 1.94.0.** The host firewall refuses sockets to cargo 1.100.0 (WSAEACCES), so lockfile updates and registry fetches ran through `cargo +1.94.0` with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=allow`, and every build and test ran `--offline` on 1.100.0. The lockfile is the same either way; only the process differs from the plan.
+
+4. **The shortcut sheet's card is three pixels tighter.** Slint 1.19 puts `SystemUi` ahead of `SansSerif` in its fallback families (`i-slint-common` `sharedfontique::FALLBACK_FAMILIES`), which is the default font fix: on Windows text is now set in Segoe UI rather than Arial, whose taller lines make the sheet's two wrapped keyboard rows taller. At 800 by 700 the card then scrolled by 9 pixels, which `test_the_shortcut_sheet_keeps_its_text_on_the_card` forbids. The card layout's spacing drops from 9 to 6 pixels and its top and bottom padding from 12 to 10, which leaves 2 pixels to spare there, as two earlier plans tightened the same card for the same test. The plan expected the font change to need no code; this is the one place it did.
+
+## Results
+
+| Step | `cargo test` | clippy | fmt | Notes |
+|---|---|---|---|---|
+| 1 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Baseline on `main` was the same count. |
+| 2 | 2037 passed, 0 failed, 24 ignored | 0 warnings | clean | Both `scrolls_to_the_end_of_its_document` tests pass with the workaround still in. One failure before departure 4, the shortcut sheet at 800 by 700. Licenses re-baked. |
+
 ## Risks
 
 - **Text metrics.** The Windows and macOS default font fix may make text wider or narrower; layouts sized to their text (hints, pills, the export sheet) are what to look at in step 3.

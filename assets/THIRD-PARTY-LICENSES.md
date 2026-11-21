@@ -1,18 +1,18 @@
 # Third-party licenses
 
-Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 531 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
+Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 533 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
 
 ## Packages
 
 - `ab_glyph 0.2.32`, [Apache-2.0](#license-2), https://github.com/alexheretic/ab-glyph
 - `ab_glyph_rasterizer 0.1.10`, [Apache-2.0](#license-2), https://github.com/alexheretic/ab-glyph
-- `accesskit 0.24.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
-- `accesskit_atspi_common 0.19.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
-- `accesskit_consumer 0.38.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
-- `accesskit_macos 0.26.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
-- `accesskit_unix 0.22.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
-- `accesskit_windows 0.34.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
-- `accesskit_winit 0.33.2`, [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
+- `accesskit 0.25.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
+- `accesskit_atspi_common 0.21.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
+- `accesskit_consumer 0.39.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
+- `accesskit_macos 0.27.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
+- `accesskit_unix 0.24.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
+- `accesskit_windows 0.35.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
+- `accesskit_winit 0.34.2`, [Apache-2.0](#license-2), https://github.com/AccessKit/accesskit
 - `adler2 2.0.1`, [0BSD](#license-1) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/oyvindln/adler2
 - `ahash 0.8.12`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/tkaitchuck/ahash
 - `alloc-no-stdlib 2.0.4`, [BSD-3-Clause](#license-4), https://github.com/dropbox/rust-alloc-no-stdlib
@@ -63,7 +63,9 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `byteorder-lite 0.1.0`, [Unlicense](#license-16) OR [MIT](#license-13), https://github.com/image-rs/byteorder-lite
 - `bytes 1.12.2`, [MIT](#license-13), https://github.com/tokio-rs/bytes
 - `calloop 0.13.0`, [MIT](#license-13), https://github.com/Smithay/calloop
+- `calloop 0.14.5`, [MIT](#license-13), https://github.com/Smithay/calloop
 - `calloop-wayland-source 0.3.0`, [MIT](#license-13), https://github.com/smithay/calloop-wayland-source
+- `calloop-wayland-source 0.4.1`, [MIT](#license-13), https://github.com/smithay/calloop-wayland-source
 - `cfg-if 1.0.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/cfg-if
 - `cgl 0.3.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/cgl-rs
 - `chrono 0.4.45`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/chronotope/chrono
@@ -127,10 +129,9 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `event-listener-strategy 0.5.4`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/smol-rs/event-listener-strategy
 - `fastrand 2.5.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/smol-rs/fastrand
 - `fdeflate 0.3.7`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/image-rs/fdeflate
-- `femtovg 0.27.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/femtovg/femtovg
+- `femtovg 0.28.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/femtovg/femtovg
 - `field-offset 0.3.6`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/Diggsey/rust-field-offset
 - `fixed_decimal 0.7.3`, [Unicode-3.0](#license-15), https://github.com/unicode-org/icu4x
-- `fixedbitset 0.5.9`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/petgraph/fixedbitset
 - `flate2 1.1.11`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/flate2-rs
 - `float-cmp 0.9.0`, [MIT](#license-13), https://github.com/mikedilger/float-cmp
 - `fnv 1.0.7`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/servo/rust-fnv
@@ -138,7 +139,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `foldhash 0.2.0`, [Zlib](#license-17), https://github.com/orlp/foldhash
 - `font-types 0.12.7`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `fontdb 0.24.0`, [MIT](#license-13), https://github.com/RazrFalcon/fontdb
-- `fontique 0.11.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
+- `fontique 0.12.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
 - `foreign-types 0.5.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/sfackler/foreign-types
 - `foreign-types-macros 0.2.4`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/sfackler/foreign-types
 - `foreign-types-shared 0.3.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/sfackler/foreign-types
@@ -182,14 +183,14 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `http 1.5.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/hyperium/http
 - `httparse 1.10.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/seanmonstar/httparse
 - `hybrid-array 0.4.15`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/RustCrypto/hybrid-array
-- `i-slint-backend-selector 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `i-slint-backend-winit 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `i-slint-common 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `i-slint-compiler 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `i-slint-core 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `i-slint-core-macros 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `i-slint-renderer-femtovg 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `i-slint-renderer-software 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-backend-selector 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-backend-winit 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-common 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-compiler 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-core 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-core-macros 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-renderer-femtovg 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `i-slint-renderer-software 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
 - `iana-time-zone 0.1.65`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/strawlab/iana-time-zone
 - `icu_collections 2.4.0`, [Unicode-3.0](#license-15), https://github.com/unicode-org/icu4x
 - `icu_decimal 2.4.0`, [Unicode-3.0](#license-15), https://github.com/unicode-org/icu4x
@@ -228,7 +229,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `jxl-render 0.12.4`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/tirr-c/jxl-oxide.git
 - `jxl-threadpool 1.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/tirr-c/jxl-oxide.git
 - `jxl-vardct 0.11.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/tirr-c/jxl-oxide.git
-- `keyboard-types 0.7.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/pyfisch/keyboard-types
+- `keyboard-types 0.8.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-windowing/keyboard-types
 - `khronos-egl 6.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/timothee-haudebourg/khronos-egl
 - `ksni 0.3.7`, [Unlicense](#license-16), https://github.com/iovxw/ksni
 - `kurbo 0.13.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/kurbo
@@ -258,11 +259,10 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `miniz_oxide 0.8.9`, [MIT](#license-13) OR [Zlib](#license-17) OR [Apache-2.0](#license-2), https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 - `miniz_oxide 0.9.1`, [MIT](#license-13) OR [Zlib](#license-17) OR [Apache-2.0](#license-2), https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
 - `moxcms 0.8.1`, [BSD-3-Clause](#license-4) OR [Apache-2.0](#license-2), https://github.com/awxkee/moxcms.git
-- `muda 0.19.3`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/tauri-apps/muda
+- `muda 0.21.2`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/tauri-apps/muda
 - `naga 28.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/gfx-rs/wgpu
 - `natord 1.0.9`, [MIT](#license-13), https://github.com/lifthrasiir/rust-natord
 - `nix 0.23.2`, [MIT](#license-13), https://github.com/nix-rust/nix
-- `nom 8.0.0`, [MIT](#license-13), https://github.com/rust-bakery/nom
 - `nu-ansi-term 0.50.3`, [MIT](#license-13), https://github.com/nushell/nu-ansi-term
 - `num-conv 0.2.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/jhpratt/num-conv
 - `num-traits 0.2.19`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-num/num-traits
@@ -294,22 +294,22 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `option-ext 0.2.0`, [MPL-2.0](#license-14), https://github.com/soc/option-ext.git
 - `ordered-float 5.5.1`, [MIT](#license-13), https://github.com/reem/rust-ordered-float
 - `ordered-stream 0.2.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/danieldg/ordered-stream
-- `os_pipe 1.2.3`, [MIT](#license-13), https://github.com/oconnor663/os_pipe.rs
 - `owned_ttf_parser 0.25.1`, [Apache-2.0](#license-2), https://github.com/alexheretic/owned-ttf-parser
 - `parking 2.2.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/smol-rs/parking
 - `parking_lot 0.12.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/Amanieu/parking_lot
 - `parking_lot_core 0.9.12`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/Amanieu/parking_lot
 - `parlance 0.1.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
-- `parley 0.11.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
-- `parley_data 0.11.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
+- `parley 0.12.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
+- `parley_data 0.12.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
+- `parley_emoji 0.12.0`, [MIT](#license-13), https://github.com/linebender/parley
+- `parley_engine 0.12.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/parley
 - `paste 1.0.15`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/dtolnay/paste
 - `pastey 0.2.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/as1100k/pastey
 - `percent-encoding 2.3.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/rust-url/
-- `petgraph 0.8.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/petgraph/petgraph
-- `phf 0.13.1`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
-- `phf_generator 0.13.1`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
-- `phf_macros 0.13.1`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
-- `phf_shared 0.13.1`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
+- `phf 0.14.0`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
+- `phf_generator 0.14.0`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
+- `phf_macros 0.14.0`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
+- `phf_shared 0.14.0`, [MIT](#license-13), https://github.com/rust-phf/rust-phf
 - `pico-args 0.5.0`, [MIT](#license-13), https://github.com/RazrFalcon/pico-args
 - `pin-project 1.2.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/taiki-e/pin-project
 - `pin-project-internal 1.2.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/taiki-e/pin-project
@@ -344,7 +344,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `regex-syntax 0.8.12`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/regex
 - `renderdoc-sys 1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/ebkalderon/renderdoc-rs
 - `resize 0.8.9`, [MIT](#license-13), https://github.com/PistonDevelopers/resize.git
-- `resvg 0.48.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/resvg
+- `resvg 0.49.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/resvg
 - `rfd 0.18.0`, [MIT](#license-13), https://github.com/PolyMeilex/rfd
 - `rgb 0.8.53`, [MIT](#license-13), https://github.com/kornelski/rust-rgb
 - `ring 0.17.14`, [Apache-2.0](#license-2) AND [ISC](#license-9), https://github.com/briansmith/ring
@@ -378,11 +378,13 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `siphasher 1.0.4`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/jedisct1/rust-siphash
 - `skrifa 0.44.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/googlefonts/fontations
 - `slab 0.4.12`, [MIT](#license-13), https://github.com/tokio-rs/slab
-- `slint 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
-- `slint-macros 1.18.1`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `slint 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
+- `slint-macros 1.19.0`, [GPL-3.0-only](#license-8) OR [LicenseRef-Slint-Royalty-free-2.0](#license-10) OR [LicenseRef-Slint-Software-3.0](#license-11), https://github.com/slint-ui/slint
 - `slotmap 1.1.1`, [Zlib](#license-17), https://github.com/orlp/slotmap
 - `smallvec 1.16.6`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/smallvec/smallvec
 - `smithay-client-toolkit 0.19.2`, [MIT](#license-13), https://github.com/smithay/client-toolkit
+- `smithay-client-toolkit 0.20.0`, [MIT](#license-13), https://github.com/smithay/client-toolkit
+- `smithay-clipboard 0.7.3`, [MIT](#license-13), https://github.com/smithay/smithay-clipboard
 - `smol_str 0.2.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-analyzer/smol_str
 - `smol_str 0.3.7`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-lang/rust-analyzer/tree/master/lib/smol_str
 - `snafu 0.8.9`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/shepmaster/snafu
@@ -404,7 +406,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `syn 3.0.10`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/dtolnay/syn
 - `synstructure 0.14.0`, [MIT](#license-13), https://github.com/mystor/synstructure
 - `sys-locale 0.3.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/1Password/sys-locale
-- `taffy 0.10.1`, [MIT](#license-13), https://github.com/DioxusLabs/taffy
+- `taffy 0.15.1`, [MIT](#license-13), https://github.com/DioxusLabs/taffy
 - `task-local 0.1.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/BugenZhao/task-local
 - `text-size 1.1.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-analyzer/text-size
 - `thiserror 1.0.69`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/dtolnay/thiserror
@@ -434,7 +436,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `tracing-core 0.1.36`, [MIT](#license-13), https://github.com/tokio-rs/tracing
 - `tracing-log 0.2.0`, [MIT](#license-13), https://github.com/tokio-rs/tracing
 - `tracing-subscriber 0.3.23`, [MIT](#license-13), https://github.com/tokio-rs/tracing
-- `tree_magic_mini 3.2.2`, [MIT](#license-13), https://github.com/mbrubeck/tree_magic/
 - `ttf-parser 0.25.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/harfbuzz/ttf-parser
 - `typed-index-collections 3.5.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/zheland/typed-index-collections
 - `typenum 1.20.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/paholg/typenum
@@ -451,7 +452,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `ureq 3.5.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/algesten/ureq
 - `ureq-proto 0.7.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/algesten/ureq-proto
 - `url 2.5.9`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/servo/rust-url
-- `usvg 0.48.1`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/resvg
+- `usvg 0.49.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/resvg
 - `utf8-zero 0.8.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/algesten/utf8-zero
 - `utf8_iter 1.1.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/hsivonen/utf8_iter
 - `utf8parse 0.2.2`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/alacritty/vte
@@ -464,6 +465,8 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `wayland-csd-frame 0.3.0`, [MIT](#license-13), https://github.com/rust-windowing/wayland-csd-frame
 - `wayland-cursor 0.31.14`, [MIT](#license-13), https://github.com/smithay/wayland-rs
 - `wayland-protocols 0.32.13`, [MIT](#license-13), https://github.com/smithay/wayland-rs
+- `wayland-protocols-experimental 20250721.0.1`, [MIT](#license-13), https://github.com/smithay/wayland-rs
+- `wayland-protocols-misc 0.3.12`, [MIT](#license-13), https://github.com/smithay/wayland-rs
 - `wayland-protocols-plasma 0.3.12`, [MIT](#license-13), https://github.com/smithay/wayland-rs
 - `wayland-protocols-wlr 0.3.12`, [MIT](#license-13), https://github.com/smithay/wayland-rs
 - `wayland-scanner 0.31.11`, [MIT](#license-13), https://github.com/smithay/wayland-rs
@@ -500,7 +503,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `winnow 0.7.15`, [MIT](#license-13), https://github.com/winnow-rs/winnow
 - `winnow 1.0.5`, [MIT](#license-13), https://github.com/winnow-rs/winnow
 - `winreg 0.56.0`, [MIT](#license-13), https://github.com/gentoo90/winreg-rs
-- `wl-clipboard-rs 0.9.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/YaLTeR/wl-clipboard-rs
 - `writeable 0.6.4`, [Unicode-3.0](#license-15), https://github.com/unicode-org/icu4x
 - `x11-dl 2.21.0`, [MIT](#license-13), https://github.com/AltF02/x11-rs.git
 - `x11rb 0.13.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/psychon/x11rb

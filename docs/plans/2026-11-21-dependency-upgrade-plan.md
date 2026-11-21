@@ -1,0 +1,123 @@
+# Slint 1.19 and the dependency upgrade
+
+## Problem
+
+Slint 1.19.0 (released 2026-11-16) carries the upstream fixes two open issues are waiting for, #94 (the menu bar flickers when a menu item's state changes) and #66 (the About window's tabs cannot scroll to the end), and it closes or moves several roadmap items that name Slint 1.18. It needs Rust 1.95, and the tree pins 1.94.0. Since the toolchain has to move anyway, this plan takes every other direct dependency with a newer major version along, in separate steps so each regression has one suspect.
+
+## How this was established
+
+- The Slint 1.19.0 changelog, read from `CHANGELOG.md` at tag `v1.19.0`, and the Slint sources at that tag for the details below (`internal/compiler/layout.rs`, `internal/compiler/project_file.rs`, `internal/compiler/diagnostics.rs`, `api/rs/macros/lib.rs`, `api/rs/build/lib.rs`, `internal/backends/winit/muda.rs`, `internal/common/enums.rs`, the editions page under `docs/astro`).
+- That the two fixes are in the release: `gh api repos/slint-ui/slint/compare/<commit>...v1.19.0` reports `ahead` for both c923cab24 (slint-ui/slint#13683, fixing #13655) and fbd87584 (the merge of slint-ui/slint#13119).
+- `cargo update --dry-run --verbose` on `main` at a376f23 for the list of held back crates, and `rustup check` for the current stable (1.100.0, 2026-11-09).
+- wgpu/naga 30 and the twelve other crates: two research agents, each on a throwaway copy of the workspace in a scratch directory, never in the repository. Both bumped the crates, fixed the compile errors, and ran what the Windows host could run. Their results are summarized per crate below. The Linux and macOS only crates (x11rb, signal-hook, mach2) were read, not compiled.
+
+## Toolchain
+
+Slint 1.19 declares `rust-version = 1.95`. Of the other upgrades the highest MSRV is zip 9.8.1 at 1.89, and wgpu 30 is 1.87, so 1.95.0 is the floor and nothing else raises it.
+
+The pin in `rust-toolchain.toml` reaches CI (the jobs run `rustup toolchain install` in a rustup home of their own) and the builders (`dist` runs `rustup toolchain install <channel>` inside the pristine builder overlay on every build, `commands/dist.rs::build_job`). No image needs rebuilding. The builder's build cache is keyed on the channel (`store/cache.rs`), so the first `dist` per target after the bump is a cold build. The builder images still carry 1.94.0 from their Packer variable; rebuilding them later saves the download per `dist` and is not required.
+
+Newer compilers bring new rustc and clippy lints. CI denies rustc warnings; clippy pedantic is on and not gated, so new clippy findings are this plan's to fix too.
+
+## Slint 1.19
+
+### What it fixes for us
+
+| Issue or roadmap item | Slint 1.19 | Action |
+|---|---|---|
+| #94, the View menu's checks made the window flicker on Windows (roadmap: "On Windows the preview flashed white...") | slint-ui/slint#13119 is in: the muda menu bar is diffed instead of rebuilt. Changelog: "Fixed the menu bar and task bar flickering when the menu changes" and "Fixed stale native menu events activating items after a menu rebuild". | Bring back the checks of 6c58e99 (Controls, Frame Guides, Pin Time Bar, two way bound, Controls through an inverse of `overlays-hidden`), remove the comment at `main.slint:821`, and confirm on the Windows desktop that nothing flickers. Close #94. |
+| #66, the About tabs end early (roadmap: "Since Slint 1.18 the About window's Attributions...") | c923cab24 is in and is not edition gated: a repeated or conditional cell of a layout is measured at the width it is given. Non-layout parents such as a `Flickable` counting their `if`/`for` children (slint-ui/slint#407) is edition 1.19 only. | Remove the preferred width workaround in `about.slint` (the `attributions-column` and `third-party-column` properties and what reads them). The two `scrolls_to_the_end_of_its_document` tests in `slint_ui.rs` decide whether it holds without edition 1.19; if they fail before step 3, they must pass after it. Keep the tests. Close #66. |
+| Tray checks drawn as a `✓ ` prefix (roadmap: "Slint's tray backends ignore `checked`") | slint-ui/slint#14419: "SystemTrayIcon: Checkable menu items show their checked state" on all three backends. | Drop the prefix and the comment in `tray.slint`; `checkable` and `checked` are already set. |
+| macOS App menu (roadmap: "Slint menu roles for the macOS App menu", and "Whether the macOS App menu's Quit (⌘Q) saves...") | `MenuItem.role` (`about`, `preferences`, `quit`, `services`, `hide`, `hide-others`, `show-all`). On macOS a role item replaces muda's predefined one in the App menu and keeps its own `activated`; elsewhere `about`, `preferences` and `quit` stay where declared. | Decision 3, step 5. With `role: quit` on File > Quit, ⌘Q would run `menu::quit` and save the geometry; with `role: about` on Help > About, the App menu's About opens our window. Hide stays AppKit's (`activated` is not invoked for that role), so its `window_state` bypass stays open. |
+| Wayland activation token (roadmap: "Wayland activation needs the token at window creation") | slint-ui/slint#14360 only applies the launcher's token to the first window of a process, from the environment. Handing a second launch's token to an existing window is slint-ui/slint#14822, still open. | Not closed. Update the roadmap entry to name #14822. Note that Slint now clears `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID` when it creates the first window; `Launch::of_this_process` reads them in `hand_over` before any window exists, so this is safe as the code stands. |
+| ksni `assume_sni_available` (roadmap) | Not mentioned in 1.19. slint-ui/slint#13693 (tray menu sometimes empty) is a different fix. | Unchanged. |
+| macOS see-through title bar (roadmap, waiting on a Mac) | Nothing new. | Unchanged. |
+
+Not tied to an item but relevant: winit no longer renders every change twice on Windows and X11 and no longer wakes at the refresh rate while a window is hidden or minimized; a `Window` dropped while visible no longer keeps the event loop running; the default font family on Windows and macOS was fixed (#13540), which changes text metrics and so possibly the size of hints and rows; Ctrl shortcuts work under Caps Lock and some xkb modifier setups were fixed (#13233); `changed` handlers now run right after a property is set from `invoke_from_event_loop`. Any of these can move a `slint_ui` test or an e2e measurement, and none of them should need code.
+
+### Breaking or noisy changes that hit the tree
+
+1. **`slint!` without an edition is a compile error in CI.** The macro emits a missing edition warning as a `#[deprecated]` constant (`diagnostics::macro_warning`), and CI sets `RUSTFLAGS=-D warnings`. `#[edition = "1.18"]` warns as well; only `"1.19"` is silent. The three `slint::slint!` blocks in `crates/sunlit-app/tests/slint_ui.rs` (lines 2592, 5298, 6096) need `#[edition = "1.19"]` as the first line of their body.
+2. **`slint-build` without an edition** reports an info, and `slint-build` drops infos (`diag.remove_infos()`), so nothing shows. New 1.19 compiler warnings, such as a value with no effect at the end of an `if` branch, surface as `cargo:warning` lines and do not fail CI. Fix what appears.
+3. **The internal API in the tests.** `slint_ui.rs:2835` reaches `i_slint_core::window::WindowInner` and `InternalToken`, and `i-slint-backend-testing` and `i-slint-core` are pinned `=1.18.1`. Both pins move to `=1.19.0`; the internal call may need adjusting.
+4. **The 1.19 language edition** (step 3) changes three behaviors: `if` and `for` elements size their parent like any other child, a `width`, `height`, `x` or `y` set by only some states keeps its default outside them, and inner binding loops are reported as errors. Each can turn into a binding loop error or a changed layout. The editions page lists the fixes.
+5. **`SLINT_ENABLE_EXPERIMENTAL_FEATURES`** now takes names, and `1` is an error. The tree sets neither it nor `SLINT_FEATURE_EXPERIMENTAL`.
+6. **Transitive changes**: muda 0.19 to 0.21, femtovg 0.27 to 0.28. winit stays 0.30. Slint's own wgpu support is behind `unstable-wgpu-29`/`-30`, which the app does not enable; the wgpu 30.0.1 already in `Cargo.lock` comes from a target this project does not build (`cargo tree -i wgpu@30.0.1` prints nothing for the host), so the shipped binaries hold one wgpu today and must still hold one afterwards.
+
+### Workarounds that 1.19 may or may not retire
+
+- `older-version.slint:34` sets the wrapped text's preferred width by hand because the window takes its height from the layout's preferred height. c923cab24 keeps measuring at the preferred width for "a root that no layout sizes, such as a window or a popup", so this one probably stays. Try removing it, look at the window, and keep it with an updated comment if the window comes out one line tall.
+- The gesture row in the overlay hints (`common.slint`, 9ced79d, preview overlays plan) places glyph, text and keys by hand because 1.18 measured the `if` section at its preferred width. With 1.19 and edition 1.19 it could go back to a layout. Optional; the hand placement works.
+
+## wgpu and naga 28 to 30
+
+Eleven edits in `sunlit-core`, all following the compiler's suggestions. After them `cargo clippy --all-targets -p sunlit-core` was clean and every sunlit-core suite passed on WARP on this host with the real textures (697 unit, 4 bc7, 157 engine, 25 golden, 51 render_pipeline, 7 shading, 1 soak), on 30.0.1.
+
+| Change | Call sites | Fix |
+|---|---|---|
+| `Instance::new` takes the descriptor by value, and `InstanceDescriptor` has no `Default` | `wgpu_init.rs:62`, `:68` | Drop the `&`; `..wgpu::InstanceDescriptor::new_without_display_handle()` in place of `..Default::default()`. The `clippy.toml` entry `wgpu::Instance::new` still matches. |
+| `PipelineLayoutDescriptor.bind_group_layouts` is `&[Option<&BindGroupLayout>]` | `gpu_setup.rs:335`; `tests/bc7.rs:243`; `tests/render_pipeline.rs:184`, `:2762` | `Some(...)` |
+| `VertexState.buffers` is `&[Option<VertexBufferLayout>]` | `gpu_setup.rs:631` to `:660`; `tests/render_pipeline.rs:199`, `:2772` | `Some(...)`, and the tuple type at `gpu_setup.rs:637` |
+| `DepthStencilState.depth_write_enabled` and `depth_compare` are `Option` | `gpu_setup.rs:682`; `tests/render_pipeline.rs:220`, `:2793` | `Some(...)` |
+| `BufferSlice::get_mapped_range` returns a `Result` | `render_pass.rs:764`; `tests/common/mod.rs:124`; `tests/shading.rs:227` | `map_err(...)?` in `render_pass.rs`, which already returns `Result<_, String>` |
+
+**The DX12 shader compiler default changed** from `Fxc` (wgpu-types 28.0.0) to `Auto` (30.0.1, confirmed in `backend.rs`): a statically linked DXC if built in (it is not), then a `dxcompiler.dll` found by name, then FXC. A user with `dxcompiler.dll` on the search path would get different shader translation than one without. Decision 4 pins FXC.
+
+Unchanged and checked: `Device::poll` and `PollType`, adapter enumeration and selection, the features and limits requested, `InstanceFlags` and `with_env()`, the internal counters and `generate_allocator_report` that `memory-report` and the soak test read, `copy_texture_to_buffer`, cube, array and MSAA textures, and naga's WGSL parse, validation and MSL output for `sphere.wgsl` and `blend.wgsl`. The tree drops `metal`, `objc`, `gpu-descriptor` and naga 28 and gains `naga-types`, `wgpu-naga-bridge` and `raw-window-metal`, all under licenses already in the corpus.
+
+Not verified: lavapipe on Linux, the Metal paravirtual device on macOS, and 30.0.2 itself (30.0.1 was run; the 30.0.2 sources were read).
+
+## The other crates
+
+Bumped on a copy, compiled with `cargo check --workspace --all-targets` on Windows after the fixes listed.
+
+| Crate | From, to | MSRV | Code changes | Notes |
+|---|---|---|---|---|
+| glam | 0.30, 0.34.3 | 1.85 | 0.34 removed `Mat4::look_at_rh` and `perspective_rh`. `camera.rs:319`, `:327`, `moon.rs:219`, `tests/render_pipeline.rs:28`, `:31`, `:3525`, `:3526` move to `glam::camera::rh::view::look_at_mat4` and `glam::camera::rh::proj::directx::perspective`; the doc comment at `display/layout.rs:16` follows. | Bit identical on 39 cases. |
+| toml | 0.9, 1.2.2 | 1.85 | None. | Serialized `ConfigFile` byte identical both ways, so `config.toml` is unaffected. Removes a duplicate toml. |
+| zip | 6, 9.8.1 | 1.89 | `ZipFile::name()` returns a `Result`: `bundle.rs:757` and the test at `:1851`, `:1856`. | Since 7.2 the "version made by" system is the host's, so the Windows archive built on Windows would lose its Unix modes: add `.system(zip::System::Unix)` to the options at `bundle.rs:677`, which restores zip 6's bytes. Resolve with `cargo update -p zip -p zeroize`, or zip stops at 9.4.1. |
+| resvg | 0.48, 0.50 | 1.85 | None. | Icon bake unchanged except the `.ico`, below. |
+| ico | 0.5, 0.6 | none declared | None. | `sunlit-earth.ico` re-bakes to different bytes (likely its move to png 0.18), so `cargo xtask bake icon` and a committed `.ico` go with it. Removes png 0.17. |
+| icns | 0.4, 0.5 | 1.87 | None. | `.icns` byte identical. |
+| windows-sys | 0.59, 0.61.2 | 1.71 | `BOOL` moved to `windows_sys::core`: `wallpaper/windows.rs:82`. | All eleven feature names used still exist. 0.59 stays in the tree through other crates. |
+| dirs | 6, 7 | none declared | None. | The only change is Windows `preference_dir` (unused). `data_local_dir`, `picture_dir`, `home_dir` unchanged, so no file moves for existing users. |
+| pollster | 0.4, 1.0.3 | 1.69 | None. | Removes a duplicate. |
+| x11rb | 0.13, 0.14 | 1.68 | None expected; not compiled. | Drops abstract socket support for reaching an X server. Adds a duplicate, since winit, softbuffer and arboard stay on 0.13. |
+| signal-hook | 0.3, 0.4.6 | 1.66 | None expected; not compiled. | Only `low_level::pipe` changed; the tree uses `iterator::Signals`. |
+| mach2 | 0.6, 0.7 | 1.85 (edition 2024) | None expected; not compiled. | Additions only in the modules `memory/macos.rs` uses. |
+
+x11rb is the only bump that adds a duplicate and buys nothing measurable. It is in the plan because it is small and the Linux guests exercise every call site, but it is the first to drop if the Linux e2e runs show anything.
+
+`cargo xtask bake licenses` has to run after every step that changes `Cargo.lock`, or `the_committed_bake_matches_a_fresh_one` fails.
+
+## Decisions
+
+Settled with the user on 2026-11-21.
+
+1. **Toolchain: 1.100.0**, the current stable, rather than the 1.95.0 floor. The toolchain moves anyway, and the new lints are fixed in step 1.
+2. **Slint edition 1.19 everywhere**: the three `slint!` blocks in the tests and `build.rs`. The `build.rs` edition is its own step after the plain upgrade, so a layout change is attributable to the edition and not to the version.
+3. **macOS menu roles in this upgrade** (step 5). `role: about` on Help > About and `role: quit` on File > Quit. Nobody here can observe the App menu, so the step is verified on the macOS runner and recorded as reviewed, not observed, in `docs/platforms.md`.
+4. **DX12 compiler pinned to FXC** through `backend_options.dx12.shader_compiler` in `wgpu_init.rs`, so shader translation does not depend on whether a user has `dxcompiler.dll` on the path and this upgrade does not move the WARP goldens. Moving to DXC can be a deliberate change later.
+
+## Steps
+
+Each step is one commit on a branch in `.worktrees/`, and each ends with `cargo build`, `cargo test`, `cargo clippy --all-targets` and `cargo fmt --check` passing, plus `cargo xtask bake licenses` where `Cargo.lock` moved.
+
+1. **Baseline and toolchain.** Record `cargo test` on `main`. Bump `rust-toolchain.toml` to `1.100.0`, update the channel in the toolchain tests (`guest/toolchain.rs`, and the `moved_channel` fixture in `dist.rs:2682` if it must differ from the pin), run `cargo update` for the semver compatible updates, fix new lints.
+2. **Slint 1.19, behavior unchanged.** `slint` and `slint-build` to `~1.19`, `i-slint-backend-testing` and `i-slint-core` to `=1.19.0`, `#[edition = "1.19"]` in the three `slint!` blocks, the internal API in `slint_ui.rs` if it broke. No `build.rs` edition yet. Update the "Slint ~1.18" line in `CLAUDE.md` and the Slint version mentions in `docs/architecture.md` and `docs/platforms.md`.
+3. **Edition 1.19 for the UI.** `.with_edition((1, 19))` in `crates/sunlit-ui/build.rs`. Fix binding loops the compiler reports, then look at every window and sheet on the desktop for layout changes (main window, sidebar, overlays and hints, time bar, export sheet, About, older version notice, shortcut sheet).
+4. **Retire the 1.18 workarounds.** In order, each checked on its own: the About column widths (#66), the View checks (#94), the tray prefix, then the trial removal of `older-version.slint`'s and optionally the gesture row's. Update the roadmap entries they close and the menu bar plan's decision 5 note.
+5. **macOS menu roles.** `role: about` on Help > About Sunlit Earth and `role: quit` on File > Quit in `main.slint`. File > Quit is behind `if Platform.os != OperatingSystemType.macos` today (`main.slint:803`) because the App menu Slint builds has its own; with the role it becomes one item on every platform, which Slint moves into the App menu on macOS (`muda.rs::take_role_entries`), and the role defaults its shortcut to ⌘Q there. On Windows and Linux both items stay where they are, so the menu tests there must not change. On macOS the App menu's About then opens the app's About window and ⌘Q runs `menu::quit`, which saves the geometry. Verify on `macos-build.yml` as far as a runner can, update the two roadmap entries (menu roles; whether ⌘Q saves) and the macOS App menu paragraph in `docs/platforms.md`, and add the check to `docs/macos-testing.md`.
+6. **wgpu and naga 30.** The eleven edits, the FXC pin, `cargo tree -d` showing one wgpu on Windows, Linux and macOS targets, goldens on WARP (`cargo test -p sunlit-core --test golden`).
+7. **The other crates.** glam, toml, zip (with `System::Unix`), resvg, ico, icns, windows-sys, dirs, pollster, then x11rb, signal-hook and mach2. Re-bake the icon. `cargo xtask bundle --platform windows --exe <release exe> --verify` to exercise the zip writer and reader.
+8. **Cross platform verification.** `cargo xtask e2e --target windows`; `cargo xtask e2e --target linux` on KDE (X11), GNOME on Wayland, sway and i3, which together cover x11rb, the Wayland window fixes and the tray; the goldens on lavapipe through the Linux guest or `golden.yml`; `macos-build.yml` in `build-and-e2e` mode for mach2, objc2 and Metal; `cargo xtask dist --target all` for the release builds and the cold builder cache.
+9. **On the Windows desktop with a GPU**, by the user: the View menu checks flip without flicker, the About tabs reach their end, the tray checks show, and the app idles at the same CPU when hidden.
+10. **Docs and release.** Roadmap entries closed or reworded, `docs/testing.md` if a test changed, CHANGELOG. The version bump and tag follow the release steps in `CLAUDE.md`.
+
+## Risks
+
+- **Text metrics.** The Windows and macOS default font fix may make text wider or narrower; layouts sized to their text (hints, pills, the export sheet) are what to look at in step 3.
+- **Edition 1.19 binding loops** in components that read a parent's size from inside an `if`. The compiler reports them, so they cannot ship silently, but each needs a decision on which side owns the size.
+- **Windows creation errors.** Slint 1.19's winit backend reports an error when no renderer supports the required graphics API instead of running without a window. The guests have no OpenGL; the Windows guest forces `winit-software` and the Linux guest uses Mesa's llvmpipe for GL, so both should be fine, and the e2e runs in step 8 are what proves it.
+- **lavapipe and Metal on wgpu 30** were not run by the research; step 8 covers both.
+- **The macOS menu roles** cannot be observed here; the runner shows the App menu over VNC at best, and a person on a Mac is the real check.

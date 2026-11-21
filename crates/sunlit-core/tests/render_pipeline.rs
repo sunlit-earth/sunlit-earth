@@ -3889,7 +3889,7 @@ fn probe_cube(
     let vector = |v: [f32; 4]| glam::Vec3::from_slice(&v[..3]).as_dvec3();
     normals
         .iter()
-        .zip(results.chunks_exact(2))
+        .zip(results.as_chunks::<2>().0)
         .map(|(&normal, pair)| Probed {
             normal: normal.normalize(),
             warped: vector(pair[0]),
@@ -4045,10 +4045,10 @@ fn the_warped_direction_is_continuous_across_every_face_edge() {
         );
     }
     let mut worst = ProbeWorst::default();
-    for pair in probed[..edge_samples].chunks_exact(2) {
+    for pair in probed[..edge_samples].as_chunks::<2>().0 {
         worst.neighbors(&pair[0], &pair[1], "across an edge");
     }
-    for corner in probed[edge_samples..].chunks_exact(3) {
+    for corner in probed[edge_samples..].as_chunks::<3>().0 {
         for (i, j) in [(0, 1), (1, 2), (0, 2)] {
             worst.neighbors(&corner[i], &corner[j], "around a corner");
         }

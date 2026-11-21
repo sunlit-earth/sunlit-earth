@@ -1099,7 +1099,10 @@ mod tests {
             desktop_windows(Some(vec![1, 2]), tree, frames, is_desktop),
             vec![21, 3]
         );
-        assert!(desktop_windows(None, Vec::new, frames, is_desktop).is_empty());
+        assert_eq!(
+            desktop_windows(None, Vec::new, frames, is_desktop),
+            [] as [u32; 0]
+        );
     }
 
     #[test]

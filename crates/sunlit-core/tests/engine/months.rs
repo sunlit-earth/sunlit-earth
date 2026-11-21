@@ -634,7 +634,7 @@ fn the_live_clock_reads_the_next_month_ahead_and_crosses_without_a_wait() {
     );
 
     gate.shut();
-    harness.advance(&clock, Duration::from_secs(2 * 3600));
+    harness.advance(&clock, Duration::from_hours(2));
     harness.settle();
     let after = tile_report(&harness);
     assert_month(&after, 4, None, "after the hand-over");

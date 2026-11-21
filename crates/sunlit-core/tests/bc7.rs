@@ -519,8 +519,10 @@ fn upload(
 }
 
 fn worst_channel(a: &[u8], b: &[u8]) -> u8 {
-    a.chunks_exact(4)
-        .zip(b.chunks_exact(4))
+    a.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
         .flat_map(|(x, y)| (0..3).map(move |c| x[c].abs_diff(y[c])))
         .max()
         .unwrap_or(0)

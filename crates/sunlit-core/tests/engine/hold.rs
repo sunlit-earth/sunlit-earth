@@ -65,7 +65,7 @@ fn a_hold_keeps_a_live_scene_where_it_was() {
     let held = redrawn_instant(group, &params);
     let at_hold = group.export(EXPORT.0, EXPORT.1);
 
-    group.advance(&group.clock, Duration::from_secs(6 * 3600));
+    group.advance(&group.clock, Duration::from_hours(6));
     assert_eq!(redrawn_instant(group, &params), held, "the preview moved");
     assert!(
         group.export(EXPORT.0, EXPORT.1) == at_hold,
@@ -250,7 +250,7 @@ fn a_publish_owed_at_exit_under_a_hold_draws_the_clock() {
     let at_hold = sink.publications()[0].frames.clone();
 
     hold(&harness, true);
-    harness.advance(&clock, Duration::from_secs(6 * 3600));
+    harness.advance(&clock, Duration::from_hours(6));
     harness.settle();
     harness.engine.send(EngineCommand::RenderWallpaperNow);
     harness.settle();

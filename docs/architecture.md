@@ -391,7 +391,7 @@ The e2e harness and the xtask read seven more. They do not go through `env_overr
 
 ## Key constraints
 
-- `rust-toolchain.toml` pins the channel (`1.94.0`, profile minimal, rustfmt and clippy).
+- `rust-toolchain.toml` pins the channel (`1.100.0`, profile minimal, rustfmt and clippy).
   rustup honors it in this checkout whatever the host's default is, which is intended:
   a release build has to be able to say which compiler made it, and the builder images
   install the channel `guest::toolchain::pinned` reads out of that file. A developer whose

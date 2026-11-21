@@ -240,8 +240,7 @@ pub fn entry_state(text: &str) -> Autostart {
         .as_deref()
         .and_then(|exec| parse_exec(exec).into_iter().next())
         .or_else(|| keys.try_exec.as_deref().map(unescape_string))
-        .map(PathBuf::from)
-        .unwrap_or_default();
+        .map_or_default(PathBuf::from);
     let is = |value: Option<&String>, word: &str| {
         value.is_some_and(|value| value.eq_ignore_ascii_case(word))
     };

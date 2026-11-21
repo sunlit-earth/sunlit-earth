@@ -940,8 +940,7 @@ fn an_export_answered_as_the_engine_stops_under_a_hold_keeps_the_held_instant() 
             .expect("pixels")
     });
 
-    rig.harness
-        .advance(&rig.clock, Duration::from_secs(6 * 3600));
+    rig.harness.advance(&rig.clock, Duration::from_hours(6));
     let (reply, replies) = crossbeam_channel::bounded(1);
     rig.harness.engine.send(EngineCommand::ExportPixels {
         width: SCREEN.0,

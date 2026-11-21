@@ -434,12 +434,7 @@ fn night_mode_reads_the_night_half_of_the_page_table() {
         },
         FRAME,
     );
-    let pixels = |frame: &[u8]| -> Vec<[u8; 4]> {
-        frame
-            .chunks_exact(4)
-            .map(|px| px.try_into().expect("four bytes"))
-            .collect()
-    };
+    let pixels = |frame: &[u8]| -> Vec<[u8; 4]> { frame.as_chunks::<4>().0.to_vec() };
     let (day, night) = (pixels(&day), pixels(&night));
     let background = day[0];
     let mut counts = std::collections::HashMap::new();

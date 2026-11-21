@@ -154,10 +154,13 @@ mod diagnostic_tests {
 
     #[test]
     fn a_build_that_said_nothing_yields_nothing_rather_than_an_empty_line() {
-        assert!(rendered_diagnostics("").is_empty());
-        assert!(rendered_diagnostics(r#"{"reason":"build-finished","success":true}"#).is_empty());
+        assert_eq!(rendered_diagnostics(""), [] as [String; 0]);
+        assert_eq!(
+            rendered_diagnostics(r#"{"reason":"build-finished","success":true}"#),
+            [] as [String; 0]
+        );
         let blank = r#"{"reason":"compiler-message","message":{"level":"error","rendered":"  "}}"#;
-        assert!(rendered_diagnostics(blank).is_empty());
+        assert_eq!(rendered_diagnostics(blank), [] as [String; 0]);
     }
 
     /// The artifact walk and the diagnostic walk read the same stream, and
@@ -165,7 +168,7 @@ mod diagnostic_tests {
     #[test]
     fn artifacts_and_diagnostics_do_not_see_each_other() {
         assert_eq!(parse_artifacts(FAILED), Vec::new());
-        assert!(!rendered_diagnostics(FAILED).is_empty());
+        assert_ne!(rendered_diagnostics(FAILED), [] as [String; 0]);
     }
 }
 
@@ -236,7 +239,7 @@ mod tests {
     fn noise_on_the_stream_is_ignored_rather_than_fatal() {
         let noisy = format!("warning: unused variable\n{STREAM}not json either\n");
         assert_eq!(parse_artifacts(&noisy).len(), 3);
-        assert!(parse_artifacts("").is_empty());
+        assert_eq!(parse_artifacts(""), [] as [Artifact; 0]);
     }
 
     #[test]

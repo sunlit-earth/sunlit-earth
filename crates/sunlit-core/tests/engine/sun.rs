@@ -67,8 +67,10 @@ fn a_sun_behind_the_painted_globe_paints_nothing() {
     let gpu = gpu();
     let (off, on) = sun_off_and_on(plain(&gpu), 176.0);
     let differing = off
-        .chunks_exact(4)
-        .zip(on.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(on.as_chunks::<4>().0)
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(
@@ -82,7 +84,13 @@ fn zero_sun_glow_takes_the_sun_out_of_the_frame() {
     let gpu = gpu();
     let (off, on) = sun_off_and_on(plain(&gpu), 160.0);
     let mut painted = 0_usize;
-    for (index, (dark, lit)) in off.chunks_exact(4).zip(on.chunks_exact(4)).enumerate() {
+    for (index, (dark, lit)) in off
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(on.as_chunks::<4>().0)
+        .enumerate()
+    {
         if dark == lit {
             continue;
         }
@@ -110,7 +118,7 @@ fn a_sun_grazing_the_limb_turns_the_glare_warm() {
     let warmth = |longitude: f32| {
         let (off, on) = sun_off_and_on(harness, longitude);
         let mut added = [0_u64; 3];
-        for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+        for (dark, lit) in off.as_chunks::<4>().0.iter().zip(on.as_chunks::<4>().0) {
             for (channel, total) in added.iter_mut().enumerate() {
                 *total += u64::from(lit[channel].saturating_sub(dark[channel]));
             }
@@ -144,7 +152,7 @@ fn sun_light(harness: &Harness, params: &SceneParams) -> (usize, u64) {
     let (off, on) = sun_off_and_on_framed(harness, params);
     let mut painted = 0;
     let mut total = 0;
-    for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+    for (dark, lit) in off.as_chunks::<4>().0.iter().zip(on.as_chunks::<4>().0) {
         let gained = [0, 1, 2].map(|c| lit[c].saturating_sub(dark[c]));
         if gained.iter().any(|&value| value > 4) {
             painted += 1;
@@ -254,8 +262,10 @@ fn sunrise_excess(harness: &Harness, longitude: f32) -> i64 {
     dark.atmo_sunrise_glow = 0.0;
     let dark = harness.picture(&dark, FRAME);
     let lit = harness.picture(&params, FRAME);
-    lit.chunks_exact(4)
-        .zip(dark.chunks_exact(4))
+    lit.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dark.as_chunks::<4>().0)
         .map(|(lit, dark)| {
             i64::from(lit[0].saturating_sub(dark[0])) - i64::from(lit[2].saturating_sub(dark[2]))
         })
@@ -307,7 +317,7 @@ fn a_pan_past_the_frame_corner_still_draws_the_sun() {
         let (off, on) = sun_off_and_on_framed(harness, params);
         let mut painted = 0;
         let mut brightest = 0;
-        for (dark, lit) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+        for (dark, lit) in off.as_chunks::<4>().0.iter().zip(on.as_chunks::<4>().0) {
             let gained = [0, 1, 2].map(|c| lit[c].saturating_sub(dark[c]));
             if gained.iter().any(|&value| value > 4) {
                 painted += 1;
@@ -360,8 +370,10 @@ fn an_enlarged_disk_reaching_the_frame_corner_is_drawn() {
     framed.sun_rays = 0.0;
     let (off, on) = sun_off_and_on_at(plain(&gpu), &framed, 0.25);
     let clipped = off
-        .chunks_exact(4)
-        .zip(on.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(on.as_chunks::<4>().0)
         .filter(|(dark, lit)| {
             [0, 1, 2]
                 .iter()

@@ -99,7 +99,7 @@ fn a_preview_with_no_screen_known_frames_on_its_own_height() {
 #[allow(clippy::cast_precision_loss)]
 fn globe_in_short_edges(rgba: &[u8], width: u32, height: u32, short_edge: f32) -> [f32; 3] {
     let (mut count, mut sum_x, mut sum_y) = (0.0_f64, 0.0_f64, 0.0_f64);
-    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+    for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
         // The clear color's green is far below anything the grid paints.
         if pixel[1] >= 60 {
             count += 1.0;

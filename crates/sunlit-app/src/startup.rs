@@ -56,10 +56,7 @@ pub(crate) fn resolve_textures(cli_dir: Option<&std::path::Path>) -> ResolvedTex
         pick("lroc_color_poles_1k.jxl"),
         pick("milkyway_2020_4k.jxl"),
     ];
-    let cube = dir
-        .as_deref()
-        .map(CubeTextures::resolve)
-        .unwrap_or_default();
+    let cube = dir.as_deref().map_or_default(CubeTextures::resolve);
     info!(
         textures_dir = ?dir,
         moon = ?paths[0],

@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn each_mode_needs_its_own_cubes() {
-        assert!(needs(TextureMode::Grid, 3).is_empty());
+        assert_eq!(needs(TextureMode::Grid, 3), [] as [SurfaceLayer; 0]);
         assert_eq!(
             needs(TextureMode::Day, 3),
             [SurfaceLayer::Day(3), SurfaceLayer::Mask]
@@ -667,7 +667,7 @@ mod tests {
                 "{mode:?}"
             );
         }
-        assert!(needs(TextureMode::Grid, 2).is_empty());
+        assert_eq!(needs(TextureMode::Grid, 2), [] as [SurfaceLayer; 0]);
     }
 
     /// A frame measures each side's ocean color from the floor it draws on

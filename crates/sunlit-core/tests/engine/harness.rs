@@ -375,6 +375,8 @@ impl Harness {
 /// A frame is "lit" when at least one pixel is clearly brighter than the
 /// clear color (which is near-black).
 pub(crate) fn has_lit_pixels(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4)
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
         .any(|px| px[0] > 40 || px[1] > 40 || px[2] > 40)
 }

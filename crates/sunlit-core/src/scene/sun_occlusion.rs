@@ -491,10 +491,6 @@ mod tests {
     /// it, and both have to be exact: the goldens with a Sun well above the
     /// limb come back byte for byte only if nothing here rounds.
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "a disk clear of the band has to be exactly one, which is what the goldens rest on"
-    )]
     fn a_disk_clear_of_the_band_carries_all_of_its_light() {
         let (tint, transmission) = integrate_disk(400.0, 4.0, 100.0, 100.0, 8.0, 95.565, 1.0, 1.0);
         assert_eq!(transmission, 1.0);
@@ -539,10 +535,6 @@ mod tests {
     // --- refraction ---
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "no refraction has to leave the disk exactly where it is"
-    )]
     fn no_refraction_leaves_the_disk_exactly_where_it_is() {
         for height in [-9.0, -0.46, 0.0, 0.3, 7.0] {
             let (apparent, squash) = refract(height, 0.0);

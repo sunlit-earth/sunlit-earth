@@ -356,8 +356,7 @@ fn provision_guest(
         let local = template_dir.join(script);
         let name = local
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         let destination = script_destination(&name);
         println!("{what} ({name})");
         provider.copy_in(state, &local, &destination)?;
@@ -442,7 +441,7 @@ fn compact(runner: &dyn Runner, disk: &Path, provider: ProviderKind) {
     if provider != ProviderKind::HyperV {
         return;
     }
-    let before = std::fs::metadata(disk).map(|m| m.len()).unwrap_or_default();
+    let before = std::fs::metadata(disk).map_or_default(|m| m.len());
     println!("compacting {}", disk.display());
     // Not through `run_script`, whose failure is a build failure. `Optimize-VHD`
     // needs the Hyper-V module and a disk nothing has attached, and both are
@@ -459,7 +458,7 @@ fn compact(runner: &dyn Runner, disk: &Path, provider: ProviderKind) {
         });
     match outcome {
         Ok(()) => {
-            let after = std::fs::metadata(disk).map(|m| m.len()).unwrap_or_default();
+            let after = std::fs::metadata(disk).map_or_default(|m| m.len());
             println!(
                 "  {} -> {}",
                 util::format_bytes(before),
@@ -570,13 +569,13 @@ mod tests {
     fn the_guest_runs_the_script_with_the_channel_as_its_argument() {
         let destination = script_destination("toolchain.ps1");
         assert_eq!(destination, r"C:\sunlit-e2e\toolchain.ps1");
-        let command = script_command(&destination, "1.94.0");
+        let command = script_command(&destination, "1.100.0");
         assert!(command.contains("-ExecutionPolicy Bypass"), "{command}");
         assert!(
             command.contains(r"-File C:\sunlit-e2e\toolchain.ps1"),
             "{command}"
         );
-        assert!(command.contains("-Channel 1.94.0"), "{command}");
+        assert!(command.contains("-Channel 1.100.0"), "{command}");
     }
 
     /// The scripts are copied rather than encoded onto the command line, for the
@@ -626,7 +625,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("cannot read {script}: {e}"));
             assert!(text.contains("[string]$Channel"), "{script}");
         }
-        assert!(script_command("x.ps1", "1.94.0").contains("-Channel 1.94.0"));
+        assert!(script_command("x.ps1", "1.100.0").contains("-Channel 1.100.0"));
     }
 
     #[test]

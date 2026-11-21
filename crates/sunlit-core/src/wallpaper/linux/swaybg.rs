@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(to_end(&[10], &processes, dir), vec![10]);
         // A pid noted as ours that now belongs to something else is left.
         assert_eq!(to_end(&[10, 13], &processes, dir), vec![10]);
-        assert!(to_end(&[], &processes, dir).is_empty());
+        assert_eq!(to_end(&[], &processes, dir), [] as [u32; 0]);
     }
 
     #[test]

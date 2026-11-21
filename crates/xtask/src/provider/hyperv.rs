@@ -1679,7 +1679,7 @@ mod tests {
             parse_addresses(out),
             vec!["fe80::1%5".to_owned(), "192.168.1.20".to_owned()]
         );
-        assert!(parse_addresses("").is_empty());
+        assert_eq!(parse_addresses(""), [] as [String; 0]);
     }
 
     #[test]

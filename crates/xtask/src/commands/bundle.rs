@@ -1381,7 +1381,7 @@ fn record(
         dirty: git.dirty,
         built_utc: util::format_unix_utc(util::now_unix()),
         duration_secs: started.elapsed().as_secs(),
-        channel: toolchain::read(repo).map(|t| t.channel).unwrap_or_default(),
+        channel: toolchain::read(repo).map_or_default(|t| t.channel),
         toolchain: host_toolchain(runner),
         verified_in: verified.then(|| hosted.runner_image.clone()),
         builder: Builder::Hosted(hosted),
@@ -1427,8 +1427,7 @@ fn host_toolchain(runner: &dyn Runner) -> String {
             .capture(&Cmd::new(program).arg(arg))
             .ok()
             .filter(crate::runner::CommandOutput::success)
-            .map(|out| out.stdout.trim().to_owned())
-            .unwrap_or_default()
+            .map_or_default(|out| out.stdout.trim().to_owned())
     };
     format!("{}\n{}", ask("rustc", "-vV"), ask("cargo", "-V"))
         .trim()
@@ -1914,7 +1913,7 @@ mod tests {
         assert_eq!(Platform::MacOs.slug(), "macos");
         assert_eq!(Platform::MacOs.to_string(), "macos");
         for platform in Platform::ALL {
-            assert!(!platform.slug().is_empty());
+            assert_ne!(platform.slug(), "");
         }
         for target in Target::ALL {
             assert_eq!(Platform::from(target).slug(), target.slug());
@@ -1982,7 +1981,7 @@ mod tests {
     #[test]
     fn a_hosted_record_never_links_to_a_run_it_does_not_have() {
         let hosted = hosted_info();
-        assert!(!hosted.runner_image.is_empty());
+        assert_ne!(hosted.runner_image, "");
         assert!(
             hosted.run_url.is_none() || hosted.run_id.is_some(),
             "{hosted:?}"

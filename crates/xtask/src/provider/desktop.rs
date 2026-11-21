@@ -278,8 +278,7 @@ impl Login {
                     line.strip_prefix(key)
                         .and_then(|rest| rest.strip_prefix('='))
                 })
-                .map(str::trim)
-                .unwrap_or_default()
+                .map_or_default(str::trim)
         };
         let observed_type = value("XDG_SESSION_TYPE");
         let observed_desktop = value("XDG_CURRENT_DESKTOP");

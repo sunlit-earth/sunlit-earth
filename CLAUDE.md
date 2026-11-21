@@ -133,7 +133,7 @@ docs/                 see the table above
 
 ## Key constraints
 
-- `rust-toolchain.toml` pins `1.94.0`; the builder images install the same channel from it.
+- `rust-toolchain.toml` pins `1.100.0`; the builder images install the same channel from it.
 - `.cargo/config.toml` sets `+crt-static` for `x86_64-pc-windows-msvc`, so every Windows binary of this tree, e2e binaries included, needs no Visual C++ redistributable. `cargo xtask dist` proves it on the artifact.
 - `unsafe_code = "deny"` workspace-wide. FFI call sites carry a scoped `#[allow(unsafe_code)]` and a `// SAFETY:` comment; follow that pattern for any new FFI.
 - Slint is `~1.18` with no wgpu feature.

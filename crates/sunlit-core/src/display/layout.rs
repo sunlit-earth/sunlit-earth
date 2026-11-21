@@ -1184,7 +1184,10 @@ mod tests {
                 "{mode:?} {groups:?}"
             );
         }
-        assert!(render_groups(&[], DisplayMode::EveryScreen, 0).is_empty());
+        assert_eq!(
+            render_groups(&[], DisplayMode::EveryScreen, 0),
+            [] as [RenderGroup; 0]
+        );
     }
 
     /// A canvas whose pixel values encode their own position, so a crop that is
@@ -1325,7 +1328,7 @@ mod tests {
             assert!(text.contains(mode.name()), "{text}");
             assert_eq!(toml::from_str::<Wrapper>(&text).unwrap().mode, mode);
             assert_eq!(DisplayMode::from_name(mode.name()), Some(mode));
-            assert!(!mode.label().is_empty());
+            assert_ne!(mode.label(), "");
         }
         // A name nothing answers to costs the default rather than the rest of
         // the config file.

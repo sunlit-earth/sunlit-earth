@@ -19,7 +19,12 @@ pub fn compare(reference: &[u8], actual: &[u8]) -> (f64, f64) {
     assert_eq!(reference.len(), actual.len(), "image sizes differ");
     let mut total = 0u64;
     let mut outliers = 0u64;
-    for (r, a) in reference.chunks_exact(4).zip(actual.chunks_exact(4)) {
+    for (r, a) in reference
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(actual.as_chunks::<4>().0)
+    {
         let mut worst = 0u8;
         for c in 0..3 {
             let diff = r[c].abs_diff(a[c]);

@@ -619,13 +619,12 @@ fn collect_linux(runner: &dyn Runner) -> LinuxFacts {
         .capture(&Cmd::new("id").arg("-nG"))
         .ok()
         .filter(crate::runner::CommandOutput::success)
-        .map(|out| {
+        .map_or_default(|out| {
             out.trimmed()
                 .split_whitespace()
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        });
 
     LinuxFacts {
         pretty_name,
@@ -860,7 +859,7 @@ mod tests {
         assert_eq!(facts.caption, "Windows");
         assert!(!facts.hypervisor_present);
         assert_eq!(free, None);
-        assert!(facts.wsl_distros.is_empty());
+        assert_eq!(facts.wsl_distros, [] as [WslDistro; 0]);
     }
 
     #[test]
@@ -944,7 +943,7 @@ mod tests {
              Error: 0x8004032d\n",
         );
         assert!(distros.is_empty(), "{distros:?}");
-        assert!(parse_wsl_list("").is_empty());
+        assert_eq!(parse_wsl_list(""), [] as [WslDistro; 0]);
     }
 
     #[test]
@@ -1010,7 +1009,10 @@ mod tests {
                 .any(|p| p == Path::new(r"C:\Program Files\qemu\qemu-system-x86_64.exe")),
             "{candidates:?}"
         );
-        assert!(fallback_candidates("qemu-img", HostOs::Linux).is_empty());
+        assert_eq!(
+            fallback_candidates("qemu-img", HostOs::Linux),
+            [] as [PathBuf; 0]
+        );
         assert!(
             fallback_candidates("vmconnect", HostOs::Windows)
                 .iter()
@@ -1104,7 +1106,10 @@ mod tests {
         );
         // Nothing to go on is no candidates rather than a relative path, which
         // would be resolved against whatever directory the xtask was run from.
-        assert!(scoop_shim_candidates("tvnviewer", None, None, None, None).is_empty());
+        assert_eq!(
+            scoop_shim_candidates("tvnviewer", None, None, None, None),
+            [] as [PathBuf; 0]
+        );
     }
 
     #[cfg(windows)]

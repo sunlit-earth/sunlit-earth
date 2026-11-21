@@ -901,7 +901,7 @@ mod tests {
         let steps = windows_plan(&done_windows(), &store());
         let runner = FakeRunner::new();
         let outcome = execute(&runner, &steps, HostOs::Windows);
-        assert!(outcome.ran.is_empty());
+        assert_eq!(outcome.ran, [] as [&str; 0]);
         assert_eq!(outcome.skipped.len(), steps.len());
         assert!(!outcome.restart_needed);
         assert!(!outcome.relogin_needed);

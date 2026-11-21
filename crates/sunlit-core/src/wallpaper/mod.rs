@@ -141,8 +141,7 @@ static GENERATION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 fn generation_name() -> String {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis());
     let counter = GENERATION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("gen-{millis}-{}-{counter}", std::process::id())
 }
@@ -242,9 +241,7 @@ pub fn published_wallpaper_files() -> Result<Vec<PathBuf>, String> {
         return Ok(generation.files);
     }
     let dir = wallpaper_dir()?;
-    Ok(newest_generation(&dir)
-        .map(|dir| generation_files(&dir))
-        .unwrap_or_default())
+    Ok(newest_generation(&dir).map_or_default(|dir| generation_files(&dir)))
 }
 
 /// When a file was last written, or `None` where there is no file to ask.
@@ -726,7 +723,7 @@ mod tests {
         let error = publication
             .write("0", &pixels(4, 4, [255, 0, 0, 255]), 4, 4)
             .expect_err("the rename onto a directory fails");
-        assert!(!error.is_empty());
+        assert_ne!(error, "");
 
         assert!(
             destination.is_dir(),

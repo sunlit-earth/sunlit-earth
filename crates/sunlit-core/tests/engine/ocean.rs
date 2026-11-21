@@ -145,8 +145,8 @@ fn a_day_color_moves_the_water_and_leaves_the_land() {
     let (mut land, mut water) = (0, 0);
     for ((n, b), a) in normals(&at_fill)
         .into_iter()
-        .zip(before.chunks_exact(4))
-        .zip(after.chunks_exact(4))
+        .zip(before.as_chunks::<4>().0)
+        .zip(after.as_chunks::<4>().0)
     {
         let Some(n) = n else { continue };
         if n.y.abs() > 0.4 {

@@ -673,10 +673,7 @@ fn load_and_upgrade(path: &Path) -> AppConfig {
 /// Where the original of a file migrated from `version` is kept:
 /// `config.toml` becomes `config.v0.toml`.
 fn backup_path(path: &Path, version: u32) -> PathBuf {
-    let mut name = path
-        .file_stem()
-        .map(OsStr::to_os_string)
-        .unwrap_or_default();
+    let mut name = path.file_stem().map_or_default(OsStr::to_os_string);
     name.push(format!(".v{version}"));
     if let Some(extension) = path.extension() {
         name.push(".");

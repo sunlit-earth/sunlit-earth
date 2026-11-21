@@ -1026,9 +1026,8 @@ impl TileLoader {
 
     pub(super) fn report(&self, target: &impl TileTarget) -> TileReport {
         let layers = target.layers();
-        let mut resident: Vec<TileId> = layers
-            .map(|layers| layers.resident().map(|(id, _)| id).collect())
-            .unwrap_or_default();
+        let mut resident: Vec<TileId> =
+            layers.map_or_default(|layers| layers.resident().map(|(id, _)| id).collect());
         resident.sort_by_key(|id| (pack_order(id.pack), id.key));
         let mut failed: Vec<TileId> = self.failed.iter().copied().collect();
         failed.sort_by_key(|id| (pack_order(id.pack), id.key));
@@ -1595,7 +1594,7 @@ mod tests {
                 .all(|&id| stand.holds(id))
         });
         assert_eq!(stand.layers.free(), 0);
-        assert!(stand.evicted.is_empty());
+        assert_eq!(stand.evicted, [] as [TileId; 0]);
     }
 
     #[test]

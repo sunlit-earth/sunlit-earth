@@ -810,8 +810,7 @@ fn guest_leaf(path: &str) -> String {
 
 fn file_name(path: &Path) -> String {
     path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|n| n.to_string_lossy().into_owned())
 }
 
 fn wslpath(runner: &dyn Runner, distro: &str, flag: &str, path: &str) -> Result<String, String> {
@@ -1092,7 +1091,7 @@ mod tests {
     /// the host reads that file to learn what to bring back.
     #[test]
     fn the_guest_build_job_keeps_cargos_json_where_the_results_come_from() {
-        let job = guest_build_job("1.94.0");
+        let job = guest_build_job("1.100.0");
         for arg in build_args() {
             assert!(job.contains(&arg), "{arg} missing from {job}");
         }
@@ -1100,8 +1099,8 @@ mod tests {
             job.contains(&format!("%SUNLIT_E2E_ARTIFACTS%\\{CARGO_JSON}")),
             "{job}"
         );
-        assert!(job.contains("toolchain install 1.94.0"), "{job}");
-        assert!(job.contains("+1.94.0"), "{job}");
+        assert!(job.contains("toolchain install 1.100.0"), "{job}");
+        assert!(job.contains("+1.100.0"), "{job}");
         // cmd.exe wants CRLF, and the job runner writes the script verbatim.
         assert!(job.contains("\r\n"), "{job}");
         assert!(!job.contains("--release"), "{job}");

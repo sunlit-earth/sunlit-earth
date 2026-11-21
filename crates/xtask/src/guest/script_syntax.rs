@@ -123,7 +123,7 @@ fn all_scripts() -> Vec<(String, String)> {
             format!("layer: run {leaf}"),
             crate::commands::build_layer::script_command(
                 &crate::commands::build_layer::script_destination(&leaf),
-                "1.94.0",
+                "1.100.0",
             ),
         ));
     }
@@ -211,7 +211,7 @@ fn generated_linux_scripts() -> Vec<(String, String)> {
     // The release build's own two jobs. The build one is the longest generated
     // script in the crate and the only one that runs for tens of minutes, so a
     // syntax error in it costs a boot and a source copy before it says anything.
-    let pinned = crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n")
+    let pinned = crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.100.0\"\n")
         .expect("a fixture pin parses");
     vec![
         (

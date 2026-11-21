@@ -478,7 +478,7 @@ fn a_switched_off_cloud_layer_fetches_nothing_until_it_is_switched_on() {
     );
 
     harness.advance(&clock, POLL);
-    assert!(clouds_settled(&harness).is_empty());
+    assert_eq!(clouds_settled(&harness), [] as [bool; 0]);
     assert_eq!(
         source.fetches_after_quiet(),
         1,

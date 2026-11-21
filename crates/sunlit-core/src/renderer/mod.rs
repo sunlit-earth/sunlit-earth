@@ -561,8 +561,7 @@ impl Renderer {
         self.surface
             .as_ref()
             .and_then(|surface| surface.tiles.as_ref())
-            .map(SurfaceTiles::named)
-            .unwrap_or_default()
+            .map_or_default(SurfaceTiles::named)
     }
 
     /// What the frame's uniforms need of the tiles: the ocean colors of the

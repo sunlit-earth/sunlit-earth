@@ -402,7 +402,7 @@ mod tests {
         let mut table = earth("sample_count = 4");
         let changes = apply(default_4096_to_8192, &mut table);
         assert_eq!(table, earth("sample_count = 4"));
-        assert!(changes.is_empty());
+        assert_eq!(changes, [] as [Change; 0]);
     }
 
     #[test]
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn override_value_records_nothing_when_the_file_already_holds_the_value() {
         let mut table = earth("sample_count = 2");
-        assert!(apply(override_to_2, &mut table).is_empty());
+        assert_eq!(apply(override_to_2, &mut table), [] as [Change; 0]);
         assert_eq!(table, earth("sample_count = 2"));
     }
 
@@ -589,7 +589,7 @@ mod tests {
             scene_time_of(&table),
             SceneTime::fixed(time::macros::datetime!(2026-06-21 17:00 UTC))
         );
-        assert!(changes.is_empty());
+        assert_eq!(changes, [] as [Change; 0]);
     }
 
     #[test]
@@ -714,7 +714,7 @@ mod tests {
         // A value that is not a number is left for serde to judge.
         let (table, changes) = short_edge_step("sky_fov = \"wide\"\n");
         assert_eq!(table.get("sky_fov"), Some(&Value::String("wide".into())));
-        assert!(changes.is_empty());
+        assert_eq!(changes, [] as [Change; 0]);
     }
 
     // --- versions ---
@@ -775,7 +775,7 @@ mod tests {
         let mut doc = earth(&source);
         let migrated = migrate(&mut doc);
         assert!(!migrated.upgraded());
-        assert!(migrated.changes.is_empty());
+        assert_eq!(migrated.changes, [] as [Change; 0]);
         assert_eq!(doc, earth(&source));
     }
 
@@ -789,7 +789,7 @@ mod tests {
             let migrated = migrate(&mut doc);
             assert!(migrated.from_version > CONFIG_VERSION);
             assert!(!migrated.upgraded());
-            assert!(migrated.changes.is_empty());
+            assert_eq!(migrated.changes, [] as [Change; 0]);
             assert_eq!(doc, earth(&source));
         }
     }

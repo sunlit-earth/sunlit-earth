@@ -23,7 +23,7 @@ pub const PINNED_FILE: &str = "rust-toolchain.toml";
 /// What the repository pins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toolchain {
-    /// The channel as rustup spells it, `1.94.0` or `stable`.
+    /// The channel as rustup spells it, `1.100.0` or `stable`.
     pub channel: String,
     /// The profile the pin asks for, `minimal` here, which is also what the
     /// guests install with.
@@ -120,13 +120,13 @@ mod tests {
         let pin = parse(
             r#"
             [toolchain]
-            channel = "1.94.0"
+            channel = "1.100.0"
             profile = "minimal"
             components = ["rustfmt", "clippy"]
             "#,
         )
         .expect("parses");
-        assert_eq!(pin.channel, "1.94.0");
+        assert_eq!(pin.channel, "1.100.0");
         assert_eq!(pin.profile, "minimal");
         assert_eq!(pin.components, ["rustfmt", "clippy"]);
     }
@@ -136,16 +136,16 @@ mod tests {
         let pin = parse("[toolchain]\nchannel = \"stable\"\n").expect("parses");
         assert_eq!(pin.channel, "stable");
         assert_eq!(pin.profile, "default");
-        assert!(pin.components.is_empty());
+        assert_eq!(pin.components, [] as [String; 0]);
     }
 
     #[test]
     fn surrounding_whitespace_is_not_part_of_the_channel() {
         assert_eq!(
-            parse("[toolchain]\nchannel = \" 1.94.0 \"\n")
+            parse("[toolchain]\nchannel = \" 1.100.0 \"\n")
                 .expect("parses")
                 .channel,
-            "1.94.0"
+            "1.100.0"
         );
     }
 
@@ -153,7 +153,7 @@ mod tests {
     fn a_file_with_no_channel_is_refused_by_name() {
         let err = parse("[toolchain]\nprofile = \"minimal\"\n").unwrap_err();
         assert!(err.contains(PINNED_FILE), "{err}");
-        let err = parse("channel = \"1.94.0\"\n").unwrap_err();
+        let err = parse("channel = \"1.100.0\"\n").unwrap_err();
         assert!(err.contains(PINNED_FILE), "{err}");
         let err = parse("not toml at all {{").unwrap_err();
         assert!(err.contains("malformed"), "{err}");
@@ -165,7 +165,7 @@ mod tests {
         // The value reaches a command line inside a guest, so this is the one
         // place that can stop a metacharacter from getting there.
         for bad in [
-            "1.94.0; rm -rf /",
+            "1.100.0; rm -rf /",
             "stable && whoami",
             "$(id)",
             "sta ble",
@@ -176,11 +176,11 @@ mod tests {
         }
         // And the shapes rustup actually uses all pass.
         for good in [
-            "1.94.0",
+            "1.100.0",
             "stable",
             "beta",
             "nightly-2026-03-02",
-            "1.94.0-x86_64-pc-windows-msvc",
+            "1.100.0-x86_64-pc-windows-msvc",
         ] {
             let text = format!("[toolchain]\nchannel = \"{good}\"\n");
             assert_eq!(parse(&text).expect("parses").channel, good);

@@ -33,8 +33,7 @@ impl FileInfo {
     pub fn name(&self) -> String {
         self.path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
+            .map_or_default(|n| n.to_string_lossy().into_owned())
     }
 }
 
@@ -916,7 +915,7 @@ mod tests {
         assert_eq!(inventory.total_bytes(), 20 * 1024 * 1024 * 1024 + 1024);
         assert!(inventory.for_image(Image::Windows).is_some());
         assert!(inventory.for_image(Image::WindowsBuilder).is_none());
-        assert!(inventory.recorded_vms().is_empty());
+        assert_eq!(inventory.recorded_vms(), [] as [&RunState; 0]);
     }
 
     #[test]

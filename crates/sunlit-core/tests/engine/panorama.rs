@@ -218,8 +218,10 @@ fn panorama_params() -> SceneParams {
 
 /// How much each pixel changed between two frames, as a sum over the channels.
 fn channel_differences(on: &[u8], off: &[u8]) -> Vec<u32> {
-    on.chunks_exact(4)
-        .zip(off.chunks_exact(4))
+    on.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(off.as_chunks::<4>().0)
         .map(|(a, b)| {
             u32::from(a[0].abs_diff(b[0]))
                 + u32::from(a[1].abs_diff(b[1]))
@@ -529,7 +531,12 @@ fn the_panorama_tracks_the_sky_field_of_view_and_the_globe_does_not() {
             .count();
         // On the frame with no panorama in it the sky is the clear color, whose
         // green channel is far below anything the grid texture paints.
-        let globe = off.chunks_exact(4).filter(|px| px[1] >= 60).count();
+        let globe = off
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[1] >= 60)
+            .count();
         (landmark, globe)
     };
 

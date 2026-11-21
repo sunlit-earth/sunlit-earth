@@ -350,6 +350,13 @@ export component MainWindow inherits Window {
     callback open-data-folder();
     // The camera panel's three resets at once: north up, the look, the frame.
     callback reset-camera();
+    // The View menu's Controls check. A checkable item flips its own `checked`
+    // before `activated` runs, so it needs a two-way binding to keep following
+    // H and the buttons over the preview; these two handlers are that binding
+    // for the inverse of `overlays-hidden`.
+    out property <bool> controls-shown: !root.overlays-hidden;
+    changed overlays-hidden => { root.controls-shown = !root.overlays-hidden; }
+    changed controls-shown => { root.overlays-hidden = !root.controls-shown; }
 
     // Full screen is the window's own `full-screen`, which the system may
     // also set, macOS's green button above all. Session state like the frame
@@ -819,29 +826,23 @@ export component MainWindow inherits Window {
                 }
             }
             MenuSeparator {}
-            // Nothing in the menu may read a property that changes: Slint
-            // 1.18 rebuilds the whole native menu on any such change, and on
-            // Windows the rebuild flashes the preview white.
             MenuItem {
-                title: "Toggle Controls";
-                activated => {
-                    root.leave-export-sheet();
-                    root.overlays-hidden = !root.overlays-hidden;
-                }
+                title: "Controls";
+                checkable: true;
+                checked <=> root.controls-shown;
+                activated => { root.leave-export-sheet(); }
             }
             MenuItem {
-                title: "Toggle Frame Guides";
-                activated => {
-                    root.leave-export-sheet();
-                    root.guides-shown = !root.guides-shown;
-                }
+                title: "Frame Guides";
+                checkable: true;
+                checked <=> root.guides-shown;
+                activated => { root.leave-export-sheet(); }
             }
             MenuItem {
-                title: "Toggle Time Bar Pin";
-                activated => {
-                    root.leave-export-sheet();
-                    root.time-bar-pinned = !root.time-bar-pinned;
-                }
+                title: "Pin Time Bar";
+                checkable: true;
+                checked <=> root.time-bar-pinned;
+                activated => { root.leave-export-sheet(); }
             }
             // macOS has AppKit's own Enter Full Screen in View, with ⌃⌘F. The
             // shortcut works with the bar hidden too.

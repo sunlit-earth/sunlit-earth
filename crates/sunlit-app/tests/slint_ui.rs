@@ -6685,27 +6685,27 @@ fn test_the_help_links_reach_open_url() {
     }
 }
 
-/// Each View toggle flips its property from whatever state H, F or the
-/// buttons left it in, and the View menu shows no check.
+/// Each View toggle is a check that flips its property, keeps following the
+/// property when something else flips it, and shows its mark while on.
 #[test]
-fn test_the_view_toggles_flip_their_property() {
+fn test_the_view_toggles_are_checks() {
     use slint::platform::PointerEventButton;
 
     type Get = fn(&MainWindow) -> bool;
     type Set = fn(&MainWindow, bool);
     let cases: [(&str, Get, Set); 3] = [
         (
-            "Toggle Controls",
+            "Controls",
             |w| !w.get_overlays_hidden(),
             |w, v| w.set_overlays_hidden(!v),
         ),
         (
-            "Toggle Frame Guides",
+            "Frame Guides",
             |w| w.get_guides_shown(),
             |w, v| w.set_guides_shown(v),
         ),
         (
-            "Toggle Time Bar Pin",
+            "Pin Time Bar",
             |w| w.get_time_bar_pinned(),
             |w, v| w.set_time_bar_pinned(v),
         ),
@@ -6718,6 +6718,8 @@ fn test_the_view_toggles_flip_their_property() {
         choose(&window, "View", title);
         assert!(!get(&window), "{title} turned it off");
         set(&window, true);
+        // The event loop runs Controls' change handlers before any click can.
+        slint::platform::update_timers_and_animations();
         choose(&window, "View", title);
         assert!(!get(&window), "{title} followed the property");
     }
@@ -6729,15 +6731,19 @@ fn test_the_view_toggles_flip_their_property() {
     click_the_globe(&window);
     tap(&window, "h");
     tap(&window, "f");
-    choose(&window, "View", "Toggle Controls");
-    assert!(!window.get_overlays_hidden(), "Toggle Controls followed H");
-    choose(&window, "View", "Toggle Frame Guides");
-    assert!(!window.get_guides_shown(), "Toggle Frame Guides followed F");
+    choose(&window, "View", "Controls");
+    assert!(!window.get_overlays_hidden(), "Controls followed H");
+    choose(&window, "View", "Frame Guides");
+    assert!(!window.get_guides_shown(), "Frame Guides followed F");
 
     window.set_guides_shown(true);
     window.set_time_bar_pinned(true);
     menu_texts(&window, "View")[0].mock_single_click(PointerEventButton::Left);
-    assert!(menu_texts(&window, "✓").is_empty(), "View shows no check");
+    assert_eq!(
+        menu_texts(&window, "✓").len(),
+        3,
+        "every check shows its mark"
+    );
 }
 
 /// Reset Camera runs the camera panel's three resets together: north up and
@@ -8178,9 +8184,9 @@ fn test_every_menu_item_works_under_the_sheet() {
         ("File", "Load Defaults"),
         ("File", "Close Window"),
         ("View", "Reset Camera"),
-        ("View", "Toggle Controls"),
-        ("View", "Toggle Frame Guides"),
-        ("View", "Toggle Time Bar Pin"),
+        ("View", "Controls"),
+        ("View", "Frame Guides"),
+        ("View", "Pin Time Bar"),
         ("Help", "Mouse and Keyboard"),
         ("Help", "Website"),
         ("Help", "Report an Issue…"),
@@ -8257,15 +8263,12 @@ fn test_a_menu_item_closes_the_sheet_first() {
 
     choose(&window, "File", "Export Image…");
     let guides = window.get_guides_shown();
-    choose(&window, "View", "Toggle Frame Guides");
-    assert!(
-        !window.get_export_sheet_open(),
-        "Toggle Frame Guides left it open"
-    );
+    choose(&window, "View", "Frame Guides");
+    assert!(!window.get_export_sheet_open(), "Frame Guides left it open");
     assert_ne!(
         window.get_guides_shown(),
         guides,
-        "Toggle Frame Guides did nothing"
+        "Frame Guides did nothing"
     );
     assert_eq!(holds(&sent), [true, false]);
 

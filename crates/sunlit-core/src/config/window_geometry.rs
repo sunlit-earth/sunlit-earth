@@ -327,7 +327,7 @@ fn fit_to_this_desk(saved: Rect) -> Option<Rect> {
 /// display server -32768..=32767 is the whole of what a position can express;
 /// Wayland and macOS impose no such limit, but a coordinate outside it is far
 /// outside any desktop either way. The bound is chosen for being the one
-/// platform-defined number in the neighbourhood, not because every platform
+/// platform-defined number in the neighborhood, not because every platform
 /// enforces it.
 #[cfg(not(windows))]
 fn plausible_coordinates(saved: Rect) -> bool {
@@ -560,7 +560,7 @@ mod tests {
     }
 
     /// The monitor holding most of the title bar wins even where its share is
-    /// all taskbar and the neighbour's share is work area.
+    /// all taskbar and the neighbor's share is work area.
     #[test]
     fn the_monitor_counts_its_taskbar_when_choosing() {
         let primary = Screen {

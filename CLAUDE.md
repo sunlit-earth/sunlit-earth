@@ -148,6 +148,7 @@ docs/                 see the table above
 ## Testing conventions
 
 - Test behavior, not constants: changing a preset or a default must not break a test.
+- No test resolves user state: `sunlit_core::user_state` panics in a process that has not claimed it, and only `main` claims. A test that wants to see a write holds `scratch_for_this_thread`, and a spawned binary goes through `app_command()`; `docs/testing.md` has the rule under "User state".
 - Float comparisons use `approx::assert_relative_eq!`. GPU tests assert invariants (monotonicity, bounds, visibility), not exact pixels.
 - Golden images run on the software adapter with per-adapter references under `tests/golden/<adapter>/`, listed in `GENERATED_ADAPTERS`; tolerance is a mean channel difference under 2/255 with at most 1% of pixels off by more than 24. A missing case fails; a companion test keeps every pair of references distinguishable.
 - A test that needs the real assets (the cube faces, the Moon, the Milky Way) checks that they are not LFS pointers (by size for the Moon and the Milky Way, by pointer prefix for the cube faces), and skips with a printed reason without them. Everything else uses generated fixtures.

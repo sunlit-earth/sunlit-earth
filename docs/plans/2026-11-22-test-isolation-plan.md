@@ -163,7 +163,7 @@ Both paths go through one function, `menu::current_geometry(window) -> Option<(i
 - `docs/architecture.md`: `user_state`, and that `main` is its one claimant.
 - `docs/platforms.md`: the restore fit per OS.
 - `docs/roadmap.md`: the entry.
-- `README.md`: `SUNLIT_EARTH_DATA_DIR` belongs in its environment variable table. README is edited only with permission, so this is asked for at step 8.
+- `README.md`: `SUNLIT_EARTH_DATA_DIR` belongs in its environment variable table. README is edited only with permission, so this is asked for at step 8. Pending the user's permission: the row is not written, and `docs/architecture.md`'s table has it meanwhile.
 - The update check branch (`feature/update-check`) adds `update_state.toml` and `update_feed.json` under the data folder; once this lands it resolves them through `user_state`, and the rebase is where that happens.
 
 ## Gates
@@ -176,6 +176,11 @@ Both paths go through one function, `menu::current_geometry(window) -> Option<(i
 - Revert the fix to `test_every_menu_item_works_under_the_sheet` locally and confirm the test now fails with the `user_state` message instead of writing.
 - Start the release build with the 2026-11-22 config (1200 by 5000 at the origin): the window fits the work area of the monitor it opens on and stays put when moved.
 - Record the step 5 inventory here.
+
+### Results
+
+- Validation item 2, on 2026-11-22 with step 6 in place: removing the `scratch_user_state();` line from `wired_window_and_link` made `test_every_menu_item_works_under_the_sheet` fail with "the config file belongs to the user, and this process has not claimed user state..." at `cratessunlit-coresrcnfigmod.rs:561` instead of writing; the line was restored afterwards.
+- Step 9: `test_a_config_save_keeps_the_stored_geometry_unless_the_window_is_on_screen` in `slint_ui` checks a never shown, a minimized, a full screen and a hidden window keep the stored geometry and a shown one saves its own. The testing backend reports full screen after `set_fullscreen(true)`, so the full screen half runs rather than skipping. Whether a person can reach Set as Wallpaper in full screen: on macOS yes, through the system menu bar, which full screen keeps reachable; elsewhere the drawn bar is hidden there. The IPC `set-wallpaper` only renders and saves nothing. The tray's auto refresh switch saves the whole config with the window hidden or minimized whatever the platform, and that is the path the rule matters most for.
 
 ### Step 5 inventory
 
@@ -204,3 +209,5 @@ All of these were reads except the one the plan started from: none of the 22 rea
 4. **The source scan also refuses `Command::new(binary())` outside `tests/common/process.rs`.** `binary()` stays crate-visible because the autostart case needs the binary's path, so naming `env!("CARGO_BIN_EXE_sunlit-earth")` was not enough to keep a new spawn on `app_command()`.
 
 5. **`SUNLIT_EARTH_DATA_DIR` is set in two more places than the plan named,** `release.yml`'s bundle step and `package-managers.yml`'s check, which set `SUNLIT_EARTH_CONFIG` too. The xtask's bundle verification set none of the variables; it now sets `SUNLIT_EARTH_DATA_DIR` under its own working folder, so a local `cargo xtask bundle --verify` no longer writes a log into the developer's data folder.
+
+6. **On Linux and macOS the fit reads `display::monitors()`, not `display::outputs()`.** The plan named the outputs because the old check used them, but on macOS they are in points while the saved geometry is in pixels: `Window::position` and `size` answer with winit's `outer_position` and inner size, which are physical (`i-slint-backend-winit-1.19.0`, `winitwindowadapter.rs`). Comparing only a position against points could misjudge a window in the right or lower part of a Retina screen, which the roadmap had open; a fit that also sizes the window would have shrunk every window wider than the screen's point width to it, half its size on a 2x screen. `monitors()` is the CoreGraphics displays in pixels on macOS and the same `xrandr` outputs on Linux, so Linux is unchanged. `Output::overlaps` became `Rect::overlap_area`, since the fit needs to know how much of the title bar each area holds, not only whether any does; `macos::outputs` keeps its points and no longer claims the window check as its reader.

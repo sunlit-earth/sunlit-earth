@@ -200,6 +200,8 @@ Round 1, on 2026-11-22 at 21ad449: 0 MAJOR, 6 MINOR, all fixed.
 
 Also folded in: the Windows guest's measured outer rectangle, 20 px short of the work area's bottom, replaces "a few pixels inside" in `docs/platforms.md`, the doc comment of `frame_at`, and decision 5's Windows bullet; no code changed for it.
 
+Gates after the round 1 fixes, at 3e84286: `cargo fmt --check` clean; `cargo clippy --all-targets` with no warning on Windows and in WSL; `cargo test --no-fail-fast` on Windows with `target/isolation-env/env.sh` sourced passed every target (sunlit-core 725, bc7 4, engine 157, golden 25, render_pipeline 51, shading 7, soak 1, the app's unit tests 210, slint_ui 194, xtask 695, e2e 25 ignored), and in WSL the `window_geometry` and `user_state` unit tests passed (40); the texture pipeline's `uv run --locked ruff check` was clean and `uv run --locked pytest` passed 367 with 1 skipped. `cargo xtask e2e --target windows` passed 25 of 25 in 516 s on the first attempt, the new case again at [0, 0, 1216, 1012] inside [[0, 0, 1920, 1032]], and the xtask removed the guest itself. `ci.yml` with every OS (run 45062067811) succeeded: Format, Texture pipeline, and Test on Linux, Windows and macOS.
+
 ### Step 5 inventory
 
 `cargo test --no-fail-fast` on Windows on 2026-11-22, with steps 1 to 4 in place and nothing else changed, the three existing overrides and `SUNLIT_EARTH_DATA_DIR` pointed under `target/`. 22 tests panicked with the `user_state` message; every other target passed (engine 157, golden 25, render_pipeline 51, shading 7, soak 1, bc7 4, the app's unit tests 208, xtask 695).

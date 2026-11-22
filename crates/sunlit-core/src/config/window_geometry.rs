@@ -261,20 +261,22 @@ const ESTIMATED_FRAME: Frame = Frame {
     bottom: 0,
 };
 
-/// The real outputs where there are any, and a coordinate-range check where
+/// The real monitors where there are any, and a coordinate-range check where
 /// there is nothing to ask.
 ///
-/// On Linux `display::outputs` parses `xrandr --query`, and on macOS it lists
-/// the displays in points, the space winit reports a window position in. Both
-/// give the shape of answer Win32 gives: a set of rectangles in one coordinate
-/// space. Under Wayland the compositor ignores the position, and only the size
-/// the fit comes to matters.
+/// On Linux `display::monitors` is the outputs `xrandr --query` lists, and on
+/// macOS the CoreGraphics displays in pixels, which is the space winit reports
+/// a window's position and size in, where the displays in points would shrink
+/// a window on a Retina screen to half its size. Both give the shape of answer
+/// Win32 gives: a set of rectangles in one coordinate space. Under Wayland the
+/// compositor ignores the position, and only the size the fit comes to
+/// matters.
 #[cfg(not(windows))]
 fn fit_to_this_desk(saved: Rect) -> Option<Rect> {
-    if let Some(outputs) = crate::display::outputs()
-        && !outputs.is_empty()
+    if let Some(monitors) = crate::display::monitors()
+        && !monitors.is_empty()
     {
-        let areas: Vec<Rect> = outputs.iter().map(crate::display::Output::rect).collect();
+        let areas: Vec<Rect> = monitors.iter().map(crate::display::Monitor::rect).collect();
         return fit(saved, ESTIMATED_FRAME, &areas);
     }
     plausible_coordinates(saved).then_some(saved)

@@ -39,19 +39,6 @@ pub struct Output {
     pub y: i32,
 }
 
-impl Output {
-    /// The rectangle this output occupies.
-    #[cfg(any(not(windows), test))]
-    pub(crate) fn rect(&self) -> layout::Rect {
-        layout::Rect {
-            x: self.x,
-            y: self.y,
-            width: self.width,
-            height: self.height,
-        }
-    }
-}
-
 /// Read the connected outputs out of `xrandr --query` output.
 ///
 /// One line per output, unindented, with `connected` as a whole word: the
@@ -435,7 +422,13 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
             width: width.unsigned_abs(),
             height: height.unsigned_abs(),
         };
-        output.rect().overlap_area(&rect) > 0
+        let output = layout::Rect {
+            x: output.x,
+            y: output.y,
+            width: output.width,
+            height: output.height,
+        };
+        output.overlap_area(&rect) > 0
     }
 
     #[test]

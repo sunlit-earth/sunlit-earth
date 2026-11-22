@@ -9066,9 +9066,38 @@ fn test_the_update_window_lists_the_releases_in_order() {
             .position(|shown| shown == text)
             .unwrap_or_else(|| panic!("{text} is on screen: {texts:?}"))
     };
-    assert!(at("0.7.0, January 12, 2027") < at("Check for updates from the Help menu"));
-    assert!(at("Faster start on a CPU adapter") < at("0.6.1, December 15, 2026"));
-    assert!(at("0.6.1, December 15, 2026") < at("0.6.0, December 1, 2026"));
+    assert!(at("0.7.0") < at(", January 12, 2027"));
+    assert!(at(", January 12, 2027") < at("Check for updates from the Help menu"));
+    assert!(at("Faster start on a CPU adapter") < at("0.6.1"));
+    assert!(at("0.6.1") < at("0.6.0"));
+}
+
+/// A release's version links to its page, and one whose page is missing or
+/// one the opener refuses is plain text.
+#[test]
+fn test_a_version_opens_its_release_page() {
+    use sunlit_core::update::UpdateStatus;
+    use sunlit_earth::update::Showing;
+
+    let UpdateStatus::Available(mut offer) = fixture_offer() else {
+        unreachable!()
+    };
+    let page = offer.releases[0]
+        .notes
+        .clone()
+        .expect("the reference file names pages");
+    offer.releases[1].notes = None;
+    offer.releases[2].notes = Some(format!("{page}&calc"));
+    let window = update_window(
+        &Showing::Answer(UpdateStatus::Available(offer)),
+        &archive_install("windows", "x86_64"),
+    );
+    let opened = capture_update_url(&window);
+    let links: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "UpdateWindow::release-link").collect();
+    assert_eq!(links.len(), 1, "only the release with a usable page links");
+    links[0].mock_single_click(slint::platform::PointerEventButton::Left);
+    assert_eq!(*opened.borrow(), [page]);
 }
 
 /// Download opens the archive for this build; without one the button opens

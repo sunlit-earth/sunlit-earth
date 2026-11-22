@@ -99,7 +99,7 @@ Once a day Sunlit Earth asks `https://sunlit.earth/releases/v1.json` whether a n
 
 While a newer version is on offer, the tray's entry reads "Update Available: 0.7.0…" instead of "Check for Updates…", and a banner at the foot of the panel says "Version 0.7.0 is available" with a Details button and a close button. Details opens the update window. Once the update window has been opened or the banner closed, the banner stays away for that version, across restarts too, and comes back for the next one.
 
-The update window lists every release since the one you run, newest first, with what changed in each, and a Release Notes link to the changelog on GitHub. Below that it says how to update:
+The update window lists every release since the one you run, newest first, with what changed in each, and a Release Notes link to the changelog on GitHub. Each release's version number links to that release's page on GitHub. Below that it says how to update:
 
 - Installed with Scoop: quit Sunlit Earth, then run `scoop update sunlit-earth`, which the window shows in a field with a Copy button. If Scoop still reports the old version as current, run `scoop update` first.
 - Installed with Homebrew: the same with `brew upgrade sunlit-earth` on Linux or `brew upgrade --cask sunlit-earth` on macOS, and `brew update` first if Homebrew reports the old version as current.

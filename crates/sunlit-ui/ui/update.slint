@@ -7,10 +7,12 @@ import { Links } from "links.slint";
 
 export enum UpdatePhase { checking, up-to-date, failed, available }
 
-// One release since the installed one: "0.7.0, December 1, 2026" and its
-// highlights, which may be none.
+// One release since the installed one: its version, its date in words or
+// empty, its page or empty, and its highlights, which may be none.
 export struct UpdateRelease {
-    heading: string,
+    version: string,
+    date: string,
+    url: string,
     highlights: [string],
 }
 
@@ -105,10 +107,25 @@ export component UpdateWindow inherits Window {
                             for release in root.releases: VerticalLayout {
                                 spacing: 3px;
 
-                                release-heading := Text {
-                                    text: release.heading;
-                                    color: Palette.foreground;
-                                    font-weight: 600;
+                                HorizontalLayout {
+                                    alignment: start;
+
+                                    release-heading := Text {
+                                        text: release.version;
+                                        color: release.url != "" ? Palette.accent-background : Palette.foreground;
+                                        font-weight: 600;
+
+                                        if release.url != "": release-link := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.open-url(release.url); }
+                                        }
+                                    }
+
+                                    if release.date != "": Text {
+                                        text: ", " + release.date;
+                                        color: Palette.foreground;
+                                        font-weight: 600;
+                                    }
                                 }
 
                                 for line in release.highlights: release-line := Text {

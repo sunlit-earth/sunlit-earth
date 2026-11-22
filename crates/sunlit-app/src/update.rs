@@ -65,19 +65,20 @@ impl Install {
     }
 }
 
-/// "0.7.0, December 1, 2026", or the version alone for a release without a
-/// date.
-pub fn heading(release: &Release) -> String {
-    match release.date {
-        Some(date) => format!(
-            "{}, {} {}, {}",
-            release.version,
-            date.month(),
-            date.day(),
-            date.year()
-        ),
-        None => release.version.to_string(),
-    }
+/// "December 1, 2026", or empty for a release without a date.
+pub fn date_text(release: &Release) -> String {
+    release.date.map_or_else(String::new, |date| {
+        format!("{} {}, {}", date.month(), date.day(), date.year())
+    })
+}
+
+/// The release's page, when the file names one the opener accepts, or empty.
+fn release_page(release: &Release) -> String {
+    release
+        .notes
+        .as_deref()
+        .filter(|url| crate::open::is_web_url(url))
+        .map_or_else(String::new, ToOwned::to_owned)
 }
 
 /// A size in decimal megabytes with one decimal, as the website shows it.
@@ -157,7 +158,9 @@ pub fn present(window: &UpdateWindow, showing: &Showing, install: &Install) {
                 .releases
                 .iter()
                 .map(|release| UpdateRelease {
-                    heading: heading(release).into(),
+                    version: release.version.to_string().into(),
+                    date: date_text(release).into(),
+                    url: release_page(release).into(),
                     highlights: ModelRc::new(VecModel::from(
                         release
                             .highlights
@@ -491,14 +494,19 @@ pub fn shut_down() {
     CONTROLLER.with(|slot| slot.borrow_mut().take());
 }
 
-/// The releases the window lists, as headings with their highlights.
+/// The releases the window lists, as headings ("0.7.0, December 1, 2026")
+/// with their highlights.
 pub fn listed(window: &UpdateWindow) -> Vec<(String, Vec<String>)> {
     window
         .get_releases()
         .iter()
         .map(|release| {
             (
-                release.heading.to_string(),
+                if release.date.is_empty() {
+                    release.version.to_string()
+                } else {
+                    format!("{}, {}", release.version, release.date)
+                },
                 release
                     .highlights
                     .iter()
@@ -518,6 +526,7 @@ mod tests {
         Release {
             version: sunlit_core::update::Version::parse(version).unwrap(),
             date: None,
+            notes: None,
             highlights: Vec::new(),
             assets: assets
                 .iter()
@@ -585,11 +594,22 @@ mod tests {
     }
 
     #[test]
-    fn a_heading_carries_the_date_in_words() {
+    fn a_date_is_put_in_words() {
         let mut dated = release("0.7.0", &[]);
         dated.date = Some(time::macros::date!(2026 - 12 - 01));
-        assert_eq!(heading(&dated), "0.7.0, December 1, 2026");
-        assert_eq!(heading(&release("0.6.1", &[])), "0.6.1");
+        assert_eq!(date_text(&dated), "December 1, 2026");
+        assert_eq!(date_text(&release("0.6.1", &[])), "");
+    }
+
+    #[test]
+    fn a_release_page_the_opener_refuses_is_no_page() {
+        let mut listed = release("0.7.0", &[]);
+        assert_eq!(release_page(&listed), "");
+        let page = "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.7.0";
+        listed.notes = Some(page.to_owned());
+        assert_eq!(release_page(&listed), page);
+        listed.notes = Some(format!("{page}&calc"));
+        assert_eq!(release_page(&listed), "");
     }
 
     #[test]

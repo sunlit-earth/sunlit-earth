@@ -8743,7 +8743,10 @@ fn recorded_controller(
     let controller = sunlit_earth::update::UpdateController::new(
         window,
         archive_install("windows", "x86_64"),
-        move |request| recorder.borrow_mut().push(request),
+        move |request| {
+            recorder.borrow_mut().push(request);
+            Ok(())
+        },
     );
     controller.wire(window);
     (controller, sent)
@@ -8930,6 +8933,38 @@ fn test_a_skipped_version_is_still_offered_when_asked() {
     assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Available);
     assert_eq!(shown.get_offered_version(), "0.7.0");
     assert_eq!(tray.get_update_title(), "Check for Updates…");
+}
+
+/// A check asked for while the update thread is gone fails in the window with
+/// the reason, and Try Again asks once more.
+#[test]
+fn test_a_check_without_the_update_thread_fails_in_the_window() {
+    use sunlit_core::update::{Request, ThreadEnded};
+
+    let window = create_window();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let recorder = Rc::clone(&asked);
+    let controller = sunlit_earth::update::UpdateController::new(
+        &window,
+        archive_install("windows", "x86_64"),
+        move |request| {
+            recorder.borrow_mut().push(request);
+            Err(ThreadEnded)
+        },
+    );
+    controller.wire(&window);
+
+    window.invoke_check_for_updates();
+    let shown = controller
+        .window()
+        .expect("the entry made the update window");
+    assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Failed);
+    assert_eq!(shown.get_failure(), ThreadEnded.to_string());
+
+    materialize_update(&shown);
+    update_button(&shown, "Try Again").invoke_accessible_default_action();
+    assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Failed);
+    assert_eq!(*asked.borrow(), [Request::CheckNow, Request::CheckNow]);
 }
 
 /// Each state of the window shows its own headline, texts and buttons.

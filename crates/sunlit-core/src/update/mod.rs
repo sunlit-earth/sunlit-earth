@@ -39,27 +39,32 @@ pub struct UpdateHandle {
     requests: Sender<Request>,
 }
 
+/// The update thread is not there to take a request: it could not be started,
+/// or it has ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThreadEnded;
+
+impl std::fmt::Display for ThreadEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the update checker is not running")
+    }
+}
+
+impl std::error::Error for ThreadEnded {}
+
 impl UpdateHandle {
-    pub fn check_now(&self) {
-        self.send(Request::CheckNow);
-    }
-
-    pub fn skip(&self, version: String) {
-        self.send(Request::Skip(version));
-    }
-
-    pub fn dismiss(&self, version: String) {
-        self.send(Request::Dismiss(version));
-    }
-
-    fn send(&self, request: Request) {
+    /// Hand `request` to the thread. A full queue is not an error: the thread
+    /// is then in a check that answers this request too.
+    pub fn send(&self, request: Request) -> Result<(), ThreadEnded> {
         match self.requests.try_send(request) {
-            Ok(()) => {}
+            Ok(()) => Ok(()),
             Err(TrySendError::Full(request)) => {
                 warn!(?request, "the update thread is busy, dropping the request");
+                Ok(())
             }
             Err(TrySendError::Disconnected(request)) => {
                 warn!(?request, "the update thread has ended");
+                Err(ThreadEnded)
             }
         }
     }
@@ -142,7 +147,7 @@ mod tests {
                 let _ = tx.send(event);
             }),
         );
-        handle.check_now();
+        handle.send(Request::CheckNow).unwrap();
         let event = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(event.manual);
         assert!(matches!(event.status, UpdateStatus::Available(_)));
@@ -152,5 +157,15 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(10)),
             Err(mpsc::RecvTimeoutError::Disconnected)
         );
+    }
+
+    #[test]
+    fn a_handle_without_its_thread_says_so_and_a_busy_one_does_not() {
+        let (requests, pending) = bounded(1);
+        let handle = UpdateHandle { requests };
+        assert_eq!(handle.send(Request::CheckNow), Ok(()));
+        assert_eq!(handle.send(Request::CheckNow), Ok(()));
+        drop(pending);
+        assert_eq!(handle.send(Request::CheckNow), Err(ThreadEnded));
     }
 }

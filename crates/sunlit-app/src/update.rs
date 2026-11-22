@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use sunlit_core::update::{
-    Offer, Release, Request, UpdateEvent, UpdateHandle, UpdateStatus, asset_key,
+    Offer, Release, Request, ThreadEnded, UpdateEvent, UpdateHandle, UpdateStatus, asset_key,
 };
 use tracing::{debug, warn};
 
@@ -225,13 +225,17 @@ pub struct UpdateController {
     state: Rc<RefCell<State>>,
     main: slint::Weak<MainWindow>,
     install: Rc<Install>,
-    requests: Rc<dyn Fn(Request)>,
+    requests: Rc<dyn Fn(Request) -> Result<(), ThreadEnded>>,
 }
 
 impl UpdateController {
     /// A controller sending its requests to `requests`. Nothing is shown and
     /// nothing is wired until [`Self::wire`].
-    pub fn new(main: &MainWindow, install: Install, requests: impl Fn(Request) + 'static) -> Self {
+    pub fn new(
+        main: &MainWindow,
+        install: Install,
+        requests: impl Fn(Request) -> Result<(), ThreadEnded> + 'static,
+    ) -> Self {
         Self {
             state: Rc::new(RefCell::new(State {
                 known: None,
@@ -340,7 +344,11 @@ impl UpdateController {
                 state.pending = true;
                 state.showing = Showing::Checking { known };
             }
-            (self.requests)(Request::CheckNow);
+            if let Err(ended) = (self.requests)(Request::CheckNow) {
+                let mut state = self.state.borrow_mut();
+                state.pending = false;
+                state.showing = Showing::Answer(UpdateStatus::Failed(ended.to_string()));
+            }
         } else if let Some(known) = known.filter(|_| !pending) {
             self.state.borrow_mut().showing = Showing::Answer(known);
         }
@@ -354,14 +362,16 @@ impl UpdateController {
 
     /// Ask for a check without opening anything, as IPC does.
     pub fn check_now(&self) {
-        (self.requests)(Request::CheckNow);
+        if let Err(ended) = (self.requests)(Request::CheckNow) {
+            crate::ipc::signal(&signal_line(&UpdateStatus::Failed(ended.to_string())));
+        }
     }
 
     fn dismiss_banner(&self) {
         let version = banner_version(self.state.borrow().known.as_ref(), None, None);
         if !version.is_empty() {
             self.state.borrow_mut().dismissed = Some(version.clone());
-            (self.requests)(Request::Dismiss(version));
+            let _ = (self.requests)(Request::Dismiss(version));
         }
         self.refresh_surfaces();
     }
@@ -376,7 +386,7 @@ impl UpdateController {
             && self.state.borrow().dismissed.as_deref() != Some(version.as_str())
         {
             self.state.borrow_mut().dismissed = Some(version.clone());
-            (self.requests)(Request::Dismiss(version));
+            let _ = (self.requests)(Request::Dismiss(version));
         }
     }
 
@@ -387,7 +397,7 @@ impl UpdateController {
         };
         if let Some(version) = shown {
             self.state.borrow_mut().skipped = Some(version.clone());
-            (self.requests)(Request::Skip(version));
+            let _ = (self.requests)(Request::Skip(version));
         }
         self.hide_window();
         self.refresh_surfaces();
@@ -460,13 +470,11 @@ pub fn start(main: &MainWindow, enabled: bool) {
     let handle: Rc<RefCell<Option<UpdateHandle>>> = Rc::new(RefCell::new(None));
     let sender = Rc::clone(&handle);
     let controller = UpdateController::new(main, Install::detect(), move |request| {
-        if let Some(handle) = sender.borrow().as_ref() {
-            match request {
-                Request::CheckNow => handle.check_now(),
-                Request::Skip(version) => handle.skip(version),
-                Request::Dismiss(version) => handle.dismiss(version),
-            }
-        }
+        sender
+            .borrow()
+            .as_ref()
+            .ok_or(ThreadEnded)
+            .and_then(|handle| handle.send(request))
     });
     controller.wire(main);
     *handle.borrow_mut() = Some(sunlit_core::update::spawn(

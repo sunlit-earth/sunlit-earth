@@ -106,12 +106,12 @@ fn fit(saved: Rect, frame: Frame, areas: &[Rect]) -> Option<Rect>
 - If the outer size (the saved inner size plus `frame`) is larger than the area in either dimension, shrink the inner size to the area minus the frame.
 - Move the position so the outer rectangle lies inside the area, keeping the top left corner where it can.
 
-Slint's `set_position` takes the outer position, frame included, and `set_size` takes the inner size, frame excluded (read from `i-slint-core-1.18.1/api.rs`), which is why `frame` is an input.
+Slint's `set_position` takes the outer position, frame included, and `set_size` takes the inner size, frame excluded (read from `i-slint-core-1.19.0/api.rs`), which is why `frame` is an input.
 
 Per platform:
 
 - **Windows.** Areas are each monitor's work area, `rcWork` from `GetMonitorInfoW`, so the taskbar is excluded. The frame comes from `AdjustWindowRectExForDpi` with `WS_OVERLAPPEDWINDOW`, `bMenu = TRUE` (the native menu bar is non-client area), and the chosen monitor's DPI from `GetDpiForMonitor`. Both are in features `sunlit-core` already enables (`Win32_Graphics_Gdi`, `Win32_UI_WindowsAndMessaging`, `Win32_UI_HiDpi`). The DWM's invisible resize borders are part of the outer rectangle, so the visible window ends a few pixels inside the area, which is the conservative side.
-- **Linux and macOS.** Areas are the `display::outputs()` rectangles the on-screen check already uses. No work area: xrandr does not report panels. The frame is zero horizontally and the existing 30 px title bar allowance vertically, an estimate rather than a measurement; window managers constrain an oversized window themselves as well. Under Wayland the position is ignored by the compositor and only the size matters.
+- **Linux and macOS.** Areas are the `display::outputs()` rectangles the on-screen check already uses. No work area: xrandr does not report panels. The frame is zero horizontally and the existing 30 px title bar allowance vertically, an estimate rather than a measurement; window managers constrain an oversized window themselves as well. Under Wayland the position is ignored by the compositor and only the size matters. On macOS `install_tray_and_geometry` places the window a second time once it exists (`PLACES_AGAIN_ONCE_CREATED`, `place_once_created`); that second placement takes the fitted position, not the saved one.
 - The window's minimum size is left to Slint, which enlarges a window below the `min-width` its layout declares.
 
 ### 6. One rule for when a geometry is saved

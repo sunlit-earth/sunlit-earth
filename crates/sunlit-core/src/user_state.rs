@@ -514,6 +514,103 @@ mod tests {
         })
     }
 
+    /// `text` with every comment and the contents of every string and
+    /// character literal blanked, lines kept, so a scan reads only code.
+    fn code_only(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            if c == '/' && next == Some('/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+            } else if c == '/' && next == Some('*') {
+                let mut depth = 0;
+                while i < chars.len() {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        out.push_str("  ");
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        out.push_str("  ");
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        out.push(blank(chars[i]));
+                        i += 1;
+                    }
+                }
+            } else if c == '"' {
+                out.push('"');
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        out.push(' ');
+                        i += 1;
+                    }
+                    if i < chars.len() {
+                        out.push(blank(chars[i]));
+                        i += 1;
+                    }
+                }
+                out.push('"');
+                i += 1;
+            } else if c == '\'' && next == Some('\\') {
+                out.push_str("' ");
+                i += 2;
+                while i < chars.len() && chars[i] != '\'' {
+                    out.push(' ');
+                    i += 1;
+                }
+                out.push('\'');
+                i += 1;
+            } else if c == '\'' && chars.get(i + 2) == Some(&'\'') {
+                out.push_str("' '");
+                i += 3;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Whether `text` names the app binary: one of [`BINARY`], with
+    /// `binary()` only as a whole name.
+    fn names_binary(text: &str) -> bool {
+        BINARY.iter().any(|binary| {
+            text.match_indices(binary)
+                .any(|(at, _)| !binary.ends_with("()") || !text[..at].ends_with(is_ident))
+        })
+    }
+
+    #[test]
+    fn a_scan_reads_code_and_not_what_it_says() {
+        let text = "let a = \"claim() \\\" user_state::claim\"; // claim()\n\
+                    /* use user_state::{claim}; /* claim() */ */ let c = '\\''; let d = 'x';\n\
+                    user_state::claim();";
+        let code = code_only(text);
+        assert_eq!(code.lines().count(), 3, "{code}");
+        assert!(
+            !code.lines().take(2).any(|line| line.contains("claim")),
+            "{code}"
+        );
+        assert!(reaches_claim(&code));
+        assert!(!reaches_claim(&code_only(
+            "use sunlit_core::user_state; // so claim nothing; claim() is main's"
+        )));
+        assert!(names_binary("let exe = binary();"));
+        assert!(!names_binary("if path.is_binary() {}"));
+    }
+
     #[test]
     fn the_claim_is_found_however_it_is_reached() {
         for text in [
@@ -583,11 +680,16 @@ fn a_second_claim() {}",
                 .expect("under the crates folder")
                 .to_string_lossy()
                 .replace('\\', "/");
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            if reaches_claim(&code_only(&text)) && name != CLAIMANT {
+                found.push(format!(
+                    "{name} claims user state, which only {CLAIMANT} does"
+                ));
+            }
             if name == "sunlit-core/src/user_state.rs" {
                 continue;
             }
-            let text = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
             for token in TOKENS {
                 let allowed = ALLOWED
                     .iter()
@@ -596,14 +698,9 @@ fn a_second_claim() {}",
                     found.push(format!("{name} names {token}"));
                 }
             }
-            if BINARY.iter().any(|binary| text.contains(binary)) && name != SPAWNER {
+            if names_binary(&text) && name != SPAWNER {
                 found.push(format!(
                     "{name} names the app binary; spawn it through app_command() in {SPAWNER}"
-                ));
-            }
-            if reaches_claim(&text) && name != CLAIMANT {
-                found.push(format!(
-                    "{name} claims user state, which only {CLAIMANT} does"
                 ));
             }
         }
@@ -621,7 +718,7 @@ fn a_second_claim() {}",
         let claimant = std::fs::read_to_string(crates.join(CLAIMANT))
             .unwrap_or_else(|e| panic!("read {CLAIMANT}: {e}"));
         assert!(
-            reaches_claim(&claimant),
+            reaches_claim(&code_only(&claimant)),
             "{CLAIMANT} no longer claims user state, so the scan looks for its claim in the wrong place"
         );
         for (file, token, reason) in ALLOWED {

@@ -227,7 +227,7 @@ jobs:
           client-id: ${{ vars.PACKAGING_APP_CLIENT_ID }}
           private-key: ${{ secrets.PACKAGING_APP_PRIVATE_KEY }}
           owner: sunlit-earth
-          repositories: scoop-bucket,homebrew-tap,website
+          repositories: scoop-bucket,homebrew-tap
           permission-contents: write
 
       - uses: actions/download-artifact@v8
@@ -262,9 +262,19 @@ jobs:
           commit homebrew-tap Casks/sunlit-earth.rb Formula/sunlit-earth.rb
 
       # Last, so that the update check never tells anyone to run a scoop or brew
-      # command before the bucket and the tap have the release.
+      # command before the bucket and the tap have the release. A token of its
+      # own, so a website the app cannot reach fails this step alone.
+      - uses: actions/create-github-app-token@v3
+        id: website-token
+        with:
+          client-id: ${{ vars.PACKAGING_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PACKAGING_APP_PRIVATE_KEY }}
+          owner: sunlit-earth
+          repositories: website
+          permission-contents: write
+
       - name: Have the website list the release
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ steps.website-token.outputs.token }}
         run: |
           gh api --method POST /repos/sunlit-earth/website/dispatches -f event_type=release-published

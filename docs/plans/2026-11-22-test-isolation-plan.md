@@ -192,3 +192,15 @@ Both paths go through one function, `menu::current_geometry(window) -> Option<(i
 | `test_close_window_hides_to_the_tray`, `test_the_tray_show_hide_title_follows_the_window`, `test_the_version_notice_is_for_another_version_and_close_dismisses_it` | slint_ui | the startup entry in the registry | creating the tray reads the real `Run` key through `autostart::windows::Location::system()` |
 
 All of these were reads except the one the plan started from: none of the 22 reached a write before panicking, and Set as Wallpaper's save in `test_every_menu_item_works_under_the_sheet` is behind the read that now fails first. The three tray cases reach `linux::system_dir()` and `macos::system_dir()` on the other platforms, which read `XDG_CONFIG_HOME` and `HOME` the same way.
+
+## Departures
+
+1. **`require` sits in `SystemWallpaper::publish`, not in a constructor.** `SystemWallpaper` is a unit struct with no constructor, and the engine's test configuration builds one as its default sink without ever publishing through it. A check at construction would fail every engine test; a check at the publish fails exactly the call that would change the desktop, on whichever thread makes it.
+
+2. **The tray cases answer the start on login entry from a stand-in.** The step 5 inventory found three `slint_ui` cases that read the real `Run` key through `window_state::show`, which refreshes the switch on every show. A scratch folder cannot stand in for a registry key, and `require` rightly refuses one, so `autostart` has a per-thread stand-in (`stand_in_for_this_thread`, `#[doc(hidden)]`) that answers `read`, `enable` and `disable` from a value instead of the system. The three cases hold one; everything else still reaches `Location::system()`, `linux::system_dir()` or `macos::system_dir()` and panics unclaimed.
+
+3. **The existing wallpaper test isolation became `user_state`'s.** `wallpaper/mod.rs` already had a `#[cfg(test)]` thread-local redirect of `wallpaper_dir()` with its own panic. It is gone: `wallpaper_dir()` resolves through `user_state::data_dir()` in every build, and the publishing tests' `Scratch` holds a `scratch_for_this_thread` guard. `export::fallback_folder` moved into `user_state::pictures_dir()` with its test, since the fallback from Pictures to home is part of resolving the location.
+
+4. **The source scan also refuses `Command::new(binary())` outside `tests/common/process.rs`.** `binary()` stays crate-visible because the autostart case needs the binary's path, so naming `env!("CARGO_BIN_EXE_sunlit-earth")` was not enough to keep a new spawn on `app_command()`.
+
+5. **`SUNLIT_EARTH_DATA_DIR` is set in two more places than the plan named,** `release.yml`'s bundle step and `package-managers.yml`'s check, which set `SUNLIT_EARTH_CONFIG` too. The xtask's bundle verification set none of the variables; it now sets `SUNLIT_EARTH_DATA_DIR` under its own working folder, so a local `cargo xtask bundle --verify` no longer writes a log into the developer's data folder.

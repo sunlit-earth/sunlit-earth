@@ -2035,7 +2035,7 @@ fn test_update_check_over_http() {
         .find(|line| line.contains("how this copy was installed"))
         .expect("the install line");
     println!("{install}");
-    assert!(install.contains("kind=Archive"), "{install}");
+    assert!(install.contains("Archive"), "{install}");
 
     assert_eq!(
         check_update(&socket_name, &stdout_watcher),

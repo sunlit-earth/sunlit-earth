@@ -5,6 +5,7 @@
 
 pub(crate) mod cloud_stub;
 pub(crate) mod desktop_linux;
+pub(crate) mod feed_stub;
 pub(crate) mod pixels;
 pub(crate) mod process;
 pub(crate) mod window_rect;

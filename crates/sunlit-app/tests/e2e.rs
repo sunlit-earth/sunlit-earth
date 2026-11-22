@@ -16,6 +16,7 @@ use sunlit_earth::ipc::{DisplaysSignal, Windowing};
 mod common;
 
 use common::cloud_stub::{cloud_fixture_jpeg, spawn_cloud_stub, wait_for_downloads};
+use common::feed_stub::{feed_listing, spawn_feed_stub};
 use common::pixels::{
     assert_blue, assert_greenish, assert_ice, assert_night_land, assert_night_ocean,
     assert_space_corner, assert_yellowish, rgb_at,
@@ -434,6 +435,7 @@ fn test_windowed_mode_graceful_shutdown() {
 fn second_instance(socket_name: &str, extra: &[&str]) -> std::process::Output {
     let instance = app_command()
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
+        .env("SUNLIT_EARTH_NO_UPDATE_CHECK", "1")
         .args(["--log-level", "debug", "--ipc-socket", socket_name])
         .args(extra)
         .stdout(Stdio::piped())
@@ -1986,6 +1988,75 @@ fn test_export_cancel_during_a_large_export_leaves_no_file() {
         .map(|entry| entry.file_name())
         .collect();
     assert!(left.is_empty(), "the cancelled export left {left:?}");
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+}
+
+/// Ask for an update check over IPC and read the state and version it
+/// answers with.
+fn check_update(socket_name: &str, stdout: &StdoutWatcher) -> (String, String) {
+    let from = stdout.line_count();
+    send_ipc_command(socket_name, "check-update");
+    let line = stdout.wait_for_signal_line_from("update ", from, SIGNAL_REPLY);
+    let field = |name: &str| {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(name))
+            .unwrap_or_else(|| panic!("no {name} in {line}"))
+            .to_owned()
+    };
+    (field("state="), field("version="))
+}
+
+/// A check against a loopback copy of the release file: a newer version is
+/// offered, the second check is a 304 that answers the same, a file listing
+/// only the running version is up to date, and a server that is gone is a
+/// failure.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_update_check_over_http() {
+    let socket_name = unique_socket_name();
+    let temp_dir = TempDirGuard::new();
+    let cache_dir = temp_dir.path().join("cache");
+    fs::create_dir_all(&cache_dir).expect("failed to create the cache dir");
+    let running = env!("CARGO_PKG_VERSION");
+    let stub = spawn_feed_stub(feed_listing(&["99.0.0", running]));
+
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name)
+        .with_update_feed(stub.url())
+        .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
+        .start();
+
+    assert_eq!(
+        check_update(&socket_name, &stdout_watcher),
+        ("available".to_owned(), "99.0.0".to_owned())
+    );
+    assert!(
+        cache_dir.join("update_feed.json").is_file(),
+        "the body is kept"
+    );
+
+    let not_modified = stub.not_modified.load(Ordering::SeqCst);
+    assert_eq!(
+        check_update(&socket_name, &stdout_watcher),
+        ("available".to_owned(), "99.0.0".to_owned())
+    );
+    assert!(
+        stub.not_modified.load(Ordering::SeqCst) > not_modified,
+        "the second check sent the kept ETag and got a 304"
+    );
+
+    stub.publish(feed_listing(&[running]));
+    assert_eq!(
+        check_update(&socket_name, &stdout_watcher),
+        ("up_to_date".to_owned(), "-".to_owned())
+    );
+
+    stub.stop();
+    assert_eq!(
+        check_update(&socket_name, &stdout_watcher),
+        ("failed".to_owned(), "-".to_owned())
+    );
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }

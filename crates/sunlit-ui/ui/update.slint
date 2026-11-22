@@ -3,6 +3,7 @@
 // and decides how to update from how the app was installed.
 
 import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import { Links } from "links.slint";
 
 export enum UpdatePhase { checking, up-to-date, failed, available }
 
@@ -30,8 +31,6 @@ export component UpdateWindow inherits Window {
     in property <string> known;
     in property <string> failure;
     in property <[UpdateRelease]> releases;
-    // The newest release's page; empty hides the link.
-    in property <string> notes-url;
 
     // A package manager's command, or empty for an archive.
     in property <string> command;
@@ -124,7 +123,7 @@ export component UpdateWindow inherits Window {
                 }
             }
 
-            if root.phase == UpdatePhase.available && root.notes-url != "": HorizontalLayout {
+            if root.phase == UpdatePhase.available: HorizontalLayout {
                 alignment: start;
 
                 Text {
@@ -133,7 +132,7 @@ export component UpdateWindow inherits Window {
 
                     notes-link := TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { root.open-url(root.notes-url); }
+                        clicked => { root.open-url(Links.changelog); }
                     }
                 }
             }

@@ -9095,6 +9095,28 @@ fn test_download_reaches_open_url_with_the_archive_or_the_page() {
     assert_eq!(*opened.borrow(), [page]);
 }
 
+/// Release Notes opens the changelog, whatever the file said about the
+/// release's own page.
+#[test]
+fn test_release_notes_opens_the_changelog() {
+    use sunlit_earth::update::Showing;
+
+    let window = update_window(
+        &Showing::Answer(fixture_offer()),
+        &archive_install("windows", "x86_64"),
+    );
+    let opened = capture_update_url(&window);
+    let link: Vec<_> =
+        ElementHandle::find_by_element_id(&window, "UpdateWindow::notes-link").collect();
+    assert_eq!(link.len(), 1, "one Release Notes link");
+    link[0].mock_single_click(slint::platform::PointerEventButton::Left);
+    let changelog = window
+        .global::<sunlit_earth::Links>()
+        .get_changelog()
+        .to_string();
+    assert_eq!(*opened.borrow(), [changelog]);
+}
+
 /// Every button in every state keeps its size when the window is made larger:
 /// the extra space goes to the release list's panel or to the empty space
 /// above the buttons. Inside the panel the releases keep their heights and

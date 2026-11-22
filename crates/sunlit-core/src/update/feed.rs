@@ -19,9 +19,6 @@ use time::macros::format_description;
 /// The largest body a check accepts.
 pub const BODY_LIMIT: u64 = 256 * 1024;
 
-/// What a release page's URL starts with.
-pub const NOTES_PREFIX: &str = "https://github.com/sunlit-earth/sunlit-earth/releases/";
-
 /// What an archive's URL starts with.
 pub const ASSET_PREFIX: &str = "https://github.com/sunlit-earth/sunlit-earth/releases/download/";
 
@@ -39,8 +36,6 @@ pub struct Asset {
 pub struct Release {
     pub version: Version,
     pub date: Option<Date>,
-    /// `None` when the file had none, or one outside [`NOTES_PREFIX`].
-    pub notes: Option<String>,
     pub highlights: Vec<String>,
     /// By the keys [`asset_key`] makes.
     pub assets: BTreeMap<String, Asset>,
@@ -102,11 +97,6 @@ fn read_release(entry: &Value) -> Option<Release> {
         .get("date")
         .and_then(Value::as_str)
         .and_then(|text| Date::parse(text, format_description!("[year]-[month]-[day]")).ok());
-    let notes = entry
-        .get("notes")
-        .and_then(Value::as_str)
-        .filter(|url| url.starts_with(NOTES_PREFIX))
-        .map(ToOwned::to_owned);
     let highlights = entry
         .get("highlights")
         .and_then(Value::as_array)
@@ -133,7 +123,6 @@ fn read_release(entry: &Value) -> Option<Release> {
     Some(Release {
         version,
         date,
-        notes,
         highlights,
         assets,
     })
@@ -232,7 +221,6 @@ mod tests {
         for (release, entry) in feed.releases.iter().zip(entries) {
             assert_eq!(release.version.to_string(), entry["version"]);
             assert!(release.date.is_some());
-            assert_eq!(release.notes.as_deref(), entry["notes"].as_str());
             assert_eq!(
                 release.highlights.len(),
                 entry["highlights"].as_array().map_or(0, Vec::len)
@@ -321,13 +309,11 @@ mod tests {
         let feed = feed_of(&[serde_json::json!({
             "version": "1.0.0",
             "date": "first of may",
-            "notes": 3,
             "highlights": ["one", 2, "  ", " three "],
             "assets": { "linux-x86_64": "not an object", "windows-x86_64": { "url": 1, "size": "big" } },
         })]);
         let release = &feed.releases[0];
         assert_eq!(release.date, None);
-        assert_eq!(release.notes, None);
         assert_eq!(release.highlights, ["one", "three"]);
         assert_eq!(release.assets.len(), 1);
         assert_eq!(
@@ -361,7 +347,6 @@ mod tests {
     fn a_url_outside_its_prefix_is_missing() {
         let feed = feed_of(&[serde_json::json!({
             "version": "1.0.0",
-            "notes": "https://example.com/sunlit-earth/sunlit-earth/releases/tag/v1.0.0",
             "assets": {
                 "a": { "url": "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v1.0.0" },
                 "b": { "url": "http://github.com/sunlit-earth/sunlit-earth/releases/download/v1.0.0/x.zip" },
@@ -370,7 +355,6 @@ mod tests {
             },
         })]);
         let release = &feed.releases[0];
-        assert_eq!(release.notes, None);
         let usable: Vec<&str> = release
             .assets
             .iter()

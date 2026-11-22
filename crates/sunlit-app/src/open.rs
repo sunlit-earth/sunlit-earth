@@ -199,6 +199,7 @@ mod tests {
             links.get_repository(),
             links.get_new_issue(),
             links.get_download(),
+            links.get_changelog(),
         ] {
             assert!(is_web_url(&link), "{link} is refused by the opener");
         }

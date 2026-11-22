@@ -175,14 +175,6 @@ pub fn present(window: &UpdateWindow, showing: &Showing, install: &Install) {
                 })
                 .collect();
             window.set_releases(ModelRc::new(VecModel::from(releases)));
-            window.set_notes_url(
-                latest
-                    .notes
-                    .as_deref()
-                    .filter(|url| crate::open::is_web_url(url))
-                    .unwrap_or_default()
-                    .into(),
-            );
             match &install.help {
                 UpdateHelp::Command { command, hint } => {
                     window.set_command((*command).into());
@@ -556,7 +548,6 @@ mod tests {
         Release {
             version: sunlit_core::update::Version::parse(version).unwrap(),
             date: None,
-            notes: None,
             highlights: Vec::new(),
             assets: assets
                 .iter()

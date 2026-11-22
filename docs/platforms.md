@@ -63,7 +63,7 @@ The running instance answers each connection on a short thread, at most four at 
 
 ## How the app was installed
 
-The update window (usage.md, Checking for updates) shows a package manager's command or a download button, depending on how the running copy was installed. `install::kind_of` answers from `std::env::current_exe()` and a check of which paths exist, so every rule below is unit-tested on every platform against made-up trees. A wrong answer costs little: the user sees a command where a button would have fit, or the other way round, and the Release Notes link leads to the archives in both cases.
+The update window (usage.md, Checking for updates) shows a package manager's command or a download button, depending on how the running copy was installed. `install::kind_of` answers from `std::env::current_exe()` and a check of which paths exist, so every rule below is unit-tested on every platform against made-up trees. A wrong answer costs little: the user sees a command where a button would have fit, or the other way round, and the website's download section has every archive.
 
 **Windows.** Scoop keeps an app at `<root>/apps/sunlit-earth/<version>/`, with `current` a junction to the newest version folder, and writes `install.json` and `manifest.json` beside the executable. Both files present, the folder above named `sunlit-earth` and the one above that `apps` is Scoop; the root can be anywhere, so the word `scoop` is not looked for. Anything else is an archive, whose key is `windows-<arch>` (plan departure 1).
 

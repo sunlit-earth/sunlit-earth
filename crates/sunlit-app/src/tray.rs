@@ -383,9 +383,18 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ScratchDir;
+    use sunlit_core::user_state::{ScratchGuard, scratch_for_this_thread};
+
+    /// On macOS the lock is a file in the data folder.
+    fn scratch_data_folder(case: &str) -> (ScratchGuard, ScratchDir) {
+        let dir = ScratchDir::new(case);
+        (scratch_for_this_thread(dir.path()), dir)
+    }
 
     #[test]
     fn a_second_claim_on_a_held_name_finds_the_first_running() {
+        let _data = scratch_data_folder("tray_second_claim");
         let name = format!("sunlit-earth-guard-test-{}", std::process::id());
         let InstanceCheck::Alone(guard) = acquire_single_instance(&name) else {
             panic!("nothing else holds a name made for this test");
@@ -541,10 +550,12 @@ mod tests {
     /// name in a namespace of its own and arrives unchanged.
     #[test]
     fn the_instance_lock_is_a_real_path_on_the_platform_that_makes_it_a_file() {
+        let (_data, dir) = scratch_data_folder("tray_instance_lock");
         let name = instance_name("sunlit-earth-app");
         if cfg!(target_os = "macos") {
             let path = std::path::Path::new(&name);
             assert!(path.is_absolute(), "{name}");
+            assert!(path.starts_with(dir.path()), "{name}");
             assert!(name.ends_with("instance-sunlit-earth-app.lock"), "{name}");
             assert!(
                 path.parent().is_some_and(std::path::Path::is_dir),

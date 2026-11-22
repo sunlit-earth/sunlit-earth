@@ -280,6 +280,10 @@ pub fn resolve_store(
 }
 
 /// The store this host is using.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the VM store is the xtask's own, outside the app's user state"
+)]
 pub fn store() -> Result<Store, String> {
     resolve_store(std::env::var(VM_DIR_ENV).ok(), dirs::data_local_dir())
 }

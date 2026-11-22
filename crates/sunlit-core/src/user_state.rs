@@ -176,6 +176,10 @@ struct Sources {
 
 impl Sources {
     /// The user's own: the environment overrides and what `dirs` answers.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one place the user's folders are asked for"
+    )]
     fn user() -> Self {
         let env = |name| crate::env_override(name).map(PathBuf::from);
         Self {
@@ -424,5 +428,132 @@ mod tests {
         std::fs::create_dir(&pictures).expect("create the pictures folder");
         assert_eq!(sources.pictures_dir(), Some(pictures));
         assert_eq!(Sources::default().pictures_dir(), None);
+    }
+
+    /// What reaches the user's state other than through this module.
+    const TOKENS: [&str; 8] = [
+        "dirs::",
+        "env::home_dir",
+        "\"HOME\"",
+        "\"XDG_CONFIG_HOME\"",
+        "\"APPDATA\"",
+        "\"LOCALAPPDATA\"",
+        "\"USERPROFILE\"",
+        "HKEY_CURRENT_USER",
+    ];
+
+    /// The files that may name a token, and why.
+    const ALLOWED: [(&str, &str, &str); 5] = [
+        (
+            "sunlit-app/src/autostart/windows.rs",
+            "HKEY_CURRENT_USER",
+            "Location::system() calls require, and the tests use scratch keys",
+        ),
+        (
+            "sunlit-app/src/autostart/linux.rs",
+            "\"XDG_CONFIG_HOME\"",
+            "system_dir() calls require before reading it",
+        ),
+        (
+            "sunlit-app/src/autostart/linux.rs",
+            "\"HOME\"",
+            "system_dir() calls require before reading it",
+        ),
+        (
+            "sunlit-app/src/autostart/macos.rs",
+            "\"HOME\"",
+            "system_dir() calls require before reading it",
+        ),
+        (
+            "sunlit-core/src/wallpaper/windows.rs",
+            "HKEY_CURRENT_USER",
+            "only a publish writes it, and SystemWallpaper's publish calls require",
+        ),
+    ];
+
+    /// The one file that may name the app binary, so every spawn of it goes
+    /// through `app_command()`.
+    const SPAWNER: &str = "sunlit-app/tests/common/process.rs";
+    const BINARY: [&str; 2] = [
+        "env!(\"CARGO_BIN_EXE_sunlit-earth\")",
+        "Command::new(binary())",
+    ];
+
+    fn rust_files(dir: &Path, found: &mut Vec<PathBuf>) {
+        let entries = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .map(|entry| entry.expect("a directory entry").path());
+        for path in entries {
+            if path.is_dir() {
+                rust_files(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                found.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_reaches_user_state_around_this_module() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut files = Vec::new();
+        for krate in ["sunlit-core", "sunlit-app", "sunlit-ui"] {
+            for part in ["src", "tests"] {
+                let dir = crates.join(krate).join(part);
+                if dir.is_dir() {
+                    rust_files(&dir, &mut files);
+                }
+            }
+        }
+        assert!(
+            files.len() > 50,
+            "the scan found only {} files",
+            files.len()
+        );
+
+        let mut found = Vec::new();
+        for path in &files {
+            let name = path
+                .strip_prefix(&crates)
+                .expect("under the crates folder")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if name == "sunlit-core/src/user_state.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            for token in TOKENS {
+                let allowed = ALLOWED
+                    .iter()
+                    .any(|&(file, allowed, _)| file == name && allowed == token);
+                if text.contains(token) && !allowed {
+                    found.push(format!("{name} names {token}"));
+                }
+            }
+            if BINARY.iter().any(|binary| text.contains(binary)) && name != SPAWNER {
+                found.push(format!(
+                    "{name} names the app binary; spawn it through app_command() in {SPAWNER}"
+                ));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "user state reached around sunlit_core::user_state (see docs/testing.md, \
+             \"User state\"):\n{}",
+            found.join("\n")
+        );
+    }
+
+    #[test]
+    fn every_allowance_is_still_needed() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for (file, token, reason) in ALLOWED {
+            let text = std::fs::read_to_string(crates.join(file))
+                .unwrap_or_else(|e| panic!("read {file}: {e}"));
+            assert!(
+                text.contains(token),
+                "{file} no longer names {token}, so its allowance ({reason}) can go"
+            );
+        }
     }
 }

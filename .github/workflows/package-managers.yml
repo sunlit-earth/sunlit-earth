@@ -184,7 +184,7 @@ jobs:
           work="$RUNNER_TEMP/verify"
           mkdir -p "$work/empty"
           cd "$work"
-          export SUNLIT_EARTH_CONFIG="$work/config.toml" SUNLIT_EARTH_CACHE_DIR="$work/cache" SUNLIT_EARTH_METRICS_DIR="$work/metrics"
+          export SUNLIT_EARTH_DATA_DIR="$work/data" SUNLIT_EARTH_CONFIG="$work/config.toml" SUNLIT_EARTH_CACHE_DIR="$work/cache" SUNLIT_EARTH_METRICS_DIR="$work/metrics"
           SUNLIT_EARTH_TEXTURES="$work/empty" "$exe" render --output grid.png --width 640 --height 360
           "$exe" render --output smoke.png --width 640 --height 360
           if [ "$RUNNER_OS" = Windows ]; then py=python; else py=python3; fi

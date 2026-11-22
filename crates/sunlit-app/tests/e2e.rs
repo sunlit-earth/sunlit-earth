@@ -4,7 +4,7 @@
 //! and GPU. Run with `cargo test --test e2e -- --ignored`.
 
 use std::fs;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -23,10 +23,10 @@ use common::pixels::{
 use common::process::{
     AUTOSTART_OPT_IN, ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY,
     Spawn, StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
-    WALLPAPER_PLATFORM, assert_no_error_lines, binary, fixture, isolated_config_path,
-    isolated_state_dir, memory_report, mib, parse_memory_entries, query_memory,
-    quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
-    wait_with_timeout, wallpaper_supported,
+    WALLPAPER_PLATFORM, app_command, assert_no_error_lines, binary, fixture, isolated_config_path,
+    memory_report, mib, parse_memory_entries, query_memory, quit_and_expect_clean_exit,
+    send_ipc_command, skip_case, tray_supported, unique_socket_name, wait_with_timeout,
+    wallpaper_supported,
 };
 use common::window_rect::{Key, MainWindow};
 
@@ -113,10 +113,8 @@ fn test_render_and_exit() {
     // `--log-level debug` into a pipe nobody reads is how a child blocks on a
     // write and a case fails as a timeout naming nothing.
     let mut guard = ChildGuard::new(
-        Command::new(binary())
+        app_command()
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
-            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
             .args([
                 "--log-level",
@@ -433,10 +431,8 @@ fn test_windowed_mode_graceful_shutdown() {
 /// name rather than the default one, which a real running instance may hold.
 /// It is spawned by hand because it is expected to exit on its own.
 fn second_instance(socket_name: &str, extra: &[&str]) -> std::process::Output {
-    let instance = Command::new(binary())
+    let instance = app_command()
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
-        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
         .args(["--log-level", "debug", "--ipc-socket", socket_name])
         .args(extra)
         .stdout(Stdio::piped())
@@ -1288,9 +1284,7 @@ fn test_displays_names_the_wallpaper_setter() {
         );
         return;
     }
-    let out = Command::new(binary())
-        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+    let out = app_command()
         .arg("displays")
         .output()
         .expect("sunlit-earth displays runs");

@@ -336,6 +336,26 @@ pub(crate) fn isolated_config_path() -> PathBuf {
     ))
 }
 
+/// The app binary with every place it keeps state moved into
+/// [`isolated_state_dir`]: the data folder, which takes the log files and the
+/// wallpaper output with it, a config file of its own, the caches and the
+/// memory metrics.
+///
+/// Every spawn of the app goes through this, so a case cannot forget one of
+/// them; a case that wants a particular config or cache sets that variable
+/// again after it, and the later value wins. The source scan in
+/// `sunlit_core::user_state` fails a spawn written any other way.
+pub(crate) fn app_command() -> Command {
+    let state = isolated_state_dir();
+    let mut command = Command::new(binary());
+    command
+        .env("SUNLIT_EARTH_DATA_DIR", state.join("data"))
+        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
+        .env("SUNLIT_EARTH_CACHE_DIR", state.join("cache"))
+        .env("SUNLIT_EARTH_METRICS_DIR", &state);
+    command
+}
+
 /// A parsed memory usage log entry.
 pub(crate) struct MemoryEntry {
     pub(crate) context: String,
@@ -494,10 +514,8 @@ impl<'a> Spawn<'a> {
 
     /// Spawn, attach both watchers, and wait until the app is answering.
     pub(crate) fn start(self) -> (ChildGuard, StdoutWatcher, StderrWatcher) {
-        let mut command = Command::new(binary());
-        command
-            .env("SUNLIT_EARTH_CONFIG", &self.config)
-            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir());
+        let mut command = app_command();
+        command.env("SUNLIT_EARTH_CONFIG", &self.config);
         if !self.clouds {
             command.env("SUNLIT_EARTH_NO_CLOUDS", "1");
         }

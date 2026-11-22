@@ -1335,7 +1335,12 @@ fn render_comparison(runner: &dyn Runner, exe: &Path, work: &Path) -> Result<f64
             SMOKE_HEIGHT.to_string(),
         ]
     };
-    let base = || Cmd::new(exe.to_string_lossy().into_owned()).cwd(work);
+    let state = work.join("state");
+    let base = || {
+        Cmd::new(exe.to_string_lossy().into_owned())
+            .cwd(work)
+            .env("SUNLIT_EARTH_DATA_DIR", state.to_string_lossy())
+    };
     at(base().arg("--version"))?;
 
     let grid = work.join(GRID_FILE);

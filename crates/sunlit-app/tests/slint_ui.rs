@@ -6343,9 +6343,9 @@ fn labelled(window: &MainWindow, label: &str) -> Vec<ElementHandle> {
 /// "Close" takes away.
 #[test]
 fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
+    use sunlit_earth::activation::{Launch, activate};
     let _autostart =
         sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
-    use sunlit_earth::activation::{Launch, activate};
 
     let window = create_window();
     let link = idle_link();
@@ -6901,9 +6901,9 @@ fn test_revert_to_saved_is_the_panels_reset() {
 /// across every way the window is shown and hidden.
 #[test]
 fn test_the_tray_show_hide_title_follows_the_window() {
+    use sunlit_earth::window_state;
     let _autostart =
         sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
-    use sunlit_earth::window_state;
 
     if the_tray_cannot_follow_a_shown_window("test_the_tray_show_hide_title_follows_the_window") {
         return;
@@ -6935,9 +6935,9 @@ fn test_the_tray_show_hide_title_follows_the_window() {
 /// the tray's title turns to Show.
 #[test]
 fn test_close_window_hides_to_the_tray() {
+    use sunlit_earth::window_state;
     let _autostart =
         sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
-    use sunlit_earth::window_state;
 
     if the_tray_cannot_follow_a_shown_window("test_close_window_hides_to_the_tray") {
         return;

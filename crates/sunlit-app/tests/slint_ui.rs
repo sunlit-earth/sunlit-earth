@@ -9095,6 +9095,74 @@ fn test_download_reaches_open_url_with_the_archive_or_the_page() {
     assert_eq!(*opened.borrow(), [page]);
 }
 
+/// Every button in every state keeps its size when the window is made larger:
+/// the extra space goes to the release list or to the empty space above the
+/// buttons, never into a button.
+#[test]
+fn test_the_update_windows_buttons_keep_their_size_when_it_grows() {
+    use sunlit_core::update::UpdateStatus;
+    use sunlit_earth::install::InstallKind;
+    use sunlit_earth::update::{Install, Showing};
+
+    let archive = archive_install("windows", "x86_64");
+    let states = [
+        ("checking", Showing::Checking { known: None }, &archive),
+        (
+            "up to date",
+            Showing::Answer(UpdateStatus::UpToDate),
+            &archive,
+        ),
+        (
+            "failed",
+            Showing::Answer(UpdateStatus::Failed("the server said 503".to_owned())),
+            &archive,
+        ),
+        ("archive", Showing::Answer(fixture_offer()), &archive),
+        (
+            "no archive",
+            Showing::Answer(fixture_offer()),
+            &archive_install("linux", "riscv64"),
+        ),
+        (
+            "package manager",
+            Showing::Answer(fixture_offer()),
+            &Install::of(InstallKind::Scoop, "windows", "x86_64", false),
+        ),
+    ];
+    let button_sizes = |window: &sunlit_earth::UpdateWindow, size: slint::LogicalSize| {
+        window.window().set_size(size);
+        window.window().request_redraw();
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+        ElementQuery::from_root(window)
+            .match_accessible_role(AccessibleRole::Button)
+            .find_all()
+            .into_iter()
+            .map(|button| {
+                let label = button.accessible_label().unwrap_or_default().to_string();
+                let size = button.size();
+                (label, size.width, size.height)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (state, showing, install) in &states {
+        let window = update_window(showing, install);
+        let smaller = button_sizes(&window, slint::LogicalSize::new(480.0, 640.0));
+        let larger = button_sizes(&window, slint::LogicalSize::new(960.0, 1280.0));
+        assert!(!smaller.is_empty(), "{state}: the window shows buttons");
+        assert_eq!(smaller.len(), larger.len(), "{state}: the same buttons");
+        for ((label, width, height), (_, larger_width, larger_height)) in
+            smaller.iter().zip(&larger)
+        {
+            assert!(
+                approx::relative_eq!(*width, *larger_width, epsilon = 0.5)
+                    && approx::relative_eq!(*height, *larger_height, epsilon = 0.5),
+                "{state}: {label} is {width} × {height} in the smaller window and {larger_width} × {larger_height} in the larger"
+            );
+        }
+    }
+}
+
 // A field that a test pastes into, which is how it reads the clipboard the
 // testing backend keeps to itself.
 slint::slint! {

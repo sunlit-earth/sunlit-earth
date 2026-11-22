@@ -174,6 +174,13 @@ export component UpdateWindow inherits Window {
                 }
             }
 
+            // Takes the height the window gains when there is no release list
+            // to take it: with every cell at stretch 0 the layout would share
+            // it out among all of them, buttons included.
+            if root.phase != UpdatePhase.available: Rectangle {
+                vertical-stretch: 1;
+            }
+
             HorizontalLayout {
                 alignment: end;
                 spacing: 8px;

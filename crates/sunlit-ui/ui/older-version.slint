@@ -33,6 +33,13 @@ export component OlderVersionWindow inherits Window {
             wrap: word-wrap;
         }
 
+        // Takes the height the window is dragged to: with every cell at
+        // stretch 0 the layout would share it out among all of them, the
+        // button included.
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
         HorizontalLayout {
             alignment: end;
 

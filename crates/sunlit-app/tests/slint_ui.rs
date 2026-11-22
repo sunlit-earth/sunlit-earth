@@ -6458,6 +6458,57 @@ fn test_the_older_version_window_names_this_version_and_close_hides_it() {
     assert!(!window.window().is_visible());
 }
 
+/// Dragging the older version's notice taller adds empty space above its
+/// button: Close keeps its size and the texts stay where they were.
+#[test]
+fn test_the_older_version_window_keeps_its_layout_when_made_taller() {
+    init();
+    let window = sunlit_earth::activation::older_version_window().unwrap();
+    window.show().unwrap();
+
+    let layout_at = |height: f32| {
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(440.0, height));
+        window.window().request_redraw();
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+        let element = |prefix: &str| {
+            ElementQuery::from_root(&window)
+                .find_all()
+                .into_iter()
+                .find(|element| {
+                    element
+                        .accessible_label()
+                        .is_some_and(|label| label.starts_with(prefix))
+                })
+                .unwrap_or_else(|| panic!("an element labelled {prefix:?}"))
+        };
+        let heading = element("An older version is already running");
+        let body = element("An older version of Sunlit Earth");
+        let close = element("Close");
+        (
+            [heading.absolute_position().y, body.absolute_position().y],
+            [close.size().width, close.size().height],
+        )
+    };
+    #[expect(clippy::cast_precision_loss, reason = "a window height")]
+    let natural = window.window().size().height as f32 / window.window().scale_factor();
+    let (texts, close) = layout_at(natural);
+    let (taller_texts, taller_close) = layout_at(natural + 400.0);
+    for (small, large) in close.iter().zip(&taller_close) {
+        assert!(
+            approx::relative_eq!(*small, *large, epsilon = 0.5),
+            "Close is {close:?} in the {natural} px window and {taller_close:?} in the taller one"
+        );
+    }
+    for (small, large) in texts.iter().zip(&taller_texts) {
+        assert!(
+            approx::relative_eq!(*small, *large, epsilon = 0.5),
+            "a text at {small} in the {natural} px window is at {large} in the taller one"
+        );
+    }
+}
+
 /// The "Start on login" check box, found by its label.
 fn start_on_login(window: &MainWindow) -> ElementHandle {
     labelled(window, "Start on login")

@@ -23,7 +23,11 @@ export component UpdateWindow inherits Window {
     background: Palette.background;
     width: 480px;
     min-height: 160px;
-    preferred-height: root.phase == UpdatePhase.available ? 520px : 160px;
+    preferred-height: root.phase == UpdatePhase.available ? root.offer-height : 160px;
+
+    // A shown window keeps its size when the phase changes, so `update.rs`
+    // grows it to this when an offer arrives.
+    out property <length> offer-height: 460px;
 
     in property <UpdatePhase> phase;
     // The installed version, and the one on offer.

@@ -58,6 +58,10 @@ impl HttpUpdateSource {
             .new_agent();
         Self { agent, url }
     }
+
+    fn answered(&self, status: u16) -> String {
+        format!("{} answered {status}", self.url)
+    }
 }
 
 impl UpdateSource for HttpUpdateSource {
@@ -66,13 +70,16 @@ impl UpdateSource for HttpUpdateSource {
         if let Some(etag) = known_etag {
             request = request.header("If-None-Match", etag);
         }
-        let mut response = request.call().map_err(|e| e.to_string())?;
+        let mut response = request.call().map_err(|e| match e {
+            ureq::Error::StatusCode(status) => self.answered(status),
+            e => format!("could not reach {}: {e}", self.url),
+        })?;
         let status = response.status().as_u16();
         if status == 304 {
             return Ok(Fetched::Unchanged);
         }
         if status != 200 {
-            return Err(format!("the server answered {status}"));
+            return Err(self.answered(status));
         }
         let etag = response
             .headers()
@@ -84,7 +91,7 @@ impl UpdateSource for HttpUpdateSource {
             .with_config()
             .limit(BODY_LIMIT)
             .read_to_vec()
-            .map_err(|e| format!("could not read the release file: {e}"))?;
+            .map_err(|e| format!("could not read {}: {e}", self.url))?;
         Ok(Fetched::Body { bytes, etag })
     }
 }
@@ -165,16 +172,30 @@ mod tests {
     fn a_body_over_the_limit_fails() {
         let body = vec![b' '; usize::try_from(BODY_LIMIT).unwrap() + 1];
         let (url, _seen) = serve_once(ok(&body, "\"big\""));
-        assert!(HttpUpdateSource::new(url).fetch(None).is_err());
+        let reason = HttpUpdateSource::new(url.clone()).fetch(None).unwrap_err();
+        assert!(reason.contains(&url), "{reason}");
     }
 
     #[test]
-    fn a_server_error_fails() {
+    fn a_server_error_fails_and_names_the_url() {
         let (url, _seen) = serve_once(
             b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .to_vec(),
         );
-        assert!(HttpUpdateSource::new(url).fetch(None).is_err());
+        let reason = HttpUpdateSource::new(url.clone()).fetch(None).unwrap_err();
+        assert_eq!(reason, format!("{url} answered 503"));
+    }
+
+    #[test]
+    fn a_server_that_is_not_there_fails_and_names_the_url() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/releases/v1.json", listener.local_addr().unwrap());
+        drop(listener);
+        let reason = HttpUpdateSource::new(url.clone()).fetch(None).unwrap_err();
+        assert!(
+            reason.starts_with(&format!("could not reach {url}: ")),
+            "{reason}"
+        );
     }
 
     #[test]

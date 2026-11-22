@@ -9005,6 +9005,40 @@ fn test_a_closed_offer_stays_in_the_tray_and_is_offered_when_asked() {
     assert_eq!(tray.get_update_title(), "Update Available: 0.7.0…");
 }
 
+/// A window shown on "Checking…" grows to its offer height when the answer
+/// is an offer, and one the user made taller keeps its height.
+#[test]
+fn test_the_update_window_grows_when_an_offer_arrives() {
+    let window = create_window();
+    let (controller, _sent) = recorded_controller(&window);
+    let height = |shown: &sunlit_earth::UpdateWindow| {
+        shown
+            .window()
+            .size()
+            .to_logical(shown.window().scale_factor())
+            .height
+    };
+
+    window.invoke_check_for_updates();
+    let shown = controller
+        .window()
+        .expect("the entry made the update window");
+    shown
+        .window()
+        .set_size(slint::LogicalSize::new(480.0, 160.0));
+    controller.apply(update_event(fixture_offer(), true));
+    assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Available);
+    approx::assert_relative_eq!(height(&shown), shown.get_offer_height());
+
+    let taller = shown.get_offer_height() + 200.0;
+    shown
+        .window()
+        .set_size(slint::LogicalSize::new(480.0, taller));
+    window.invoke_check_for_updates();
+    controller.apply(update_event(fixture_offer(), true));
+    approx::assert_relative_eq!(height(&shown), taller);
+}
+
 /// A check asked for while the update thread is gone fails in the window with
 /// the reason, and Try Again asks once more.
 #[test]

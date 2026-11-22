@@ -190,6 +190,27 @@ pub fn present(window: &UpdateWindow, showing: &Showing, install: &Install) {
     }
 }
 
+/// Make a window that shows an offer at least its `offer-height` tall.
+///
+/// A window takes its preferred height only when it is first shown, so one
+/// opened on "Checking…" would otherwise keep that height for the releases.
+/// A window never shown has no size yet and gets the height on its first show.
+fn grow_for_an_offer(window: &UpdateWindow) {
+    if window.get_phase() != UpdatePhase::Available {
+        return;
+    }
+    let size = window
+        .window()
+        .size()
+        .to_logical(window.window().scale_factor());
+    let wanted = window.get_offer_height();
+    if size.height > 0.0 && size.height < wanted {
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(size.width, wanted));
+    }
+}
+
 struct State {
     /// The last answer that was not a failure.
     known: Option<UpdateStatus>,
@@ -395,6 +416,7 @@ impl UpdateController {
         let state = self.state.borrow();
         if let Some(window) = state.window.as_ref() {
             present(window, &state.showing, &self.install);
+            grow_for_an_offer(window);
         }
     }
 

@@ -44,7 +44,6 @@ export component UpdateWindow inherits Window {
     property <length> scrollbar-width: 14px;
 
     callback check-again();
-    callback skip();
     callback open-url(url: string);
     // Esc and Close, which hide the window.
     callback dismiss();
@@ -210,11 +209,6 @@ export component UpdateWindow inherits Window {
                 if root.phase == UpdatePhase.failed: Button {
                     text: "Try Again";
                     clicked => { root.check-again(); }
-                }
-
-                if root.phase == UpdatePhase.available: Button {
-                    text: "Skip This Version";
-                    clicked => { root.skip(); }
                 }
 
                 Button {

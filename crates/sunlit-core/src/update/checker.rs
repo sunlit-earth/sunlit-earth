@@ -65,8 +65,6 @@ pub enum Request {
     /// Check now, whatever the schedule says, and report the outcome even when
     /// it is a failure.
     CheckNow,
-    /// Stop pointing at this version in the tray and the banner.
-    Skip(String),
     /// Stop showing the banner for this version.
     Dismiss(String),
 }
@@ -86,7 +84,6 @@ pub struct UpdateEvent {
     pub status: UpdateStatus,
     /// Whether this answers a [`Request::CheckNow`].
     pub manual: bool,
-    pub skipped_version: Option<String>,
     pub dismissed_version: Option<String>,
 }
 
@@ -173,10 +170,6 @@ impl Checker {
     pub fn handle(&mut self, request: Request, pending: &Receiver<Request>) {
         match request {
             Request::CheckNow => self.check(true, pending),
-            Request::Skip(version) => {
-                self.state.skipped_version = Some(version);
-                self.store.save_state(&self.state);
-            }
             Request::Dismiss(version) => {
                 self.state.dismissed_version = Some(version);
                 self.store.save_state(&self.state);
@@ -250,7 +243,6 @@ impl Checker {
         (self.emit)(UpdateEvent {
             status,
             manual,
-            skipped_version: self.state.skipped_version.clone(),
             dismissed_version: self.state.dismissed_version.clone(),
         });
     }
@@ -576,14 +568,12 @@ mod tests {
     }
 
     #[test]
-    fn skip_and_dismiss_reach_the_state_file_and_leave_a_newer_offer_alone() {
-        let rig = Rig::new("update_skip");
+    fn a_dismissal_reaches_the_state_file_and_leaves_a_newer_offer_alone() {
+        let rig = Rig::new("update_dismiss");
         let mut checker = rig.checker(OLD, false);
-        checker.handle(Request::Skip("0.6.1".to_owned()), &rig.pending);
         checker.handle(Request::Dismiss("0.6.0".to_owned()), &rig.pending);
 
         let (state, _) = rig.store().load();
-        assert_eq!(state.skipped_version.as_deref(), Some("0.6.1"));
         assert_eq!(state.dismissed_version.as_deref(), Some("0.6.0"));
 
         let mut reopened = rig.checker(OLD, false);
@@ -591,7 +581,6 @@ mod tests {
         reopened.handle(Request::CheckNow, &rig.pending);
         let event = &rig.events()[0];
         assert_eq!(offered(event).as_deref(), Some("0.7.0"));
-        assert_eq!(event.skipped_version.as_deref(), Some("0.6.1"));
         assert_eq!(event.dismissed_version.as_deref(), Some("0.6.0"));
     }
 }

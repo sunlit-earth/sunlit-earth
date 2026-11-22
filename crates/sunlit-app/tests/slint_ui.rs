@@ -8722,7 +8722,6 @@ fn update_event(
     sunlit_core::update::UpdateEvent {
         status,
         manual,
-        skipped_version: None,
         dismissed_version: None,
     }
 }
@@ -8897,13 +8896,16 @@ fn test_details_opens_the_window_and_hides_the_banner() {
     assert_eq!(window.get_update_banner_version(), "0.8.0");
 }
 
-/// Skip This Version clears the tray's title and the banner for that version
-/// and closes the window, and Help > Check for Updates… still offers it.
+/// Help > Check for Updates… checks and shows the answer. Close leaves the
+/// tray's entry naming the version and the banner hidden for it, and asking
+/// again checks again and offers it again.
 #[test]
-fn test_a_skipped_version_is_still_offered_when_asked() {
+fn test_a_closed_offer_stays_in_the_tray_and_is_offered_when_asked() {
     use sunlit_core::update::Request;
 
-    if the_tray_cannot_follow_a_shown_window("test_a_skipped_version_is_still_offered_when_asked") {
+    if the_tray_cannot_follow_a_shown_window(
+        "test_a_closed_offer_stays_in_the_tray_and_is_offered_when_asked",
+    ) {
         return;
     }
     let window = create_window();
@@ -8922,17 +8924,23 @@ fn test_a_skipped_version_is_still_offered_when_asked() {
     assert_eq!(tray.get_update_title(), "Update Available: 0.7.0…");
 
     materialize_update(&shown);
-    update_button(&shown, "Skip This Version").invoke_accessible_default_action();
-    assert!(!shown.window().is_visible(), "Skip closes the window");
-    assert!(sent.borrow().contains(&Request::Skip("0.7.0".to_owned())));
-    assert_eq!(tray.get_update_title(), "Check for Updates…");
+    update_button(&shown, "Close").invoke_accessible_default_action();
+    assert!(!shown.window().is_visible(), "Close hides the window");
+    assert_eq!(tray.get_update_title(), "Update Available: 0.7.0…");
     assert_eq!(window.get_update_banner_version(), "");
 
     window.invoke_check_for_updates();
+    assert_eq!(
+        sent.borrow()
+            .iter()
+            .filter(|request| **request == Request::CheckNow)
+            .count(),
+        2
+    );
     controller.apply(update_event(fixture_offer(), true));
     assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Available);
     assert_eq!(shown.get_offered_version(), "0.7.0");
-    assert_eq!(tray.get_update_title(), "Check for Updates…");
+    assert_eq!(tray.get_update_title(), "Update Available: 0.7.0…");
 }
 
 /// A check asked for while the update thread is gone fails in the window with
@@ -9016,7 +9024,7 @@ fn test_the_update_window_shows_each_state() {
     );
     assert_eq!(
         update_buttons(&window),
-        ["Download 0.7.0 (35.8 MB)", "Skip This Version", "Close"]
+        ["Download 0.7.0 (35.8 MB)", "Close"]
     );
     assert!(update_texts(&window).contains(&"Release Notes".to_owned()));
 }
@@ -9273,10 +9281,7 @@ fn test_copy_puts_the_package_managers_command_on_the_clipboard() {
             .any(|text| text.contains("run \"scoop update\" first")),
         "the hint is on screen"
     );
-    assert_eq!(
-        update_buttons(&window),
-        ["Copy", "Skip This Version", "Close"]
-    );
+    assert_eq!(update_buttons(&window), ["Copy", "Close"]);
 
     update_button(&window, "Copy").invoke_accessible_default_action();
     let probe = ClipboardProbe::new().unwrap();

@@ -105,7 +105,7 @@ The update window lists every release since the one you run, newest first, with 
 - Installed with Homebrew: the same with `brew upgrade sunlit-earth` on Linux or `brew upgrade --cask sunlit-earth` on macOS, and `brew update` first if Homebrew reports the old version as current.
 - Unpacked from an archive: a Download button opens the archive for your system in the browser, and below it the window says what to do with it. Where there is no archive for your system, the button opens the website's download section instead.
 
-Skip This Version takes the version off the tray and the banner. Help > Check for Updates… still shows it, and a later version is offered as usual. Check for Updates… always checks at once, whatever the schedule and the setting say, and shows a failure with its reason.
+The tray's entry keeps naming the version until you update. Check for Updates… always checks at once, whatever the schedule and the setting say, and shows a failure with its reason.
 
 To stop the daily check, set `update_check_enabled = false` in `config.toml`; there is no switch in the window yet. Check for Updates… still works, and what an earlier check found is still shown. A check is one request for one static file, with the user agent `sunlit.earth/<version> (<os>; <arch>)`: no identifier, no cookie, nothing about your installation.
 
@@ -177,7 +177,7 @@ Keys act on the preview, which has the keyboard when the window opens and takes 
 
 ## App data and environment overrides
 
-By default, `config.toml`, the cloud cache, the tile packs the Earth is drawn from (`tile_cache/`, about 416 MiB for the year, rebuilt on first launch and when the faces change), generated wallpaper directories, memory metrics CSV files, and the update check's `update_feed.json` (the last release file it received) and `update_state.toml` (when it last checked, its `ETag`, and the versions skipped and dismissed) live under the platform's local app data directory:
+By default, `config.toml`, the cloud cache, the tile packs the Earth is drawn from (`tile_cache/`, about 416 MiB for the year, rebuilt on first launch and when the faces change), generated wallpaper directories, memory metrics CSV files, and the update check's `update_feed.json` (the last release file it received) and `update_state.toml` (when it last checked, its `ETag`, and the version whose banner was dismissed) live under the platform's local app data directory:
 
 - Windows uses `%LOCALAPPDATA%\SunlitEarth`.
 - Linux uses `~/.local/share/SunlitEarth`.

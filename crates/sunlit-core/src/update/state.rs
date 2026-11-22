@@ -3,8 +3,8 @@
 //! Two files in [`cache_dir`](crate::assets::cloud_fetcher::cache_dir), beside
 //! the cloud cache: `update_feed.json`, the last body received exactly as it
 //! came, and `update_state.toml` with the `ETag` that body came with, when the
-//! last check succeeded, and the version the user skipped and the one whose
-//! banner they dismissed. Only the update thread writes either.
+//! last check succeeded, and the version whose banner the user dismissed.
+//! Only the update thread writes either.
 
 use std::path::{Path, PathBuf};
 
@@ -26,7 +26,6 @@ pub struct UpdateState {
     pub etag: Option<String>,
     /// When the last check succeeded, UTC in RFC 3339.
     pub last_checked: Option<String>,
-    pub skipped_version: Option<String>,
     pub dismissed_version: Option<String>,
 }
 
@@ -136,7 +135,6 @@ mod tests {
         let mut state = UpdateState {
             etag: Some("\"abc\"".to_owned()),
             last_checked: None,
-            skipped_version: Some("0.7.0".to_owned()),
             dismissed_version: Some("0.6.1".to_owned()),
         };
         state.set_last_checked(OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000));
@@ -176,6 +174,27 @@ mod tests {
     }
 
     #[test]
+    fn a_state_with_a_skipped_version_from_an_older_build_still_reads() {
+        let dir = ScratchDir::new("update_state_old_field");
+        let store = Store::new(Some(dir.path().to_owned()));
+        assert!(store.save_feed(FIXTURE));
+        std::fs::write(
+            dir.join(STATE_FILE),
+            r#"etag = "\"abc\""
+last_checked = "2024-10-04T00:00:00Z"
+skipped_version = "0.7.0"
+dismissed_version = "0.6.1"
+"#,
+        )
+        .unwrap();
+
+        let (state, _) = store.load();
+        assert_eq!(state.etag.as_deref(), Some("\"abc\""));
+        assert_eq!(state.dismissed_version.as_deref(), Some("0.6.1"));
+        assert!(state.last_checked_at().is_some());
+    }
+
+    #[test]
     fn an_etag_without_a_kept_body_is_dropped() {
         let dir = ScratchDir::new("update_state_orphan_etag");
         let store = Store::new(Some(dir.path().to_owned()));
@@ -184,7 +203,7 @@ mod tests {
         let (state, kept) = store.load();
         assert_eq!(kept, None);
         assert_eq!(state.etag, None);
-        assert_eq!(state.skipped_version, full_state().skipped_version);
+        assert_eq!(state.dismissed_version, full_state().dismissed_version);
 
         std::fs::write(dir.join(FEED_FILE), b"not json").unwrap();
         assert_eq!(store.load().0.etag, None);

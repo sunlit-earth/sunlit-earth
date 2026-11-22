@@ -22,7 +22,7 @@ export component TrayIcon inherits SystemTrayIcon {
     in property <bool> window-shown: false;
 
     out property <string> window-title: root.window-shown ? "Hide" : "Show";
-    // The version on offer that the user has not skipped, empty for none.
+    // The version on offer, empty for none.
     in property <string> update-version;
     out property <string> update-title: root.update-version == "" ? "Check for Updates…" : "Update Available: " + root.update-version + "…";
 

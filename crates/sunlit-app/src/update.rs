@@ -2,7 +2,7 @@
 //!
 //! The update window, the tray's entry and the banner at the foot of the panel
 //! all follow one `UpdateController`, which holds the last answer the thread
-//! gave and the versions the user skipped and dismissed. The menu, the tray
+//! gave and the version whose banner the user dismissed. The menu, the tray
 //! and IPC reach it through a thread-local, as `autostart::ui` is reached,
 //! because all three are wired before or apart from each other.
 //!
@@ -111,22 +111,15 @@ fn offered(status: Option<&UpdateStatus>) -> Option<String> {
     }
 }
 
-/// The version the tray's entry names: the one on offer unless it is skipped.
-pub fn tray_version(status: Option<&UpdateStatus>, skipped: Option<&str>) -> String {
-    offered(status)
-        .filter(|version| Some(version.as_str()) != skipped)
-        .unwrap_or_default()
+/// The version the tray's entry names: the one on offer, empty for none.
+pub fn tray_version(status: Option<&UpdateStatus>) -> String {
+    offered(status).unwrap_or_default()
 }
 
-/// The version the banner offers: the one on offer unless it is skipped or
-/// dismissed.
-pub fn banner_version(
-    status: Option<&UpdateStatus>,
-    skipped: Option<&str>,
-    dismissed: Option<&str>,
-) -> String {
+/// The version the banner offers: the one on offer unless it is dismissed.
+pub fn banner_version(status: Option<&UpdateStatus>, dismissed: Option<&str>) -> String {
     offered(status)
-        .filter(|version| Some(version.as_str()) != skipped && Some(version.as_str()) != dismissed)
+        .filter(|version| Some(version.as_str()) != dismissed)
         .unwrap_or_default()
 }
 
@@ -202,7 +195,6 @@ pub fn present(window: &UpdateWindow, showing: &Showing, install: &Install) {
 struct State {
     /// The last answer that was not a failure.
     known: Option<UpdateStatus>,
-    skipped: Option<String>,
     dismissed: Option<String>,
     /// Whether a check the window asked for is still out.
     pending: bool,
@@ -231,7 +223,6 @@ impl UpdateController {
         Self {
             state: Rc::new(RefCell::new(State {
                 known: None,
-                skipped: None,
                 dismissed: None,
                 pending: false,
                 showing: Showing::Checking { known: None },
@@ -259,11 +250,7 @@ impl UpdateController {
         self.state.borrow_mut().tray = Some(tray.as_weak());
         let this = self.clone();
         tray.on_show_update(move || {
-            let nothing_on_offer = tray_version(
-                this.state.borrow().known.as_ref(),
-                this.state.borrow().skipped.as_deref(),
-            )
-            .is_empty();
+            let nothing_on_offer = tray_version(this.state.borrow().known.as_ref()).is_empty();
             this.open(nothing_on_offer);
         });
         self.refresh_surfaces();
@@ -300,9 +287,8 @@ impl UpdateController {
         }
         {
             let mut state = self.state.borrow_mut();
-            // Only this side sends a skip or a dismissal, so its own record is never
-            // older than the thread's.
-            state.skipped = state.skipped.take().or(event.skipped_version);
+            // Only this side sends a dismissal, so its own record is never older
+            // than the thread's.
             state.dismissed = state.dismissed.take().or(event.dismissed_version);
             if !matches!(event.status, UpdateStatus::Failed(_)) {
                 state.known = Some(event.status.clone());
@@ -360,7 +346,7 @@ impl UpdateController {
     }
 
     fn dismiss_banner(&self) {
-        let version = banner_version(self.state.borrow().known.as_ref(), None, None);
+        let version = banner_version(self.state.borrow().known.as_ref(), None);
         if !version.is_empty() {
             self.state.borrow_mut().dismissed = Some(version.clone());
             let _ = (self.requests)(Request::Dismiss(version));
@@ -382,19 +368,6 @@ impl UpdateController {
         }
     }
 
-    fn skip(&self) {
-        let shown = match &self.state.borrow().showing {
-            Showing::Answer(status) => offered(Some(status)),
-            Showing::Checking { .. } => None,
-        };
-        if let Some(version) = shown {
-            self.state.borrow_mut().skipped = Some(version.clone());
-            let _ = (self.requests)(Request::Skip(version));
-        }
-        self.hide_window();
-        self.refresh_surfaces();
-    }
-
     fn hide_window(&self) {
         if let Some(window) = self.window() {
             let _ = window.hide();
@@ -410,8 +383,6 @@ impl UpdateController {
         window.on_open_url(|url| crate::open::url(&url));
         let this = self.clone();
         window.on_check_again(move || this.open(true));
-        let this = self.clone();
-        window.on_skip(move || this.skip());
         let this = self.clone();
         window.on_dismiss(move || this.hide_window());
         window.window().on_close_requested(|| {
@@ -431,14 +402,13 @@ impl UpdateController {
 
     fn refresh_surfaces(&self) {
         let state = self.state.borrow();
-        let skipped = state.skipped.as_deref();
         if let Some(main) = self.main.upgrade() {
             main.set_update_banner_version(
-                banner_version(state.known.as_ref(), skipped, state.dismissed.as_deref()).into(),
+                banner_version(state.known.as_ref(), state.dismissed.as_deref()).into(),
             );
         }
         if let Some(tray) = state.tray.as_ref().and_then(slint::Weak::upgrade) {
-            tray.set_update_version(tray_version(state.known.as_ref(), skipped).into());
+            tray.set_update_version(tray_version(state.known.as_ref()).into());
         }
     }
 }
@@ -623,18 +593,17 @@ mod tests {
     }
 
     #[test]
-    fn a_skipped_version_leaves_the_tray_and_a_dismissed_one_only_the_banner() {
+    fn a_dismissed_version_leaves_the_banner_and_not_the_tray() {
         let offer = UpdateStatus::Available(Offer {
             releases: vec![release("0.7.0", &[])],
         });
-        assert_eq!(tray_version(Some(&offer), None), "0.7.0");
-        assert_eq!(tray_version(Some(&offer), Some("0.7.0")), "");
-        assert_eq!(tray_version(Some(&offer), Some("0.6.0")), "0.7.0");
-        assert_eq!(banner_version(Some(&offer), None, Some("0.7.0")), "");
-        assert_eq!(banner_version(Some(&offer), None, Some("0.6.0")), "0.7.0");
-        assert_eq!(banner_version(Some(&offer), Some("0.7.0"), None), "");
-        assert_eq!(tray_version(Some(&UpdateStatus::UpToDate), None), "");
-        assert_eq!(tray_version(None, None), "");
+        assert_eq!(tray_version(Some(&offer)), "0.7.0");
+        assert_eq!(banner_version(Some(&offer), None), "0.7.0");
+        assert_eq!(banner_version(Some(&offer), Some("0.7.0")), "");
+        assert_eq!(banner_version(Some(&offer), Some("0.6.0")), "0.7.0");
+        assert_eq!(tray_version(Some(&UpdateStatus::UpToDate)), "");
+        assert_eq!(banner_version(Some(&UpdateStatus::UpToDate), None), "");
+        assert_eq!(tray_version(None), "");
     }
 
     #[test]

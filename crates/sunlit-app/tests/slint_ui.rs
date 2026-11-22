@@ -7041,15 +7041,14 @@ fn tap_full_screen_key(window: &MainWindow) {
     }
 }
 
-/// The height of the menu bar the testing backend draws that full screen
-/// keeps, read while windowed. The testing backend has no native menu bar, so
-/// it draws Slint's on every OS. On macOS the app leaves the bar to the
-/// system, which hides it in full screen, and the real app never draws one;
-/// elsewhere full screen hides it.
+/// The height of the drawn menu bar that full screen keeps, read while
+/// windowed. On macOS the app leaves its menu bar to the system, which draws
+/// it natively and hides it in full screen, so the testing backend's drawn
+/// stand-in stays there; elsewhere full screen hides the bar.
 fn menu_bar_kept_in_full_screen(window: &MainWindow) -> f32 {
     assert!(!window.window().is_fullscreen());
     if cfg!(target_os = "macos") {
-        edges(&the_element(window, "MainWindow::image-container"))[1]
+        menu_bar_height(window)
     } else {
         0.0
     }
@@ -7572,15 +7571,13 @@ fn test_a_switch_goes_black_before_full_screen_changes() {
 #[test]
 fn test_entering_shows_the_notice_until_the_frame_for_the_size_sent() {
     let (window, sent, _poll) = full_screen_window_at(sunlit_core::config::QualityTier::Low);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a menu bar a few dozen pixels high"
-    )]
-    let bar = menu_bar_kept_in_full_screen(&window).round() as u32;
-    window
-        .window()
-        .set_size(slint::PhysicalSize::new(2400, 1200 + bar));
+    if cfg!(target_os = "macos") {
+        set_content_size(&window, 2400, 1200);
+    } else {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(2400, 1200));
+    }
     let_pass(500);
     deliver_frame(&window, 1280, 466);
     while sent.try_recv().is_ok() {}

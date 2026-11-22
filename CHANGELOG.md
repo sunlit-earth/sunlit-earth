@@ -2,6 +2,13 @@
 
 Notable changes to Sunlit Earth, for people who use it. The GitHub release pages list every merged pull request.
 
+## [Unreleased]
+
+- macOS: About Sunlit Earth and Quit in the App menu are now the app's own. About opens the app's About window, and Quit (⌘Q) saves the window's position and size like every other way of quitting. ([#96](https://github.com/sunlit-earth/sunlit-earth/pull/96))
+- The tray menu shows a real check mark next to Auto-refresh and Start on login. ([#96](https://github.com/sunlit-earth/sunlit-earth/pull/96))
+- The first start after updating rebuilds the texture cache once, because the image decoders were updated, so the first wallpaper and the Earth in the preview take longer than usual to appear. ([#96](https://github.com/sunlit-earth/sunlit-earth/pull/96))
+- Under the hood: Slint 1.19 for the user interface, with the system font on Windows and macOS, and wgpu 30 for rendering. On Windows, Direct3D 12 keeps compiling the shaders with FXC, so the picture does not depend on whether `dxcompiler.dll` happens to be installed. ([#96](https://github.com/sunlit-earth/sunlit-earth/pull/96))
+
 ## [0.5.0] - 2026-10-25
 
 - Camera and time controls directly in the scene preview. It's now easier to discover how camera controls work and all keyboard shortcuts are documented. Time controls allow you to control time. Try it, it's fun! ([#82](https://github.com/sunlit-earth/sunlit-earth/pull/82))

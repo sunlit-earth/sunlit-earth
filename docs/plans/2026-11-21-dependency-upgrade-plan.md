@@ -149,6 +149,8 @@ Each step is one commit on a branch in `.worktrees/`, and each ends with `cargo 
 - Minor: architecture.md said a `changed is-open` handler makes Slint 1.18.1's compiler panic, unchecked on 1.19. Fixed: stated in the past tense, as a fact about 1.18.1.
 - Minor: `test_quit_and_about_carry_their_menu_roles` reads `main.slint` rather than the menu at run time. Declined: the testing backend has no menu roles to read (departure 6), the roles' effect on macOS is covered by the `macos-build.yml` build and a person on a Mac, and the test fails when either role is removed.
 
+**Round 2** (range 5f27874..53f6870, docs only): the three fixes verified and the decline accepted. 0 major, 0 minor. Final gates at 53f6870: 2039 passed, 0 failed, 24 ignored; clippy 0 warnings; fmt clean.
+
 ## Risks
 
 - **Text metrics.** The Windows and macOS default font fix may make text wider or narrower; layouts sized to their text (hints, pills, the export sheet) are what to look at in step 3.

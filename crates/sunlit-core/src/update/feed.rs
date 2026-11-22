@@ -25,6 +25,24 @@ pub const NOTES_PREFIX: &str = "https://github.com/sunlit-earth/sunlit-earth/rel
 /// What an archive's URL starts with.
 pub const ASSET_PREFIX: &str = "https://github.com/sunlit-earth/sunlit-earth/releases/download/";
 
+/// Whether `url` is `prefix` followed by a plain path.
+///
+/// Every segment of that path is ASCII letters, digits, `.`, `_`, `-` and `+`,
+/// and none is empty, `.` or `..`. So nothing a browser or a downloader
+/// resolves can climb out of the prefix: no dot segment, no `%` to encode one
+/// or a slash, no `\` that a browser reads as `/`, and no query, fragment,
+/// userinfo or port.
+fn is_under(url: &str, prefix: &str) -> bool {
+    url.strip_prefix(prefix).is_some_and(|path| {
+        path.split('/').all(|segment| {
+            !matches!(segment, "" | "." | "..")
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+        })
+    })
+}
+
 /// One archive of a release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
@@ -106,7 +124,7 @@ fn read_release(entry: &Value) -> Option<Release> {
     let notes = entry
         .get("notes")
         .and_then(Value::as_str)
-        .filter(|url| url.starts_with(NOTES_PREFIX))
+        .filter(|url| is_under(url, NOTES_PREFIX))
         .map(ToOwned::to_owned);
     let highlights = entry
         .get("highlights")
@@ -145,7 +163,7 @@ fn read_asset(asset: &Value) -> Asset {
         url: asset
             .get("url")
             .and_then(Value::as_str)
-            .filter(|url| url.starts_with(ASSET_PREFIX))
+            .filter(|url| is_under(url, ASSET_PREFIX))
             .map(ToOwned::to_owned),
         size: asset.get("size").and_then(Value::as_u64),
     }
@@ -396,6 +414,64 @@ mod tests {
         ] {
             assert_eq!(notes(foreign), None, "{foreign}");
         }
+    }
+
+    /// Paths after a prefix that a browser or a downloader could resolve to
+    /// somewhere outside it, or that carry more than a path.
+    const ESCAPES: [&str; 17] = [
+        "../../../attacker/repo",
+        "tag/../../../attacker/repo",
+        "tag/..",
+        "./tag/v1.0.0",
+        "tag/./v1.0.0",
+        "%2e%2e/%2e%2e/attacker/repo",
+        "tag%2Fv1.0.0",
+        "..%2F..%2Fattacker",
+        "..\\..\\attacker\\repo",
+        "tag\\v1.0.0",
+        "tag//v1.0.0",
+        "tag/v1.0.0/",
+        "tag/v1.0.0?redirect=https://example.com",
+        "tag/v1.0.0#top",
+        "tag/v1.0.0@example.com",
+        "tag/v1.0.0:443",
+        "tag/v1.0.0 x",
+    ];
+
+    fn read_both(notes: &str, asset: &str) -> (Option<String>, Option<String>) {
+        let feed = feed_of(&[serde_json::json!({
+            "version": "1.0.0",
+            "notes": notes,
+            "assets": { "windows-x86_64": { "url": asset } },
+        })]);
+        let release = &feed.releases[0];
+        (
+            release.notes.clone(),
+            release.assets["windows-x86_64"].url.clone(),
+        )
+    }
+
+    #[test]
+    fn the_shapes_the_website_writes_are_kept() {
+        let page = format!("{NOTES_PREFIX}tag/v0.5.0");
+        let archive = format!("{ASSET_PREFIX}v0.5.0/sunlit-earth-0.5.0-windows-x86_64.zip");
+        assert_eq!(read_both(&page, &archive), (Some(page), Some(archive)));
+        let beta = format!(
+            "{ASSET_PREFIX}v0.6.0-beta.1/sunlit-earth-0.6.0-beta.1+b2-linux-aarch64.tar.gz"
+        );
+        assert_eq!(read_both("", &beta).1, Some(beta));
+    }
+
+    #[test]
+    fn a_url_that_could_climb_out_of_its_prefix_is_missing() {
+        for escape in ESCAPES {
+            let page = format!("{NOTES_PREFIX}{escape}");
+            let archive = format!("{ASSET_PREFIX}{escape}");
+            assert_eq!(read_both(&page, &archive), (None, None), "{escape}");
+            let nested = format!("{ASSET_PREFIX}v1.0.0/{escape}");
+            assert_eq!(read_both(&page, &nested), (None, None), "{escape}");
+        }
+        assert_eq!(read_both(NOTES_PREFIX, ASSET_PREFIX), (None, None));
     }
 
     #[test]

@@ -59,7 +59,7 @@ The rules every release of the app follows from the first one, which are what le
 3. A stable build ignores every entry whose version has a prerelease part. A prerelease build considers all entries.
 4. The version on offer is the greatest considered version above the app's own, by `semver`'s `cmp_precedence`. With none, the app is up to date.
 5. What changed is every considered entry above the app's own version up to the one on offer, newest first.
-6. A `notes` URL is used only when it starts with `https://github.com/sunlit-earth/sunlit-earth/releases/` and an asset URL only when it starts with `https://github.com/sunlit-earth/sunlit-earth/releases/download/`, and both only when `open::is_web_url` accepts them. Anything else is treated as missing. With that, a tampered file can show wrong text and cannot send anyone anywhere else.
+6. A `notes` URL is used only when it starts with `https://github.com/sunlit-earth/sunlit-earth/releases/` and an asset URL only when it starts with `https://github.com/sunlit-earth/sunlit-earth/releases/download/`, and both only when `open::is_web_url` accepts them. What follows the prefix must be a plain path, so the prefix cannot be climbed out of: every segment is ASCII letters, digits, `.`, `_`, `-` and `+`, and none is empty, `.` or `..`, which also leaves out percent escapes, backslashes, a query, a fragment and userinfo. Anything else is treated as missing. With that, a tampered file can show wrong text and cannot send anyone anywhere else.
 7. A body over 256 KiB is a failed check.
 
 ### 3. Stable releases only, for now

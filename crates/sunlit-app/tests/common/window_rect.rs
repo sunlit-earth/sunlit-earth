@@ -1,9 +1,9 @@
 //! The app's main window as the desktop sees it: its rectangle, the rectangle
 //! of the monitor it is on, and keys pressed into it.
 //!
-//! Win32 on Windows and `xdotool` with `xrandr` on X11, which the Linux guest
-//! image installs. A Wayland session lets no client read another's window or
-//! type into it, and macOS has no guest, so both answer `None`.
+//! Win32 on Windows and `xdotool`, `xprop` and `xrandr` on X11, which the
+//! Linux guest image installs. A Wayland session lets no client read another's
+//! window or type into it, and macOS has no guest, so both answer `None`.
 
 /// Left, top, right and bottom in desktop pixels.
 pub(crate) type Rect = [i32; 4];
@@ -28,6 +28,13 @@ impl MainWindow {
     /// The window's rectangle and its monitor's.
     pub(crate) fn rects(&self) -> Option<(Rect, Rect)> {
         imp::rects(&self.0)
+    }
+
+    /// The window's outer rectangle, frame included, and the rectangles it is
+    /// meant to stay inside: the work area of its monitor on Windows, every
+    /// monitor on X11, where nothing reports the panels.
+    pub(crate) fn outer_and_areas(&self) -> Option<(Rect, Vec<Rect>)> {
+        imp::outer_and_areas(&self.0)
     }
 
     /// Press and release `key` in the window.
@@ -77,6 +84,22 @@ mod imp {
     }
 
     pub(super) fn rects(handle: &Handle) -> Option<(Rect, Rect)> {
+        let (window, info) = window_and_monitor(handle)?;
+        Some((rect(window), rect(info.rcMonitor)))
+    }
+
+    /// `GetWindowRect` is the outer rectangle, the resize borders the DWM
+    /// draws invisibly included.
+    pub(super) fn outer_and_areas(handle: &Handle) -> Option<(Rect, Vec<Rect>)> {
+        let (window, info) = window_and_monitor(handle)?;
+        Some((rect(window), vec![rect(info.rcWork)]))
+    }
+
+    fn rect(r: RECT) -> Rect {
+        [r.left, r.top, r.right, r.bottom]
+    }
+
+    fn window_and_monitor(handle: &Handle) -> Option<(RECT, MONITORINFO)> {
         let mut window = RECT {
             left: 0,
             top: 0,
@@ -110,8 +133,7 @@ mod imp {
         if found == 0 {
             return None;
         }
-        let rect = |r: RECT| [r.left, r.top, r.right, r.bottom];
-        Some((rect(window), rect(info.rcMonitor)))
+        Some((window, info))
     }
 
     /// Posted to the window's queue rather than sent through `SendInput`,
@@ -173,6 +195,47 @@ mod imp {
     }
 
     pub(super) fn rects(handle: &Handle) -> Option<(Rect, Rect)> {
+        let window = client_rect(handle)?;
+        let (cx, cy) = (
+            i32::midpoint(window[0], window[2]),
+            i32::midpoint(window[1], window[3]),
+        );
+        let monitor = monitors()?
+            .into_iter()
+            .find(|m| (m[0]..m[2]).contains(&cx) && (m[1]..m[3]).contains(&cy))?;
+        Some((window, monitor))
+    }
+
+    /// The client rectangle grown by `_NET_FRAME_EXTENTS`, which the window
+    /// manager sets on a window it frames; a window it leaves unframed has
+    /// none, and its outer rectangle is its own.
+    pub(super) fn outer_and_areas(handle: &Handle) -> Option<(Rect, Vec<Rect>)> {
+        let [left, top, right, bottom] = client_rect(handle)?;
+        let [frame_left, frame_right, frame_top, frame_bottom] =
+            run("xprop", &["-id", &handle.0, "_NET_FRAME_EXTENTS"])
+                .as_deref()
+                .and_then(frame_extents)
+                .unwrap_or_default();
+        let outer = [
+            left - frame_left,
+            top - frame_top,
+            right + frame_right,
+            bottom + frame_bottom,
+        ];
+        Some((outer, monitors()?))
+    }
+
+    /// `_NET_FRAME_EXTENTS(CARDINAL) = 0, 0, 37, 0`: left, right, top, bottom.
+    fn frame_extents(line: &str) -> Option<[i32; 4]> {
+        let (_, values) = line.split_once('=')?;
+        let values: Vec<i32> = values
+            .split(',')
+            .map(|value| value.trim().parse().ok())
+            .collect::<Option<_>>()?;
+        values.try_into().ok()
+    }
+
+    fn client_rect(handle: &Handle) -> Option<Rect> {
         let shell = run("xdotool", &["getwindowgeometry", "--shell", &handle.0])?;
         let value = |name: &str| -> Option<i32> {
             shell
@@ -183,17 +246,12 @@ mod imp {
                 .ok()
         };
         let (x, y) = (value("X")?, value("Y")?);
-        let window = [x, y, x + value("WIDTH")?, y + value("HEIGHT")?];
-        let monitors = run("xrandr", &["--listmonitors"])?;
-        let (cx, cy) = (
-            i32::midpoint(window[0], window[2]),
-            i32::midpoint(window[1], window[3]),
-        );
-        let monitor = monitors
-            .lines()
-            .filter_map(monitor_of)
-            .find(|m| (m[0]..m[2]).contains(&cx) && (m[1]..m[3]).contains(&cy))?;
-        Some((window, monitor))
+        Some([x, y, x + value("WIDTH")?, y + value("HEIGHT")?])
+    }
+
+    fn monitors() -> Option<Vec<Rect>> {
+        let listed = run("xrandr", &["--listmonitors"])?;
+        Some(listed.lines().filter_map(monitor_of).collect())
     }
 
     /// One line of `xrandr --listmonitors`, ` 0: +*Virtual-1 1280/339x800/212+0+0  Virtual-1`.
@@ -264,6 +322,10 @@ mod imp {
     }
 
     pub(super) fn rects(_handle: &Handle) -> Option<(Rect, Rect)> {
+        None
+    }
+
+    pub(super) fn outer_and_areas(_handle: &Handle) -> Option<(Rect, Vec<Rect>)> {
         None
     }
 

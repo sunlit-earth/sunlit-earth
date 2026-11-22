@@ -4,10 +4,10 @@
 //! decoded frames parked in the texture mailbox. The engine drives it from its
 //! own worker thread on its own schedule.
 //!
-//! Three values can be overridden through the environment so tests can point
-//! the fetcher at a local stub server without touching the real cache:
-//! `SUNLIT_EARTH_CLOUD_URL`, `SUNLIT_EARTH_CLOUD_POLL_SECS`, and
-//! `SUNLIT_EARTH_CACHE_DIR`.
+//! Two values can be overridden through the environment so tests can point the
+//! fetcher at a local stub server: `SUNLIT_EARTH_CLOUD_URL` and
+//! `SUNLIT_EARTH_CLOUD_POLL_SECS`. The cache folder is
+//! [`crate::user_state::cache_dir`]'s, which `SUNLIT_EARTH_CACHE_DIR` moves.
 
 use std::cell::Cell;
 use std::fs;
@@ -90,8 +90,6 @@ impl Default for RetryBackoff {
 const ENV_CLOUD_URL: &str = "SUNLIT_EARTH_CLOUD_URL";
 /// Environment variable overriding the poll interval, in seconds.
 const ENV_POLL_SECS: &str = "SUNLIT_EARTH_CLOUD_POLL_SECS";
-/// Environment variable overriding the cloud cache directory.
-const ENV_CACHE_DIR: &str = "SUNLIT_EARTH_CACHE_DIR";
 
 /// Metadata cached alongside the cloud JPEG for freshness checks.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -162,17 +160,9 @@ pub fn poll_interval() -> Duration {
     resolve_poll_interval(crate::env_override(ENV_POLL_SECS).as_deref())
 }
 
-/// Resolve the cloud cache directory from an optional environment override.
-fn resolve_cache_dir(raw: Option<&str>) -> Option<PathBuf> {
-    match raw {
-        Some(dir) => Some(PathBuf::from(dir)),
-        None => crate::app_data_dir(),
-    }
-}
-
-/// The configured cache directory, honoring `SUNLIT_EARTH_CACHE_DIR`.
+/// The cache directory, as [`crate::user_state::cache_dir`] resolves it.
 pub fn cache_dir() -> Option<PathBuf> {
-    resolve_cache_dir(crate::env_override(ENV_CACHE_DIR).as_deref())
+    crate::user_state::cache_dir()
 }
 
 fn load_cache_meta(path: &Path) -> Option<CacheMeta> {
@@ -725,25 +715,6 @@ mod tests {
                 "expected fallback for {value:?}"
             );
         }
-    }
-
-    #[test]
-    fn resolve_cache_dir_with_override() {
-        let dir = resolve_cache_dir(Some("C:/tmp/sunlit")).expect("override should resolve");
-        assert_eq!(dir, PathBuf::from("C:/tmp/sunlit"));
-    }
-
-    #[test]
-    fn the_cache_dir_without_an_override_is_the_app_folder() {
-        let Some(dir) = resolve_cache_dir(None) else {
-            println!("skipping: this system has no local data directory");
-            return;
-        };
-        assert!(
-            dir.ends_with("SunlitEarth"),
-            "unexpected cache dir: {}",
-            dir.display()
-        );
     }
 
     #[test]

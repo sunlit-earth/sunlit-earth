@@ -107,16 +107,27 @@ impl AutostartSignal {
     }
 }
 
+thread_local! {
+    static STAND_IN: std::cell::RefCell<Option<Autostart>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Read the entry of this session.
 #[must_use]
 pub fn read() -> Autostart {
-    platform::read()
+    STAND_IN
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(platform::read)
 }
 
 /// Write the entry for this copy of the app.
 ///
 /// :returns: why the entry could not be written, as a sentence for the user
 pub fn enable() -> Result<(), String> {
+    if STAND_IN.with(|slot| slot.borrow().is_some()) {
+        let exe = this_exe()?;
+        STAND_IN.with(|slot| *slot.borrow_mut() = Some(Autostart::On { exe }));
+        return Ok(());
+    }
     platform::enable()
 }
 
@@ -124,7 +135,43 @@ pub fn enable() -> Result<(), String> {
 ///
 /// :returns: why the entry could not be removed, as a sentence for the user
 pub fn disable() -> Result<(), String> {
+    if STAND_IN.with(|slot| slot.borrow().is_some()) {
+        STAND_IN.with(|slot| *slot.borrow_mut() = Some(Autostart::Off));
+        return Ok(());
+    }
     platform::disable()
+}
+
+/// Answer [`read`], [`enable`] and [`disable`] on the calling thread from a
+/// value that starts as `state`, instead of from the system's entry, for as
+/// long as the guard lives.
+///
+/// For the UI tests, whose thread has not claimed user state and so may not
+/// read the real entry.
+///
+/// :param state: what the entry says until the code under test changes it
+#[doc(hidden)]
+#[must_use = "the stand-in applies only while the guard lives"]
+pub fn stand_in_for_this_thread(state: Autostart) -> StandInGuard {
+    let previous = STAND_IN.with(|slot| slot.replace(Some(state)));
+    StandInGuard {
+        previous,
+        _this_thread: std::marker::PhantomData,
+    }
+}
+
+/// Holds a thread's stand-in entry; see [`stand_in_for_this_thread`].
+#[doc(hidden)]
+pub struct StandInGuard {
+    previous: Option<Autostart>,
+    _this_thread: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for StandInGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        let _ = STAND_IN.try_with(|slot| *slot.borrow_mut() = previous);
+    }
 }
 
 /// The executable an entry written by this copy would run.
@@ -264,6 +311,30 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stand_in_answers_the_reads_and_keeps_the_writes() {
+        let _outer = stand_in_for_this_thread(Autostart::Unsupported {
+            reason: "outer".to_owned(),
+        });
+        {
+            let _inner = stand_in_for_this_thread(Autostart::Off);
+            assert_eq!(read(), Autostart::Off);
+            let (state, written) = set(true);
+            assert_eq!(written, Ok(()));
+            assert_eq!(state.exe(), this_exe().ok().as_deref());
+            assert!(read().is_on());
+            assert_eq!(set(false), (Autostart::Off, Ok(())));
+        }
+        assert_eq!(read().state_name(), "unsupported");
+    }
+
+    #[test]
+    #[cfg(any(windows, target_os = "macos"))]
+    #[should_panic(expected = "has not claimed user state")]
+    fn without_a_stand_in_a_test_may_not_read_the_entry() {
+        let _ = read();
+    }
 
     #[test]
     fn the_status_line_names_the_state_and_the_executable_on_one_line() {

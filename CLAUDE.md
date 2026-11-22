@@ -19,7 +19,8 @@ Public beta, with breaking changes still expected. Every release ships Windows (
 | Why the architecture is headless first | `docs/reviews/2026-08-15-retrospective.md` section 7, before changing the engine or the crate split |
 | What is planned and what is known to be broken | `docs/roadmap.md` |
 | The research and plan behind a feature | `docs/plans/`, dated, one research and one plan document per feature |
-| Prerequisites, textures, CLI flags, environment variables, where files are written | `README.md` |
+| Prerequisites, textures, CLI flags, where files are written | `README.md` |
+| The `SUNLIT_EARTH_*` environment variables of the app, the xtask and the e2e harness | `docs/architecture.md` under "Environment knobs" |
 
 ## Commands
 
@@ -141,13 +142,14 @@ docs/                 see the table above
 - One GPU device at a time in tests: shader tests share a `LazyLock<Mutex<GpuContext>>`, the engine and soak targets hold `GPU_SERIAL` for the lifetime of their engine, and the golden target serializes on its own shared `EngineHandle` mutex. Per-test device creation crashes on Windows.
 - WGSL `vec3<f32>` is 16-byte aligned: every `[f32; 3]` in `Uniforms` is followed by `_pad: f32`. `uniforms.rs` declares the block once as a list of Rust type and WGSL type, asserts the struct size at compile time, and has unit tests that parse `sphere.wgsl` and compare the two field lists name for name and offset for offset, so a field added on one side alone fails, a field appended into the trailing padding included.
 - The preview renders at the panel's physical size, capped in width by the quality tier; the window sends a new size only once it has settled. It is framed for the anchor screen, the screen's rectangle as tall as the frame, and every export is framed as a screen of its size. Zoom is normalized 0 to 1 through `zoom_to_distance` / `distance_to_zoom` in `scene/camera.rs`.
-- Every `SUNLIT_EARTH_*` variable that carries a value goes through `sunlit_core::env_override`, which treats blank as unset. The xtask and the e2e harness read theirs directly under the same rule. The tables are in README.
+- Every `SUNLIT_EARTH_*` variable that carries a value goes through `sunlit_core::env_override`, which treats blank as unset. The xtask and the e2e harness read theirs directly under the same rule. The tables are in `docs/architecture.md` under "Environment knobs".
 - Changing an `AppConfig` default that existing users should follow, renaming a key or changing its type takes a step in `config/migrate.rs`, with `change_default` or `override_value` for a default; `docs/architecture.md` has the rule.
 - CI sets `RUSTFLAGS: "-D warnings"`; a warning is a build failure there. LF line endings everywhere.
 
 ## Testing conventions
 
 - Test behavior, not constants: changing a preset or a default must not break a test.
+- No test resolves user state: `sunlit_core::user_state` panics in a process that has not claimed it, and only `main` claims. A test that wants to see a write holds `scratch_for_this_thread`, and a spawned binary goes through `app_command()`; `docs/testing.md` has the rule under "User state".
 - Float comparisons use `approx::assert_relative_eq!`. GPU tests assert invariants (monotonicity, bounds, visibility), not exact pixels.
 - Golden images run on the software adapter with per-adapter references under `tests/golden/<adapter>/`, listed in `GENERATED_ADAPTERS`; tolerance is a mean channel difference under 2/255 with at most 1% of pixels off by more than 24. A missing case fails; a companion test keeps every pair of references distinguishable.
 - A test that needs the real assets (the cube faces, the Moon, the Milky Way) checks that they are not LFS pointers (by size for the Moon and the Milky Way, by pointer prefix for the cube faces), and skips with a printed reason without them. Everything else uses generated fixtures.

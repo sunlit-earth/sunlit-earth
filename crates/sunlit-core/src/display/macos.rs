@@ -1,14 +1,15 @@
 //! What the displays are on macOS, asked of CoreGraphics.
 //!
 //! CoreGraphics rather than AppKit, and that is the whole design of this file:
-//! `NSScreen` is main-thread-only and both callers of [`super::monitors`] are
-//! off it, while `CGGetActiveDisplayList` and everything derived from it are
-//! the same call from anywhere.
+//! `NSScreen` is main-thread-only and [`super::monitors`] is called from other
+//! threads as well as the main one, while `CGGetActiveDisplayList` and
+//! everything derived from it are the same call from anywhere.
 //!
 //! Two coordinate spaces meet here. `CGDisplayBounds` answers in points, which
-//! [`outputs`] hands straight through because it is the space winit reports a
-//! window position in; [`monitors`] wants pixels. `docs/platforms.md` has what
-//! that conversion is exact for.
+//! [`outputs`] hands straight through; [`monitors`] wants pixels, the space
+//! winit reports a window's position and size in, which is why the restored
+//! window is fitted to the monitors. `docs/platforms.md` has what that
+//! conversion is exact for.
 
 use objc2_core_graphics::{
     CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayIsMain, CGDisplayMode,
@@ -220,10 +221,7 @@ pub(crate) fn monitors() -> Option<Vec<Monitor>> {
     )
 }
 
-/// Every monitor this session has, in points.
-///
-/// Points, because winit reports a window's position in them and the
-/// window-position check is the only reader.
+/// Every monitor this session has, in points, as CoreGraphics reports them.
 pub(crate) fn outputs() -> Option<Vec<Output>> {
     let displays = active_displays()?;
     Some(
@@ -286,14 +284,11 @@ mod tests {
         assert!(!beside_it.primary);
     }
 
-    /// The window-position check reads points, which is winit's space.
     #[test]
     fn an_output_is_its_display_in_points() {
         let laptop = output(&retina(), 0);
         assert_eq!((laptop.width, laptop.height), (1512, 982));
         assert_eq!((laptop.x, laptop.y), (0, 0));
-        assert!(laptop.overlaps(100, 100, 800, 30));
-        assert!(!laptop.overlaps(1512, 100, 800, 30));
     }
 
     /// A display with no mode keeps its rectangle in points rather than

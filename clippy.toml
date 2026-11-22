@@ -11,6 +11,21 @@
 # Clippy is a local command here rather than a CI job (its artifacts do not
 # share the test cache), so this is a `cargo clippy --all-targets` gate, not a
 # push gate.
+#
+# The `dirs` entries keep every location that belongs to the user behind
+# `sunlit_core::user_state`, which a test process cannot reach (see
+# docs/testing.md, "User state"). `user_state.rs` and the xtask's VM store, a
+# tool with a store of its own, allow the lint by name.
 disallowed-methods = [
   { path = "wgpu::Instance::new", reason = "use sunlit_core::wgpu_init::instance(), which keeps the process's one instance alive" },
+  { path = "dirs::data_local_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::data_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::config_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::config_local_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::cache_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::home_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::picture_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::document_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::download_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
+  { path = "dirs::desktop_dir", reason = "resolve the user's folders through sunlit_core::user_state, which refuses a process that has not claimed them" },
 ]

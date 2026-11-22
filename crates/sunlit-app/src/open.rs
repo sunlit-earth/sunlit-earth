@@ -16,6 +16,7 @@ use std::process::Command;
 ///
 /// :param url: the page to open
 pub fn url(url: &str) {
+    sunlit_core::user_state::require("the browser");
     if !is_web_url(url) {
         tracing::warn!("refusing to open {url:?}: only http and https are opened");
         return;
@@ -32,6 +33,7 @@ pub fn url(url: &str) {
 ///
 /// :param path: the folder to open
 pub fn folder(path: &Path) {
+    sunlit_core::user_state::require("the file manager");
     if let Err(error) = std::fs::create_dir_all(path) {
         tracing::warn!("could not create {}: {error}", path.display());
         return;

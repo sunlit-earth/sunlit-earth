@@ -25,7 +25,7 @@ pub(crate) use linux::{check_supported, set_wallpaper_job};
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{check_supported, set_wallpaper_job};
 #[cfg(windows)]
-pub(crate) use windows::{enumerate_monitors, set_wallpaper_job};
+pub(crate) use windows::{ensure_dpi_awareness, enumerate_monitors, set_wallpaper_job};
 
 /// How many generations a publish leaves on disk, its own included.
 ///
@@ -46,45 +46,14 @@ pub(crate) const GENERATIONS_KEPT: usize = 12;
 
 /// Return the wallpaper output directory, creating it if it does not exist.
 ///
-/// [`crate::app_data_dir`], which is where the config file and the cloud cache
-/// already are.
-///
-/// In a unit-test build this refuses to resolve to that live directory: a publish
-/// under test writes real PNGs and sweeps what is there, so a test that reached
-/// the real directory would overwrite the developer's own wallpaper. The tests
-/// point it at a scratch directory through `tests::Scratch`, and a resolution
-/// with no scratch set panics rather than falling back to the live directory, so
-/// a test that forgets the isolation fails loudly in CI instead of quietly on a
-/// desktop.
+/// [`crate::user_state::data_dir`], which is where the config file and the cloud
+/// cache already are.
 pub fn wallpaper_dir() -> Result<PathBuf, String> {
-    #[cfg(test)]
-    let dir = scratch_override().expect(
-        "a unit test resolved wallpaper_dir() without a scratch override; wrap the \
-         publish in tests::Scratch so it cannot write to the real desktop directory",
-    );
-    #[cfg(not(test))]
-    let dir = data_dir_wallpaper_path()?;
+    let dir = crate::user_state::data_dir()
+        .ok_or_else(|| "no local data directory on this system".to_owned())?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create wallpaper directory: {e}"))?;
     Ok(dir)
-}
-
-/// The live wallpaper directory under this system's local data directory.
-///
-/// The real resolution, kept apart from [`wallpaper_dir`] so the test build can
-/// redirect the latter without losing a way to check this one, and so nothing in
-/// a test ever creates it by accident.
-fn data_dir_wallpaper_path() -> Result<PathBuf, String> {
-    crate::app_data_dir().ok_or_else(|| "no local data directory on this system".to_owned())
-}
-
-/// The scratch directory the current test thread publishes into, if any.
-///
-/// Thread-local so a serialized test owns its own directory, and consulted by
-/// [`wallpaper_dir`] ahead of the live directory.
-#[cfg(test)]
-fn scratch_override() -> Option<PathBuf> {
-    tests::SCRATCH_DIR.with(|dir| dir.borrow().clone())
 }
 
 /// One publish's own directory, and the files it wrote.
@@ -495,16 +464,9 @@ fn sweep_legacy_files(root: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::sync::{Mutex, MutexGuard};
 
     use super::*;
-
-    thread_local! {
-        /// The directory the current test thread publishes into. Set by
-        /// [`Scratch`] and read by [`super::scratch_override`].
-        pub(super) static SCRATCH_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-    }
 
     /// Serializes every test that publishes, because the publish record in
     /// [`PUBLISHED`] is process-global and two publishes at once would each see
@@ -520,6 +482,7 @@ mod tests {
     /// what serializes the publishing tests.
     struct Scratch {
         _serial: MutexGuard<'static, ()>,
+        _guard: crate::user_state::ScratchGuard,
         dir: crate::test_support::ScratchDir,
     }
 
@@ -529,10 +492,11 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let dir = crate::test_support::ScratchDir::new(&format!("wallpaper_{name}"));
-            SCRATCH_DIR.with(|slot| *slot.borrow_mut() = Some(dir.path().to_path_buf()));
+            let guard = crate::user_state::scratch_for_this_thread(dir.path());
             reset_published();
             Self {
                 _serial: serial,
+                _guard: guard,
                 dir,
             }
         }
@@ -544,7 +508,6 @@ mod tests {
 
     impl Drop for Scratch {
         fn drop(&mut self) {
-            SCRATCH_DIR.with(|slot| *slot.borrow_mut() = None);
             reset_published();
         }
     }
@@ -554,15 +517,6 @@ mod tests {
         *PUBLISHED
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    }
-
-    #[test]
-    fn the_wallpaper_lives_under_this_systems_local_data_directory() {
-        let dir = data_dir_wallpaper_path().expect("a local data directory on the test host");
-        assert!(
-            dir.ends_with("SunlitEarth"),
-            "path should end with SunlitEarth, got: {dir:?}"
-        );
     }
 
     /// The isolation itself: while a test holds a [`Scratch`], a publish resolves
@@ -577,12 +531,6 @@ mod tests {
             "a publish under test resolved to {resolved:?}, outside the scratch {:?}",
             scratch.dir()
         );
-        let live = data_dir_wallpaper_path().expect("a local data directory on the test host");
-        assert_ne!(
-            resolved, live,
-            "a publish under test resolved to the live wallpaper directory"
-        );
-
         let mut publication = begin_publication().expect("a generation to publish into");
         let path = publication
             .write("0", &[255u8, 0, 0, 255], 1, 1)
@@ -594,20 +542,9 @@ mod tests {
         );
     }
 
-    /// The panic-guard itself, pinned: resolving the wallpaper directory with no
-    /// scratch set panics rather than reaching the live data directory. A future
-    /// change that let it fall back to `data_dir_wallpaper_path` under test would
-    /// re-expose the developer's desktop, and this is what fails first if it does.
     #[test]
-    #[should_panic(expected = "scratch override")]
+    #[should_panic(expected = "has not claimed user state")]
     fn resolving_the_wallpaper_directory_without_a_scratch_refuses() {
-        // No `Scratch` on this thread, so the thread-local override is unset.
-        SCRATCH_DIR.with(|slot| {
-            assert!(
-                slot.borrow().is_none(),
-                "a scratch leaked onto this thread, so the guard was not exercised"
-            );
-        });
         let _ = wallpaper_dir();
     }
 

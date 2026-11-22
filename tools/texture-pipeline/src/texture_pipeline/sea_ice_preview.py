@@ -1141,6 +1141,7 @@ class Harness:
             SUNLIT_EARTH_CACHE_DIR=str(cache),
             SUNLIT_EARTH_CONFIG=str(work / "unused-config.toml"),
             SUNLIT_EARTH_METRICS_DIR=str(work / "metrics"),
+            SUNLIT_EARTH_DATA_DIR=str(work / f"data-{name}"),
             SUNLIT_EARTH_NO_CLOUDS="1",
         )
         args = [
@@ -1158,7 +1159,7 @@ class Harness:
             str(config),
         ]
         started = time.monotonic()
-        code = run_in_own_console(args, env)
+        code = subprocess.run(args, env=env, check=False).returncode
         seconds = round(time.monotonic() - started, 1)
         if code != 0 or not output.exists():
             msg = f"The render of {name} failed with exit code {code}."
@@ -1778,31 +1779,6 @@ def _jsonable(value: object) -> object:
     if isinstance(value, np.floating):
         return float(value)
     return value
-
-
-def run_in_own_console(args: list[str], env: dict[str, str]) -> int:
-    """Run the app with a console of its own, so it writes no log file.
-
-    The app logs to a file in the user's data directory when its standard
-    error is not a terminal. On Windows a hidden console of its own is one; on
-    other systems it inherits the harness's terminal.
-
-    :param args: The command line.
-    :param env: The environment.
-    :returns: The exit code.
-    """
-    if sys.platform != "win32":
-        return subprocess.run(args, env=env, check=False).returncode
-    startup = subprocess.STARTUPINFO()
-    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startup.wShowWindow = 0
-    return subprocess.run(
-        args,
-        env=env,
-        check=False,
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
-        startupinfo=startup,
-    ).returncode
 
 
 def camera_distance(

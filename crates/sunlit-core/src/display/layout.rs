@@ -140,6 +140,16 @@ impl Rect {
         i64::from(self.y) + i64::from(self.height)
     }
 
+    /// How many pixels this rectangle shares with another.
+    ///
+    /// Half-open on the far edges, so a rectangle whose left edge is exactly
+    /// this one's right edge shares none.
+    pub(crate) fn overlap_area(&self, other: &Self) -> u64 {
+        let width = self.right().min(other.right()) - i64::from(self.x.max(other.x));
+        let height = self.bottom().min(other.bottom()) - i64::from(self.y.max(other.y));
+        u64::try_from(width).unwrap_or(0) * u64::try_from(height).unwrap_or(0)
+    }
+
     /// Whether this rectangle has any pixels in it.
     pub fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0

@@ -41,6 +41,7 @@ pub fn autostart_dir(xdg_config_home: Option<&str>, home: Option<&Path>) -> Opti
 /// The autostart folder of this session.
 #[must_use]
 pub fn system_dir() -> Option<PathBuf> {
+    sunlit_core::user_state::require("the autostart folder");
     let config = std::env::var("XDG_CONFIG_HOME").ok();
     let home = std::env::var_os("HOME")
         .filter(|home| !home.is_empty())

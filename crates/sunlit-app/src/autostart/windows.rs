@@ -151,6 +151,7 @@ impl Location {
     /// The keys Windows reads at logon.
     #[must_use]
     pub fn system() -> Self {
+        sunlit_core::user_state::require("the startup entry in the registry");
         Self {
             run_key: r"Software\Microsoft\Windows\CurrentVersion\Run".to_owned(),
             approved_key: r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"

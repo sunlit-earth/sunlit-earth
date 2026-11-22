@@ -133,7 +133,7 @@ fn file_writer() -> Option<(
     if std::io::stderr().is_terminal() {
         return None;
     }
-    let dir = sunlit_core::app_data_dir()?;
+    let dir = sunlit_core::user_state::data_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let appender = build_appender(&dir)?;
     let today = time::OffsetDateTime::now_utc().date();

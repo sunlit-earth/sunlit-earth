@@ -24,6 +24,7 @@ const OPEN: &str = "/usr/bin/open";
 /// The launch agents folder of this user.
 #[must_use]
 pub fn system_dir() -> Option<PathBuf> {
+    sunlit_core::user_state::require("the launch agents folder");
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(|home| PathBuf::from(home).join("Library").join("LaunchAgents"))

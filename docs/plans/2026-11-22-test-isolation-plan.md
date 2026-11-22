@@ -1,0 +1,251 @@
+# Test isolation and window geometry clamp
+
+## Problem
+
+Running `cargo test` overwrites the developer's real settings. On 2026-11-22 the config under `%LOCALAPPDATA%\SunlitEarth\config.toml` held the headless test window's state: `window_x = 0`, `window_y = 0`, `window_width = 1200`, `window_height = 5000`, `time_zone = "utc"`, `scene_time = "2026-04-30T09:15:00Z"` and default values for everything else, auto refresh switched off among them. Every build started afterwards, 0.5.0 included, opened a window 5000 px tall at the top left corner of the screen, and Windows threw it back on screen as soon as it was moved or resized. This is not the first time a test has reached the user's files.
+
+Three things are wrong, and this plan fixes all three:
+
+1. A test wired the app's real Set as Wallpaper callback, and nothing stopped it from saving.
+2. Isolation is opt-in. Every test has to remember to redirect every location it might touch, and a test that forgets reaches the user's files with no failure.
+3. A saved geometry that does not fit any screen is restored as it is. The only check is that the title bar overlaps a monitor, which a window at (0, 0) passes whatever its size.
+
+## What happened
+
+- `test_every_menu_item_works_under_the_sheet` (`crates/sunlit-app/tests/slint_ui.rs`, added in 7da2b5e on 2026-11-08, after 0.5.0) chooses File > Set as Wallpaper on the `export_sheet()` fixture, which wires the real callbacks through `wired_window_and_link()`. `register_action_callbacks` installs `on_set_wallpaper`, which calls `config::save_config(&read_config_from_window(...))`. `config_path()` falls back to the real data folder because the `slint_ui` process has no `SUNLIT_EARTH_CONFIG`, and cannot set one: `std::env::set_var` is `unsafe` in edition 2024 and `unsafe_code` is denied.
+- `create_window()` sizes every test window 1200 by 5000 so the testing backend lays out every control. The testing backend reports position (0, 0).
+- Confirmed by running each of the 192 `slint_ui` tests alone against a scratch `SUNLIT_EARTH_CONFIG` and comparing the file afterwards: this test is the only one that writes.
+- Restoring that file: `install_tray_and_geometry` (`app.rs`) passes it through `validated_window_geometry`, whose test is a 30 px title bar strip overlapping a monitor. (0, 0) passes, and `set_size` asks for an inner height of 5000.
+
+## What reaches user state today
+
+The places a process can reach that belong to the user rather than to the process, and how each resolves:
+
+| What | Resolved by | Override today |
+|---|---|---|
+| Data folder (logs, wallpaper output, `gen-*` folders) | `sunlit_core::app_data_dir()` (`dirs::data_local_dir`) | none for the folder itself |
+| `config.toml` | `config::config_path()` | `SUNLIT_EARTH_CONFIG` |
+| Cloud cache and tile cache | `cloud_fetcher::cache_dir()` | `SUNLIT_EARTH_CACHE_DIR`, or `EngineConfig::cache_dir` |
+| `memory-metrics.csv` | `memory` module | `SUNLIT_EARTH_METRICS_DIR` |
+| Export's default folder | `export.rs`, `dirs::picture_dir()` / `dirs::home_dir()` | none |
+| Autostart entry | `autostart::windows::Location::system()` (HKCU), `linux::system_dir()` (`XDG_CONFIG_HOME`, `HOME`), `macos::system_dir()` (`HOME`) | the backends take a location, so tests pass a scratch one |
+| Browser and file manager | `open::url`, `open::folder` | none |
+| Desktop wallpaper | the real `WallpaperSink` | engine tests inject a fake |
+
+The env overrides work for a spawned binary (the e2e harness, CI's smoke run, the bundle verification) and do nothing for an in-process test. A spawned binary whose stderr is not a terminal writes its log file into the real data folder, since no variable redirects the folder itself (`logging::file_writer`).
+
+## Decisions
+
+### 1. A process claims user state, and only `main` claims it
+
+A new module, `sunlit_core::user_state`, is the one owner of every location in the table above.
+
+```rust
+pub fn claim();                              // main.rs, first statement
+pub fn data_dir() -> Option<PathBuf>;        // replaces app_data_dir()
+pub fn config_file() -> Option<PathBuf>;     // SUNLIT_EARTH_CONFIG, else data_dir()/config.toml
+pub fn cache_dir() -> Option<PathBuf>;       // SUNLIT_EARTH_CACHE_DIR, else data_dir()
+pub fn metrics_dir() -> Option<PathBuf>;     // SUNLIT_EARTH_METRICS_DIR, else data_dir()
+pub fn pictures_dir() -> Option<PathBuf>;    // dirs::picture_dir(), else dirs::home_dir()
+pub fn require(what: &str);                  // for state that is not a path
+```
+
+`claim()` sets a process-wide `OnceLock`. Every function above panics when nothing has claimed, with a message naming `what` and pointing at `docs/testing.md`. `main.rs` calls `claim()` before `sunlit_earth::run()`, so every mode and subcommand of the binary has it, and the library never claims on its own. No test calls `claim()`.
+
+The claim is checked before the env overrides are read, so a developer's shell that happens to export `SUNLIT_EARTH_CONFIG` does not open a path around the gate in a test process.
+
+`require(what)` is called at the top of `autostart::windows::Location::system()`, `autostart::linux::system_dir()`, `autostart::macos::system_dir()`, `open::url`, `open::folder` and the constructor of the real `WallpaperSink`.
+
+Explicit paths are never gated. `load_config_from(path)`, `render --config <path>`, `EngineConfig::cache_dir` and the autostart backends given a location keep working in tests. Only resolving the user's default locations is.
+
+**Why a panic and not `None`.** Every caller already treats `None` as "this system has no data folder" and carries on with defaults. A test that tried to save would pass silently, which is how this bug survived two weeks. A panic fails the test that reached for user state, in every test target that exists and every one written later, with nothing for its author to remember.
+
+**Why not `[env]` in `.cargo/config.toml`.** Cargo applies `[env]` to `cargo run` too, so `cargo app` would stop reading the developer's config.
+
+**Why not a cargo feature on a dev-dependency.** Resolver 2 unifies dev-dependency features into the build of the binary that `cargo test` compiles for the e2e suite, and the e2e binary would then behave differently from the shipped one. The isolation would also depend on Cargo's feature rules rather than on one line in `main`.
+
+**Production risk.** Code that resolves a location before `main`'s first statement would panic: a static initializer or a `LazyLock` read during argument parsing. Step 1 greps for those, and the e2e suite in both guests exercises every entry point.
+
+### 2. Tests that want to observe a write get their own folder
+
+```rust
+#[doc(hidden)]
+pub fn scratch_for_this_thread(dir: &Path) -> ScratchGuard;
+```
+
+A thread-local root that `data_dir()`, `config_file()`, `cache_dir()`, `metrics_dir()` and `pictures_dir()` resolve under while the guard lives, ignoring the env overrides. `require()` still panics under it: a scratch folder has no registry key, browser or wallpaper.
+
+It is thread-local because Slint's testing backend runs callbacks and timers on the test thread, and libtest runs tests on parallel threads: one test's folder never leaks into another's. A thread the test did not create (the engine thread, a cloud worker) sees no scratch root and panics if it resolves a location, which is the fail-closed answer; those already take their paths through `EngineConfig`.
+
+The `slint_ui` fixtures that wire real callbacks (`wired_window_and_link()` and through it `export_sheet()`) hold a guard over a per-test `ScratchDir`, so a successful export's `remember()`, Revert to Saved's `load_config()` and Set as Wallpaper's save all land in it.
+
+### 3. Nothing bypasses the module
+
+Two enforcement layers, because clippy is not run in CI:
+
+- **A source scan test** in `sunlit-core`, in the manner of the tests that already read `main.slint` and `sphere.wgsl`. It walks `crates/sunlit-core`, `crates/sunlit-app` and `crates/sunlit-ui`, sources and tests both, and fails on any of `dirs::`, `env::home_dir`, the string literals `"HOME"`, `"XDG_CONFIG_HOME"`, `"APPDATA"`, `"LOCALAPPDATA"`, `"USERPROFILE"`, and `HKEY_CURRENT_USER`, outside `user_state.rs`. The allowlist is a list of `(file, token, reason)` in the test, starting with `autostart/windows.rs` for `HKEY_CURRENT_USER` (its `system()` calls `require`, and its tests use scratch keys under HKCU). The scan also fails on `env!("CARGO_BIN_EXE_sunlit-earth")` outside `tests/common/process.rs`, which is what holds decision 4 in place. This runs in CI.
+- **`clippy.toml` `disallowed-methods`** for `dirs::data_local_dir`, `data_dir`, `config_dir`, `config_local_dir`, `cache_dir`, `home_dir`, `picture_dir`, `document_dir`, `download_dir` and `desktop_dir`, with `user_state.rs` and the xtask's VM store (`crates/xtask/src/store/mod.rs`, a tool with its own store, outside this rule) allowing the lint by name. This gives the error in the editor, as the `wgpu::Instance::new` entry does.
+
+### 4. Spawned binaries get one redirect for everything
+
+A new override, `SUNLIT_EARTH_DATA_DIR`, moves the data folder itself, so a spawned binary's log file, wallpaper output and everything else that has no variable of its own follow it. The three existing variables keep their meaning and win over it for their one location.
+
+Every spawn of the app binary in `crates/sunlit-app/tests` goes through one helper in `tests/common/process.rs`, `app_command()`, which sets `SUNLIT_EARTH_DATA_DIR`, `SUNLIT_EARTH_CONFIG`, `SUNLIT_EARTH_CACHE_DIR` and `SUNLIT_EARTH_METRICS_DIR` to the test's temporary folder. The `.env("SUNLIT_EARTH_CONFIG", ...)` lines scattered through `e2e.rs` move into it. The source scan in decision 3 is what keeps a new spawn from going around it.
+
+`SUNLIT_EARTH_DATA_DIR` is also set wherever `SUNLIT_EARTH_CONFIG` is today: `ci.yml`'s smoke run, `macos-build.yml`, and the xtask's bundle verification.
+
+### 5. The restored window fits the screen it lands on
+
+`validated_window_geometry` becomes a fit rather than a yes or no. The decision is a pure function in `config/window_geometry.rs`, tested on every platform:
+
+```rust
+fn fit(saved: Rect, frame: Frame, areas: &[Rect]) -> Option<Rect>
+```
+
+- Pick the area with the largest overlap with the saved title bar strip. No overlap is `None` and the OS places the window, as today.
+- If the outer size (the saved inner size plus `frame`) is larger than the area in either dimension, shrink the inner size to the area minus the frame.
+- Move the position so the outer rectangle lies inside the area, keeping the top left corner where it can.
+
+Slint's `set_position` takes the outer position, frame included, and `set_size` takes the inner size, frame excluded (read from `i-slint-core-1.19.0/api.rs`), which is why `frame` is an input.
+
+Per platform:
+
+- **Windows.** Areas are each monitor's work area, `rcWork` from `GetMonitorInfoW`, so the taskbar is excluded. The frame comes from `AdjustWindowRectExForDpi` with `WS_OVERLAPPEDWINDOW`, `bMenu = TRUE` (the native menu bar is non-client area), and the chosen monitor's DPI from `GetDpiForMonitor`. Both are in features `sunlit-core` already enables (`Win32_Graphics_Gdi`, `Win32_UI_WindowsAndMessaging`, `Win32_UI_HiDpi`). The DWM's invisible resize borders are part of the outer rectangle, so the visible window ends a few pixels inside the area, which is the conservative side. (Measured in the Windows guest: the 1200 by 5000 window came back as `[0, 0, 1216, 1012]` in the work area `[0, 0, 1920, 1032]`, 16 px wider than the content as the frame predicts and 20 px short of the bottom, about the menu bar's height. Departure 9 changes which rectangle picks the monitor.)
+- **Linux and macOS.** Areas are the `display::outputs()` rectangles the on-screen check already uses. No work area: xrandr does not report panels. The frame is zero horizontally and the existing 30 px title bar allowance vertically, an estimate rather than a measurement; window managers constrain an oversized window themselves as well. Under Wayland the position is ignored by the compositor and only the size matters. On macOS `install_tray_and_geometry` places the window a second time once it exists (`PLACES_AGAIN_ONCE_CREATED`, `place_once_created`); that second placement takes the fitted position, not the saved one.
+- The window's minimum size is left to Slint, which enlarges a window below the `min-width` its layout declares.
+
+### 6. One rule for when a geometry is saved
+
+`menu::save_geometry` saves only a window that is shown, not minimized and not in full screen. `read_config_from_window_onto` (`ui_callbacks.rs`) writes `window_x` through `window_height` with no such check, and it is behind Set as Wallpaper, the display plan change and the auto refresh change (`app.rs`), which the tray's checkmark drives with the window hidden. A save from a minimized window stores (-32000, -32000) on Windows, which the next start rejects and the user's geometry is lost; a save in full screen stores the monitor's size.
+
+Both paths go through one function, `menu::current_geometry(window) -> Option<(i32, i32, u32, u32)>`, and `read_config_from_window_onto` keeps the stored geometry when it returns `None`. Whether full screen can reach Set as Wallpaper today is confirmed by the test in step 9 rather than assumed.
+
+### Not in this plan
+
+- An older build drops keys it does not know and its next save erases them (`AppConfig`'s doc comment). Running 0.5.0 after a newer build loses `export_*` today. Saving over the file's existing TOML table would keep them; it is its own plan.
+- A separate config file for debug builds.
+- Restoring the developer's settings. The newest backup with them is `config.v3.toml` from 2026-10-24.
+
+## Implementation steps
+
+1. Add `user_state` with `claim`, the location functions, `require`, and `scratch_for_this_thread`. Grep for statics, `LazyLock`s and `OnceLock`s that resolve a location, and for xtask code calling into the moved functions.
+2. Move the resolution out of `config_path()`, `cloud_fetcher::cache_dir()`, the metrics path, `wallpaper/mod.rs`, `logging::file_writer`, `menu.rs` (Open Data Folder), `tray.rs` and `export.rs` into calls of `user_state`. Remove `sunlit_core::app_data_dir()`. Add `SUNLIT_EARTH_DATA_DIR`, through `env_override`.
+3. Add the `require` calls to the autostart `system` constructors, `open::url`, `open::folder` and the real `WallpaperSink`.
+4. Call `user_state::claim()` first in `main.rs`.
+5. Run `cargo test`. Every panic is a test that reached user state. Expected: `test_every_menu_item_works_under_the_sheet`, `config_path_without_override_uses_app_folder` (`config/mod.rs`), and any `slint_ui` export test whose successful export reaches `remember()`. List what panics in the validation section before fixing anything: that list is the inventory of the leaks this plan closes.
+6. Fix them. The fixtures from decision 2 take a scratch guard; `test_every_menu_item_works_under_the_sheet` then also asserts that Set as Wallpaper wrote a config into its scratch folder, since that is what the item doing its job means. `config_path_without_override_uses_app_folder` tests the pure resolution with an injected root and the scratch guard.
+7. Add the source scan test and the `clippy.toml` entries.
+8. Add `app_command()` to `tests/common/process.rs` and move every spawn in `e2e.rs` to it. Set `SUNLIT_EARTH_DATA_DIR` in `ci.yml`, `macos-build.yml` and the xtask's bundle verification.
+9. Add `menu::current_geometry`, use it in `save_geometry` and `read_config_from_window_onto`.
+10. Add `fit` and the per-platform areas and frame, and use them in `install_tray_and_geometry`.
+
+## Tests
+
+### Unit (`sunlit-core`)
+
+- `user_state`: unclaimed and without a scratch guard, each location function and `require` panics; with a guard, the locations resolve under it and ignore the env overrides; the guard is per thread (a second thread spawned in the test panics); `require` panics under a guard.
+- The source scan test from decision 3.
+- `fit`: the 1200 by 5000 window at (0, 0) on a 3440 by 1400 area comes back as tall as the area minus the frame; a window larger in both dimensions; one hanging off the right edge moves left; a title bar on no area is `None`; with two areas, the one the title bar is on wins, including a monitor at negative coordinates left of the primary; a window that already fits comes back unchanged.
+
+### `slint_ui`
+
+- `test_every_menu_item_works_under_the_sheet` as in step 6.
+- `read_config_from_window_onto` keeps the stored geometry for a hidden window, and for a window in full screen if the testing backend reports one.
+
+### e2e
+
+- A case that starts the app with `window_x = 0`, `window_y = 0`, `window_width = 1200`, `window_height = 5000` in its isolated config and checks the window's outer rectangle lies inside the work area: `GetWindowRect` against `rcWork` on Windows, the frame window's geometry as X11 reports it against the output on X11 (the tool the guest image has for that is checked in step 10), skipped under Wayland with the reason printed.
+
+## Docs
+
+- `docs/testing.md`, Conventions: no test resolves user state; the panic and what it means; `scratch_for_this_thread` for a test that wants to see a write; `app_command()` for a spawned binary; the source scan and its allowlist.
+- `CLAUDE.md`, Testing conventions: one line pointing at the above.
+- `docs/architecture.md`: `user_state`, and that `main` is its one claimant.
+- `docs/platforms.md`: the restore fit per OS.
+- `docs/roadmap.md`: the entry.
+- `README.md`: `SUNLIT_EARTH_DATA_DIR` belongs in its environment variable table. README is edited only with permission, so this is asked for at step 8. Pending the user's permission: the row is not written, and `docs/architecture.md`'s table has it meanwhile.
+- The update check branch (`feature/update-check`) adds `update_state.toml` and `update_feed.json` under the data folder; once this lands it resolves them through `user_state`, and the rebase is where that happens.
+
+## Gates
+
+`cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, `cargo e2e` on the desktop, `cargo xtask e2e --target windows` and `cargo xtask e2e --target linux` (KDE on X11, and GNOME on Wayland for the skip).
+
+## Validation
+
+- Hash every file under `%LOCALAPPDATA%\SunlitEarth` (and `~/.local/share/SunlitEarth` in WSL or the Linux guest), run `cargo test` and `cargo e2e`, hash again: nothing changed, nothing added. Also check that no new file appeared under Pictures.
+- Revert the fix to `test_every_menu_item_works_under_the_sheet` locally and confirm the test now fails with the `user_state` message instead of writing.
+- Start the release build with the 2026-11-22 config (1200 by 5000 at the origin): the window fits the work area of the monitor it opens on and stays put when moved.
+- Record the step 5 inventory here.
+
+### Results
+
+- Validation item 2, on 2026-11-22 with step 6 in place: removing the `scratch_user_state();` line from `wired_window_and_link` made `test_every_menu_item_works_under_the_sheet` fail with "the config file belongs to the user, and this process has not claimed user state..." at `crates\sunlit-core\src\config\mod.rs:561` instead of writing; the line was restored afterwards.
+- Step 9: `test_a_config_save_keeps_the_stored_geometry_unless_the_window_is_on_screen` in `slint_ui` checks a never shown, a minimized, a full screen and a hidden window keep the stored geometry and a shown one saves its own. The testing backend reports full screen after `set_fullscreen(true)`, so the full screen half runs rather than skipping. Whether a person can reach Set as Wallpaper in full screen: on macOS yes, through the system menu bar, which full screen keeps reachable; elsewhere the drawn bar is hidden there. The IPC `set-wallpaper` only renders and saves nothing. The tray's auto refresh switch saves the whole config with the window hidden or minimized whatever the platform, and that is the path the rule matters most for.
+- Validation item 1, `cargo test` half, on 2026-11-22 at 792db97 on Windows: every file under `%LOCALAPPDATA%\SunlitEarth` except the xtask's `vm\` store (34 files) hashed with SHA256 before and after `cargo test --no-fail-fast` with `target/isolation-env/env.sh` sourced, and every file under `%USERPROFILE%\Pictures` (52080) listed with size and modification time. No sunlit-earth process ran at either snapshot. The run (18:26 to 18:34) passed every target: sunlit-core 722, bc7 4, engine 157, golden 25, render_pipeline 51, shading 7, soak 1, the app's unit tests 210, slint_ui 194, xtask 695, e2e 25 ignored. Nothing was added or removed, and no hash or size changed. One modification time did: `config.toml` went from 18:06:52 to 18:31:38 with the same SHA256 and size, while the engine target was running. Neither the engine target nor any other target of this run can resolve that path (the gate panics, and no target panicked), and the one known test writer would have written the 1200 by 5000 test window, not the same bytes, so the rewrite most likely came from outside the run: the user is working on this desktop, and another session was active on the machine at the time. To check, `cargo test` ran a second time (18:35 to 18:42, the same counts) under a watcher that polled the file's modification time every 200 ms and would have listed the running processes on a change. Nothing changed during that run, the hashes after it matched those after the first, and Pictures matched the first listing. Under `vm\`, only `results`, `run` and `ssh` changed, from the other session's guest runs.
+- VM e2e, on 2026-11-22 at 83c0249 (the e2e code is unchanged since 792db97). Linux KDE on X11 (`cargo xtask e2e --target linux`): 24 passed, 0 failed in 479 s; the new case printed "the window is at [0, 0, 1202, 1040], inside one of [[0, 0, 1920, 1080]]", so the 30 px title bar allowance was enough for KWin and needed no change. GNOME on Wayland (`--desktop gnome --session-type wayland`): 24 passed, 0 failed in 486 s; the new case skipped with "this session cannot read the window's rectangle (Wayland, macOS, or no xdotool)". Linux runs 24 cases because `test_session_end_shuts_down_promptly` is Windows only. Windows (`cargo xtask e2e --target windows`): the fourth attempt reached the suite, 25 passed, 0 failed in 501 s, the new case at [0, 0, 1216, 1012] inside the work area [[0, 0, 1920, 1032]], and the three cases departure 7 fixed now pass. The three attempts before it failed on the host's Hyper-V networking before any case ran (an empty guest output after 72 s, a reset `scp`, no address within 300 s; logs `target/vm-e2e-windows{,2,3}.log`), with `vm doctor` passing 23 of 23 throughout; this run changed nothing on the host between the third and fourth attempts, which started about 25 minutes apart (18:58 and 19:23).
+- `cargo e2e` on the developer's desktop, the remaining gate and the desktop half of validation item 1, was deliberately not run by the implementing agents: the run's constraints forbid starting the app on this desktop. The orchestrator ran it with the user's approval on 2026-11-22 at e5463ae, on Windows with one 3440 by 1440 monitor, no `SUNLIT_EARTH_*` variable set and no instance of the app running: 25 passed, 0 failed in 382 s, the wallpaper and autostart cases skipping as designed. The new case printed "the window is at [0, 0, 1216, 1380], inside one of [[0, 0, 3440, 1400]]". Around the run, every file under `%LOCALAPPDATA%\SunlitEarth` except `vm\` was hashed with SHA256, every file under Pictures listed with size and modification time, and the HKCU `Run` values and the Startup folder listed: before and after were identical, line for line. The user's `config.toml` had already been rewritten with the test window's state at 20:01 that day, before the run, by something outside this branch; it is unchanged by it.
+- Validation item 3, on 2026-11-22 at e5463ae: the release build (`cargo build --release -p sunlit-earth`) started with `--mode window` and `SUNLIT_EARTH_DATA_DIR` pointing at a scratch folder holding a copy of the user's `config.toml` (1200 by 5000 at the origin, auto refresh off). The window opened at [0, 0, 1216, 1380] in the work area [0, 0, 3440, 1400]. Three moves with `SetWindowPos`, to (200, 0), (600, 0) and (100, 200), each left the window exactly where it was put and at the same size. Closing it saved `window_x = 100`, `window_y = 200`, `window_width = 1200`, `window_height = 1321` into the scratch config. The user's data, Pictures, `Run` values and Startup folder hashed the same afterwards. The moves were programmatic; a drag by hand was not tried.
+- CI. The workflows run only on `workflow_dispatch`, so both were dispatched on the branch after the push. At 83c0249, `macos-build.yml` build-and-e2e on macos-latest (run 45055834722) succeeded, and `ci.yml` with every OS (run 45055832003) failed in Test (macOS) only: two tray unit tests reached the data folder (departure 8). At e53f9df, with that fixed, `ci.yml` with every OS (run 45058891509) succeeded: Format, Texture pipeline, and Test on Linux, Windows and macOS, the app's unit tests 208 passed on macOS.
+- WSL. `cargo sweep --maxsize 8GB` over each of the nine `$HOME/sunlit-target-*` directories and `--maxsize 10GB` over `$HOME/sunlit-target`, after the VM runs, cleaned nothing: every directory was under its cap by cargo-sweep's count. `$HOME/sunlit-target` measures 14 GB, of which 9.9 GB is `debug/incremental`, which cargo-sweep does not count or remove.
+
+### Validation rounds
+
+Round 1, on 2026-11-22 at 21ad449: 0 MAJOR, 6 MINOR, all fixed.
+
+1. The Windows fit took the work areas alone, so a title bar saved under a taskbar docked at the top was on no screen and the saved size was lost. Fixed by departure 9 (d135345).
+2. Nothing enforced that only `main` calls `user_state::claim`. The source scan now fails any call or import of it elsewhere, through the full path, a `use` under any name or a bare `claim()`; departure 10 (c8ad1c5).
+3. The scan's spawn check matched the exact text `Command::new(binary())`. `binary()` is now private to `tests/common/process.rs` and the scan refuses `binary()`, `SUNLIT_EARTH_BIN` and `CARGO_BIN_EXE_sunlit-earth` anywhere else; departure 10 (c8ad1c5).
+4. The texture pipeline's sea ice preview set `SUNLIT_EARTH_CONFIG` for its renders but not `SUNLIT_EARTH_DATA_DIR`. Each render now gets a data folder under the preview's work folder, and the hidden console on Windows, whose docstring gave keeping the log file out of the data folder as its only purpose, is gone (3dd5245).
+5. `docs/testing.md` left `SUNLIT_EARTH_DATA_DIR` out of the bundle verification's variables; it now names it and says `cargo xtask bundle --verify` sets it itself.
+6. The panic path in the Results above was garbled; it reads `crates\sunlit-core\src\config\mod.rs:561`, the body of `config::config_path`, which is where `#[track_caller]` on `user_state::config_file` puts the panic.
+
+Also folded in: the Windows guest's measured outer rectangle, 20 px short of the work area's bottom, replaces "a few pixels inside" in `docs/platforms.md`, the doc comment of `frame_at`, and decision 5's Windows bullet; no code changed for it.
+
+Gates after the round 1 fixes, at 3e84286: `cargo fmt --check` clean; `cargo clippy --all-targets` with no warning on Windows and in WSL; `cargo test --no-fail-fast` on Windows with `target/isolation-env/env.sh` sourced passed every target (sunlit-core 725, bc7 4, engine 157, golden 25, render_pipeline 51, shading 7, soak 1, the app's unit tests 210, slint_ui 194, xtask 695, e2e 25 ignored), and in WSL the `window_geometry` and `user_state` unit tests passed (40); the texture pipeline's `uv run --locked ruff check` was clean and `uv run --locked pytest` passed 367 with 1 skipped. `cargo xtask e2e --target windows` passed 25 of 25 in 516 s on the first attempt, the new case again at [0, 0, 1216, 1012] inside [[0, 0, 1920, 1032]], and the xtask removed the guest itself. `ci.yml` with every OS (run 45062067811) succeeded: Format, Texture pipeline, and Test on Linux, Windows and macOS.
+
+Round 2, on 2026-11-22 at 76b5f0e: every round 1 fix verified, 0 MAJOR, 2 MINOR.
+
+1. The scan skipped `user_state.rs` for every check, the claim check included, because the file's own matcher tests spell out the claim. A unit test in this module that called `claim()` would have passed the scan and opened the user's locations to every later test in the sunlit-core binary. Fixed in 4253c02: the claim check now reads every file with comments and the contents of string and character literals blanked (`code_only`), and runs on `user_state.rs` like any other file; only the token checks still skip it. A probe test calling `super::claim()` inside `user_state.rs` failed the scan with "sunlit-core/src/user_state.rs claims user state" and was reverted.
+2. The scan fails closed on a few legitimate spellings. `binary()` matched as a substring, so `is_binary()` would have tripped it; it now matches only as a whole name (`names_binary`). A comment such as "use user_state, claim nothing" no longer trips the claim check, since comments are blanked. `Self::claim()` still trips it: telling it apart from a module alias such as `us::claim()`, which the bare call rule is what catches, would take name resolution, and nothing in the tree has such a function. Declined for that one case, as a false alarm that names its file.
+
+The validator also tried deliberate evasions the scan does not catch, such as `let c = us::claim; c();` through a module alias or a path to the binary built by hand from `current_exe()`. The scan is a guard against a test reaching user state by accident, which a review catches when it is done on purpose, so these stay as they are.
+
+Gates after the round 2 fixes, at 4253c02: `cargo fmt --check` clean; `cargo clippy --all-targets` with no warning; the `user_state` unit tests pass (21), the new `a_scan_reads_code_and_not_what_it_says` among them; `cargo test --no-fail-fast` with `target/isolation-env/env.sh` sourced passed every target (sunlit-core 726, bc7 4, engine 157, golden 25, render_pipeline 51, shading 7, soak 1, the app's unit tests 210, slint_ui 194, xtask 695, e2e 25 ignored).
+
+### Step 5 inventory
+
+`cargo test --no-fail-fast` on Windows on 2026-11-22, with steps 1 to 4 in place and nothing else changed, the three existing overrides and `SUNLIT_EARTH_DATA_DIR` pointed under `target/`. 22 tests panicked with the `user_state` message; every other target passed (engine 157, golden 25, render_pipeline 51, shading 7, soak 1, bc7 4, the app's unit tests 208, xtask 695).
+
+| Test | Target | Reached | How |
+|---|---|---|---|
+| `config_path_without_override_uses_app_folder` | sunlit-core unit | the data folder | resolved the real config path without an override |
+| `the_cache_dir_without_an_override_is_the_app_folder` | sunlit-core unit | the data folder | the same for the cache folder |
+| `metrics_path_without_override_uses_app_folder` | sunlit-core unit | the data folder | the same for the metrics CSV |
+| `the_wallpaper_lives_under_this_systems_local_data_directory` | sunlit-core unit | the data folder | the same for the wallpaper output |
+| `test_every_menu_item_works_under_the_sheet` | slint_ui | the config file | `export_sheet()` opens the sheet, whose `open` reads the real config through `config::load_config()`, before Set as Wallpaper writes it |
+| `test_a_menu_item_closes_the_sheet_first`, `test_an_ipc_export_on_a_hidden_window_lets_the_scene_go`, `test_enter_in_a_field_exports_and_never_cancels`, `test_every_control_of_the_card_has_a_hover_text`, `test_export_waits_for_the_scene`, `test_nothing_in_the_card_moves`, `test_reopening_while_an_export_stops_says_so`, `test_the_cards_buttons_fit_the_smallest_window`, `test_the_open_sheet_blocks_the_window_behind_it`, `test_the_path_field_stays_editable_and_warns_before_replacing`, `test_the_sheet_closes_on_esc_and_its_buttons_but_not_the_backdrop`, `test_the_size_fields_pick_their_entry_and_swap`, `test_the_slider_follows_the_format_and_each_keeps_its_value`, `test_the_time_bar_names_the_held_instant` | slint_ui | the config file | the same read of the real config when the sheet opens, which `docs/testing.md` already noted ("The sheet reads the developer's real config") |
+| `test_close_window_hides_to_the_tray`, `test_the_tray_show_hide_title_follows_the_window`, `test_the_version_notice_is_for_another_version_and_close_dismisses_it` | slint_ui | the startup entry in the registry | creating the tray reads the real `Run` key through `autostart::windows::Location::system()` |
+
+All of these were reads except the one the plan started from: none of the 22 reached a write before panicking, and Set as Wallpaper's save in `test_every_menu_item_works_under_the_sheet` is behind the read that now fails first. The three tray cases reach `linux::system_dir()` and `macos::system_dir()` on the other platforms, which read `XDG_CONFIG_HOME` and `HOME` the same way.
+
+## Departures
+
+1. **`require` sits in `SystemWallpaper::publish`, not in a constructor.** `SystemWallpaper` is a unit struct with no constructor, and the engine's test configuration builds one as its default sink without ever publishing through it. A check at construction would fail every engine test; a check at the publish fails exactly the call that would change the desktop, on whichever thread makes it.
+
+2. **The tray cases answer the start on login entry from a stand-in.** The step 5 inventory found three `slint_ui` cases that read the real `Run` key through `window_state::show`, which refreshes the switch on every show. A scratch folder cannot stand in for a registry key, and `require` rightly refuses one, so `autostart` has a per-thread stand-in (`stand_in_for_this_thread`, `#[doc(hidden)]`) that answers `read`, `enable` and `disable` from a value instead of the system. The three cases hold one; everything else still reaches `Location::system()`, `linux::system_dir()` or `macos::system_dir()` and panics unclaimed.
+
+3. **The existing wallpaper test isolation became `user_state`'s.** `wallpaper/mod.rs` already had a `#[cfg(test)]` thread-local redirect of `wallpaper_dir()` with its own panic. It is gone: `wallpaper_dir()` resolves through `user_state::data_dir()` in every build, and the publishing tests' `Scratch` holds a `scratch_for_this_thread` guard. `export::fallback_folder` moved into `user_state::pictures_dir()` with its test, since the fallback from Pictures to home is part of resolving the location.
+
+4. **The source scan also refuses `Command::new(binary())` outside `tests/common/process.rs`.** `binary()` stays crate-visible because the autostart case needs the binary's path, so naming `env!("CARGO_BIN_EXE_sunlit-earth")` was not enough to keep a new spawn on `app_command()`.
+
+5. **`SUNLIT_EARTH_DATA_DIR` is set in two more places than the plan named,** `release.yml`'s bundle step and `package-managers.yml`'s check, which set `SUNLIT_EARTH_CONFIG` too. The xtask's bundle verification set none of the variables; it now sets `SUNLIT_EARTH_DATA_DIR` under its own working folder, so a local `cargo xtask bundle --verify` no longer writes a log into the developer's data folder.
+
+6. **On Linux and macOS the fit reads `display::monitors()`, not `display::outputs()`.** The plan named the outputs because the old check used them, but on macOS they are in points while the saved geometry is in pixels: `Window::position` and `size` answer with winit's `outer_position` and inner size, which are physical (`i-slint-backend-winit-1.19.0`, `winitwindowadapter.rs`). Comparing only a position against points could misjudge a window in the right or lower part of a Retina screen, which the roadmap had open; a fit that also sizes the window would have shrunk every window wider than the screen's point width to it, half its size on a 2x screen. `monitors()` is the CoreGraphics displays in pixels on macOS and the same `xrandr` outputs on Linux, so Linux is unchanged. `Output::overlaps` became `Rect::overlap_area`, since the fit needs to know how much of the title bar each area holds, not only whether any does; `macos::outputs` keeps its points and no longer claims the window check as its reader.
+
+7. **The e2e test process reached user state in three places the step 5 inventory could not see.** Step 5 ran `cargo test`, which skips the `#[ignore]`d e2e cases, so calls into the app's code made by the e2e process itself, rather than by the binaries it spawns, only showed up in the first Windows guest run: `test_set_wallpaper` and `test_across_screens_writes_what_this_desktop_can_hold` read `wallpaper::published_wallpaper_files()` and panicked in `wallpaper_dir`, and `test_autostart_round_trip_over_ipc` panicked in its cleanup guard, which called `autostart::disable()` in the test process. Since step 8 the reads would also have looked in the wrong folder: the app writes under `SUNLIT_EARTH_DATA_DIR`, not the real data folder. A grep of `tests/` for calls into gated code found a fourth on the same road: `desktop::detect_current()` and `SystemWallpaper::check_supported()`, called by the e2e process to decide what to expect, probe the wallpaper folder under sway through `Session::wallpaper_dir`. All of these now run through `as_the_app` in `tests/common/process.rs`, which holds a scratch folder over the data folder `app_command()` gives the app, so they read what the app wrote; `desktop_linux.rs` takes that folder directly where it only needs the path. The autostart guard no longer calls the backend: a case that passes has disabled the entry over IPC and read back `off`, and when the case panics the guard starts a fresh instance through `Spawn` and sends `autostart-disable`, inside `catch_unwind` so a failure there is reported and not a second panic. The e2e process still never claims user state.
+
+8. **Two tray unit tests reached the data folder on macOS only.** The step 5 inventory ran on Windows and in WSL, and the macOS CI job (run 45055832003) found what neither could: `tray::instance_name` keeps the single instance lock as a file in the data folder on macOS, so `a_second_claim_on_a_held_name_finds_the_first_running` and `the_instance_lock_is_a_real_path_on_the_platform_that_makes_it_a_file` panicked unclaimed in `user_state::data_dir()`. Before this branch they created `instance-*.lock` files in the developer's real data folder on a Mac. Both now hold a scratch folder over a `ScratchDir` on every platform, and the second also checks that the lock lands inside it. Every other target passed on the macOS runner, so these two were the only macOS-only reach.
+
+9. **On Windows the monitor is chosen by `rcMonitor` and the window fitted into its `rcWork`.** The plan made the work areas the only rectangles, which turned a title bar saved in the taskbar band into one on no screen: with a 48 px taskbar docked at the top, a saved `window_y` of 0 to 17 leaves the 30 px strip outside every work area, `fit` returned `None`, and the saved size was lost where the `MonitorFromRect(..., MONITOR_DEFAULTTONULL)` check before this branch accepted it. `fit` now takes a `Screen` per monitor, the whole monitor and its work area, picks the monitor holding the largest share of the strip, and fits into that monitor's work area. Linux and macOS pass each monitor as its own work area, so nothing changes there. `a_title_bar_in_the_taskbar_band_moves_into_the_work_area` covers the top taskbar, and `the_monitor_counts_its_taskbar_when_choosing` a strip that is mostly in one monitor's taskbar band and partly in its neighbor's work area, which the work areas alone gave to the neighbor.
+
+10. **`binary()` is private to `tests/common/process.rs`, and the source scan also guards `claim`.** Departure 4 matched the text `Command::new(binary())`, which `Command::new(&binary())` or a `let` in between would have passed. `binary()` is now private, `test_binary_exists` reads the path from `app_command().get_program()`, and the autostart case takes the path an entry names from `autostart_target()` beside it, so nothing outside that file can reach the binary but through `app_command()`. The scan refuses `CARGO_BIN_EXE_sunlit-earth`, `SUNLIT_EARTH_BIN` and `binary()` anywhere else, which also catches a second function of that name. Nothing enforced that only `main` claims, so the scan now fails a path to `user_state::claim`, a `use` of it from that module under any name, or a bare `claim()` call outside `crates/sunlit-app/src/main.rs`, and `every_allowance_is_still_needed` checks that `main.rs` still claims; `the_claim_is_found_however_it_is_reached` pins the matcher against the forms it must catch and the unrelated `claim` methods in `tiles.rs`, `tile_loader.rs` and `tray.rs` it must not. `claim` stays visible in the docs: it is the production entry point, and the crate keeps `#[doc(hidden)]` for test support such as `scratch_for_this_thread`.

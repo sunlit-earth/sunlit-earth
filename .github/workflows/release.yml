@@ -190,6 +190,7 @@ jobs:
       - name: Bundle and verify
         env:
           SUNLIT_EARTH_CONFIG: ${{ github.workspace }}/bundle-config.toml
+          SUNLIT_EARTH_DATA_DIR: ${{ github.workspace }}/bundle-data
           SUNLIT_EARTH_METRICS_DIR: ${{ github.workspace }}/bundle-metrics
           SUNLIT_EARTH_CACHE_DIR: ${{ github.workspace }}/bundle-cache
           SUNLIT_EARTH_NO_CLOUDS: "1"

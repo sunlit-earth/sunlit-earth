@@ -5,6 +5,7 @@
 //! `i-slint-backend-testing` crate. No GPU or display is required.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
@@ -18,6 +19,9 @@ use sunlit_earth::{
     FramingSettings, LightingSettings, MainWindow, MoonSettings, SkySettings, StarSettings,
     SunSettings, SunriseBandSettings,
 };
+
+#[path = "../../sunlit-core/src/test_support.rs"]
+mod test_support;
 
 /// The sample counts the tests' adapter offers, in the AA combo box's order.
 const AA_COUNTS: [u32; 4] = [1, 2, 4, 8];
@@ -1892,12 +1896,39 @@ fn wired_window() -> (
     (window, sent)
 }
 
+/// The folder this test's config, data and pictures resolve under, made on the
+/// first call on this thread and kept until the test ends.
+///
+/// For the fixtures that wire the app's real callbacks, some of which read and
+/// write the config: the test thread has not claimed user state, so without it
+/// they would panic rather than reach the developer's files.
+fn scratch_user_state() -> PathBuf {
+    thread_local! {
+        static SCRATCH: RefCell<Option<(sunlit_core::user_state::ScratchGuard, test_support::ScratchDir)>> =
+            const { RefCell::new(None) };
+    }
+    SCRATCH.with(|slot| {
+        slot.borrow_mut()
+            .get_or_insert_with(|| {
+                let dir = test_support::ScratchDir::new("slint_ui_user_state");
+                (
+                    sunlit_core::user_state::scratch_for_this_thread(dir.path()),
+                    dir,
+                )
+            })
+            .1
+            .path()
+            .to_path_buf()
+    })
+}
+
 /// [`wired_window`] and the link its callbacks send through.
 fn wired_window_and_link() -> (
     MainWindow,
     crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
     sunlit_earth::engine_client::EngineLink,
 ) {
+    scratch_user_state();
     let window = create_window();
     window.set_advanced_open(true);
     window.set_time_zone_utc(true);
@@ -6313,6 +6344,8 @@ fn labelled(window: &MainWindow, label: &str) -> Vec<ElementHandle> {
 #[test]
 fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
     use sunlit_earth::activation::{Launch, activate};
+    let _autostart =
+        sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
 
     let window = create_window();
     let link = idle_link();
@@ -6869,6 +6902,8 @@ fn test_revert_to_saved_is_the_panels_reset() {
 #[test]
 fn test_the_tray_show_hide_title_follows_the_window() {
     use sunlit_earth::window_state;
+    let _autostart =
+        sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
 
     if the_tray_cannot_follow_a_shown_window("test_the_tray_show_hide_title_follows_the_window") {
         return;
@@ -6901,6 +6936,8 @@ fn test_the_tray_show_hide_title_follows_the_window() {
 #[test]
 fn test_close_window_hides_to_the_tray() {
     use sunlit_earth::window_state;
+    let _autostart =
+        sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
 
     if the_tray_cannot_follow_a_shown_window("test_close_window_hides_to_the_tray") {
         return;
@@ -6940,6 +6977,63 @@ fn test_geometry_is_kept_only_from_a_window_on_screen() {
     assert!(is_on_screen(window.window()), "restored");
     window.hide().unwrap();
     assert!(!is_on_screen(window.window()), "hidden");
+}
+
+/// Set as Wallpaper, the display plan and the auto refresh switch all save the
+/// whole config, and the tray drives the last with the window hidden. Those
+/// saves take the geometry under the same rule as closing the window does.
+#[test]
+fn test_a_config_save_keeps_the_stored_geometry_unless_the_window_is_on_screen() {
+    use sunlit_core::config::AppConfig;
+
+    let window = create_window();
+    let stored = AppConfig {
+        window_x: Some(300),
+        window_y: Some(200),
+        window_width: Some(900),
+        window_height: Some(700),
+        ..AppConfig::default()
+    };
+    let geometry = |config: &AppConfig| {
+        (
+            config.window_x,
+            config.window_y,
+            config.window_width,
+            config.window_height,
+        )
+    };
+    let kept = geometry(&stored);
+
+    assert_eq!(geometry(&saved_with(&window, &stored)), kept, "never shown");
+
+    window.show().unwrap();
+    let size = window.window().size();
+    let position = window.window().position();
+    assert_eq!(
+        geometry(&saved_with(&window, &stored)),
+        (
+            Some(position.x),
+            Some(position.y),
+            Some(size.width),
+            Some(size.height)
+        ),
+        "shown, the window's own geometry is saved"
+    );
+
+    window.window().set_minimized(true);
+    assert_eq!(geometry(&saved_with(&window, &stored)), kept, "minimized");
+    window.window().set_minimized(false);
+
+    window.window().set_fullscreen(true);
+    if window.window().is_fullscreen() {
+        assert_eq!(geometry(&saved_with(&window, &stored)), kept, "full screen");
+    } else {
+        println!("skipping the full screen half: the testing backend reports no full screen");
+    }
+    window.window().set_fullscreen(false);
+
+    window.hide().unwrap();
+    assert_eq!(geometry(&saved_with(&window, &stored)), kept, "hidden");
 }
 
 /// The tray's last entry is Quit, the word the File menu and the version
@@ -8298,11 +8392,20 @@ fn test_every_menu_item_works_under_the_sheet() {
         .chain(full_screen.iter().filter(|_| !cfg!(target_os = "macos")));
     for &(menu, item) in items {
         let (window, _sent) = export_sheet();
+        let config = scratch_user_state().join("config.toml");
+        let _ = std::fs::remove_file(&config);
         choose(&window, menu, item);
         assert!(
             !window.get_export_sheet_open(),
             "{menu} > {item} left the sheet open"
         );
+        if item == "Set as Wallpaper" {
+            assert!(
+                config.is_file(),
+                "Set as Wallpaper saved no config to {}",
+                config.display()
+            );
+        }
     }
 }
 

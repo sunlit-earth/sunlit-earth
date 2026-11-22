@@ -4,7 +4,7 @@
 //! and GPU. Run with `cargo test --test e2e -- --ignored`.
 
 use std::fs;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -23,10 +23,10 @@ use common::pixels::{
 use common::process::{
     AUTOSTART_OPT_IN, ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY,
     Spawn, StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
-    WALLPAPER_PLATFORM, assert_no_error_lines, binary, fixture, isolated_config_path,
-    isolated_state_dir, memory_report, mib, parse_memory_entries, query_memory,
-    quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
-    wait_with_timeout, wallpaper_supported,
+    WALLPAPER_PLATFORM, app_command, assert_no_error_lines, autostart_target, fixture,
+    isolated_config_path, memory_report, mib, parse_memory_entries, published_wallpaper_files,
+    query_memory, quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported,
+    unique_socket_name, wait_with_timeout, wallpaper_supported,
 };
 use common::window_rect::{Key, MainWindow};
 
@@ -83,7 +83,8 @@ fn assert_the_files_match_the_layout(files: &[std::path::PathBuf]) {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_binary_exists() {
-    let path = binary();
+    let command = app_command();
+    let path = std::path::Path::new(command.get_program());
     assert!(
         path.exists(),
         "binary not found at {} — was the project built?",
@@ -113,10 +114,8 @@ fn test_render_and_exit() {
     // `--log-level debug` into a pipe nobody reads is how a child blocks on a
     // write and a case fails as a timeout naming nothing.
     let mut guard = ChildGuard::new(
-        Command::new(binary())
+        app_command()
             .env("SUNLIT_EARTH_NO_CLOUDS", "1")
-            .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-            .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
             .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
             .args([
                 "--log-level",
@@ -433,10 +432,8 @@ fn test_windowed_mode_graceful_shutdown() {
 /// name rather than the default one, which a real running instance may hold.
 /// It is spawned by hand because it is expected to exit on its own.
 fn second_instance(socket_name: &str, extra: &[&str]) -> std::process::Output {
-    let instance = Command::new(binary())
+    let instance = app_command()
         .env("SUNLIT_EARTH_NO_CLOUDS", "1")
-        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
         .args(["--log-level", "debug", "--ipc-socket", socket_name])
         .args(extra)
         .stdout(Stdio::piped())
@@ -528,13 +525,30 @@ fn test_a_hidden_second_launch_leaves_the_first_alone() {
     quit_and_expect_clean_exit(&socket_name, &mut guard_a, &stderr_a);
 }
 
-/// Removes the real start-on-login entry when the case ends, however it ends.
+/// Removes the real start-on-login entry when the case fails.
+///
+/// A case that passes has removed it itself and read back that it is gone.
+/// One that fails may have left it, and the instance it wrote it through may
+/// be gone with the failure, so a fresh instance removes it over IPC: this
+/// process never claims user state, which the entry is part of.
 struct RemoveAutostartEntry;
 
 impl Drop for RemoveAutostartEntry {
     fn drop(&mut self) {
-        if let Err(e) = sunlit_earth::autostart::disable() {
-            eprintln!("the autostart entry the case wrote could not be removed: {e}");
+        if !std::thread::panicking() {
+            return;
+        }
+        let removed = std::panic::catch_unwind(|| {
+            let socket_name = unique_socket_name();
+            let (mut guard, stdout, stderr) = Spawn::new(&socket_name).start();
+            let off = autostart_over_ipc(&socket_name, &stdout, "autostart-disable");
+            quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr);
+            off.state
+        });
+        match removed {
+            Ok(state) if state == "off" => {}
+            Ok(state) => eprintln!("the autostart entry the case wrote is still {state}"),
+            Err(_) => eprintln!("the autostart entry the case wrote could not be removed"),
         }
     }
 }
@@ -581,15 +595,7 @@ fn test_autostart_round_trip_over_ipc() {
     let on = autostart_over_ipc(&socket_name, &stdout, "autostart-enable");
     assert_eq!(on.state, "on", "{on:?}");
     let written = std::path::PathBuf::from(&on.exe);
-    // What an entry for this binary names: the bundle on macOS, the stable
-    // Homebrew path on Linux, the binary itself otherwise.
-    let spawned = if cfg!(target_os = "macos") {
-        sunlit_earth::autostart::macos::launched_path(&binary())
-    } else if cfg!(target_os = "linux") {
-        sunlit_earth::autostart::linux::stable_path(&binary())
-    } else {
-        binary()
-    };
+    let spawned = autostart_target();
     let same = match (written.canonicalize(), spawned.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => sunlit_earth::autostart::same_exe(&written, &spawned),
@@ -648,18 +654,8 @@ fn test_f11_fills_the_monitor_and_escape_restores_the_window() {
     let socket_name = unique_socket_name();
     let (mut guard, _stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
     let pid = guard.child_mut().id();
-    let found = {
-        let deadline = Instant::now() + SETTLE;
-        loop {
-            let window = MainWindow::find(pid);
-            if window.is_some() || Instant::now() >= deadline {
-                break window;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    };
-    let Some((window, (before, monitor))) =
-        found.and_then(|window| window.rects().map(|rects| (window, rects)))
+    let Some((window, (before, monitor))) = find_main_window(pid, SETTLE)
+        .and_then(|window| window.rects().map(|rects| (window, rects)))
     else {
         quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
         skip_case(
@@ -688,6 +684,74 @@ fn test_f11_fills_the_monitor_and_escape_restores_the_window() {
     wait_for(monitor, "F11 fills the monitor");
     window.press(Key::Escape).expect("Escape");
     wait_for(before, "Esc restores the window");
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+}
+
+/// The app's main window once the desktop shows it, or `None` when this
+/// session cannot look or it never appears within `settle`.
+fn find_main_window(pid: u32, settle: Duration) -> Option<MainWindow> {
+    let deadline = Instant::now() + settle;
+    loop {
+        let window = MainWindow::find(pid);
+        if window.is_some() || Instant::now() >= deadline {
+            return window;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A saved window at the origin and taller than any screen, the geometry a
+/// test once wrote into a real config, comes back whole on the screen: inside
+/// the monitor's work area on Windows, inside a monitor with the window
+/// manager's frame on X11.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_a_saved_window_taller_than_the_screen_comes_back_inside_it() {
+    const CASE: &str = "test_a_saved_window_taller_than_the_screen_comes_back_inside_it";
+    const SETTLE: Duration = Duration::from_secs(10);
+
+    let config = isolated_config_path();
+    fs::write(
+        &config,
+        "[sunlit.earth]\nwindow_x = 0\nwindow_y = 0\nwindow_width = 1200\nwindow_height = 5000\n",
+    )
+    .expect("write the throwaway config");
+
+    let socket_name = unique_socket_name();
+    let (mut guard, _stdout_watcher, stderr_watcher) =
+        Spawn::new(&socket_name).config(config).start();
+    let pid = guard.child_mut().id();
+    let Some(window) =
+        find_main_window(pid, SETTLE).filter(|window| window.outer_and_areas().is_some())
+    else {
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+        skip_case(
+            CASE,
+            "this session cannot read the window's rectangle (Wayland, macOS, or no xdotool)",
+        );
+        return;
+    };
+
+    let inside = |[left, top, right, bottom]: [i32; 4], area: &[i32; 4]| {
+        area[0] <= left && area[1] <= top && right <= area[2] && bottom <= area[3]
+    };
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        let (outer, areas) = window
+            .outer_and_areas()
+            .expect("the window's rectangle stays readable");
+        if areas.iter().any(|area| inside(outer, area)) {
+            println!("{CASE}: the window is at {outer:?}, inside one of {areas:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the window is at {outer:?}, inside none of {areas:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }
@@ -1216,8 +1280,7 @@ fn test_set_wallpaper() {
             "publish {pass}: the engine reported a failure instead: {line}"
         );
         let files = if writes_files {
-            let files = sunlit_core::wallpaper::published_wallpaper_files()
-                .expect("a local data directory");
+            let files = published_wallpaper_files().expect("a local data directory");
             assert!(
                 !files.is_empty(),
                 "publish {pass}: the engine reported a wallpaper and wrote no file"
@@ -1288,9 +1351,7 @@ fn test_displays_names_the_wallpaper_setter() {
         );
         return;
     }
-    let out = Command::new(binary())
-        .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
-        .env("SUNLIT_EARTH_METRICS_DIR", isolated_state_dir())
+    let out = app_command()
         .arg("displays")
         .output()
         .expect("sunlit-earth displays runs");
@@ -1319,7 +1380,7 @@ fn test_displays_names_the_wallpaper_setter() {
 /// pixmap is the one setter that writes none: its image goes to the X server.
 fn writes_wallpaper_files() -> bool {
     #[cfg(target_os = "linux")]
-    return sunlit_core::desktop::detect_current()
+    return common::process::as_the_app(sunlit_core::desktop::detect_current)
         .is_none_or(|backend| backend.mechanism() != sunlit_core::desktop::Mechanism::RootPixmap);
     #[cfg(not(target_os = "linux"))]
     true
@@ -1488,8 +1549,7 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
         "the engine reported a failure instead: {line}"
     );
 
-    let files =
-        sunlit_core::wallpaper::published_wallpaper_files().expect("a local data directory");
+    let files = published_wallpaper_files().expect("a local data directory");
     assert!(!files.is_empty(), "a publish that wrote no file");
     assert_the_files_match_the_layout(&files);
 
@@ -1512,7 +1572,7 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
         #[cfg(target_os = "linux")]
         {
             use sunlit_core::desktop::Reach;
-            let backend = sunlit_core::desktop::detect_current()
+            let backend = common::process::as_the_app(sunlit_core::desktop::detect_current)
                 .expect("a session with no backend could not have published");
             match backend.reach() {
                 Reach::Spanned => assert_eq!(
@@ -1643,7 +1703,7 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         line.contains("wallpaper_set"),
         "the first publish failed: {line}"
     );
-    let before = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    let before = published_wallpaper_files().expect("a data directory");
     assert!(!before.is_empty(), "the first publish wrote no file");
     let was = sunlit_core::display::outputs().unwrap_or_default();
 
@@ -1672,7 +1732,7 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         "the republish after the layout change failed: {line}"
     );
 
-    let after = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    let after = published_wallpaper_files().expect("a data directory");
     assert!(!after.is_empty(), "the republish wrote no file");
     assert_the_files_match_the_layout(&after);
     for path in &after {
@@ -1693,9 +1753,7 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         line.contains("wallpaper_set"),
         "the republish after the layout came back failed: {line}"
     );
-    assert_the_files_match_the_layout(
-        &sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory"),
-    );
+    assert_the_files_match_the_layout(&published_wallpaper_files().expect("a data directory"));
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }
@@ -1738,7 +1796,7 @@ fn test_plasmashell_survives_rapid_republishing() {
         return;
     }
     #[cfg(target_os = "linux")]
-    let is_plasma = sunlit_core::desktop::detect_current()
+    let is_plasma = common::process::as_the_app(sunlit_core::desktop::detect_current)
         .is_some_and(|backend| backend.desktop == "KDE Plasma");
     #[cfg(not(target_os = "linux"))]
     let is_plasma = false;

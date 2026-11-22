@@ -6731,27 +6731,44 @@ fn test_the_help_links_reach_open_url() {
     }
 }
 
-/// Each View toggle is a check that flips its property, keeps following the
-/// property when something else flips it, and shows its mark while on.
+/// View's toggles for Controls, Frame Guides and the time bar pin, in that
+/// order, as this OS titles them: checks, or plain entries on macOS.
+fn view_toggles() -> [&'static str; 3] {
+    if cfg!(target_os = "macos") {
+        [
+            "Toggle Controls",
+            "Toggle Frame Guides",
+            "Toggle Time Bar Pin",
+        ]
+    } else {
+        ["Controls", "Frame Guides", "Pin Time Bar"]
+    }
+}
+
+/// Each View toggle flips its property and keeps following the property when
+/// something else flips it. On Windows and Linux each is a check that shows
+/// its mark while on; on macOS View reads no changing state, so no entry
+/// shows a mark.
 #[test]
-fn test_the_view_toggles_are_checks() {
+fn test_the_view_toggles_flip_their_property() {
     use slint::platform::PointerEventButton;
 
     type Get = fn(&MainWindow) -> bool;
     type Set = fn(&MainWindow, bool);
+    let [controls, guides, pin] = view_toggles();
     let cases: [(&str, Get, Set); 3] = [
         (
-            "Controls",
+            controls,
             |w| !w.get_overlays_hidden(),
             |w, v| w.set_overlays_hidden(!v),
         ),
         (
-            "Frame Guides",
+            guides,
             |w| w.get_guides_shown(),
             |w, v| w.set_guides_shown(v),
         ),
         (
-            "Pin Time Bar",
+            pin,
             |w| w.get_time_bar_pinned(),
             |w, v| w.set_time_bar_pinned(v),
         ),
@@ -6777,19 +6794,20 @@ fn test_the_view_toggles_are_checks() {
     click_the_globe(&window);
     tap(&window, "h");
     tap(&window, "f");
-    choose(&window, "View", "Controls");
-    assert!(!window.get_overlays_hidden(), "Controls followed H");
-    choose(&window, "View", "Frame Guides");
-    assert!(!window.get_guides_shown(), "Frame Guides followed F");
+    choose(&window, "View", controls);
+    assert!(!window.get_overlays_hidden(), "{controls} followed H");
+    choose(&window, "View", guides);
+    assert!(!window.get_guides_shown(), "{guides} followed F");
 
     window.set_guides_shown(true);
     window.set_time_bar_pinned(true);
     menu_texts(&window, "View")[0].mock_single_click(PointerEventButton::Left);
-    assert_eq!(
-        menu_texts(&window, "✓").len(),
-        3,
-        "every check shows its mark"
-    );
+    let marks = menu_texts(&window, "✓").len();
+    if cfg!(target_os = "macos") {
+        assert_eq!(marks, 0, "View shows no check on macOS");
+    } else {
+        assert_eq!(marks, 3, "every check shows its mark");
+    }
 }
 
 /// Reset Camera runs the camera panel's three resets together: north up and
@@ -8258,15 +8276,16 @@ fn test_the_open_sheet_blocks_the_window_behind_it() {
 /// Every item of every menu works with the sheet open, closing it.
 #[test]
 fn test_every_menu_item_works_under_the_sheet() {
+    let [controls, guides, pin] = view_toggles();
     let items = [
         ("File", "Set as Wallpaper"),
         ("File", "Revert to Saved"),
         ("File", "Load Defaults"),
         ("File", "Close Window"),
         ("View", "Reset Camera"),
-        ("View", "Controls"),
-        ("View", "Frame Guides"),
-        ("View", "Pin Time Bar"),
+        ("View", controls),
+        ("View", guides),
+        ("View", pin),
         ("Help", "Mouse and Keyboard"),
         ("Help", "Website"),
         ("Help", "Report an Issue…"),
@@ -8342,14 +8361,11 @@ fn test_a_menu_item_closes_the_sheet_first() {
     assert_eq!(holds(&sent), [true, false]);
 
     choose(&window, "File", "Export Image…");
-    let guides = window.get_guides_shown();
-    choose(&window, "View", "Frame Guides");
-    assert!(!window.get_export_sheet_open(), "Frame Guides left it open");
-    assert_ne!(
-        window.get_guides_shown(),
-        guides,
-        "Frame Guides did nothing"
-    );
+    let shown = window.get_guides_shown();
+    let [_, guides, _] = view_toggles();
+    choose(&window, "View", guides);
+    assert!(!window.get_export_sheet_open(), "{guides} left it open");
+    assert_ne!(window.get_guides_shown(), shown, "{guides} did nothing");
     assert_eq!(holds(&sent), [true, false]);
 
     choose(&window, "File", "Export Image…");

@@ -9096,10 +9096,11 @@ fn test_download_reaches_open_url_with_the_archive_or_the_page() {
 }
 
 /// Every button in every state keeps its size when the window is made larger:
-/// the extra space goes to the release list or to the empty space above the
-/// buttons, never into a button.
+/// the extra space goes to the release list's panel or to the empty space
+/// above the buttons. Inside the panel the releases keep their heights and
+/// their spacing.
 #[test]
-fn test_the_update_windows_buttons_keep_their_size_when_it_grows() {
+fn test_only_the_release_list_grows_with_the_update_window() {
     use sunlit_core::update::UpdateStatus;
     use sunlit_earth::install::InstallKind;
     use sunlit_earth::update::{Install, Showing};
@@ -9145,10 +9146,55 @@ fn test_the_update_windows_buttons_keep_their_size_when_it_grows() {
             .collect::<Vec<_>>()
     };
 
+    // The panel's height, then each heading's and line's top relative to the
+    // first heading, and its height.
+    let release_list = |window: &sunlit_earth::UpdateWindow| {
+        let panel = ElementHandle::find_by_element_id(window, "UpdateWindow::release-panel")
+            .map(|panel| panel.size().height)
+            .next();
+        let mut texts: Vec<_> =
+            ElementHandle::find_by_element_id(window, "UpdateWindow::release-heading")
+                .chain(ElementHandle::find_by_element_id(
+                    window,
+                    "UpdateWindow::release-line",
+                ))
+                .map(|text| (text.absolute_position().y, text.size().height))
+                .collect();
+        texts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let top = texts.first().map_or(0.0, |first| first.0);
+        let texts: Vec<_> = texts.iter().map(|(y, h)| (y - top, *h)).collect();
+        (panel, texts)
+    };
+
     for (state, showing, install) in &states {
         let window = update_window(showing, install);
         let smaller = button_sizes(&window, slint::LogicalSize::new(480.0, 640.0));
+        let (smaller_panel, smaller_texts) = release_list(&window);
         let larger = button_sizes(&window, slint::LogicalSize::new(960.0, 1280.0));
+        let (larger_panel, larger_texts) = release_list(&window);
+        assert_eq!(
+            smaller_panel.is_some(),
+            window.get_phase() == sunlit_earth::UpdatePhase::Available,
+            "{state}: the release list shows with a version on offer"
+        );
+        if let (Some(smaller_panel), Some(larger_panel)) = (smaller_panel, larger_panel) {
+            assert!(
+                larger_panel > smaller_panel + 0.5,
+                "{state}: the release list grows with the window, from {smaller_panel} to {larger_panel}"
+            );
+            assert!(
+                !smaller_texts.is_empty(),
+                "{state}: the list shows releases"
+            );
+            assert_eq!(smaller_texts.len(), larger_texts.len(), "{state}");
+            for (small, large) in smaller_texts.iter().zip(&larger_texts) {
+                assert!(
+                    approx::relative_eq!(small.0, large.0, epsilon = 0.5)
+                        && approx::relative_eq!(small.1, large.1, epsilon = 0.5),
+                    "{state}: a release line at {small:?} in the smaller window is at {large:?} in the larger"
+                );
+            }
+        }
         assert!(!smaller.is_empty(), "{state}: the window shows buttons");
         assert_eq!(smaller.len(), larger.len(), "{state}: the same buttons");
         for ((label, width, height), (_, larger_width, larger_height)) in

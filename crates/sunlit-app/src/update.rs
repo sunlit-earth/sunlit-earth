@@ -209,6 +209,8 @@ struct State {
     known: Option<UpdateStatus>,
     skipped: Option<String>,
     dismissed: Option<String>,
+    /// Whether a check the window asked for is still out.
+    pending: bool,
     showing: Showing,
     window: Option<UpdateWindow>,
     tray: Option<slint::Weak<TrayIcon>>,
@@ -232,6 +234,7 @@ impl UpdateController {
                 known: None,
                 skipped: None,
                 dismissed: None,
+                pending: false,
                 showing: Showing::Checking { known: None },
                 window: None,
                 tray: None,
@@ -302,11 +305,11 @@ impl UpdateController {
             // older than the thread's.
             state.skipped = state.skipped.take().or(event.skipped_version);
             state.dismissed = state.dismissed.take().or(event.dismissed_version);
-            let checking = matches!(state.showing, Showing::Checking { .. });
             if !matches!(event.status, UpdateStatus::Failed(_)) {
                 state.known = Some(event.status.clone());
             }
-            if event.manual || !checking {
+            if event.manual || !state.pending {
+                state.pending = false;
                 state.showing = Showing::Answer(event.status);
             } else {
                 state.showing = Showing::Checking {
@@ -321,21 +324,22 @@ impl UpdateController {
         self.refresh_surfaces();
     }
 
-    /// Open the window, checking first when `check` asks for it, and dismiss
-    /// the banner for what it shows.
+    /// Open the window, checking first when `check` asks for it or nothing
+    /// is known yet, and dismiss the banner for what it shows.
     pub fn open(&self, check: bool) {
-        if check {
-            let known = self.state.borrow().known.clone();
-            self.state.borrow_mut().showing = Showing::Checking { known };
-            (self.requests)(Request::CheckNow);
-        } else if matches!(
-            self.state.borrow().showing,
-            Showing::Checking { known: None }
-        ) {
-            let known = self.state.borrow().known.clone();
-            if let Some(known) = known {
-                self.state.borrow_mut().showing = Showing::Answer(known);
+        let (known, pending) = {
+            let state = self.state.borrow();
+            (state.known.clone(), state.pending)
+        };
+        if check || (known.is_none() && !pending) {
+            {
+                let mut state = self.state.borrow_mut();
+                state.pending = true;
+                state.showing = Showing::Checking { known };
             }
+            (self.requests)(Request::CheckNow);
+        } else if let Some(known) = known.filter(|_| !pending) {
+            self.state.borrow_mut().showing = Showing::Answer(known);
         }
         if let Err(e) = self.ensure_window().and_then(|window| window.show()) {
             warn!("the update window could not be shown: {e}");

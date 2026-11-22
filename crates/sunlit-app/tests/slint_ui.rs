@@ -6673,10 +6673,13 @@ fn counter() -> (Rc<RefCell<u32>>, impl Fn() + 'static) {
 #[test]
 fn test_each_menu_entry_reaches_its_command() {
     type Register = fn(&MainWindow, Box<dyn Fn()>);
-    let cases: [(&str, &str, Register); 5] = [
+    let cases: [(&str, &str, Register); 6] = [
         ("File", "Set as Wallpaper", |w, f| w.on_set_wallpaper(f)),
         ("File", "Revert to Saved", |w, f| w.on_reset(f)),
         ("File", "Load Defaults", |w, f| w.on_load_defaults(f)),
+        ("Help", "Check for Updates…", |w, f| {
+            w.on_check_for_updates(f);
+        }),
         ("Help", "About Sunlit Earth", |w, f| w.on_show_about(f)),
         ("Help", "Open Data Folder", |w, f| w.on_open_data_folder(f)),
     ];
@@ -8693,4 +8696,415 @@ fn test_the_cards_buttons_fit_the_smallest_window() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Checking for updates
+// ---------------------------------------------------------------------------
+
+const UPDATE_FEED: &[u8] = include_bytes!("../../sunlit-core/tests/fixtures/update_feed_v1.json");
+
+/// What the reference file offers a copy of 0.5.0: 0.7.0, 0.6.1 and 0.6.0.
+fn fixture_offer() -> sunlit_core::update::UpdateStatus {
+    use sunlit_core::update::feed::{Verdict, parse};
+
+    let feed = parse(UPDATE_FEED).expect("the reference file reads");
+    match feed.verdict(&sunlit_core::update::Version::parse("0.5.0").unwrap()) {
+        Verdict::Available(offer) => sunlit_core::update::UpdateStatus::Available(offer),
+        Verdict::UpToDate => panic!("the reference file offers nothing to 0.5.0"),
+    }
+}
+
+fn update_event(
+    status: sunlit_core::update::UpdateStatus,
+    manual: bool,
+) -> sunlit_core::update::UpdateEvent {
+    sunlit_core::update::UpdateEvent {
+        status,
+        manual,
+        skipped_version: None,
+        dismissed_version: None,
+    }
+}
+
+fn archive_install(os: &str, arch: &str) -> sunlit_earth::update::Install {
+    sunlit_earth::update::Install::of(sunlit_earth::install::InstallKind::Archive, os, arch, false)
+}
+
+/// A controller on `window` whose requests are recorded instead of sent.
+fn recorded_controller(
+    window: &MainWindow,
+) -> (
+    sunlit_earth::update::UpdateController,
+    Rc<RefCell<Vec<sunlit_core::update::Request>>>,
+) {
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let recorder = Rc::clone(&sent);
+    let controller = sunlit_earth::update::UpdateController::new(
+        window,
+        archive_install("windows", "x86_64"),
+        move |request| recorder.borrow_mut().push(request),
+    );
+    controller.wire(window);
+    (controller, sent)
+}
+
+/// An update window showing `showing`, laid out so its elements can be found.
+fn update_window(
+    showing: &sunlit_earth::update::Showing,
+    install: &sunlit_earth::update::Install,
+) -> sunlit_earth::UpdateWindow {
+    init();
+    let window = sunlit_earth::UpdateWindow::new().unwrap();
+    window
+        .window()
+        .set_size(slint::LogicalSize::new(480.0, 640.0));
+    sunlit_earth::update::present(&window, showing, install);
+    materialize_update(&window);
+    window
+}
+
+fn materialize_update(window: &sunlit_earth::UpdateWindow) {
+    window.show().unwrap();
+    window.window().request_redraw();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+}
+
+fn update_labels(window: &sunlit_earth::UpdateWindow, role: AccessibleRole) -> Vec<String> {
+    ElementQuery::from_root(window)
+        .match_accessible_role(role)
+        .find_all()
+        .into_iter()
+        .filter_map(|element| element.accessible_label())
+        .map(|label| label.to_string())
+        .collect()
+}
+
+/// The labels of the update window's buttons, in tree order.
+fn update_buttons(window: &sunlit_earth::UpdateWindow) -> Vec<String> {
+    update_labels(window, AccessibleRole::Button)
+}
+
+fn update_texts(window: &sunlit_earth::UpdateWindow) -> Vec<String> {
+    update_labels(window, AccessibleRole::Text)
+}
+
+fn update_button(window: &sunlit_earth::UpdateWindow, label: &str) -> ElementHandle {
+    let found: Vec<_> = ElementHandle::find_by_accessible_label(window, label)
+        .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
+        .collect();
+    assert_eq!(found.len(), 1, "expected one button labelled {label}");
+    found.into_iter().next().expect("one button")
+}
+
+fn capture_update_url(window: &sunlit_earth::UpdateWindow) -> Rc<RefCell<Vec<String>>> {
+    let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let captured = Rc::clone(&opened);
+    window.on_open_url(move |url| captured.borrow_mut().push(url.to_string()));
+    opened
+}
+
+/// The tray's entry reads "Check for Updates…" with nothing on offer and
+/// names the version while one is, which is its title property since the
+/// testing backend shows no tray menu.
+#[test]
+fn test_the_tray_entry_names_the_version_on_offer() {
+    init();
+    let tray = sunlit_earth::TrayIcon::new().expect("the testing backend creates a tray icon");
+    assert_eq!(tray.get_update_title(), "Check for Updates…");
+    tray.set_update_version("0.7.0".into());
+    assert_eq!(tray.get_update_title(), "Update Available: 0.7.0…");
+
+    let window = create_window();
+    let (controller, _sent) = recorded_controller(&window);
+    let tray = sunlit_earth::TrayIcon::new().expect("the testing backend creates a tray icon");
+    controller.wire_tray(&tray);
+    assert_eq!(tray.get_update_title(), "Check for Updates…");
+    controller.apply(update_event(fixture_offer(), false));
+    assert_eq!(tray.get_update_title(), "Update Available: 0.7.0…");
+    controller.apply(update_event(
+        sunlit_core::update::UpdateStatus::UpToDate,
+        false,
+    ));
+    assert_eq!(tray.get_update_title(), "Check for Updates…");
+}
+
+/// The banner shows the version on offer; its close button hides it, sends
+/// the dismissal on, and the same version found again stays hidden, in this
+/// run and in the next, which learns of it from the thread.
+#[test]
+fn test_the_banner_closes_for_the_version_it_named() {
+    use sunlit_core::update::Request;
+
+    let window = create_window();
+    let (controller, sent) = recorded_controller(&window);
+    assert_eq!(window.get_update_banner_version(), "");
+    controller.apply(update_event(fixture_offer(), false));
+    assert_eq!(window.get_update_banner_version(), "0.7.0");
+    assert!(
+        texts_on_screen(&window)
+            .iter()
+            .any(|text| text == "Version 0.7.0 is available"),
+        "the banner is on screen"
+    );
+
+    the_labelled(&window, "Dismiss", AccessibleRole::Button).invoke_accessible_default_action();
+    assert_eq!(window.get_update_banner_version(), "");
+    assert_eq!(*sent.borrow(), [Request::Dismiss("0.7.0".to_owned())]);
+    controller.apply(update_event(fixture_offer(), false));
+    assert_eq!(window.get_update_banner_version(), "", "it stays hidden");
+
+    let next_run = create_window();
+    let (controller, _sent) = recorded_controller(&next_run);
+    controller.apply(sunlit_core::update::UpdateEvent {
+        dismissed_version: Some("0.7.0".to_owned()),
+        ..update_event(fixture_offer(), false)
+    });
+    assert_eq!(next_run.get_update_banner_version(), "");
+}
+
+/// Details opens the update window on the version on offer and hides the
+/// banner for it; a later version brings the banner back.
+#[test]
+fn test_details_opens_the_window_and_hides_the_banner() {
+    use sunlit_core::update::{Request, UpdateStatus};
+
+    let window = create_window();
+    let (controller, sent) = recorded_controller(&window);
+    controller.apply(update_event(fixture_offer(), false));
+    the_labelled(&window, "Details", AccessibleRole::Button).invoke_accessible_default_action();
+
+    let shown = controller.window().expect("Details made the update window");
+    assert!(shown.window().is_visible());
+    assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Available);
+    assert_eq!(shown.get_offered_version(), "0.7.0");
+    assert_eq!(window.get_update_banner_version(), "");
+    assert_eq!(
+        *sent.borrow(),
+        [Request::Dismiss("0.7.0".to_owned())],
+        "Details checks nothing"
+    );
+
+    let UpdateStatus::Available(mut offer) = fixture_offer() else {
+        unreachable!()
+    };
+    offer.releases[0].version = sunlit_core::update::Version::parse("0.8.0").unwrap();
+    shown.hide().unwrap();
+    controller.apply(update_event(UpdateStatus::Available(offer), false));
+    assert_eq!(window.get_update_banner_version(), "0.8.0");
+}
+
+/// Skip This Version clears the tray's title and the banner for that version
+/// and closes the window, and Help > Check for Updates… still offers it.
+#[test]
+fn test_a_skipped_version_is_still_offered_when_asked() {
+    use sunlit_core::update::Request;
+
+    if the_tray_cannot_follow_a_shown_window("test_a_skipped_version_is_still_offered_when_asked") {
+        return;
+    }
+    let window = create_window();
+    let (controller, sent) = recorded_controller(&window);
+    let tray = sunlit_earth::TrayIcon::new().expect("the testing backend creates a tray icon");
+    controller.wire_tray(&tray);
+
+    window.invoke_check_for_updates();
+    let shown = controller
+        .window()
+        .expect("the entry made the update window");
+    assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Checking);
+    assert_eq!(*sent.borrow(), [Request::CheckNow]);
+    controller.apply(update_event(fixture_offer(), true));
+    assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Available);
+    assert_eq!(tray.get_update_title(), "Update Available: 0.7.0…");
+
+    materialize_update(&shown);
+    update_button(&shown, "Skip This Version").invoke_accessible_default_action();
+    assert!(!shown.window().is_visible(), "Skip closes the window");
+    assert!(sent.borrow().contains(&Request::Skip("0.7.0".to_owned())));
+    assert_eq!(tray.get_update_title(), "Check for Updates…");
+    assert_eq!(window.get_update_banner_version(), "");
+
+    window.invoke_check_for_updates();
+    controller.apply(update_event(fixture_offer(), true));
+    assert_eq!(shown.get_phase(), sunlit_earth::UpdatePhase::Available);
+    assert_eq!(shown.get_offered_version(), "0.7.0");
+    assert_eq!(tray.get_update_title(), "Check for Updates…");
+}
+
+/// Each state of the window shows its own headline, texts and buttons.
+#[test]
+fn test_the_update_window_shows_each_state() {
+    use sunlit_core::update::UpdateStatus;
+    use sunlit_earth::update::Showing;
+
+    let install = archive_install("windows", "x86_64");
+    let current = env!("CARGO_PKG_VERSION");
+
+    let window = update_window(&Showing::Checking { known: None }, &install);
+    assert_eq!(window.get_headline(), "Checking for updates…");
+    assert_eq!(update_buttons(&window), ["Close"]);
+
+    let window = update_window(
+        &Showing::Checking {
+            known: Some(fixture_offer()),
+        },
+        &install,
+    );
+    assert!(
+        update_texts(&window)
+            .iter()
+            .any(|text| text.contains("0.7.0")),
+        "what was known shows under the headline: {:?}",
+        update_texts(&window)
+    );
+
+    let window = update_window(&Showing::Answer(UpdateStatus::UpToDate), &install);
+    assert_eq!(
+        window.get_headline(),
+        format!("Sunlit Earth {current} is the latest version.")
+    );
+    assert_eq!(update_buttons(&window), ["Check Again", "Close"]);
+
+    let window = update_window(
+        &Showing::Answer(UpdateStatus::Failed("the server said 503".to_owned())),
+        &install,
+    );
+    assert_eq!(window.get_headline(), "Could not check for updates.");
+    assert!(update_texts(&window).contains(&"the server said 503".to_owned()));
+    assert_eq!(update_buttons(&window), ["Try Again", "Close"]);
+
+    let window = update_window(&Showing::Answer(fixture_offer()), &install);
+    assert_eq!(
+        window.get_headline(),
+        format!("Sunlit Earth 0.7.0 is available. You have {current}.")
+    );
+    assert_eq!(
+        update_buttons(&window),
+        ["Download 0.7.0 (35.8 MB)", "Skip This Version", "Close"]
+    );
+    assert!(update_texts(&window).contains(&"Release Notes".to_owned()));
+}
+
+/// The available state lists every release since the installed one, newest
+/// first, with its highlights, and one without highlights as its heading.
+#[test]
+fn test_the_update_window_lists_the_releases_in_order() {
+    use sunlit_earth::update::{Showing, listed};
+
+    let window = update_window(
+        &Showing::Answer(fixture_offer()),
+        &archive_install("windows", "x86_64"),
+    );
+    assert_eq!(
+        listed(&window),
+        [
+            (
+                "0.7.0, January 12, 2027".to_owned(),
+                vec![
+                    "Check for updates from the Help menu".to_owned(),
+                    "Faster start on a CPU adapter".to_owned()
+                ]
+            ),
+            ("0.6.1, December 15, 2026".to_owned(), Vec::new()),
+            (
+                "0.6.0, December 1, 2026".to_owned(),
+                vec![
+                    "Export the current view as an image".to_owned(),
+                    "A menu bar, and full screen with F11".to_owned()
+                ]
+            ),
+        ]
+    );
+    let texts = update_texts(&window);
+    let at = |text: &str| {
+        texts
+            .iter()
+            .position(|shown| shown == text)
+            .unwrap_or_else(|| panic!("{text} is on screen: {texts:?}"))
+    };
+    assert!(at("0.7.0, January 12, 2027") < at("Check for updates from the Help menu"));
+    assert!(at("Faster start on a CPU adapter") < at("0.6.1, December 15, 2026"));
+    assert!(at("0.6.1, December 15, 2026") < at("0.6.0, December 1, 2026"));
+}
+
+/// Download opens the archive for this build; without one the button opens
+/// the website's download section.
+#[test]
+fn test_download_reaches_open_url_with_the_archive_or_the_page() {
+    use sunlit_earth::update::Showing;
+
+    let window = update_window(
+        &Showing::Answer(fixture_offer()),
+        &archive_install("windows", "x86_64"),
+    );
+    let opened = capture_update_url(&window);
+    update_button(&window, "Download 0.7.0 (35.8 MB)").invoke_accessible_default_action();
+    assert_eq!(
+        *opened.borrow(),
+        [
+            "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-windows-x86_64.zip"
+        ]
+    );
+
+    let window = update_window(
+        &Showing::Answer(fixture_offer()),
+        &archive_install("linux", "riscv64"),
+    );
+    let opened = capture_update_url(&window);
+    update_button(&window, "Open Download Page").invoke_accessible_default_action();
+    let page = window
+        .global::<sunlit_earth::Links>()
+        .get_download()
+        .to_string();
+    assert_eq!(*opened.borrow(), [page]);
+}
+
+// A field that a test pastes into, which is how it reads the clipboard the
+// testing backend keeps to itself.
+slint::slint! {
+    #[edition = "1.19"]
+    export component ClipboardProbe inherits Window {
+        out property <string> text: field.text;
+        public function paste() {
+            field.paste();
+        }
+        field := TextInput { }
+    }
+}
+
+/// Installed with a package manager, the window shows its command and hint
+/// instead of a download, and Copy leaves the command on the clipboard.
+#[test]
+fn test_copy_puts_the_package_managers_command_on_the_clipboard() {
+    use sunlit_earth::install::InstallKind;
+    use sunlit_earth::update::{Install, Showing};
+
+    let window = update_window(
+        &Showing::Answer(fixture_offer()),
+        &Install::of(InstallKind::Scoop, "windows", "x86_64", false),
+    );
+    let fields = ElementQuery::from_root(&window)
+        .match_accessible_role(AccessibleRole::TextInput)
+        .find_all();
+    assert_eq!(fields.len(), 1, "one command field");
+    assert_eq!(
+        fields[0].accessible_value().as_deref(),
+        Some("scoop update sunlit-earth")
+    );
+    assert!(
+        update_texts(&window)
+            .iter()
+            .any(|text| text.contains("run \"scoop update\" first")),
+        "the hint is on screen"
+    );
+    assert_eq!(
+        update_buttons(&window),
+        ["Copy", "Skip This Version", "Close"]
+    );
+
+    update_button(&window, "Copy").invoke_accessible_default_action();
+    let probe = ClipboardProbe::new().unwrap();
+    probe.invoke_paste();
+    assert_eq!(probe.get_text(), "scoop update sunlit-earth");
 }

@@ -65,152 +65,155 @@ export component UpdateWindow inherits Window {
             padding: 20px;
             spacing: 12px;
 
-            Text {
-                text: root.headline;
-                color: Palette.foreground;
-                font-size: 15px;
-                font-weight: 600;
-                wrap: word-wrap;
-            }
-
-            if root.phase == UpdatePhase.checking && root.known != "": Text {
-                text: root.known;
-                color: Palette.foreground;
-                wrap: word-wrap;
-            }
-
-            if root.phase == UpdatePhase.failed: Text {
-                text: root.failure;
-                color: Palette.foreground;
-                wrap: word-wrap;
-            }
-
-            if root.phase == UpdatePhase.available: release-panel := Rectangle {
+            // Takes the height the window gains: the release list's panel
+            // when there is one, the space under the last text otherwise.
+            // With every cell at stretch 0 the outer layout would share it
+            // out among all of them, buttons included.
+            VerticalLayout {
+                spacing: 12px;
+                alignment: root.phase == UpdatePhase.available ? LayoutAlignment.stretch : LayoutAlignment.start;
                 vertical-stretch: 1;
-                min-height: 120px;
-                border-radius: 7px;
-                border-width: 1px;
-                border-color: Palette.border;
-                background: Palette.alternate-background;
 
-                VerticalLayout {
-                    padding: 1px;
+                Text {
+                    text: root.headline;
+                    color: Palette.foreground;
+                    font-size: 15px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
 
-                    ScrollView {
-                        VerticalLayout {
-                            width: 100%;
-                            padding: 12px;
-                            padding-right: 12px + root.scrollbar-width;
-                            alignment: start;
-                            spacing: 10px;
+                if root.phase == UpdatePhase.checking && root.known != "": Text {
+                    text: root.known;
+                    color: Palette.foreground;
+                    wrap: word-wrap;
+                }
 
-                            for release in root.releases: VerticalLayout {
-                                spacing: 3px;
+                if root.phase == UpdatePhase.failed: Text {
+                    text: root.failure;
+                    color: Palette.foreground;
+                    wrap: word-wrap;
+                }
 
-                                HorizontalLayout {
-                                    alignment: start;
+                if root.phase == UpdatePhase.available: release-panel := Rectangle {
+                    vertical-stretch: 1;
+                    min-height: 120px;
+                    border-radius: 7px;
+                    border-width: 1px;
+                    border-color: Palette.border;
+                    background: Palette.alternate-background;
 
-                                    release-heading := Text {
-                                        text: release.version;
-                                        color: release.url != "" ? Palette.accent-background : Palette.foreground;
-                                        font-weight: 600;
+                    VerticalLayout {
+                        padding: 1px;
 
-                                        if release.url != "": release-link := TouchArea {
-                                            mouse-cursor: pointer;
-                                            clicked => { root.open-url(release.url); }
+                        ScrollView {
+                            VerticalLayout {
+                                width: 100%;
+                                padding: 12px;
+                                padding-right: 12px + root.scrollbar-width;
+                                alignment: start;
+                                spacing: 10px;
+
+                                for release in root.releases: VerticalLayout {
+                                    spacing: 3px;
+
+                                    HorizontalLayout {
+                                        alignment: start;
+
+                                        release-heading := Text {
+                                            text: release.version;
+                                            color: release.url != "" ? Palette.accent-background : Palette.foreground;
+                                            font-weight: 600;
+
+                                            if release.url != "": release-link := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.open-url(release.url); }
+                                            }
+                                        }
+
+                                        if release.date != "": Text {
+                                            text: ", " + release.date;
+                                            color: Palette.foreground;
+                                            font-weight: 600;
                                         }
                                     }
 
-                                    if release.date != "": Text {
-                                        text: ", " + release.date;
+                                    for line in release.highlights: release-line := Text {
+                                        text: line;
                                         color: Palette.foreground;
-                                        font-weight: 600;
+                                        wrap: word-wrap;
                                     }
-                                }
-
-                                for line in release.highlights: release-line := Text {
-                                    text: line;
-                                    color: Palette.foreground;
-                                    wrap: word-wrap;
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            if root.phase == UpdatePhase.available: HorizontalLayout {
-                alignment: start;
+                if root.phase == UpdatePhase.available: HorizontalLayout {
+                    alignment: start;
 
-                Text {
-                    text: "Release Notes";
-                    color: Palette.accent-background;
+                    Text {
+                        text: "Release Notes";
+                        color: Palette.accent-background;
 
-                    notes-link := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.open-url(Links.changelog); }
-                    }
-                }
-            }
-
-            if root.phase == UpdatePhase.available && root.command != "": VerticalLayout {
-                spacing: 6px;
-
-                Text {
-                    text: "Quit Sunlit Earth, then run:";
-                    color: Palette.foreground;
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
-
-                    command-field := LineEdit {
-                        text: root.command;
-                        read-only: true;
-                        horizontal-stretch: 1;
-                    }
-
-                    Button {
-                        text: "Copy";
-                        clicked => {
-                            command-field.select-all();
-                            command-field.copy();
+                        notes-link := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-url(Links.changelog); }
                         }
                     }
                 }
 
-                Text {
-                    text: root.command-hint;
-                    color: Palette.foreground;
-                    wrap: word-wrap;
-                }
-            }
+                if root.phase == UpdatePhase.available && root.command != "": VerticalLayout {
+                    spacing: 6px;
 
-            if root.phase == UpdatePhase.available && root.command == "": VerticalLayout {
-                spacing: 6px;
+                    Text {
+                        text: "Quit Sunlit Earth, then run:";
+                        color: Palette.foreground;
+                    }
 
-                HorizontalLayout {
-                    alignment: start;
+                    HorizontalLayout {
+                        spacing: 8px;
 
-                    Button {
-                        text: root.download-label;
-                        primary: true;
-                        clicked => { root.open-url(root.download-url); }
+                        command-field := LineEdit {
+                            text: root.command;
+                            read-only: true;
+                            horizontal-stretch: 1;
+                        }
+
+                        Button {
+                            text: "Copy";
+                            clicked => {
+                                command-field.select-all();
+                                command-field.copy();
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.command-hint;
+                        color: Palette.foreground;
+                        wrap: word-wrap;
                     }
                 }
 
-                Text {
-                    text: root.archive-step;
-                    color: Palette.foreground;
-                    wrap: word-wrap;
-                }
-            }
+                if root.phase == UpdatePhase.available && root.command == "": VerticalLayout {
+                    spacing: 6px;
 
-            // Takes the height the window gains when there is no release list
-            // to take it: with every cell at stretch 0 the layout would share
-            // it out among all of them, buttons included.
-            if root.phase != UpdatePhase.available: Rectangle {
-                vertical-stretch: 1;
+                    HorizontalLayout {
+                        alignment: start;
+
+                        Button {
+                            text: root.download-label;
+                            primary: true;
+                            clicked => { root.open-url(root.download-url); }
+                        }
+                    }
+
+                    Text {
+                        text: root.archive-step;
+                        color: Palette.foreground;
+                        wrap: word-wrap;
+                    }
+                }
             }
 
             HorizontalLayout {

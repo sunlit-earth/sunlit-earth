@@ -19,25 +19,27 @@ export component OlderVersionWindow inherits Window {
         padding: 20px;
         spacing: 14px;
 
-        Text {
-            text: "An older version is already running";
-            color: Palette.foreground;
-            font-size: 15px;
-            font-weight: 600;
-        }
-
-        Text {
-            text: "An older version of Sunlit Earth is already running, so Sunlit Earth " + root.version + " did not start. Open the running one from its " + root.tray-icon + ", or quit it there and open Sunlit Earth again.";
-            color: Palette.foreground;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-
-        // Takes the height the window is dragged to: with every cell at
-        // stretch 0 the layout would share it out among all of them, the
-        // button included.
-        Rectangle {
+        // Takes the height the window is dragged to, below the texts: with
+        // every cell at stretch 0 the layout would share it out among all of
+        // them, the button included.
+        VerticalLayout {
+            spacing: 14px;
+            alignment: start;
             vertical-stretch: 1;
+
+            Text {
+                text: "An older version is already running";
+                color: Palette.foreground;
+                font-size: 15px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: "An older version of Sunlit Earth is already running, so Sunlit Earth " + root.version + " did not start. Open the running one from its " + root.tray-icon + ", or quit it there and open Sunlit Earth again.";
+                color: Palette.foreground;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
         }
 
         HorizontalLayout {

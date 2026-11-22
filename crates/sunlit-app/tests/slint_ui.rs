@@ -6459,7 +6459,8 @@ fn test_the_older_version_window_names_this_version_and_close_hides_it() {
 }
 
 /// Dragging the older version's notice taller adds empty space above its
-/// button: Close keeps its size and the texts stay where they were.
+/// button: Close keeps its size and the texts stay where they were. At its
+/// natural height the gap above the button is the one between the texts.
 #[test]
 fn test_the_older_version_window_keeps_its_layout_when_made_taller() {
     init();
@@ -6486,15 +6487,25 @@ fn test_the_older_version_window_keeps_its_layout_when_made_taller() {
         let heading = element("An older version is already running");
         let body = element("An older version of Sunlit Earth");
         let close = element("Close");
+        let bottom =
+            |element: &ElementHandle| element.absolute_position().y + element.size().height;
         (
             [heading.absolute_position().y, body.absolute_position().y],
             [close.size().width, close.size().height],
+            [
+                body.absolute_position().y - bottom(&heading),
+                close.absolute_position().y - bottom(&body),
+            ],
         )
     };
     #[expect(clippy::cast_precision_loss, reason = "a window height")]
     let natural = window.window().size().height as f32 / window.window().scale_factor();
-    let (texts, close) = layout_at(natural);
-    let (taller_texts, taller_close) = layout_at(natural + 400.0);
+    let (texts, close, [between_texts, above_close]) = layout_at(natural);
+    assert!(
+        approx::relative_eq!(between_texts, above_close, epsilon = 0.5),
+        "at {natural} px the texts are {between_texts} apart and Close is {above_close} below the body"
+    );
+    let (taller_texts, taller_close, _) = layout_at(natural + 400.0);
     for (small, large) in close.iter().zip(&taller_close) {
         assert!(
             approx::relative_eq!(*small, *large, epsilon = 0.5),
@@ -9225,6 +9236,48 @@ fn update_button_sizes(
         .collect()
 }
 
+/// How far the button row is below the last text above it, and, when the
+/// headline has a text under it, how far that is below the headline.
+fn update_gap_above_buttons(window: &sunlit_earth::UpdateWindow) -> (f32, Option<f32>) {
+    use sunlit_earth::UpdatePhase;
+
+    let text = |label: &str| {
+        ElementQuery::from_root(window)
+            .match_accessible_role(AccessibleRole::Text)
+            .match_accessible_label(label)
+            .find_first()
+            .unwrap_or_else(|| panic!("a text {label:?}"))
+    };
+    let bottom = |element: &ElementHandle| element.absolute_position().y + element.size().height;
+    let phase = window.get_phase();
+    let under_headline = match phase {
+        UpdatePhase::Failed => Some(window.get_failure()),
+        UpdatePhase::Checking if !window.get_known().is_empty() => Some(window.get_known()),
+        _ => None,
+    };
+    let last = if phase == UpdatePhase::Available {
+        if window.get_command().is_empty() {
+            window.get_archive_step()
+        } else {
+            window.get_command_hint()
+        }
+    } else {
+        under_headline
+            .clone()
+            .unwrap_or_else(|| window.get_headline())
+    };
+    let close = ElementQuery::from_root(window)
+        .match_accessible_role(AccessibleRole::Button)
+        .match_accessible_label("Close")
+        .find_first()
+        .expect("Close");
+    let headline = text(&window.get_headline());
+    (
+        close.absolute_position().y - bottom(&text(&last)),
+        under_headline.map(|label| text(&label).absolute_position().y - bottom(&headline)),
+    )
+}
+
 /// The release list's panel.
 struct ReleasePanel {
     height: f32,
@@ -9259,7 +9312,8 @@ fn update_release_list(
 /// Every button in every state keeps its size when the window is made larger:
 /// the extra space goes to the release list's panel or to the empty space
 /// above the buttons. Inside the panel the releases keep their heights and
-/// their spacing.
+/// their spacing. With no space to spare, the button row is as far below the
+/// last text as the rows above it are apart.
 #[test]
 fn test_only_the_release_list_grows_with_the_update_window() {
     use sunlit_core::update::UpdateStatus;
@@ -9291,8 +9345,11 @@ fn test_only_the_release_list_grows_with_the_update_window() {
             &Install::of(InstallKind::Scoop, "windows", "x86_64", false),
         ),
     ];
+    let mut gaps = Vec::new();
     for (state, showing, install) in &states {
         let window = update_window(showing, install);
+        update_button_sizes(&window, slint::LogicalSize::new(480.0, 1.0));
+        gaps.push((*state, update_gap_above_buttons(&window)));
         let smaller = update_button_sizes(&window, slint::LogicalSize::new(480.0, 640.0));
         let (smaller_panel, smaller_texts) = update_release_list(&window);
         let larger = update_button_sizes(&window, slint::LogicalSize::new(960.0, 1280.0));
@@ -9335,6 +9392,18 @@ fn test_only_the_release_list_grows_with_the_update_window() {
                 approx::relative_eq!(*width, *larger_width, epsilon = 0.5)
                     && approx::relative_eq!(*height, *larger_height, epsilon = 0.5),
                 "{state}: {label} is {width} × {height} in the smaller window and {larger_width} × {larger_height} in the larger"
+            );
+        }
+    }
+    let spacing = gaps
+        .iter()
+        .find_map(|(_, (_, under_headline))| *under_headline)
+        .expect("a state with a text under the headline");
+    for (state, (above_buttons, under_headline)) in gaps {
+        for gap in std::iter::once(above_buttons).chain(under_headline) {
+            assert!(
+                approx::relative_eq!(gap, spacing, epsilon = 0.5),
+                "{state}: rows {gap} apart where the layout spaces them {spacing}"
             );
         }
     }

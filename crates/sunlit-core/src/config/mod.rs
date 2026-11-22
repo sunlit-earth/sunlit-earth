@@ -561,14 +561,6 @@ pub(crate) fn config_path() -> Option<PathBuf> {
     crate::user_state::config_file()
 }
 
-/// Resolve the config file path from an optional environment override.
-fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
-    match env_path {
-        Some(path) => Some(PathBuf::from(path)),
-        None => Some(crate::user_state::data_dir()?.join("config.toml")),
-    }
-}
-
 /// Load the app configuration from the standard path.
 ///
 /// [`load_config_from`] does the work and states what a failure gives back.
@@ -744,26 +736,26 @@ mod tests {
     // --- config_path resolution ---
 
     #[test]
-    fn config_path_with_override_uses_that_file() {
-        let path =
-            config_path_from(Some("C:/tmp/sunlit/custom.toml")).expect("override should resolve");
-        assert_eq!(path, PathBuf::from("C:/tmp/sunlit/custom.toml"));
+    fn the_config_file_saved_and_loaded_is_the_one_user_state_names() {
+        let dir = ScratchDir::new("config_user_state");
+        let _guard = crate::user_state::scratch_for_this_thread(dir.path());
+        let path = config_path().expect("a scratch folder resolves");
+        assert_eq!(Some(path.clone()), crate::user_state::config_file());
+        assert!(path.starts_with(dir.path()), "{}", path.display());
+
+        let config = AppConfig {
+            window_x: Some(17),
+            ..AppConfig::default()
+        };
+        save_config(&config);
+        assert!(path.is_file(), "save_config wrote {}", path.display());
+        assert_eq!(load_config().window_x, Some(17));
     }
 
     #[test]
-    fn config_path_without_override_uses_app_folder() {
-        if let Some(path) = config_path_from(None) {
-            assert!(
-                path.ends_with("config.toml"),
-                "unexpected path: {}",
-                path.display()
-            );
-            assert!(
-                path.parent().is_some_and(|p| p.ends_with("SunlitEarth")),
-                "expected the app folder, got {}",
-                path.display()
-            );
-        }
+    #[should_panic(expected = "has not claimed user state")]
+    fn the_config_file_is_refused_to_a_test_without_a_scratch_folder() {
+        let _ = load_config();
     }
 
     // --- AppConfig defaults and serde ---

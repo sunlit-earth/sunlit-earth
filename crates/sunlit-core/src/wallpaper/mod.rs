@@ -49,14 +49,11 @@ pub(crate) const GENERATIONS_KEPT: usize = 12;
 /// [`crate::user_state::data_dir`], which is where the config file and the cloud
 /// cache already are.
 pub fn wallpaper_dir() -> Result<PathBuf, String> {
-    let dir = data_dir_wallpaper_path()?;
+    let dir = crate::user_state::data_dir()
+        .ok_or_else(|| "no local data directory on this system".to_owned())?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create wallpaper directory: {e}"))?;
     Ok(dir)
-}
-
-fn data_dir_wallpaper_path() -> Result<PathBuf, String> {
-    crate::user_state::data_dir().ok_or_else(|| "no local data directory on this system".to_owned())
 }
 
 /// One publish's own directory, and the files it wrote.
@@ -520,15 +517,6 @@ mod tests {
         *PUBLISHED
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    }
-
-    #[test]
-    fn the_wallpaper_lives_under_this_systems_local_data_directory() {
-        let dir = data_dir_wallpaper_path().expect("a local data directory on the test host");
-        assert!(
-            dir.ends_with("SunlitEarth"),
-            "path should end with SunlitEarth, got: {dir:?}"
-        );
     }
 
     /// The isolation itself: while a test holds a [`Scratch`], a publish resolves

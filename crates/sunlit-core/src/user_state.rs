@@ -158,7 +158,7 @@ pub struct ScratchGuard {
 impl Drop for ScratchGuard {
     fn drop(&mut self) {
         let previous = self.previous.take();
-        SCRATCH.with(|slot| *slot.borrow_mut() = previous);
+        let _ = SCRATCH.try_with(|slot| *slot.borrow_mut() = previous);
     }
 }
 
@@ -388,7 +388,10 @@ mod tests {
             Some(Path::new("/elsewhere/custom.toml"))
         );
         assert_eq!(sources.cache_dir().as_deref(), Some(Path::new("/cache")));
-        assert_eq!(sources.metrics_dir().as_deref(), Some(Path::new("/metrics")));
+        assert_eq!(
+            sources.metrics_dir().as_deref(),
+            Some(Path::new("/metrics"))
+        );
         assert_eq!(sources.data_dir().as_deref(), Some(Path::new("/moved")));
     }
 
@@ -402,7 +405,10 @@ mod tests {
             config_file: Some(PathBuf::from("/custom.toml")),
             ..Sources::default()
         };
-        assert_eq!(sources.config_file().as_deref(), Some(Path::new("/custom.toml")));
+        assert_eq!(
+            sources.config_file().as_deref(),
+            Some(Path::new("/custom.toml"))
+        );
     }
 
     #[test]

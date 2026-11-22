@@ -5,6 +5,7 @@
 //! `i-slint-backend-testing` crate. No GPU or display is required.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
@@ -18,6 +19,9 @@ use sunlit_earth::{
     FramingSettings, LightingSettings, MainWindow, MoonSettings, SkySettings, StarSettings,
     SunSettings, SunriseBandSettings,
 };
+
+#[path = "../../sunlit-core/src/test_support.rs"]
+mod test_support;
 
 /// The sample counts the tests' adapter offers, in the AA combo box's order.
 const AA_COUNTS: [u32; 4] = [1, 2, 4, 8];
@@ -1892,12 +1896,39 @@ fn wired_window() -> (
     (window, sent)
 }
 
+/// The folder this test's config, data and pictures resolve under, made on the
+/// first call on this thread and kept until the test ends.
+///
+/// For the fixtures that wire the app's real callbacks, some of which read and
+/// write the config: the test thread has not claimed user state, so without it
+/// they would panic rather than reach the developer's files.
+fn scratch_user_state() -> PathBuf {
+    thread_local! {
+        static SCRATCH: RefCell<Option<(sunlit_core::user_state::ScratchGuard, test_support::ScratchDir)>> =
+            const { RefCell::new(None) };
+    }
+    SCRATCH.with(|slot| {
+        slot.borrow_mut()
+            .get_or_insert_with(|| {
+                let dir = test_support::ScratchDir::new("slint_ui_user_state");
+                (
+                    sunlit_core::user_state::scratch_for_this_thread(dir.path()),
+                    dir,
+                )
+            })
+            .1
+            .path()
+            .to_path_buf()
+    })
+}
+
 /// [`wired_window`] and the link its callbacks send through.
 fn wired_window_and_link() -> (
     MainWindow,
     crossbeam_channel::Receiver<sunlit_core::engine::EngineCommand>,
     sunlit_earth::engine_client::EngineLink,
 ) {
+    scratch_user_state();
     let window = create_window();
     window.set_advanced_open(true);
     window.set_time_zone_utc(true);
@@ -6312,6 +6343,8 @@ fn labelled(window: &MainWindow, label: &str) -> Vec<ElementHandle> {
 /// "Close" takes away.
 #[test]
 fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
+    let _autostart =
+        sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
     use sunlit_earth::activation::{Launch, activate};
 
     let window = create_window();
@@ -6868,6 +6901,8 @@ fn test_revert_to_saved_is_the_panels_reset() {
 /// across every way the window is shown and hidden.
 #[test]
 fn test_the_tray_show_hide_title_follows_the_window() {
+    let _autostart =
+        sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
     use sunlit_earth::window_state;
 
     if the_tray_cannot_follow_a_shown_window("test_the_tray_show_hide_title_follows_the_window") {
@@ -6900,6 +6935,8 @@ fn test_the_tray_show_hide_title_follows_the_window() {
 /// the tray's title turns to Show.
 #[test]
 fn test_close_window_hides_to_the_tray() {
+    let _autostart =
+        sunlit_earth::autostart::stand_in_for_this_thread(sunlit_earth::autostart::Autostart::Off);
     use sunlit_earth::window_state;
 
     if the_tray_cannot_follow_a_shown_window("test_close_window_hides_to_the_tray") {
@@ -8298,11 +8335,20 @@ fn test_every_menu_item_works_under_the_sheet() {
         .chain(full_screen.iter().filter(|_| !cfg!(target_os = "macos")));
     for &(menu, item) in items {
         let (window, _sent) = export_sheet();
+        let config = scratch_user_state().join("config.toml");
+        let _ = std::fs::remove_file(&config);
         choose(&window, menu, item);
         assert!(
             !window.get_export_sheet_open(),
             "{menu} > {item} left the sheet open"
         );
+        if item == "Set as Wallpaper" {
+            assert!(
+                config.is_file(),
+                "Set as Wallpaper saved no config to {}",
+                config.display()
+            );
+        }
     }
 }
 

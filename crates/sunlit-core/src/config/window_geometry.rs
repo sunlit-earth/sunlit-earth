@@ -47,22 +47,42 @@ impl Frame {
 /// drag it.
 const TITLE_BAR_HEIGHT: u32 = 30;
 
-/// Fit a saved window into the screen area its title bar is on.
+/// One monitor: the whole of it, and the part a window may occupy.
+///
+/// On Windows `work` leaves out the taskbar and docked bars. Elsewhere nothing
+/// reports one, and the two are the same rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Screen {
+    monitor: Rect,
+    work: Rect,
+}
+
+impl Screen {
+    #[cfg(any(test, not(windows)))]
+    fn whole(rect: Rect) -> Self {
+        Self {
+            monitor: rect,
+            work: rect,
+        }
+    }
+}
+
+/// Fit a saved window into the work area of the monitor its title bar is on.
 ///
 /// `saved` is a position and a size the way Slint takes them: `set_position`
 /// places the outer rectangle, frame included, and `set_size` sizes the
-/// content, frame excluded. The area with the largest share of the title bar
-/// strip is the one the window belongs to, and none at all means the window
-/// would come back where nobody can reach it. The outer rectangle shrinks to
-/// that area where it is larger, and moves into it, keeping the top left corner
-/// where it can.
+/// content, frame excluded. The monitor with the largest share of the title
+/// bar strip is the one the window belongs to, a taskbar on it included, and
+/// none at all means the window would come back where nobody can reach it. The
+/// outer rectangle shrinks to that monitor's work area where it is larger, and
+/// moves into it, keeping the top left corner where it can.
 ///
 /// :param saved: the outer position and the content size
 /// :param frame: what the system adds around the content
-/// :param areas: the rectangles a window may occupy
+/// :param screens: the monitors of this desk
 /// :returns: the outer position and the content size that fit, or `None` when
-///     the title bar is on no area
-fn fit(saved: Rect, frame: Frame, areas: &[Rect]) -> Option<Rect> {
+///     the title bar is on no monitor
+fn fit(saved: Rect, frame: Frame, screens: &[Screen]) -> Option<Rect> {
     let outer_width = u64::from(saved.width) + frame.horizontal();
     let outer_height = u64::from(saved.height) + frame.vertical();
     let strip = Rect {
@@ -71,12 +91,12 @@ fn fit(saved: Rect, frame: Frame, areas: &[Rect]) -> Option<Rect> {
         width: u32::try_from(outer_width).unwrap_or(u32::MAX),
         height: TITLE_BAR_HEIGHT.min(u32::try_from(outer_height).unwrap_or(u32::MAX)),
     };
-    let area = areas
+    let area = screens
         .iter()
-        .map(|area| (area.overlap_area(&strip), area))
+        .map(|screen| (screen.monitor.overlap_area(&strip), screen))
         .filter(|(overlap, _)| *overlap > 0)
         .max_by_key(|(overlap, _)| *overlap)
-        .map(|(_, area)| *area)?;
+        .map(|(_, screen)| screen.work)?;
 
     let outer_width = outer_width.min(u64::from(area.width));
     let outer_height = outer_height.min(u64::from(area.height));
@@ -104,9 +124,10 @@ fn content(outer: u64, frame: u64) -> u32 {
         .max(1)
 }
 
-/// Each monitor's work area, so the taskbar is excluded, in physical pixels.
+/// Each monitor with its work area, which excludes the taskbar, in physical
+/// pixels.
 #[cfg(windows)]
-fn work_areas() -> Option<Vec<Rect>> {
+fn screens() -> Option<Vec<Screen>> {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::{LPARAM, RECT, TRUE};
@@ -122,11 +143,11 @@ fn work_areas() -> Option<Vec<Rect>> {
         _rect: *mut RECT,
         lparam: LPARAM,
     ) -> BOOL {
-        // SAFETY: lparam is the &mut Vec<Rect> work_areas passes, and this
+        // SAFETY: lparam is the &mut Vec<Screen> screens passes, and this
         // callback runs synchronously on that thread inside
         // EnumDisplayMonitors, while the Vec is borrowed for nothing else.
         #[allow(unsafe_code)]
-        let areas = unsafe { &mut *(lparam as *mut Vec<Rect>) };
+        let screens = unsafe { &mut *(lparam as *mut Vec<Screen>) };
         let mut info = MONITORINFO {
             cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or(0),
             rcMonitor: RECT {
@@ -148,20 +169,26 @@ fn work_areas() -> Option<Vec<Rect>> {
         #[allow(unsafe_code)]
         let ok = unsafe { GetMonitorInfoW(hmonitor, &raw mut info) };
         if ok != 0 {
-            let work = info.rcWork;
-            areas.push(Rect {
-                x: work.left,
-                y: work.top,
-                width: work.right.saturating_sub(work.left).unsigned_abs(),
-                height: work.bottom.saturating_sub(work.top).unsigned_abs(),
+            screens.push(Screen {
+                monitor: rect_of(info.rcMonitor),
+                work: rect_of(info.rcWork),
             });
         }
         TRUE
     }
 
-    let mut areas: Vec<Rect> = Vec::new();
+    fn rect_of(rect: RECT) -> Rect {
+        Rect {
+            x: rect.left,
+            y: rect.top,
+            width: rect.right.saturating_sub(rect.left).unsigned_abs(),
+            height: rect.bottom.saturating_sub(rect.top).unsigned_abs(),
+        }
+    }
+
+    let mut screens: Vec<Screen> = Vec::new();
     // SAFETY: a null HDC and clip rectangle enumerate every monitor. The
-    // callback gets a pointer to `areas`, which outlives the call, and runs
+    // callback gets a pointer to `screens`, which outlives the call, and runs
     // only before EnumDisplayMonitors returns.
     #[allow(unsafe_code)]
     let ok = unsafe {
@@ -169,14 +196,14 @@ fn work_areas() -> Option<Vec<Rect>> {
             ptr::null_mut(),
             ptr::null(),
             Some(collect),
-            (&raw mut areas) as LPARAM,
+            (&raw mut screens) as LPARAM,
         )
     };
     if ok == 0 {
         warn!("cannot enumerate the monitors to fit the window into");
         return None;
     }
-    Some(areas)
+    Some(screens)
 }
 
 /// The frame Windows puts around a window of this app's style, at the DPI of
@@ -184,7 +211,10 @@ fn work_areas() -> Option<Vec<Rect>> {
 ///
 /// `WS_OVERLAPPEDWINDOW` with a menu, since the menu bar is native and outside
 /// the content. The outer rectangle includes the resize borders the DWM draws
-/// invisibly, so a fitted window looks a few pixels inside its area.
+/// invisibly, so a fitted window looks a few pixels inside its area at the
+/// sides; a 1200 by 5000 window restored on a 1920 by 1032 work area in the
+/// Windows guest measured `[0, 0, 1216, 1012]` from `GetWindowRect`, 20 px short of the
+/// bottom.
 #[cfg(windows)]
 fn frame_at(saved: Rect) -> Frame {
     use windows_sys::Win32::Foundation::{RECT, TRUE};
@@ -246,8 +276,8 @@ fn frame_at(saved: Rect) -> Frame {
 #[cfg(windows)]
 fn fit_to_this_desk(saved: Rect) -> Option<Rect> {
     crate::wallpaper::ensure_dpi_awareness();
-    let areas = work_areas()?;
-    fit(saved, frame_at(saved), &areas)
+    let screens = screens()?;
+    fit(saved, frame_at(saved), &screens)
 }
 
 /// What a window manager adds, estimated: nothing at the sides and a title bar
@@ -276,8 +306,11 @@ fn fit_to_this_desk(saved: Rect) -> Option<Rect> {
     if let Some(monitors) = crate::display::monitors()
         && !monitors.is_empty()
     {
-        let areas: Vec<Rect> = monitors.iter().map(crate::display::Monitor::rect).collect();
-        return fit(saved, ESTIMATED_FRAME, &areas);
+        let screens: Vec<Screen> = monitors
+            .iter()
+            .map(|monitor| Screen::whole(monitor.rect()))
+            .collect();
+        return fit(saved, ESTIMATED_FRAME, &screens);
     }
     plausible_coordinates(saved).then_some(saved)
 }
@@ -355,6 +388,10 @@ mod tests {
             width,
             height,
         }
+    }
+
+    fn whole(areas: &[Rect]) -> Vec<Screen> {
+        areas.iter().copied().map(Screen::whole).collect()
     }
 
     /// A Windows frame at 100 %: resize borders and a caption and a menu bar.
@@ -451,37 +488,37 @@ mod tests {
     #[test]
     fn a_window_taller_than_the_screen_comes_back_as_tall_as_it() {
         let area = rect(0, 0, 3440, 1400);
-        let fitted = fit(rect(0, 0, 1200, 5000), FRAME, &[area]).unwrap();
+        let fitted = fit(rect(0, 0, 1200, 5000), FRAME, &whole(&[area])).unwrap();
         assert_eq!(fitted, rect(0, 0, 1200, 1400 - 51 - 8));
     }
 
     #[test]
     fn a_window_larger_than_the_screen_both_ways_fills_it() {
         let area = rect(0, 0, 1920, 1040);
-        let fitted = fit(rect(200, 100, 4000, 3000), FRAME, &[area]).unwrap();
+        let fitted = fit(rect(200, 100, 4000, 3000), FRAME, &whole(&[area])).unwrap();
         assert_eq!(fitted, rect(0, 0, 1920 - 16, 1040 - 59));
     }
 
     #[test]
     fn a_window_hanging_off_the_right_edge_moves_left() {
         let area = rect(0, 0, 1920, 1040);
-        let fitted = fit(rect(1500, 100, 800, 600), FRAME, &[area]).unwrap();
+        let fitted = fit(rect(1500, 100, 800, 600), FRAME, &whole(&[area])).unwrap();
         assert_eq!(fitted, rect(1920 - 816, 100, 800, 600));
     }
 
     #[test]
     fn a_window_below_the_bottom_edge_moves_up() {
         let area = rect(0, 0, 1920, 1040);
-        let fitted = fit(rect(100, 900, 800, 600), FRAME, &[area]).unwrap();
+        let fitted = fit(rect(100, 900, 800, 600), FRAME, &whole(&[area])).unwrap();
         assert_eq!(fitted, rect(100, 1040 - 659, 800, 600));
     }
 
     #[test]
     fn a_title_bar_on_no_screen_is_left_to_the_system() {
         let area = rect(0, 0, 1920, 1040);
-        assert_eq!(fit(rect(2500, 100, 800, 600), FRAME, &[area]), None);
-        assert_eq!(fit(rect(100, -500, 800, 400), FRAME, &[area]), None);
-        assert_eq!(fit(rect(100, 100, 800, 600), FRAME, &[]), None);
+        assert_eq!(fit(rect(2500, 100, 800, 600), FRAME, &whole(&[area])), None);
+        assert_eq!(fit(rect(100, -500, 800, 400), FRAME, &whole(&[area])), None);
+        assert_eq!(fit(rect(100, 100, 800, 600), FRAME, &whole(&[])), None);
     }
 
     /// The body may hang off a screen; only the title bar decides which one the
@@ -489,7 +526,7 @@ mod tests {
     #[test]
     fn a_window_whose_title_bar_is_on_screen_but_body_is_not_moves_onto_it() {
         let area = rect(0, 0, 1920, 1040);
-        let fitted = fit(rect(100, 1020, 800, 600), FRAME, &[area]).unwrap();
+        let fitted = fit(rect(100, 1020, 800, 600), FRAME, &whole(&[area])).unwrap();
         assert_eq!(fitted, rect(100, 1040 - 659, 800, 600));
     }
 
@@ -501,11 +538,38 @@ mod tests {
         let primary = rect(0, 0, 1920, 1040);
         let areas = [primary, left];
 
-        let mostly_left = fit(rect(-700, 100, 800, 2000), FRAME, &areas).unwrap();
+        let mostly_left = fit(rect(-700, 100, 800, 2000), FRAME, &whole(&areas)).unwrap();
         assert_eq!(mostly_left, rect(-816, 0, 800, 1400 - 59));
 
-        let mostly_right = fit(rect(-100, 100, 800, 2000), FRAME, &areas).unwrap();
+        let mostly_right = fit(rect(-100, 100, 800, 2000), FRAME, &whole(&areas)).unwrap();
         assert_eq!(mostly_right, rect(0, 0, 800, 1040 - 59));
+    }
+
+    /// A taskbar docked at the top: a title bar saved above the work area is
+    /// still on the monitor, and comes back below the taskbar.
+    #[test]
+    fn a_title_bar_in_the_taskbar_band_moves_into_the_work_area() {
+        let screen = Screen {
+            monitor: rect(0, 0, 1920, 1080),
+            work: rect(0, 48, 1920, 1032),
+        };
+        for y in [0, 17] {
+            let fitted = fit(rect(100, y, 800, 600), FRAME, &[screen]).unwrap();
+            assert_eq!(fitted, rect(100, 48, 800, 600));
+        }
+    }
+
+    /// The monitor holding most of the title bar wins even where its share is
+    /// all taskbar and the neighbour's share is work area.
+    #[test]
+    fn the_monitor_counts_its_taskbar_when_choosing() {
+        let primary = Screen {
+            monitor: rect(0, 0, 1920, 1080),
+            work: rect(0, 48, 1920, 1032),
+        };
+        let right = Screen::whole(rect(1920, 0, 1920, 1080));
+        let fitted = fit(rect(1200, 0, 800, 600), FRAME, &[primary, right]).unwrap();
+        assert_eq!(fitted, rect(1920 - 816, 48, 800, 600));
     }
 
     #[test]
@@ -513,10 +577,10 @@ mod tests {
         let left = rect(-2560, 0, 2560, 1400);
         let primary = rect(0, 0, 1920, 1040);
         for saved in [rect(100, 100, 800, 600), rect(-2000, 200, 1200, 900)] {
-            assert_eq!(fit(saved, FRAME, &[primary, left]), Some(saved));
+            assert_eq!(fit(saved, FRAME, &whole(&[primary, left])), Some(saved));
         }
         assert_eq!(
-            fit(rect(0, 0, 1920 - 16, 1040 - 59), FRAME, &[primary]),
+            fit(rect(0, 0, 1920 - 16, 1040 - 59), FRAME, &whole(&[primary])),
             Some(rect(0, 0, 1920 - 16, 1040 - 59))
         );
     }
@@ -536,7 +600,7 @@ mod tests {
     #[test]
     fn the_content_never_shrinks_below_a_pixel() {
         let tiny = rect(0, 0, 10, 10);
-        let fitted = fit(rect(0, 0, 800, 600), FRAME, &[tiny]).unwrap();
+        let fitted = fit(rect(0, 0, 800, 600), FRAME, &whole(&[tiny])).unwrap();
         assert_eq!((fitted.width, fitted.height), (1, 1));
     }
 }

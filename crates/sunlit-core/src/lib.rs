@@ -21,6 +21,7 @@ pub mod scene;
 #[cfg(test)]
 mod test_support;
 mod thread_priority;
+pub mod update;
 pub mod user_state;
 pub mod wallpaper;
 pub mod wgpu_init;

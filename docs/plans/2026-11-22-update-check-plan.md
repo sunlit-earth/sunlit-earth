@@ -254,3 +254,7 @@ One case, `test_update_check_over_http`, against the feed stub with `SUNLIT_EART
 ## Gates
 
 `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets`, the e2e suite in the Windows and Linux guests, and step 13.
+
+## Departures
+
+1. **The Windows archive key names the architecture.** Decision 10 says the key is `windows-x86_64` on Windows; `asset_key` makes it `windows-<arch>`, as it does on Linux. Every Windows build the project ships is x86_64, so for those the two read the same. A build from source on an ARM64 Windows machine would have been offered the x86_64 archive, which replaces a native build with an emulated one; with the architecture in the key it finds no asset and the button opens the download page instead, which is the plan's own answer for an architecture without an archive.

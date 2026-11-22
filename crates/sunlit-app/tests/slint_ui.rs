@@ -9216,6 +9216,188 @@ fn test_release_notes_opens_the_changelog() {
     assert_eq!(*opened.borrow(), [changelog]);
 }
 
+/// The update window in each of its states: a name, what it shows and how
+/// the app was installed.
+fn update_window_states() -> Vec<(
+    &'static str,
+    sunlit_earth::update::Showing,
+    sunlit_earth::update::Install,
+)> {
+    use sunlit_core::update::UpdateStatus;
+    use sunlit_earth::install::InstallKind;
+    use sunlit_earth::update::{Install, Showing};
+
+    let archive = archive_install("windows", "x86_64");
+    vec![
+        (
+            "checking",
+            Showing::Checking { known: None },
+            archive.clone(),
+        ),
+        (
+            "checking with a version known",
+            Showing::Checking {
+                known: Some(fixture_offer()),
+            },
+            archive.clone(),
+        ),
+        (
+            "up to date",
+            Showing::Answer(UpdateStatus::UpToDate),
+            archive.clone(),
+        ),
+        (
+            "failed",
+            Showing::Answer(UpdateStatus::Failed("the server said 503".to_owned())),
+            archive.clone(),
+        ),
+        ("archive", Showing::Answer(fixture_offer()), archive),
+        (
+            "no archive",
+            Showing::Answer(fixture_offer()),
+            archive_install("linux", "riscv64"),
+        ),
+        (
+            "package manager",
+            Showing::Answer(fixture_offer()),
+            Install::of(InstallKind::Scoop, "windows", "x86_64", false),
+        ),
+    ]
+}
+
+/// One element of the update window: its label, its top and its height.
+#[derive(Debug)]
+struct UpdateRow {
+    label: String,
+    top: f32,
+    height: f32,
+}
+
+impl UpdateRow {
+    fn of(element: &ElementHandle, fallback: &str) -> Self {
+        Self {
+            label: element
+                .accessible_label()
+                .or_else(|| element.accessible_value())
+                .map_or_else(|| fallback.to_owned(), |label| label.to_string()),
+            top: element.absolute_position().y,
+            height: element.size().height,
+        }
+    }
+
+    fn bottom(&self) -> f32 {
+        self.top + self.height
+    }
+}
+
+/// The update window laid out at one size.
+struct UpdateLayout {
+    /// The layout's padding, from the window's left edge to the headline's.
+    padding: f32,
+    close_top: f32,
+    panel: Option<UpdateRow>,
+    /// Every text, button and field outside the release list's panel and
+    /// above the button row, from the top down.
+    rows: Vec<UpdateRow>,
+}
+
+impl UpdateLayout {
+    /// The rows above the panel, or every row without one.
+    fn above_panel(&self) -> impl Iterator<Item = &UpdateRow> {
+        self.rows
+            .iter()
+            .filter(|row| self.panel.as_ref().is_none_or(|panel| row.top < panel.top))
+    }
+
+    /// Each gap between the layout's own rows, named by the two rows. The
+    /// rows of the block under the Release Notes link are spaced by that
+    /// block, so of those only the first's top and the last's bottom count.
+    /// The gap down to the button row is included when `to_buttons`.
+    fn gaps(&self, to_buttons: bool) -> Vec<(String, f32)> {
+        let mut stack: Vec<&UpdateRow> = self.above_panel().collect();
+        if let Some(panel) = &self.panel {
+            stack.push(panel);
+            stack.extend(
+                self.rows
+                    .iter()
+                    .filter(|row| row.top >= panel.bottom())
+                    .take(2),
+            );
+        }
+        let mut gaps: Vec<_> = stack
+            .windows(2)
+            .map(|pair| {
+                (
+                    format!("from {:?} to {:?}", pair[0].label, pair[1].label),
+                    pair[1].top - pair[0].bottom(),
+                )
+            })
+            .collect();
+        if to_buttons {
+            let last = self.rows.last().expect("a text above the buttons");
+            gaps.push((
+                format!("from {:?} to the buttons", last.label),
+                self.close_top - last.bottom(),
+            ));
+        }
+        gaps
+    }
+}
+
+/// The update window laid out at `size`.
+fn update_layout(window: &sunlit_earth::UpdateWindow, size: slint::LogicalSize) -> UpdateLayout {
+    window.window().set_size(size);
+    window.window().request_redraw();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+    let close = ElementQuery::from_root(window)
+        .match_accessible_role(AccessibleRole::Button)
+        .match_accessible_label("Close")
+        .find_first()
+        .expect("Close");
+    let close_top = close.absolute_position().y;
+    let panel = ElementHandle::find_by_element_id(window, "UpdateWindow::release-panel").next();
+    let in_panel: Vec<_> = panel
+        .iter()
+        .flat_map(|panel| panel.query_descendants().find_all())
+        .map(|element| UpdateRow::of(&element, ""))
+        .collect();
+    let panel = panel.map(|panel| UpdateRow::of(&panel, "the release list"));
+    let mut rows: Vec<_> = [
+        AccessibleRole::Text,
+        AccessibleRole::Button,
+        AccessibleRole::TextInput,
+    ]
+    .into_iter()
+    .flat_map(|role| {
+        ElementQuery::from_root(window)
+            .match_accessible_role(role)
+            .find_all()
+    })
+    .map(|element| UpdateRow::of(&element, "a field"))
+    .filter(|row| {
+        row.top < close_top - 0.5
+            && !in_panel.iter().any(|inner| {
+                inner.label == row.label
+                    && approx::relative_eq!(inner.top, row.top, epsilon = 0.01)
+                    && approx::relative_eq!(inner.height, row.height, epsilon = 0.01)
+            })
+    })
+    .collect();
+    rows.sort_by(|a, b| a.top.total_cmp(&b.top));
+    UpdateLayout {
+        padding: ElementQuery::from_root(window)
+            .match_accessible_role(AccessibleRole::Text)
+            .match_accessible_label(window.get_headline().as_str())
+            .find_first()
+            .expect("the headline")
+            .absolute_position()
+            .x,
+        close_top,
+        panel,
+        rows,
+    }
+}
+
 /// The update window's buttons at `size`: each one's label, width and height.
 fn update_button_sizes(
     window: &sunlit_earth::UpdateWindow,
@@ -9234,48 +9416,6 @@ fn update_button_sizes(
             (label, size.width, size.height)
         })
         .collect()
-}
-
-/// How far the button row is below the last text above it, and, when the
-/// headline has a text under it, how far that is below the headline.
-fn update_gap_above_buttons(window: &sunlit_earth::UpdateWindow) -> (f32, Option<f32>) {
-    use sunlit_earth::UpdatePhase;
-
-    let text = |label: &str| {
-        ElementQuery::from_root(window)
-            .match_accessible_role(AccessibleRole::Text)
-            .match_accessible_label(label)
-            .find_first()
-            .unwrap_or_else(|| panic!("a text {label:?}"))
-    };
-    let bottom = |element: &ElementHandle| element.absolute_position().y + element.size().height;
-    let phase = window.get_phase();
-    let under_headline = match phase {
-        UpdatePhase::Failed => Some(window.get_failure()),
-        UpdatePhase::Checking if !window.get_known().is_empty() => Some(window.get_known()),
-        _ => None,
-    };
-    let last = if phase == UpdatePhase::Available {
-        if window.get_command().is_empty() {
-            window.get_archive_step()
-        } else {
-            window.get_command_hint()
-        }
-    } else {
-        under_headline
-            .clone()
-            .unwrap_or_else(|| window.get_headline())
-    };
-    let close = ElementQuery::from_root(window)
-        .match_accessible_role(AccessibleRole::Button)
-        .match_accessible_label("Close")
-        .find_first()
-        .expect("Close");
-    let headline = text(&window.get_headline());
-    (
-        close.absolute_position().y - bottom(&text(&last)),
-        under_headline.map(|label| text(&label).absolute_position().y - bottom(&headline)),
-    )
 }
 
 /// The release list's panel.
@@ -9309,47 +9449,13 @@ fn update_release_list(
     (panel, texts)
 }
 
-/// Every button in every state keeps its size when the window is made larger:
-/// the extra space goes to the release list's panel or to the empty space
-/// above the buttons. Inside the panel the releases keep their heights and
-/// their spacing. With no space to spare, the button row is as far below the
-/// last text as the rows above it are apart.
+/// Every button in every state keeps its size when the window is made larger,
+/// and inside the release list's panel the releases keep their heights and
+/// their spacing while the panel grows.
 #[test]
 fn test_only_the_release_list_grows_with_the_update_window() {
-    use sunlit_core::update::UpdateStatus;
-    use sunlit_earth::install::InstallKind;
-    use sunlit_earth::update::{Install, Showing};
-
-    let archive = archive_install("windows", "x86_64");
-    let states = [
-        ("checking", Showing::Checking { known: None }, &archive),
-        (
-            "up to date",
-            Showing::Answer(UpdateStatus::UpToDate),
-            &archive,
-        ),
-        (
-            "failed",
-            Showing::Answer(UpdateStatus::Failed("the server said 503".to_owned())),
-            &archive,
-        ),
-        ("archive", Showing::Answer(fixture_offer()), &archive),
-        (
-            "no archive",
-            Showing::Answer(fixture_offer()),
-            &archive_install("linux", "riscv64"),
-        ),
-        (
-            "package manager",
-            Showing::Answer(fixture_offer()),
-            &Install::of(InstallKind::Scoop, "windows", "x86_64", false),
-        ),
-    ];
-    let mut gaps = Vec::new();
-    for (state, showing, install) in &states {
-        let window = update_window(showing, install);
-        update_button_sizes(&window, slint::LogicalSize::new(480.0, 1.0));
-        gaps.push((*state, update_gap_above_buttons(&window)));
+    for (state, showing, install) in update_window_states() {
+        let window = update_window(&showing, &install);
         let smaller = update_button_sizes(&window, slint::LogicalSize::new(480.0, 640.0));
         let (smaller_panel, smaller_texts) = update_release_list(&window);
         let larger = update_button_sizes(&window, slint::LogicalSize::new(960.0, 1280.0));
@@ -9395,17 +9501,109 @@ fn test_only_the_release_list_grows_with_the_update_window() {
             );
         }
     }
-    let spacing = gaps
-        .iter()
-        .find_map(|(_, (_, under_headline))| *under_headline)
-        .expect("a state with a text under the headline");
-    for (state, (above_buttons, under_headline)) in gaps {
-        for gap in std::iter::once(above_buttons).chain(under_headline) {
+}
+
+/// Where the update window puts the height it has to spare. Its headline
+/// sits at the layout's padding at every size and its rows are the layout's
+/// spacing apart. With a version on offer, the release list's panel takes
+/// all of the spare height: the rows above it stay where they are, the rows
+/// below it move down by what the window gained, and none of them grows.
+/// Without one, the texts stay at the top, each at its place and height
+/// whatever the window's size, and the spare height is left empty above the
+/// buttons. With nothing to spare, the button row is as far below the last
+/// text as the rows above it are apart.
+#[test]
+fn test_the_update_window_leaves_its_rows_in_place_as_it_grows() {
+    let tight = slint::LogicalSize::new(480.0, 1.0);
+    let heights_by_width = [
+        (tight.width, &[tight.height, 640.0, 880.0][..]),
+        (960.0, &[1280.0, 1520.0][..]),
+    ];
+    let mut gaps = Vec::new();
+    for (state, showing, install) in update_window_states() {
+        let window = update_window(&showing, &install);
+        let available = window.get_phase() == sunlit_earth::UpdatePhase::Available;
+        let headline = window.get_headline().to_string();
+        let layouts: Vec<Vec<_>> = heights_by_width
+            .iter()
+            .map(|(width, heights)| {
+                heights
+                    .iter()
+                    .map(|height| {
+                        let size = slint::LogicalSize::new(*width, *height);
+                        (size, update_layout(&window, size))
+                    })
+                    .collect()
+            })
+            .collect();
+        for (size, layout) in layouts.iter().flatten() {
+            let first = layout.rows.first().expect("a headline");
+            assert_eq!(first.label, headline, "{state}: the headline comes first");
             assert!(
-                approx::relative_eq!(gap, spacing, epsilon = 0.5),
-                "{state}: rows {gap} apart where the layout spaces them {spacing}"
+                approx::relative_eq!(first.top, layout.padding, epsilon = 0.5),
+                "{state} at {size:?}: the headline is {} from the top where the layout's padding is {}",
+                first.top,
+                layout.padding
+            );
+            assert_eq!(
+                layout.panel.is_some(),
+                available,
+                "{state}: the release list shows with a version on offer"
+            );
+            let to_buttons = available || *size == tight;
+            gaps.extend(
+                layout
+                    .gaps(to_buttons)
+                    .into_iter()
+                    .map(|(between, gap)| (state, *size, between, gap)),
             );
         }
+        for pair in layouts.iter().flat_map(|same_width| same_width.windows(2)) {
+            let [(smaller_size, smaller), (larger_size, larger)] = pair else {
+                unreachable!()
+            };
+            let grown = larger_size.height - smaller_size.height;
+            if available {
+                if *smaller_size == tight {
+                    continue;
+                }
+                let panel = smaller.panel.as_ref().expect("a panel");
+                let larger_panel = larger.panel.as_ref().expect("a panel");
+                assert!(
+                    approx::relative_eq!(larger_panel.height, panel.height + grown, epsilon = 0.5),
+                    "{state}: the release list grows from {} to {} where the window grows by {grown}",
+                    panel.height,
+                    larger_panel.height
+                );
+            }
+            assert_eq!(
+                smaller.rows.len(),
+                larger.rows.len(),
+                "{state}: the same rows at {smaller_size:?} and {larger_size:?}"
+            );
+            for (row, larger_row) in smaller.rows.iter().zip(&larger.rows) {
+                let below_panel = smaller
+                    .panel
+                    .as_ref()
+                    .is_some_and(|panel| row.top >= panel.bottom());
+                let shift = if below_panel { grown } else { 0.0 };
+                assert!(
+                    approx::relative_eq!(larger_row.top, row.top + shift, epsilon = 0.5)
+                        && approx::relative_eq!(larger_row.height, row.height, epsilon = 0.5),
+                    "{state}: {row:?} at {smaller_size:?} is {larger_row:?} at {larger_size:?}, where it should move down by {shift} and keep its height"
+                );
+            }
+        }
+    }
+    let spacing = gaps
+        .iter()
+        .find_map(|(_, _, between, gap)| (!between.ends_with("the buttons")).then_some(*gap))
+        .expect("a state with two rows above the buttons");
+    for (state, size, between, gap) in gaps {
+        assert!(
+            approx::relative_eq!(gap, spacing, epsilon = 0.5),
+            "{state} at {size:?}: {gap} {between} where the layout spaces its rows {spacing}"
+        );
     }
 }
 

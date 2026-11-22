@@ -24,9 +24,9 @@ use common::process::{
     AUTOSTART_OPT_IN, ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY,
     Spawn, StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
     WALLPAPER_PLATFORM, app_command, assert_no_error_lines, binary, fixture, isolated_config_path,
-    memory_report, mib, parse_memory_entries, query_memory, quit_and_expect_clean_exit,
-    send_ipc_command, skip_case, tray_supported, unique_socket_name, wait_with_timeout,
-    wallpaper_supported,
+    memory_report, mib, parse_memory_entries, published_wallpaper_files, query_memory,
+    quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
+    wait_with_timeout, wallpaper_supported,
 };
 use common::window_rect::{Key, MainWindow};
 
@@ -524,13 +524,30 @@ fn test_a_hidden_second_launch_leaves_the_first_alone() {
     quit_and_expect_clean_exit(&socket_name, &mut guard_a, &stderr_a);
 }
 
-/// Removes the real start-on-login entry when the case ends, however it ends.
+/// Removes the real start-on-login entry when the case fails.
+///
+/// A case that passes has removed it itself and read back that it is gone.
+/// One that fails may have left it, and the instance it wrote it through may
+/// be gone with the failure, so a fresh instance removes it over IPC: this
+/// process never claims user state, which the entry is part of.
 struct RemoveAutostartEntry;
 
 impl Drop for RemoveAutostartEntry {
     fn drop(&mut self) {
-        if let Err(e) = sunlit_earth::autostart::disable() {
-            eprintln!("the autostart entry the case wrote could not be removed: {e}");
+        if !std::thread::panicking() {
+            return;
+        }
+        let removed = std::panic::catch_unwind(|| {
+            let socket_name = unique_socket_name();
+            let (mut guard, stdout, stderr) = Spawn::new(&socket_name).start();
+            let off = autostart_over_ipc(&socket_name, &stdout, "autostart-disable");
+            quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr);
+            off.state
+        });
+        match removed {
+            Ok(state) if state == "off" => {}
+            Ok(state) => eprintln!("the autostart entry the case wrote is still {state}"),
+            Err(_) => eprintln!("the autostart entry the case wrote could not be removed"),
         }
     }
 }
@@ -1270,8 +1287,7 @@ fn test_set_wallpaper() {
             "publish {pass}: the engine reported a failure instead: {line}"
         );
         let files = if writes_files {
-            let files = sunlit_core::wallpaper::published_wallpaper_files()
-                .expect("a local data directory");
+            let files = published_wallpaper_files().expect("a local data directory");
             assert!(
                 !files.is_empty(),
                 "publish {pass}: the engine reported a wallpaper and wrote no file"
@@ -1371,7 +1387,7 @@ fn test_displays_names_the_wallpaper_setter() {
 /// pixmap is the one setter that writes none: its image goes to the X server.
 fn writes_wallpaper_files() -> bool {
     #[cfg(target_os = "linux")]
-    return sunlit_core::desktop::detect_current()
+    return common::process::as_the_app(sunlit_core::desktop::detect_current)
         .is_none_or(|backend| backend.mechanism() != sunlit_core::desktop::Mechanism::RootPixmap);
     #[cfg(not(target_os = "linux"))]
     true
@@ -1540,8 +1556,7 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
         "the engine reported a failure instead: {line}"
     );
 
-    let files =
-        sunlit_core::wallpaper::published_wallpaper_files().expect("a local data directory");
+    let files = published_wallpaper_files().expect("a local data directory");
     assert!(!files.is_empty(), "a publish that wrote no file");
     assert_the_files_match_the_layout(&files);
 
@@ -1564,7 +1579,7 @@ fn test_across_screens_writes_what_this_desktop_can_hold() {
         #[cfg(target_os = "linux")]
         {
             use sunlit_core::desktop::Reach;
-            let backend = sunlit_core::desktop::detect_current()
+            let backend = common::process::as_the_app(sunlit_core::desktop::detect_current)
                 .expect("a session with no backend could not have published");
             match backend.reach() {
                 Reach::Spanned => assert_eq!(
@@ -1695,7 +1710,7 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         line.contains("wallpaper_set"),
         "the first publish failed: {line}"
     );
-    let before = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    let before = published_wallpaper_files().expect("a data directory");
     assert!(!before.is_empty(), "the first publish wrote no file");
     let was = sunlit_core::display::outputs().unwrap_or_default();
 
@@ -1724,7 +1739,7 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         "the republish after the layout change failed: {line}"
     );
 
-    let after = sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory");
+    let after = published_wallpaper_files().expect("a data directory");
     assert!(!after.is_empty(), "the republish wrote no file");
     assert_the_files_match_the_layout(&after);
     for path in &after {
@@ -1745,9 +1760,7 @@ fn test_a_layout_change_republishes_the_wallpaper() {
         line.contains("wallpaper_set"),
         "the republish after the layout came back failed: {line}"
     );
-    assert_the_files_match_the_layout(
-        &sunlit_core::wallpaper::published_wallpaper_files().expect("a data directory"),
-    );
+    assert_the_files_match_the_layout(&published_wallpaper_files().expect("a data directory"));
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }
@@ -1790,7 +1803,7 @@ fn test_plasmashell_survives_rapid_republishing() {
         return;
     }
     #[cfg(target_os = "linux")]
-    let is_plasma = sunlit_core::desktop::detect_current()
+    let is_plasma = common::process::as_the_app(sunlit_core::desktop::detect_current)
         .is_some_and(|backend| backend.desktop == "KDE Plasma");
     #[cfg(not(target_os = "linux"))]
     let is_plasma = false;

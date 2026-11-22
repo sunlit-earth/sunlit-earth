@@ -60,7 +60,7 @@ pub(crate) fn assert_the_desktop_holds_the_wallpaper(
 ) -> Option<String> {
     use sunlit_core::desktop::Mechanism;
 
-    let backend = sunlit_core::desktop::detect_current()
+    let backend = crate::common::process::as_the_app(sunlit_core::desktop::detect_current)
         .expect("a session with no backend could not have got this far");
     match backend.mechanism() {
         Mechanism::RootPixmap => Some(the_root_holds_a_new_pixmap()),
@@ -244,7 +244,7 @@ fn one_swaybg_of_ours_shows(published: &[std::path::PathBuf]) -> String {
         .expect("the swaybg setter writes the image it starts swaybg with")
         .to_string_lossy()
         .into_owned();
-    let dir = sunlit_core::wallpaper::wallpaper_dir().expect("a wallpaper directory");
+    let dir = crate::common::process::isolated_data_dir();
     let ours = |lines: &[Vec<String>]| -> Vec<Vec<String>> {
         lines
             .iter()

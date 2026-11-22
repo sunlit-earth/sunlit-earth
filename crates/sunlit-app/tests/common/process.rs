@@ -125,7 +125,7 @@ fn lifecycle_mode_args() -> [&'static str; 2] {
 /// where this run is and not only about what it was compiled for.
 pub(crate) fn wallpaper_supported() -> bool {
     use sunlit_core::engine::wallpaper_sink::{SystemWallpaper, WallpaperSink};
-    SystemWallpaper.check_supported().is_ok()
+    as_the_app(|| SystemWallpaper.check_supported().is_ok())
 }
 
 /// Whether this platform has a wallpaper setter at all.
@@ -336,6 +336,29 @@ pub(crate) fn isolated_config_path() -> PathBuf {
     ))
 }
 
+/// The data folder [`app_command`] gives the app, where its log files and
+/// wallpaper output land.
+pub(crate) fn isolated_data_dir() -> PathBuf {
+    isolated_state_dir().join("data")
+}
+
+/// Run `read` with this thread's user state resolving to [`isolated_data_dir`],
+/// the folder every app under test keeps its state in.
+///
+/// This process never claims user state, so a call into the app's code that
+/// resolves a location, the wallpaper folder the desktop probe and the
+/// read-back of a publish look in, holds a scratch folder for its duration
+/// and sees the folder the app writes to.
+pub(crate) fn as_the_app<T>(read: impl FnOnce() -> T) -> T {
+    let _data = sunlit_core::user_state::scratch_for_this_thread(&isolated_data_dir());
+    read()
+}
+
+/// The wallpaper files the newest publish of an app under test wrote.
+pub(crate) fn published_wallpaper_files() -> Result<Vec<PathBuf>, String> {
+    as_the_app(sunlit_core::wallpaper::published_wallpaper_files)
+}
+
 /// The app binary with every place it keeps state moved into
 /// [`isolated_state_dir`]: the data folder, which takes the log files and the
 /// wallpaper output with it, a config file of its own, the caches and the
@@ -349,7 +372,7 @@ pub(crate) fn app_command() -> Command {
     let state = isolated_state_dir();
     let mut command = Command::new(binary());
     command
-        .env("SUNLIT_EARTH_DATA_DIR", state.join("data"))
+        .env("SUNLIT_EARTH_DATA_DIR", isolated_data_dir())
         .env("SUNLIT_EARTH_CONFIG", isolated_config_path())
         .env("SUNLIT_EARTH_CACHE_DIR", state.join("cache"))
         .env("SUNLIT_EARTH_METRICS_DIR", &state);

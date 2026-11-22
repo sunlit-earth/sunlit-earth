@@ -118,8 +118,6 @@ Configuration, caches, and generated wallpapers live under these directories:
 
 The settings file is `config.toml`. Back it up if you want to keep a configuration before experimenting. The `tile_cache` folder holds the surface textures prepared on first launch.
 
-To keep a separate set of settings, for example while trying another version of the app, set the environment variable `SUNLIT_EARTH_DATA_DIR` to another folder before you start it. Sunlit Earth then keeps its configuration, caches, logs, and generated wallpapers there instead.
-
 ### Export an image
 
 To render a PNG without opening the settings window, open a terminal and run:

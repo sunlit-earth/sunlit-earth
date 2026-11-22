@@ -93,8 +93,8 @@ pub enum UpdateHelp {
         command: &'static str,
         hint: &'static str,
     },
-    /// Download the archive, then follow `steps`.
-    Archive { steps: &'static [&'static str] },
+    /// Download the archive, then do as `step` says.
+    Archive { step: &'static str },
 }
 
 const COPY_OVER: &str = "Quit Sunlit Earth, unpack the download, and copy the files in its folder over those in the folder Sunlit Earth runs from.";
@@ -116,16 +116,10 @@ pub fn update_help(kind: InstallKind, os: &str, bundled: bool) -> UpdateHelp {
             hint: "If Homebrew reports the old version as current, run \"brew update\" first.",
         },
         InstallKind::Archive => UpdateHelp::Archive {
-            steps: match os {
-                "windows" => &[
-                    COPY_OVER,
-                    "Windows may ask once more before it starts the new version.",
-                ],
-                "macos" if bundled => &[
-                    "Quit Sunlit Earth, unzip the download, and move the new Sunlit Earth.app to Applications in place of the old one.",
-                    "macOS may ask once more before it opens the new version, as it did the first time.",
-                ],
-                _ => &[COPY_OVER],
+            step: if os == "macos" && bundled {
+                "Quit Sunlit Earth, unzip the download, and move the new Sunlit Earth.app to Applications in place of the old one."
+            } else {
+                COPY_OVER
             },
         },
     }
@@ -254,15 +248,15 @@ mod tests {
             ("macos", true),
             ("macos", false),
         ] {
-            let UpdateHelp::Archive { steps } = update_help(InstallKind::Archive, os, bundled)
+            let UpdateHelp::Archive { step } = update_help(InstallKind::Archive, os, bundled)
             else {
-                panic!("an archive has steps");
+                panic!("an archive has a step");
             };
-            assert!(steps[0].starts_with("Quit Sunlit Earth"), "{os}");
+            assert!(step.starts_with("Quit Sunlit Earth"), "{os}");
         }
-        let UpdateHelp::Archive { steps } = update_help(InstallKind::Archive, "macos", true) else {
+        let UpdateHelp::Archive { step } = update_help(InstallKind::Archive, "macos", true) else {
             unreachable!()
         };
-        assert!(steps[0].contains("Sunlit Earth.app"));
+        assert!(step.contains("Sunlit Earth.app"));
     }
 }

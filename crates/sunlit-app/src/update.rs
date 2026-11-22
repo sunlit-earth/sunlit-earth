@@ -176,18 +176,13 @@ pub fn present(window: &UpdateWindow, showing: &Showing, install: &Install) {
                     window.set_command((*command).into());
                     window.set_command_hint((*hint).into());
                 }
-                UpdateHelp::Archive { steps } => {
+                UpdateHelp::Archive { step } => {
                     let fallback = window.global::<Links>().get_download();
                     let (label, url) = download(offer, install.asset_key.as_deref(), &fallback);
                     window.set_command(SharedString::new());
                     window.set_download_label(label.into());
                     window.set_download_url(url.into());
-                    window.set_archive_steps(ModelRc::new(VecModel::from(
-                        steps
-                            .iter()
-                            .map(|step| SharedString::from(*step))
-                            .collect::<Vec<_>>(),
-                    )));
+                    window.set_archive_step((*step).into());
                 }
             }
             window.set_phase(UpdatePhase::Available);

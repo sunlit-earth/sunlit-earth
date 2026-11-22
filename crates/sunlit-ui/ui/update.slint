@@ -39,7 +39,7 @@ export component UpdateWindow inherits Window {
     in property <string> command-hint;
     in property <string> download-label;
     in property <string> download-url;
-    in property <[string]> archive-steps;
+    in property <string> archive-step;
 
     // The fluent ScrollView draws its bar over the list rather than beside
     // it, so the list reserves the width whether the bar is showing.
@@ -199,8 +199,8 @@ export component UpdateWindow inherits Window {
                     }
                 }
 
-                for step in root.archive-steps: Text {
-                    text: step;
+                Text {
+                    text: root.archive-step;
                     color: Palette.foreground;
                     wrap: word-wrap;
                 }

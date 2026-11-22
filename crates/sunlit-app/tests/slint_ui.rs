@@ -9225,12 +9225,18 @@ fn update_button_sizes(
         .collect()
 }
 
-/// The release list's panel height and the distance from its top to the
-/// first heading's, then each heading's and line's top relative to the first
-/// heading, and its height.
+/// The release list's panel.
+struct ReleasePanel {
+    height: f32,
+    /// From the panel's top to the first heading's.
+    inset: f32,
+}
+
+/// The release list's panel, then each heading's and line's top relative to
+/// the first heading, and its height.
 fn update_release_list(
     window: &sunlit_earth::UpdateWindow,
-) -> (Option<(f32, f32)>, Vec<(f32, f32)>) {
+) -> (Option<ReleasePanel>, Vec<(f32, f32)>) {
     let panel = ElementHandle::find_by_element_id(window, "UpdateWindow::release-panel").next();
     let mut texts: Vec<_> =
         ElementHandle::find_by_element_id(window, "UpdateWindow::release-heading")
@@ -9242,7 +9248,10 @@ fn update_release_list(
             .collect();
     texts.sort_by(|a, b| a.0.total_cmp(&b.0));
     let top = texts.first().map_or(0.0, |first| first.0);
-    let panel = panel.map(|panel| (panel.size().height, top - panel.absolute_position().y));
+    let panel = panel.map(|panel| ReleasePanel {
+        height: panel.size().height,
+        inset: top - panel.absolute_position().y,
+    });
     let texts = texts.iter().map(|(y, h)| (y - top, *h)).collect();
     (panel, texts)
 }
@@ -9293,13 +9302,13 @@ fn test_only_the_release_list_grows_with_the_update_window() {
             window.get_phase() == sunlit_earth::UpdatePhase::Available,
             "{state}: the release list shows with a version on offer"
         );
-        if let (Some((smaller_panel, smaller_inset)), Some((larger_panel, larger_inset))) =
-            (smaller_panel, larger_panel)
-        {
+        if let (Some(smaller_panel), Some(larger_panel)) = (smaller_panel, larger_panel) {
+            let (smaller_height, larger_height) = (smaller_panel.height, larger_panel.height);
             assert!(
-                larger_panel > smaller_panel + 0.5,
-                "{state}: the release list grows with the window, from {smaller_panel} to {larger_panel}"
+                larger_height > smaller_height + 0.5,
+                "{state}: the release list grows with the window, from {smaller_height} to {larger_height}"
             );
+            let (smaller_inset, larger_inset) = (smaller_panel.inset, larger_panel.inset);
             assert!(
                 approx::relative_eq!(smaller_inset, larger_inset, epsilon = 0.5),
                 "{state}: the first release starts {smaller_inset} below the panel's top in the smaller window and {larger_inset} in the larger"

@@ -16,7 +16,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use sunlit_core::update::{
     Offer, Release, Request, UpdateEvent, UpdateHandle, UpdateStatus, asset_key,
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::install::{self, InstallKind, UpdateHelp};
 use crate::{Links, MainWindow, TrayIcon, UpdatePhase, UpdateRelease, UpdateWindow};
@@ -46,12 +46,15 @@ pub struct Install {
 impl Install {
     /// The running copy's.
     pub fn detect() -> Self {
-        Self::of(
-            install::kind(),
+        let kind = install::kind();
+        let install = Self::of(
+            kind,
             std::env::consts::OS,
             std::env::consts::ARCH,
             install::bundled(),
-        )
+        );
+        debug!(?kind, asset_key = ?install.asset_key, "how this copy was installed");
+        install
     }
 
     pub fn of(kind: InstallKind, os: &str, arch: &str, bundled: bool) -> Self {

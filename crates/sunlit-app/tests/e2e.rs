@@ -2027,6 +2027,16 @@ fn test_update_check_over_http() {
         .env("SUNLIT_EARTH_CACHE_DIR", &cache_dir)
         .start();
 
+    // The suite's binary is never one a package manager installed.
+    stderr_watcher.wait_for_log("how this copy was installed", READY);
+    let install = stderr_watcher
+        .lines()
+        .into_iter()
+        .find(|line| line.contains("how this copy was installed"))
+        .expect("the install line");
+    println!("{install}");
+    assert!(install.contains("kind=Archive"), "{install}");
+
     assert_eq!(
         check_update(&socket_name, &stdout_watcher),
         ("available".to_owned(), "99.0.0".to_owned())

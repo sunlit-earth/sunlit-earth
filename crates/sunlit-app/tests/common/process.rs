@@ -568,7 +568,9 @@ impl<'a> Spawn<'a> {
             command.env("SUNLIT_EARTH_NO_CLOUDS", "1");
         }
         match &self.update_feed {
-            Some(url) => command.env("SUNLIT_EARTH_UPDATE_URL", url),
+            Some(url) => command
+                .env("SUNLIT_EARTH_UPDATE_URL", url)
+                .env_remove("SUNLIT_EARTH_NO_UPDATE_CHECK"),
             None => command.env("SUNLIT_EARTH_NO_UPDATE_CHECK", "1"),
         };
         for (key, value) in &self.env {

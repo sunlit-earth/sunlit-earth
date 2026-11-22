@@ -292,8 +292,14 @@ mod tests {
         let laptop = output(&retina(), 0);
         assert_eq!((laptop.width, laptop.height), (1512, 982));
         assert_eq!((laptop.x, laptop.y), (0, 0));
-        assert!(laptop.overlaps(100, 100, 800, 30));
-        assert!(!laptop.overlaps(1512, 100, 800, 30));
+        let title_bar = |x| crate::display::layout::Rect {
+            x,
+            y: 100,
+            width: 800,
+            height: 30,
+        };
+        assert!(laptop.rect().overlap_area(&title_bar(100)) > 0);
+        assert_eq!(laptop.rect().overlap_area(&title_bar(1512)), 0);
     }
 
     /// A display with no mode keeps its rectangle in points rather than

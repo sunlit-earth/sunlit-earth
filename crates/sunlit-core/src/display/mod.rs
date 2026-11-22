@@ -40,22 +40,15 @@ pub struct Output {
 }
 
 impl Output {
-    /// Whether a rectangle overlaps this output at all.
-    ///
-    /// Half-open on the far edges, so a window whose left edge is exactly the
-    /// output's right edge is on the next one and not on this.
+    /// The rectangle this output occupies.
     #[cfg(any(not(windows), test))]
-    pub(crate) fn overlaps(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
-        let right = self
-            .x
-            .saturating_add(i32::try_from(self.width).unwrap_or(i32::MAX));
-        let bottom = self
-            .y
-            .saturating_add(i32::try_from(self.height).unwrap_or(i32::MAX));
-        x < right
-            && x.saturating_add(width) > self.x
-            && y < bottom
-            && y.saturating_add(height) > self.y
+    pub(crate) fn rect(&self) -> layout::Rect {
+        layout::Rect {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+        }
     }
 }
 
@@ -435,6 +428,16 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
         }
     }
 
+    fn overlaps(output: &Output, x: i32, y: i32, width: i32, height: i32) -> bool {
+        let rect = layout::Rect {
+            x,
+            y,
+            width: width.unsigned_abs(),
+            height: height.unsigned_abs(),
+        };
+        output.rect().overlap_area(&rect) > 0
+    }
+
     #[test]
     fn overlap_is_half_open_on_the_far_edges() {
         let output = Output {
@@ -446,16 +449,16 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
             y: 0,
         };
         // A title bar inside it.
-        assert!(output.overlaps(100, 100, 800, 30));
+        assert!(overlaps(&output, 100, 100, 800, 30));
         // Its top left corner exactly.
-        assert!(output.overlaps(0, 0, 1, 1));
+        assert!(overlaps(&output, 0, 0, 1, 1));
         // One pixel past the right and bottom edges, which is the next monitor.
-        assert!(!output.overlaps(1920, 0, 10, 10));
-        assert!(!output.overlaps(0, 1080, 10, 10));
+        assert!(!overlaps(&output, 1920, 0, 10, 10));
+        assert!(!overlaps(&output, 0, 1080, 10, 10));
         // Straddling the left edge from outside still overlaps.
-        assert!(output.overlaps(-5, 10, 10, 10));
+        assert!(overlaps(&output, -5, 10, 10, 10));
         // Entirely off to the left does not.
-        assert!(!output.overlaps(-100, 10, 50, 10));
+        assert!(!overlaps(&output, -100, 10, 50, 10));
     }
 
     #[test]
@@ -468,7 +471,13 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
             x: i32::MAX - 10,
             y: i32::MAX - 10,
         };
-        assert!(!output.overlaps(0, 0, 100, 100));
-        assert!(output.overlaps(i32::MAX - 5, i32::MAX - 5, i32::MAX, i32::MAX));
+        assert!(!overlaps(&output, 0, 0, 100, 100));
+        assert!(overlaps(
+            &output,
+            i32::MAX - 5,
+            i32::MAX - 5,
+            i32::MAX,
+            i32::MAX
+        ));
     }
 }

@@ -25,7 +25,7 @@ pub(crate) use linux::{check_supported, set_wallpaper_job};
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{check_supported, set_wallpaper_job};
 #[cfg(windows)]
-pub(crate) use windows::{enumerate_monitors, set_wallpaper_job};
+pub(crate) use windows::{ensure_dpi_awareness, enumerate_monitors, set_wallpaper_job};
 
 /// How many generations a publish leaves on disk, its own included.
 ///

@@ -615,8 +615,9 @@ fn start_engine(
 /// The geometry restore is the third step and has no such constraint. It has to
 /// happen before the window is shown, which `run_event_loop` does several steps
 /// later, and nothing else here reads or writes a position or a size; it sits
-/// in this helper because it is the last thing the stored config decides. On
-/// macOS the position goes on again once the system window exists
+/// in this helper because it is the last thing the stored config decides. The
+/// geometry is the saved one fitted to the screen its title bar is on, and on
+/// macOS that fitted position goes on again once the system window exists
 /// ([`PLACES_AGAIN_ONCE_CREATED`]).
 ///
 /// `None` is a session with no tray host, or `--mode window`, and the caller
@@ -690,7 +691,8 @@ fn placement(window_exists: bool, attempt: u32) -> Placement {
 /// exists.
 ///
 /// :param window: the main window
-/// :param position: the saved position, the frame's top-left
+/// :param position: the restored position, the frame's top-left, after the
+///     fit to the screen
 /// :param attempt: how many looks came before this one
 fn place_once_created(
     window: slint::Weak<MainWindow>,

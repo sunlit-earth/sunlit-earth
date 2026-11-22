@@ -15,6 +15,7 @@ export { MonitorTile, AboutBlock, ColorText, ParsedColor } from "widgets.slint";
 export { AboutWindow } from "about.slint";
 export { Links } from "links.slint";
 export { OlderVersionWindow } from "older-version.slint";
+export { UpdateWindow, UpdateRelease, UpdatePhase } from "update.slint";
 export { TrayIcon } from "tray.slint";
 export { CameraStick, CameraReset } from "overlays/camera-panel.slint";
 export { OverlayHints, OverlayStyle } from "overlays/common.slint";
@@ -699,6 +700,14 @@ export component MainWindow inherits Window {
     // converted at the current instant, so the view does not jump.
     callback camera-frame-toggled();
     callback show-about();
+    // Help > Check for Updates…: open the update window and check.
+    callback check-for-updates();
+    // The banner's Details: open the update window as it is.
+    callback show-update();
+    // The banner's close button.
+    callback dismiss-update-banner();
+    // The version the banner offers, empty while it is hidden.
+    in property <string> update-banner-version;
 
     in-out property <bool> auto-refresh-enabled;
     in-out property <float> auto-refresh-interval;
@@ -915,6 +924,13 @@ export component MainWindow inherits Window {
                 }
             }
             MenuSeparator {}
+            MenuItem {
+                title: "Check for Updates…";
+                activated => {
+                    root.leave-export-sheet();
+                    root.check-for-updates();
+                }
+            }
             MenuItem {
                 title: "About Sunlit Earth";
                 role: about;
@@ -2363,6 +2379,50 @@ export component MainWindow inherits Window {
                             }
                         }
 
+                    }
+                }
+            }
+
+            if root.update-banner-version != "": Rectangle {
+                vertical-stretch: 0;
+                background: Palette.alternate-background;
+
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+
+                    update-banner-text := Text {
+                        text: "Version " + root.update-banner-version + " is available";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+
+                    Button {
+                        text: "Details";
+                        clicked => { root.show-update(); }
+                    }
+
+                    Rectangle {
+                        width: 24px;
+                        border-radius: 4px;
+                        background: banner-close.pressed ? Palette.foreground.with-alpha(0.2)
+                            : banner-close.has-hover ? Palette.foreground.with-alpha(0.1)
+                            : transparent;
+
+                        Image {
+                            width: 12px;
+                            height: 12px;
+                            source: @image-url("icons/close.svg");
+                            colorize: Palette.foreground;
+                        }
+
+                        banner-close := TouchArea {
+                            accessible-role: button;
+                            accessible-label: "Close";
+                            accessible-action-default => { root.dismiss-update-banner(); }
+                            clicked => { root.dismiss-update-banner(); }
+                        }
                     }
                 }
             }

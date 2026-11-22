@@ -312,6 +312,7 @@ pub fn wire(tray: &TrayIcon, window: &MainWindow, engine: &EngineLink, about: &A
     tray.set_autostart_on(window.get_autostart_on());
     tray.set_autostart_available(window.get_autostart_available());
     crate::autostart::ui::register_tray(tray);
+    crate::update::register_tray(tray);
 
     tray.set_window_shown(window.window().is_visible());
     let tray_weak = tray.as_weak();

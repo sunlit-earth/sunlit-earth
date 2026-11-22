@@ -15,7 +15,6 @@ pub mod state;
 use std::sync::Arc;
 
 use crossbeam_channel::{RecvTimeoutError, Sender, TrySendError, bounded};
-use semver::Version;
 use tracing::warn;
 
 pub use checker::{
@@ -23,6 +22,7 @@ pub use checker::{
     update_url,
 };
 pub use feed::{Asset, Offer, Release, asset_key};
+pub use semver::Version;
 pub use source::{Fetched, HttpUpdateSource, UpdateSource};
 pub use state::Store;
 

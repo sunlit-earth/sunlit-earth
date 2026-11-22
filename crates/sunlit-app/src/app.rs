@@ -249,6 +249,7 @@ fn init_ui(
     ui_callbacks::register_action_callbacks(window, link, screens);
     ui_callbacks::register_display_callbacks(window, link, screens);
     crate::export::register(window, link, screens);
+    crate::update::start(window, config.update_check_enabled);
 }
 
 /// Wire the auto-refresh controls to the engine's scheduler and the tray mark.
@@ -809,6 +810,7 @@ fn tear_down(
 
     engine.shutdown();
     crate::export::shutdown();
+    crate::update::shut_down();
     if let Some(watcher) = display_watch {
         watcher.stop();
     }

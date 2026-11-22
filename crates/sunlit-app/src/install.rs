@@ -172,7 +172,7 @@ mod tests {
             "D:/tools/sunlit-earth/current/install.json",
             "D:/tools/sunlit-earth/current/manifest.json",
         ]);
-        assert_eq!(kind_of("windows", &exe, present), InstallKind::Archive);
+        assert_eq!(kind_of("windows", exe, present), InstallKind::Archive);
     }
 
     #[test]

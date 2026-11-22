@@ -22,12 +22,16 @@ export component TrayIcon inherits SystemTrayIcon {
     in property <bool> window-shown: false;
 
     out property <string> window-title: root.window-shown ? "Hide" : "Show";
+    // The version on offer that the user has not skipped, empty for none.
+    in property <string> update-version;
+    out property <string> update-title: root.update-version == "" ? "Check for Updates…" : "Update Available: " + root.update-version + "…";
 
     callback toggle-window();
     callback refresh-now();
     callback auto-refresh-toggled(bool);
     callback autostart-toggled(bool);
     callback open-url(url: string);
+    callback show-update();
     callback show-about();
     callback quit();
 
@@ -62,6 +66,10 @@ export component TrayIcon inherits SystemTrayIcon {
             activated => { root.autostart-toggled(root.autostart-on); }
         }
         MenuSeparator {}
+        MenuItem {
+            title: root.update-title;
+            activated => { root.show-update(); }
+        }
         MenuItem {
             title: "Website";
             activated => { root.open-url(Links.website); }

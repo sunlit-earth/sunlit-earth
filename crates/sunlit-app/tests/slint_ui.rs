@@ -4052,14 +4052,18 @@ fn test_holding_l_keeps_shuttling_until_let_go_or_the_fastest() {
     key_down(&window, "l");
     assert_eq!(rates_played(&sent), [ladder[2]], "the press steps at once");
     let_pass(300);
-    assert_eq!(rates_played(&sent), [], "and waits before it repeats");
+    assert_eq!(
+        rates_played(&sent),
+        Vec::<i32>::new(),
+        "and waits before it repeats"
+    );
     let_pass(200);
     assert_eq!(rates_played(&sent), [ladder[3]], "then steps again");
     let_pass(200);
     assert_eq!(rates_played(&sent), [ladder[4]], "and again");
     key_up(&window, "l");
     let_pass(1000);
-    assert_eq!(rates_played(&sent), [], "until it is let go");
+    assert_eq!(rates_played(&sent), Vec::<i32>::new(), "until it is let go");
 
     running_at(&window, ladder[1]);
     key_down(&window, "l");

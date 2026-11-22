@@ -1,0 +1,205 @@
+// Help > Check for Updates…, the tray's entry and the banner's Details all
+// open this window. `update.rs` fills it from what the update thread reports
+// and decides how to update from how the app was installed.
+
+import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+
+export enum UpdatePhase { checking, up-to-date, failed, available }
+
+// One release since the installed one: "0.7.0, December 1, 2026" and its
+// highlights, which may be none.
+export struct UpdateRelease {
+    heading: string,
+    highlights: [string],
+}
+
+export component UpdateWindow inherits Window {
+    forward-focus: keys;
+    title: "Check for Updates";
+    icon: @image-url("../../../assets/icon/sunlit-earth.svg");
+    background: Palette.background;
+    width: 480px;
+    min-height: 160px;
+    preferred-height: root.phase == UpdatePhase.available ? 520px : 160px;
+
+    in property <UpdatePhase> phase;
+    // The installed version, and the one on offer.
+    in property <string> current-version;
+    in property <string> offered-version;
+    // What the kept file said, shown under "Checking…"; empty for nothing.
+    in property <string> known;
+    in property <string> failure;
+    in property <[UpdateRelease]> releases;
+    // The newest release's page; empty hides the link.
+    in property <string> notes-url;
+
+    // A package manager's command, or empty for an archive.
+    in property <string> command;
+    in property <string> command-hint;
+    in property <string> download-label;
+    in property <string> download-url;
+    in property <[string]> archive-steps;
+
+    callback check-again();
+    callback skip();
+    callback open-url(url: string);
+    // Esc and Close, which hide the window.
+    callback dismiss();
+
+    out property <string> headline: root.phase == UpdatePhase.checking ? "Checking for updates…"
+        : root.phase == UpdatePhase.up-to-date ? "Sunlit Earth " + root.current-version + " is the latest version."
+        : root.phase == UpdatePhase.failed ? "Could not check for updates."
+        : "Sunlit Earth " + root.offered-version + " is available. You have " + root.current-version + ".";
+
+    keys := FocusScope {
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => { root.dismiss(); }
+        }
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            Text {
+                text: root.headline;
+                color: Palette.foreground;
+                font-size: 15px;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+
+            if root.phase == UpdatePhase.checking && root.known != "": Text {
+                text: root.known;
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+
+            if root.phase == UpdatePhase.failed: Text {
+                text: root.failure;
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+
+            if root.phase == UpdatePhase.available: ScrollView {
+                vertical-stretch: 1;
+                min-height: 120px;
+
+                VerticalLayout {
+                    padding-right: 14px;
+                    spacing: 10px;
+
+                    for release in root.releases: VerticalLayout {
+                        spacing: 3px;
+
+                        Text {
+                            text: release.heading;
+                            color: Palette.foreground;
+                            font-weight: 600;
+                        }
+
+                        for line in release.highlights: Text {
+                            text: line;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            if root.phase == UpdatePhase.available && root.notes-url != "": HorizontalLayout {
+                alignment: start;
+
+                Text {
+                    text: "Release Notes";
+                    color: Palette.accent-background;
+
+                    notes-link := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-url(root.notes-url); }
+                    }
+                }
+            }
+
+            if root.phase == UpdatePhase.available && root.command != "": VerticalLayout {
+                spacing: 6px;
+
+                Text {
+                    text: "Quit Sunlit Earth, then run:";
+                    color: Palette.foreground;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    command-field := LineEdit {
+                        text: root.command;
+                        read-only: true;
+                        horizontal-stretch: 1;
+                    }
+
+                    Button {
+                        text: "Copy";
+                        clicked => {
+                            command-field.select-all();
+                            command-field.copy();
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.command-hint;
+                    color: Palette.foreground;
+                    wrap: word-wrap;
+                }
+            }
+
+            if root.phase == UpdatePhase.available && root.command == "": VerticalLayout {
+                spacing: 6px;
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Button {
+                        text: root.download-label;
+                        primary: true;
+                        clicked => { root.open-url(root.download-url); }
+                    }
+                }
+
+                for step in root.archive-steps: Text {
+                    text: step;
+                    color: Palette.foreground;
+                    wrap: word-wrap;
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                vertical-stretch: 0;
+
+                if root.phase == UpdatePhase.up-to-date: Button {
+                    text: "Check Again";
+                    clicked => { root.check-again(); }
+                }
+
+                if root.phase == UpdatePhase.failed: Button {
+                    text: "Try Again";
+                    clicked => { root.check-again(); }
+                }
+
+                if root.phase == UpdatePhase.available: Button {
+                    text: "Skip This Version";
+                    clicked => { root.skip(); }
+                }
+
+                Button {
+                    text: "Close";
+                    primary: root.phase != UpdatePhase.available || root.command != "";
+                    clicked => { root.dismiss(); }
+                }
+            }
+        }
+    }
+}

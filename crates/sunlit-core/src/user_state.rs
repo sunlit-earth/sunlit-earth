@@ -42,7 +42,8 @@ thread_local! {
 /// Let this process reach the user's files and state.
 ///
 /// Called once, as the first statement of the binary's `main`. The library
-/// never calls it, and no test does.
+/// never calls it, and no test does: the source scan in this module's tests
+/// fails any other caller.
 pub fn claim() {
     let _ = CLAIMED.set(());
 }
@@ -472,12 +473,77 @@ mod tests {
     ];
 
     /// The one file that may name the app binary, so every spawn of it goes
-    /// through `app_command()`.
+    /// through `app_command()`. `binary()` is private to it as well; naming it
+    /// elsewhere means another function of that name.
     const SPAWNER: &str = "sunlit-app/tests/common/process.rs";
-    const BINARY: [&str; 2] = [
-        "env!(\"CARGO_BIN_EXE_sunlit-earth\")",
-        "Command::new(binary())",
-    ];
+    const BINARY: [&str; 3] = ["CARGO_BIN_EXE_sunlit-earth", "SUNLIT_EARTH_BIN", "binary()"];
+
+    /// The one file that may claim user state.
+    const CLAIMANT: &str = "sunlit-app/src/main.rs";
+
+    fn is_ident(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// Whether `text` calls or imports this module's `claim`: a path to it, a
+    /// `use` of it from this module, or a free call `claim()` with no
+    /// arguments. A method `.claim(..)` and a local `fn claim(..)` with
+    /// arguments are other functions.
+    fn reaches_claim(text: &str) -> bool {
+        let uses = text.split(';').any(|statement| {
+            let keyword = statement
+                .match_indices("use ")
+                .map(|(at, _)| at)
+                .filter(|&at| !statement[..at].ends_with(is_ident))
+                .last();
+            keyword.is_some_and(|start| {
+                let statement = &statement[start..];
+                statement.contains("user_state")
+                    && statement
+                        .split(|c: char| !is_ident(c))
+                        .any(|word| word == "claim")
+            })
+        });
+        uses || text.match_indices("claim").any(|(at, _)| {
+            let before = text[..at].trim_end();
+            let after = text[at + "claim".len()..].trim_start();
+            let word = !text[..at].ends_with(is_ident)
+                && !text[at + "claim".len()..].starts_with(is_ident);
+            word && (before.ends_with("user_state::")
+                || (after.starts_with("()") && !before.ends_with('.') && !before.ends_with("fn")))
+        })
+    }
+
+    #[test]
+    fn the_claim_is_found_however_it_is_reached() {
+        for text in [
+            "sunlit_core::user_state::claim();",
+            "use sunlit_core::user_state::claim;
+fn f() { claim(); }",
+            "use sunlit_core::user_state::{self, claim as take};",
+            "use sunlit_core::{user_state::{claim}, wallpaper};",
+            "let f = user_state::claim;",
+            "fn f() {
+    claim ();
+}",
+        ] {
+            assert!(reaches_claim(text), "{text}");
+        }
+        for text in [
+            "layers.claim(id, None)",
+            "slot.claim()",
+            "fn claim(name: &str) -> Claim {}
+claim(name, &mut held);",
+            "fn claim() {}",
+            "// a claim that the image is fresh",
+            "use sunlit_core::user_state;
+fn a_second_claim() {}",
+            "use crate::renderer::tiles::claim;",
+            "// because user_state panics, claim nothing here",
+        ] {
+            assert!(!reaches_claim(text), "{text}");
+        }
+    }
 
     fn rust_files(dir: &Path, found: &mut Vec<PathBuf>) {
         let entries = std::fs::read_dir(dir)
@@ -535,6 +601,11 @@ mod tests {
                     "{name} names the app binary; spawn it through app_command() in {SPAWNER}"
                 ));
             }
+            if reaches_claim(&text) && name != CLAIMANT {
+                found.push(format!(
+                    "{name} claims user state, which only {CLAIMANT} does"
+                ));
+            }
         }
         assert!(
             found.is_empty(),
@@ -547,6 +618,12 @@ mod tests {
     #[test]
     fn every_allowance_is_still_needed() {
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let claimant = std::fs::read_to_string(crates.join(CLAIMANT))
+            .unwrap_or_else(|e| panic!("read {CLAIMANT}: {e}"));
+        assert!(
+            reaches_claim(&claimant),
+            "{CLAIMANT} no longer claims user state, so the scan looks for its claim in the wrong place"
+        );
         for (file, token, reason) in ALLOWED {
             let text = std::fs::read_to_string(crates.join(file))
                 .unwrap_or_else(|e| panic!("read {file}: {e}"));

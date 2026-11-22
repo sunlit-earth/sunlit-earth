@@ -23,10 +23,10 @@ use common::pixels::{
 use common::process::{
     AUTOSTART_OPT_IN, ChildGuard, PUBLISH, READY, REPORT_SECTIONS, Ready, SHUTDOWN, SIGNAL_REPLY,
     Spawn, StderrWatcher, StdoutWatcher, TEXTURE_RESOLUTION, TempDirGuard, WALLPAPER_OPT_IN,
-    WALLPAPER_PLATFORM, app_command, assert_no_error_lines, binary, fixture, isolated_config_path,
-    memory_report, mib, parse_memory_entries, published_wallpaper_files, query_memory,
-    quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported, unique_socket_name,
-    wait_with_timeout, wallpaper_supported,
+    WALLPAPER_PLATFORM, app_command, assert_no_error_lines, autostart_target, fixture,
+    isolated_config_path, memory_report, mib, parse_memory_entries, published_wallpaper_files,
+    query_memory, quit_and_expect_clean_exit, send_ipc_command, skip_case, tray_supported,
+    unique_socket_name, wait_with_timeout, wallpaper_supported,
 };
 use common::window_rect::{Key, MainWindow};
 
@@ -83,7 +83,8 @@ fn assert_the_files_match_the_layout(files: &[std::path::PathBuf]) {
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
 fn test_binary_exists() {
-    let path = binary();
+    let command = app_command();
+    let path = std::path::Path::new(command.get_program());
     assert!(
         path.exists(),
         "binary not found at {} — was the project built?",
@@ -594,15 +595,7 @@ fn test_autostart_round_trip_over_ipc() {
     let on = autostart_over_ipc(&socket_name, &stdout, "autostart-enable");
     assert_eq!(on.state, "on", "{on:?}");
     let written = std::path::PathBuf::from(&on.exe);
-    // What an entry for this binary names: the bundle on macOS, the stable
-    // Homebrew path on Linux, the binary itself otherwise.
-    let spawned = if cfg!(target_os = "macos") {
-        sunlit_earth::autostart::macos::launched_path(&binary())
-    } else if cfg!(target_os = "linux") {
-        sunlit_earth::autostart::linux::stable_path(&binary())
-    } else {
-        binary()
-    };
+    let spawned = autostart_target();
     let same = match (written.canonicalize(), spawned.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => sunlit_earth::autostart::same_exe(&written, &spawned),

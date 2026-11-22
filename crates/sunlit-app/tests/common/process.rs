@@ -24,11 +24,25 @@ use sunlit_earth::ipc::MemorySignal;
 /// on a developer desktop and the wrong one inside a VM, where the test binary
 /// was built on the host and copied in. `SUNLIT_EARTH_BIN` is what the VM
 /// orchestrator sets; without it nothing changes.
-pub(crate) fn binary() -> PathBuf {
+///
+/// Private, so the only way to run it is [`app_command`].
+fn binary() -> PathBuf {
     std::env::var_os("SUNLIT_EARTH_BIN").map_or_else(
         || PathBuf::from(env!("CARGO_BIN_EXE_sunlit-earth")),
         PathBuf::from,
     )
+}
+
+/// What a start on login entry for the binary under test names: the bundle on
+/// macOS, the stable Homebrew path on Linux, the binary itself otherwise.
+pub(crate) fn autostart_target() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        sunlit_earth::autostart::macos::launched_path(&binary())
+    } else if cfg!(target_os = "linux") {
+        sunlit_earth::autostart::linux::stable_path(&binary())
+    } else {
+        binary()
+    }
 }
 
 /// A file from `tests/fixtures/`.

@@ -9117,6 +9117,46 @@ fn test_release_notes_opens_the_changelog() {
     assert_eq!(*opened.borrow(), [changelog]);
 }
 
+/// The update window's buttons at `size`: each one's label, width and height.
+fn update_button_sizes(
+    window: &sunlit_earth::UpdateWindow,
+    size: slint::LogicalSize,
+) -> Vec<(String, f32, f32)> {
+    window.window().set_size(size);
+    window.window().request_redraw();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+    ElementQuery::from_root(window)
+        .match_accessible_role(AccessibleRole::Button)
+        .find_all()
+        .into_iter()
+        .map(|button| {
+            let label = button.accessible_label().unwrap_or_default().to_string();
+            let size = button.size();
+            (label, size.width, size.height)
+        })
+        .collect()
+}
+
+/// The release list's panel height, then each heading's and line's top
+/// relative to the first heading, and its height.
+fn update_release_list(window: &sunlit_earth::UpdateWindow) -> (Option<f32>, Vec<(f32, f32)>) {
+    let panel = ElementHandle::find_by_element_id(window, "UpdateWindow::release-panel")
+        .map(|panel| panel.size().height)
+        .next();
+    let mut texts: Vec<_> =
+        ElementHandle::find_by_element_id(window, "UpdateWindow::release-heading")
+            .chain(ElementHandle::find_by_element_id(
+                window,
+                "UpdateWindow::release-line",
+            ))
+            .map(|text| (text.absolute_position().y, text.size().height))
+            .collect();
+    texts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let top = texts.first().map_or(0.0, |first| first.0);
+    let texts = texts.iter().map(|(y, h)| (y - top, *h)).collect();
+    (panel, texts)
+}
+
 /// Every button in every state keeps its size when the window is made larger:
 /// the extra space goes to the release list's panel or to the empty space
 /// above the buttons. Inside the panel the releases keep their heights and
@@ -9152,48 +9192,12 @@ fn test_only_the_release_list_grows_with_the_update_window() {
             &Install::of(InstallKind::Scoop, "windows", "x86_64", false),
         ),
     ];
-    let button_sizes = |window: &sunlit_earth::UpdateWindow, size: slint::LogicalSize| {
-        window.window().set_size(size);
-        window.window().request_redraw();
-        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
-        ElementQuery::from_root(window)
-            .match_accessible_role(AccessibleRole::Button)
-            .find_all()
-            .into_iter()
-            .map(|button| {
-                let label = button.accessible_label().unwrap_or_default().to_string();
-                let size = button.size();
-                (label, size.width, size.height)
-            })
-            .collect::<Vec<_>>()
-    };
-
-    // The panel's height, then each heading's and line's top relative to the
-    // first heading, and its height.
-    let release_list = |window: &sunlit_earth::UpdateWindow| {
-        let panel = ElementHandle::find_by_element_id(window, "UpdateWindow::release-panel")
-            .map(|panel| panel.size().height)
-            .next();
-        let mut texts: Vec<_> =
-            ElementHandle::find_by_element_id(window, "UpdateWindow::release-heading")
-                .chain(ElementHandle::find_by_element_id(
-                    window,
-                    "UpdateWindow::release-line",
-                ))
-                .map(|text| (text.absolute_position().y, text.size().height))
-                .collect();
-        texts.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let top = texts.first().map_or(0.0, |first| first.0);
-        let texts: Vec<_> = texts.iter().map(|(y, h)| (y - top, *h)).collect();
-        (panel, texts)
-    };
-
     for (state, showing, install) in &states {
         let window = update_window(showing, install);
-        let smaller = button_sizes(&window, slint::LogicalSize::new(480.0, 640.0));
-        let (smaller_panel, smaller_texts) = release_list(&window);
-        let larger = button_sizes(&window, slint::LogicalSize::new(960.0, 1280.0));
-        let (larger_panel, larger_texts) = release_list(&window);
+        let smaller = update_button_sizes(&window, slint::LogicalSize::new(480.0, 640.0));
+        let (smaller_panel, smaller_texts) = update_release_list(&window);
+        let larger = update_button_sizes(&window, slint::LogicalSize::new(960.0, 1280.0));
+        let (larger_panel, larger_texts) = update_release_list(&window);
         assert_eq!(
             smaller_panel.is_some(),
             window.get_phase() == sunlit_earth::UpdatePhase::Available,

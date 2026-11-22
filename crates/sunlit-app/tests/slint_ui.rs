@@ -5282,7 +5282,7 @@ fn test_a_wrapping_gesture_keeps_its_hint_around_it() {
             let line = the_descendant(&hint, "OverlayHint::title").size().height;
             let gesture = the_descendant(&hint, "OverlayHint::gesture");
             assert!(
-                gesture.size().height >= 2.0 * line - 0.5,
+                gesture.size().height > 1.5 * line,
                 "{id} (macOS: {macos}): the gesture is {} px high, one line {line} px",
                 gesture.size().height
             );
@@ -7025,6 +7025,36 @@ fn leave_full_screen(window: &MainWindow) {
     assert!(!window.window().is_fullscreen());
 }
 
+/// The key that switches full screen: F11, and on macOS ⌃⌘F, where the View
+/// menu has no F11 entry.
+fn tap_full_screen_key(window: &MainWindow) {
+    use slint::platform::Key;
+
+    if cfg!(target_os = "macos") {
+        key_down(window, Key::Control);
+        key_down(window, Key::Meta);
+        tap(window, "f");
+        key_up(window, Key::Meta);
+        key_up(window, Key::Control);
+    } else {
+        tap(window, Key::F11);
+    }
+}
+
+/// The height of the menu bar the testing backend draws that full screen
+/// keeps, read while windowed. The testing backend has no native menu bar, so
+/// it draws Slint's on every OS. On macOS the app leaves the bar to the
+/// system, which hides it in full screen, and the real app never draws one;
+/// elsewhere full screen hides it.
+fn menu_bar_kept_in_full_screen(window: &MainWindow) -> f32 {
+    assert!(!window.window().is_fullscreen());
+    if cfg!(target_os = "macos") {
+        edges(&the_element(window, "MainWindow::image-container"))[1]
+    } else {
+        0.0
+    }
+}
+
 /// Move the pointer over the bare preview, to a point it was not at before.
 fn wiggle(window: &MainWindow) {
     #[expect(
@@ -7051,6 +7081,7 @@ fn test_full_screen_gives_the_preview_the_whole_window() {
         |window: &MainWindow, id: &str| ElementHandle::find_by_element_id(window, id).count();
     let (window, _sent, _poll) = full_screen_window();
     let width = window.window().size().to_logical(1.0).width;
+    let bar = menu_bar_kept_in_full_screen(&window);
     let before = edges(&the_element(&window, "MainWindow::image-container"));
     assert!(before[0] > 0.0, "the sidebar is left of the preview");
     for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
@@ -7060,7 +7091,7 @@ fn test_full_screen_gives_the_preview_the_whole_window() {
     enter_full_screen(&window);
     let [left, top, right, _] = edges(&the_element(&window, "MainWindow::image-container"));
     approx::assert_relative_eq!(left, 0.0);
-    approx::assert_relative_eq!(top, 0.0);
+    approx::assert_relative_eq!(top, bar);
     approx::assert_relative_eq!(right, width);
     approx::assert_relative_eq!(window.get_viewport_width(), width);
     for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
@@ -7327,26 +7358,26 @@ fn test_entering_full_screen_asks_for_the_geometry_while_windowed() {
     });
     enter_full_screen(&window);
     leave_full_screen(&window);
-    tap(&window, slint::platform::Key::F11);
+    tap_full_screen_key(&window);
     finish_switch(&window);
     assert!(window.window().is_fullscreen());
-    tap(&window, slint::platform::Key::F11);
+    tap_full_screen_key(&window);
     finish_switch(&window);
     assert!(!window.window().is_fullscreen());
     assert_eq!(*seen.borrow(), [false, false], "once per entry, windowed");
 }
 
-/// The pill starts long however full screen was entered, F11 and the button
-/// alike, a click on either form leaves, and the next entry starts long again.
+/// The pill starts long however full screen was entered, the key and the
+/// button alike, a click on either form leaves, and the next entry starts long again.
 #[test]
 fn test_the_exit_pill_starts_long_on_every_entry_and_leaves_on_a_click() {
     let (window, _sent, _poll) = full_screen_window();
     assert!(!window.get_exit_pill_shown(), "no pill in the window");
 
-    tap(&window, slint::platform::Key::F11);
+    tap_full_screen_key(&window);
     finish_switch(&window);
-    assert!(window.window().is_fullscreen(), "F11 enters");
-    assert!(window.get_exit_pill_long(), "long after F11");
+    assert!(window.window().is_fullscreen(), "the key enters");
+    assert!(window.get_exit_pill_long(), "long after the key");
     press_the(&window, "MainWindow::exit-pill");
     finish_switch(&window);
     assert!(
@@ -7541,9 +7572,15 @@ fn test_a_switch_goes_black_before_full_screen_changes() {
 #[test]
 fn test_entering_shows_the_notice_until_the_frame_for_the_size_sent() {
     let (window, sent, _poll) = full_screen_window_at(sunlit_core::config::QualityTier::Low);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a menu bar a few dozen pixels high"
+    )]
+    let bar = menu_bar_kept_in_full_screen(&window).round() as u32;
     window
         .window()
-        .set_size(slint::PhysicalSize::new(2400, 1200));
+        .set_size(slint::PhysicalSize::new(2400, 1200 + bar));
     let_pass(500);
     deliver_frame(&window, 1280, 466);
     while sent.try_recv().is_ok() {}

@@ -347,6 +347,7 @@ Every crate Sunlit Earth depends on, as the union over the three platforms it bu
 - `scoped-tls-hkt 0.1.5`: [MIT](https://spdx.org/licenses/MIT.html) OR [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
 - `scopeguard 1.2.0`: [MIT](https://spdx.org/licenses/MIT.html) OR [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
 - `sctk-adwaita 0.10.1`: [MIT](https://spdx.org/licenses/MIT.html)
+- `semver 1.0.28`: [MIT](https://spdx.org/licenses/MIT.html) OR [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
 - `serde 1.0.229`: [MIT](https://spdx.org/licenses/MIT.html) OR [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
 - `serde_core 1.0.229`: [MIT](https://spdx.org/licenses/MIT.html) OR [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
 - `serde_derive 1.0.229`: [MIT](https://spdx.org/licenses/MIT.html) OR [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)

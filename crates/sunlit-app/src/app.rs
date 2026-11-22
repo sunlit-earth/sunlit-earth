@@ -614,7 +614,9 @@ fn start_engine(
 /// The geometry restore is the third step and has no such constraint. It has to
 /// happen before the window is shown, which `run_event_loop` does several steps
 /// later, and nothing else here reads or writes a position or a size; it sits
-/// in this helper because it is the last thing the stored config decides.
+/// in this helper because it is the last thing the stored config decides. On
+/// macOS the position goes on again once the system window exists
+/// ([`PLACES_AGAIN_ONCE_CREATED`]).
 ///
 /// `None` is a session with no tray host, or `--mode window`, and the caller
 /// reads it as "this run is a windowed one".
@@ -632,13 +634,94 @@ fn install_tray_and_geometry(
     };
     register_auto_refresh_callback(window, link, config, tray.clone());
     if let Some((x, y, w, h)) = config::validated_window_geometry(config) {
-        window
-            .window()
-            .set_position(slint::PhysicalPosition::new(x, y));
+        let position = slint::PhysicalPosition::new(x, y);
+        window.window().set_position(position);
         window.window().set_size(slint::PhysicalSize::new(w, h));
+        if PLACES_AGAIN_ONCE_CREATED {
+            place_once_created(window.as_weak(), position, 0);
+        }
     }
     debug!("loaded config from disk");
     tray
+}
+
+/// Whether the saved position goes on the window a second time once the
+/// system window exists.
+///
+/// The saved position is the frame's top-left (`outer_position`). Before the
+/// window exists Slint hands a position to winit as the creation position,
+/// which winit on macOS takes as the content's top-left and puts the title bar
+/// above, so every save and restart would move the window up by one title bar.
+/// On the live window Slint calls `set_outer_position`, which on macOS goes
+/// through `setFrameOrigin` and places the frame itself. Windows and X11 take
+/// the frame's top-left both ways, and Wayland places windows itself.
+const PLACES_AGAIN_ONCE_CREATED: bool = cfg!(target_os = "macos");
+
+/// What one look at the window decides for the saved position's second
+/// placement.
+#[derive(Debug, PartialEq, Eq)]
+enum Placement {
+    Place,
+    Wait,
+    GiveUp,
+}
+
+/// :param `window_exists`: whether the system window exists yet
+/// :param attempt: how many looks came before this one
+/// :returns: what this look does
+fn placement(window_exists: bool, attempt: u32) -> Placement {
+    if window_exists {
+        Placement::Place
+    } else if attempt + 1 < WINDOW_HANDLE_ATTEMPTS {
+        Placement::Wait
+    } else {
+        Placement::GiveUp
+    }
+}
+
+/// Set the saved position on the window again as soon as the system window
+/// exists.
+///
+/// On macOS Slint creates it on the event loop's first turns, hidden or shown,
+/// so with
+/// `--tray-start hidden` the frame is in place before the tray first shows it.
+/// The handle is what tells: Slint has one only while the system window
+/// exists.
+///
+/// :param window: the main window
+/// :param position: the saved position, the frame's top-left
+/// :param attempt: how many looks came before this one
+fn place_once_created(
+    window: slint::Weak<MainWindow>,
+    position: slint::PhysicalPosition,
+    attempt: u32,
+) {
+    use raw_window_handle::HasWindowHandle;
+    let delay = if attempt == 0 {
+        Duration::ZERO
+    } else {
+        WINDOW_HANDLE_POLL
+    };
+    slint::Timer::single_shot(delay, move || {
+        let Some(win) = window.upgrade() else {
+            return;
+        };
+        let exists = win.window().window_handle().window_handle().is_ok();
+        match placement(exists, attempt) {
+            Placement::Place => {
+                debug!(
+                    x = position.x,
+                    y = position.y,
+                    "placing the window's frame at the saved position"
+                );
+                win.window().set_position(position);
+            }
+            Placement::Wait => place_once_created(window, position, attempt + 1),
+            Placement::GiveUp => {
+                warn!("the window was never created, so its saved position was not placed again");
+            }
+        }
+    });
 }
 
 /// Hold the first unattended wallpaper update back until the textures are in.
@@ -836,6 +919,21 @@ fn run_event_loop(
 
 #[cfg(test)]
 mod tests {
+    use super::{Placement, placement};
+
+    #[test]
+    fn the_saved_position_is_placed_once_the_window_exists_and_the_wait_ends() {
+        let waits = (0..u32::MAX)
+            .take_while(|&attempt| placement(false, attempt) == Placement::Wait)
+            .count();
+        let waits = u32::try_from(waits).expect("the wait fits in u32");
+        assert!(waits > 0, "the first look waits for a window not yet made");
+        assert_eq!(placement(false, waits), Placement::GiveUp);
+        for attempt in 0..=waits {
+            assert_eq!(placement(true, attempt), Placement::Place, "look {attempt}");
+        }
+    }
+
     #[test]
     fn the_app_id_is_the_desktop_entry_it_is_matched_to() {
         let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -391,14 +391,12 @@ pub fn signal_line(monitors: &[Monitor], mode: DisplayMode, stored: Option<&str>
         .map(|m| format!("{},{},{},{}", m.x, m.y, m.width, m.height))
         .collect();
     let anchor = layout::resolve_anchor(monitors, stored);
-    let images: Vec<String> = anchor
-        .map(|anchor| {
-            layout::render_groups(monitors, mode, anchor.index)
-                .iter()
-                .map(|group| format!("{}x{}", group.width, group.height))
-                .collect()
-        })
-        .unwrap_or_default();
+    let images: Vec<String> = anchor.map_or_default(|anchor| {
+        layout::render_groups(monitors, mode, anchor.index)
+            .iter()
+            .map(|group| format!("{}x{}", group.width, group.height))
+            .collect()
+    });
     format!(
         "monitors={} mode={} anchor={} fell_back={} rects={} images={}",
         monitors.len(),
@@ -573,7 +571,7 @@ mod tests {
     #[test]
     fn a_session_with_nothing_to_draw_has_no_tiles() {
         let diagram = diagram(&[], None);
-        assert!(diagram.tiles.is_empty());
+        assert_eq!(diagram.tiles, [] as [MonitorTile; 0]);
         approx::assert_relative_eq!(diagram.aspect, 1.0);
     }
 

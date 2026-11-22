@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn a_windows_host_does_not_look_in_linux_locations() {
         let candidates = candidates(HostOs::Windows, None);
-        assert!(candidates.is_empty());
+        assert_eq!(candidates, [] as [(PathBuf, PathBuf); 0]);
     }
 
     #[test]

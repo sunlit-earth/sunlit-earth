@@ -386,8 +386,11 @@ eDP-1 disconnected (normal left inverted right x axis y axis)
 
     #[test]
     fn nothing_at_all_is_no_outputs_rather_than_a_guess() {
-        assert!(parse_outputs("").is_empty());
-        assert!(parse_outputs("xrandr: Can't open display\n").is_empty());
+        assert_eq!(parse_outputs(""), [] as [Output; 0]);
+        assert_eq!(
+            parse_outputs("xrandr: Can't open display\n"),
+            [] as [Output; 0]
+        );
         assert!(primary_of(&[]).is_none());
     }
 

@@ -308,7 +308,7 @@ mod tests {
             format_version: FORMAT_VERSION,
             archive: Kind::Target.archive(),
             bytes: 1_234_567,
-            channel: "1.94.0".to_owned(),
+            channel: "1.100.0".to_owned(),
             image: "linux-builder".to_owned(),
             template_hash: "crc32:1a2b3c4d".to_owned(),
             image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
@@ -321,7 +321,7 @@ mod tests {
 
     fn facts() -> Facts {
         Facts {
-            channel: "1.94.0".to_owned(),
+            channel: "1.100.0".to_owned(),
             image: "linux-builder".to_owned(),
             template_hash: "crc32:1a2b3c4d".to_owned(),
             image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(restorable(&sidecar(), &facts()), Ok(()));
 
         let cases = [
-            ("channel", "1.95.0", "toolchain channel"),
+            ("channel", "1.101.0", "toolchain channel"),
             ("image", "windows-builder", "builder image"),
             ("template_hash", "crc32:99999999", "template"),
             ("image_built_utc", "2026-09-01T00:00:00Z", "build time"),
@@ -484,7 +484,7 @@ mod tests {
             restored: false,
             bytes: None,
             written_utc: None,
-            reason: Some("the pinned toolchain channel was 1.93.0 and is 1.94.0 now".to_owned()),
+            reason: Some("the pinned toolchain channel was 1.93.0 and is 1.100.0 now".to_owned()),
             saved: true,
             copied_in_secs: None,
             copied_out_secs: None,

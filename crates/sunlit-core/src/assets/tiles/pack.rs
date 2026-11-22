@@ -236,7 +236,7 @@ fn decode_header(bytes: &[u8], file_len: u64) -> Result<(Header, Vec<Entry>), Pa
     let index = FIXED_HEADER + key_len.next_multiple_of(8);
     let tile_blob = codec::blob_bytes(format, tile + 2 * gutter, tile_levels);
     let mut entries: Vec<Entry> = Vec::with_capacity(count);
-    for raw in bytes[index..].chunks_exact(ENTRY_BYTES) {
+    for raw in bytes[index..].as_chunks::<ENTRY_BYTES>().0 {
         let entry = Entry {
             key: TileKey {
                 level: raw[0],
@@ -531,7 +531,10 @@ mod tests {
         assert_eq!(pack.entries(), entries.as_slice());
         let last = pack.find(entries[2].key).expect("found");
         assert_eq!(pack.read(last).expect("read"), blobs[1]);
-        assert!(pack.read(&entries[1]).expect("an ocean entry").is_empty());
+        assert_eq!(
+            pack.read(&entries[1]).expect("an ocean entry"),
+            [] as [u8; 0]
+        );
         assert!(
             pack.find(TileKey {
                 level: 4,

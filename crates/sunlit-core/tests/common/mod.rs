@@ -121,7 +121,9 @@ pub fn read_buffer(
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     rx.recv().unwrap().expect("buffer mapping failed");
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("the mapped buffer is readable");
     let data = mapped.to_vec();
     drop(mapped);
     staging.unmap();

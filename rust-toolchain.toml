@@ -8,6 +8,6 @@
 # the host's default toolchain is, which is the intended effect and is worth
 # knowing before wondering why `rustc -V` differs from the one outside.
 [toolchain]
-channel = "1.94.0"
+channel = "1.100.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]

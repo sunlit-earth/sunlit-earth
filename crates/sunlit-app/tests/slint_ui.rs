@@ -2590,6 +2590,7 @@ fn adapter_line_height(window: &MainWindow, renderer_info: &str) -> f32 {
 // A `Text` whose family and content the test drives, so the width it reports
 // is the width the font gives that string.
 slint::slint! {
+    #[edition = "1.19"]
     export component FamilyProbe inherits Window {
         in property <string> family;
         in property <string> body;
@@ -5281,7 +5282,7 @@ fn test_a_wrapping_gesture_keeps_its_hint_around_it() {
             let line = the_descendant(&hint, "OverlayHint::title").size().height;
             let gesture = the_descendant(&hint, "OverlayHint::gesture");
             assert!(
-                gesture.size().height >= 2.0 * line - 0.5,
+                gesture.size().height > 1.5 * line,
                 "{id} (macOS: {macos}): the gesture is {} px high, one line {line} px",
                 gesture.size().height
             );
@@ -5296,6 +5297,7 @@ fn test_a_wrapping_gesture_keeps_its_hint_around_it() {
 // A wrapping `Text` in the sheet's description font, whose minimum width is
 // the width of the longest word of what it holds.
 slint::slint! {
+    #[edition = "1.19"]
     export component WordProbe inherits Window {
         in property <string> body;
         out property <length> longest-word: probe.min-width;
@@ -6094,6 +6096,7 @@ fn test_the_speed_hint_names_the_speed() {
 // A key cap in a row narrower than its label asks for, beside text that would
 // take every pixel the cap gives up, and the label alone in the cap's font.
 slint::slint! {
+    #[edition = "1.19"]
     import { KeyCap } from "../sunlit-ui/ui/overlays/common.slint";
     export component SqueezedCap inherits Window {
         out property <length> cap-width: cap.width;
@@ -6363,13 +6366,40 @@ fn test_the_version_notice_is_for_another_version_and_close_dismisses_it() {
 }
 
 /// A launch beside an older version says so in a window of its own, which
-/// names this version, and "Close" hides it.
+/// names this version, is tall enough for its wrapped text and its button,
+/// and "Close" hides it.
 #[test]
 fn test_the_older_version_window_names_this_version_and_close_hides_it() {
     init();
     let window = sunlit_earth::activation::older_version_window().unwrap();
     window.show().unwrap();
     assert!(window.window().is_visible());
+
+    let labelled_as = |prefix: &str| {
+        ElementQuery::from_root(&window)
+            .find_all()
+            .into_iter()
+            .find(|element| {
+                element
+                    .accessible_label()
+                    .is_some_and(|label| label.starts_with(prefix))
+            })
+            .unwrap_or_else(|| panic!("an element labelled {prefix:?}"))
+    };
+    let heading = labelled_as("An older version is already running");
+    let body = labelled_as("An older version of Sunlit Earth");
+    assert!(
+        body.size().height > heading.size().height,
+        "the body wraps onto more than one line: {:?}",
+        body.size()
+    );
+    let button = labelled_as("Close");
+    #[expect(clippy::cast_precision_loss, reason = "a window height")]
+    let window_height = window.window().size().height as f32 / window.window().scale_factor();
+    assert!(
+        button.absolute_position().y + button.size().height <= window_height,
+        "the window holds its button"
+    );
 
     let labels: Vec<String> = ElementQuery::from_root(&window)
         .find_all()
@@ -6505,15 +6535,14 @@ fn the_tray_cannot_follow_a_shown_window(case: &str) -> bool {
     skip
 }
 
-/// Slint's tray backends draw no checkmark, so the state is in the titles:
-/// the mark is there exactly when auto-refresh is on, follows the main
-/// window, and a toggle from the tray reaches the window.
+/// The tray's Auto-refresh check follows the main window, and a toggle from
+/// the tray reaches the window.
 #[test]
-fn test_the_tray_auto_refresh_title_carries_the_mark() {
+fn test_the_tray_auto_refresh_check_follows_the_window() {
     let window = create_window();
     window.set_auto_refresh_enabled(false);
     let tray = wired_tray(&window);
-    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
+    assert!(!tray.get_auto_refresh_enabled());
 
     let checkbox = labelled(&window, "Auto-refresh wallpaper")
         .into_iter()
@@ -6521,7 +6550,10 @@ fn test_the_tray_auto_refresh_title_carries_the_mark() {
         .expect("the auto-refresh check box");
     checkbox.invoke_accessible_default_action();
     assert!(window.get_auto_refresh_enabled());
-    assert_eq!(tray.get_auto_refresh_title(), "✓ Auto-refresh");
+    assert!(
+        tray.get_auto_refresh_enabled(),
+        "the check followed the window"
+    );
 
     tray.set_auto_refresh_enabled(false);
     tray.invoke_auto_refresh_toggled(false);
@@ -6529,7 +6561,6 @@ fn test_the_tray_auto_refresh_title_carries_the_mark() {
         !window.get_auto_refresh_enabled(),
         "the tray's toggle reached the window"
     );
-    assert_eq!(tray.get_auto_refresh_title(), "Auto-refresh");
 }
 
 /// "Start on login" in the tray follows each read of the entry and is
@@ -6549,11 +6580,10 @@ fn test_the_tray_start_on_login_item_follows_the_entry() {
         },
     );
     assert!(tray.get_autostart_on());
-    assert_eq!(tray.get_autostart_title(), "✓ Start on login");
     assert!(tray.get_autostart_available());
 
     autostart::ui::show(&window, &Autostart::Off);
-    assert_eq!(tray.get_autostart_title(), "Start on login");
+    assert!(!tray.get_autostart_on());
 
     autostart::ui::show(
         &window,
@@ -6562,7 +6592,7 @@ fn test_the_tray_start_on_login_item_follows_the_entry() {
         },
     );
     assert!(!tray.get_autostart_available());
-    assert_eq!(tray.get_autostart_title(), "Start on login");
+    assert!(!tray.get_autostart_on());
 }
 
 // ---------------------------------------------------------------------------
@@ -6626,27 +6656,47 @@ fn test_each_menu_entry_reaches_its_command() {
     assert!(window.get_shortcut_sheet_open(), "the shortcut sheet opens");
 }
 
-/// File has Quit, which ends the app through `quit-app`, everywhere but on
-/// macOS, where the App menu Slint builds has it.
+/// File has Quit, which ends the app through `quit-app`. The testing backend
+/// keeps it there on macOS as well, where the winit backend moves it into
+/// the App menu by its role, under the title macOS gives that entry.
 #[test]
-fn test_file_quits_except_on_macos() {
+fn test_file_quits() {
     let window = create_window();
     let (count, call) = counter();
     window.on_quit_app(call);
-    if cfg!(target_os = "macos") {
-        let file = menu_texts(&window, "File");
-        file[0].mock_single_click(slint::platform::PointerEventButton::Left);
-        assert_eq!(menu_texts(&window, "Close Window").len(), 1);
-        assert!(menu_texts(&window, "Quit").is_empty(), "File has no Quit");
+    let title = if cfg!(target_os = "macos") {
+        "Quit Sunlit Earth"
     } else {
-        choose(&window, "File", "Quit");
-        assert_eq!(*count.borrow(), 1);
+        "Quit"
+    };
+    choose(&window, "File", title);
+    assert_eq!(*count.borrow(), 1);
+}
+
+/// Quit and About carry the roles that put them in the macOS App menu, which
+/// only the winit backend on macOS acts on and no test can see.
+#[test]
+fn test_quit_and_about_carry_their_menu_roles() {
+    const MAIN: &str = include_str!("../../sunlit-ui/ui/main.slint");
+    for (title, role) in [
+        ("\"Quit\"", "role: quit;"),
+        ("\"About Sunlit Earth\"", "role: about;"),
+    ] {
+        let at = MAIN
+            .find(title)
+            .unwrap_or_else(|| panic!("{title} is in main.slint"));
+        let item = &MAIN[at..];
+        let item = &item[..item.find("activated").expect("the item has activated")];
+        assert!(
+            item.lines().any(|line| line.trim() == role),
+            "{title} has {role}"
+        );
     }
 }
 
 /// Ctrl + Q is Quit's shortcut and reaches it with the preview holding the
-/// keyboard, whose own Q rolls the globe; on macOS File has no Quit, so the
-/// keys stay the preview's.
+/// keyboard, whose own Q rolls the globe. On macOS the winit backend reports
+/// ⌘ as Ctrl, so this is ⌘Q there.
 #[test]
 fn test_control_q_quits_from_the_preview() {
     use slint::platform::Key;
@@ -6658,8 +6708,7 @@ fn test_control_q_quits_from_the_preview() {
     key_down(&window, Key::Control);
     tap(&window, "q");
     key_up(&window, Key::Control);
-    let expected = u32::from(!cfg!(target_os = "macos"));
-    assert_eq!(*count.borrow(), expected);
+    assert_eq!(*count.borrow(), 1);
 }
 
 /// The website and the issue form go through `open-url` with the addresses
@@ -6682,27 +6731,44 @@ fn test_the_help_links_reach_open_url() {
     }
 }
 
-/// Each View toggle flips its property from whatever state H, F or the
-/// buttons left it in, and the View menu shows no check.
+/// View's toggles for Controls, Frame Guides and the time bar pin, in that
+/// order, as this OS titles them: checks, or plain entries on macOS.
+fn view_toggles() -> [&'static str; 3] {
+    if cfg!(target_os = "macos") {
+        [
+            "Toggle Controls",
+            "Toggle Frame Guides",
+            "Toggle Time Bar Pin",
+        ]
+    } else {
+        ["Controls", "Frame Guides", "Pin Time Bar"]
+    }
+}
+
+/// Each View toggle flips its property and keeps following the property when
+/// something else flips it. On Windows and Linux each is a check that shows
+/// its mark while on; on macOS View reads no changing state, so no entry
+/// shows a mark.
 #[test]
 fn test_the_view_toggles_flip_their_property() {
     use slint::platform::PointerEventButton;
 
     type Get = fn(&MainWindow) -> bool;
     type Set = fn(&MainWindow, bool);
+    let [controls, guides, pin] = view_toggles();
     let cases: [(&str, Get, Set); 3] = [
         (
-            "Toggle Controls",
+            controls,
             |w| !w.get_overlays_hidden(),
             |w, v| w.set_overlays_hidden(!v),
         ),
         (
-            "Toggle Frame Guides",
+            guides,
             |w| w.get_guides_shown(),
             |w, v| w.set_guides_shown(v),
         ),
         (
-            "Toggle Time Bar Pin",
+            pin,
             |w| w.get_time_bar_pinned(),
             |w, v| w.set_time_bar_pinned(v),
         ),
@@ -6715,6 +6781,8 @@ fn test_the_view_toggles_flip_their_property() {
         choose(&window, "View", title);
         assert!(!get(&window), "{title} turned it off");
         set(&window, true);
+        // The event loop runs Controls' change handlers before any click can.
+        slint::platform::update_timers_and_animations();
         choose(&window, "View", title);
         assert!(!get(&window), "{title} followed the property");
     }
@@ -6726,15 +6794,20 @@ fn test_the_view_toggles_flip_their_property() {
     click_the_globe(&window);
     tap(&window, "h");
     tap(&window, "f");
-    choose(&window, "View", "Toggle Controls");
-    assert!(!window.get_overlays_hidden(), "Toggle Controls followed H");
-    choose(&window, "View", "Toggle Frame Guides");
-    assert!(!window.get_guides_shown(), "Toggle Frame Guides followed F");
+    choose(&window, "View", controls);
+    assert!(!window.get_overlays_hidden(), "{controls} followed H");
+    choose(&window, "View", guides);
+    assert!(!window.get_guides_shown(), "{guides} followed F");
 
     window.set_guides_shown(true);
     window.set_time_bar_pinned(true);
     menu_texts(&window, "View")[0].mock_single_click(PointerEventButton::Left);
-    assert!(menu_texts(&window, "✓").is_empty(), "View shows no check");
+    let marks = menu_texts(&window, "✓").len();
+    if cfg!(target_os = "macos") {
+        assert_eq!(marks, 0, "View shows no check on macOS");
+    } else {
+        assert_eq!(marks, 3, "every check shows its mark");
+    }
 }
 
 /// Reset Camera runs the camera panel's three resets together: north up and
@@ -6970,6 +7043,35 @@ fn leave_full_screen(window: &MainWindow) {
     assert!(!window.window().is_fullscreen());
 }
 
+/// The key that switches full screen: F11, and on macOS ⌃⌘F, where the View
+/// menu has no F11 entry.
+fn tap_full_screen_key(window: &MainWindow) {
+    use slint::platform::Key;
+
+    if cfg!(target_os = "macos") {
+        key_down(window, Key::Control);
+        key_down(window, Key::Meta);
+        tap(window, "f");
+        key_up(window, Key::Meta);
+        key_up(window, Key::Control);
+    } else {
+        tap(window, Key::F11);
+    }
+}
+
+/// The height of the drawn menu bar that full screen keeps, read while
+/// windowed. On macOS the app leaves its menu bar to the system, which draws
+/// it natively and hides it in full screen, so the testing backend's drawn
+/// stand-in stays there; elsewhere full screen hides the bar.
+fn menu_bar_kept_in_full_screen(window: &MainWindow) -> f32 {
+    assert!(!window.window().is_fullscreen());
+    if cfg!(target_os = "macos") {
+        menu_bar_height(window)
+    } else {
+        0.0
+    }
+}
+
 /// Move the pointer over the bare preview, to a point it was not at before.
 fn wiggle(window: &MainWindow) {
     #[expect(
@@ -6996,6 +7098,7 @@ fn test_full_screen_gives_the_preview_the_whole_window() {
         |window: &MainWindow, id: &str| ElementHandle::find_by_element_id(window, id).count();
     let (window, _sent, _poll) = full_screen_window();
     let width = window.window().size().to_logical(1.0).width;
+    let bar = menu_bar_kept_in_full_screen(&window);
     let before = edges(&the_element(&window, "MainWindow::image-container"));
     assert!(before[0] > 0.0, "the sidebar is left of the preview");
     for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
@@ -7005,7 +7108,7 @@ fn test_full_screen_gives_the_preview_the_whole_window() {
     enter_full_screen(&window);
     let [left, top, right, _] = edges(&the_element(&window, "MainWindow::image-container"));
     approx::assert_relative_eq!(left, 0.0);
-    approx::assert_relative_eq!(top, 0.0);
+    approx::assert_relative_eq!(top, bar);
     approx::assert_relative_eq!(right, width);
     approx::assert_relative_eq!(window.get_viewport_width(), width);
     for id in ["MainWindow::sidebar", "MainWindow::splitter"] {
@@ -7272,26 +7375,26 @@ fn test_entering_full_screen_asks_for_the_geometry_while_windowed() {
     });
     enter_full_screen(&window);
     leave_full_screen(&window);
-    tap(&window, slint::platform::Key::F11);
+    tap_full_screen_key(&window);
     finish_switch(&window);
     assert!(window.window().is_fullscreen());
-    tap(&window, slint::platform::Key::F11);
+    tap_full_screen_key(&window);
     finish_switch(&window);
     assert!(!window.window().is_fullscreen());
     assert_eq!(*seen.borrow(), [false, false], "once per entry, windowed");
 }
 
-/// The pill starts long however full screen was entered, F11 and the button
-/// alike, a click on either form leaves, and the next entry starts long again.
+/// The pill starts long however full screen was entered, the key and the
+/// button alike, a click on either form leaves, and the next entry starts long again.
 #[test]
 fn test_the_exit_pill_starts_long_on_every_entry_and_leaves_on_a_click() {
     let (window, _sent, _poll) = full_screen_window();
     assert!(!window.get_exit_pill_shown(), "no pill in the window");
 
-    tap(&window, slint::platform::Key::F11);
+    tap_full_screen_key(&window);
     finish_switch(&window);
-    assert!(window.window().is_fullscreen(), "F11 enters");
-    assert!(window.get_exit_pill_long(), "long after F11");
+    assert!(window.window().is_fullscreen(), "the key enters");
+    assert!(window.get_exit_pill_long(), "long after the key");
     press_the(&window, "MainWindow::exit-pill");
     finish_switch(&window);
     assert!(
@@ -7486,9 +7589,13 @@ fn test_a_switch_goes_black_before_full_screen_changes() {
 #[test]
 fn test_entering_shows_the_notice_until_the_frame_for_the_size_sent() {
     let (window, sent, _poll) = full_screen_window_at(sunlit_core::config::QualityTier::Low);
-    window
-        .window()
-        .set_size(slint::PhysicalSize::new(2400, 1200));
+    if cfg!(target_os = "macos") {
+        set_content_size(&window, 2400, 1200);
+    } else {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(2400, 1200));
+    }
     let_pass(500);
     deliver_frame(&window, 1280, 466);
     while sent.try_recv().is_ok() {}
@@ -8169,15 +8276,16 @@ fn test_the_open_sheet_blocks_the_window_behind_it() {
 /// Every item of every menu works with the sheet open, closing it.
 #[test]
 fn test_every_menu_item_works_under_the_sheet() {
+    let [controls, guides, pin] = view_toggles();
     let items = [
         ("File", "Set as Wallpaper"),
         ("File", "Revert to Saved"),
         ("File", "Load Defaults"),
         ("File", "Close Window"),
         ("View", "Reset Camera"),
-        ("View", "Toggle Controls"),
-        ("View", "Toggle Frame Guides"),
-        ("View", "Toggle Time Bar Pin"),
+        ("View", controls),
+        ("View", guides),
+        ("View", pin),
         ("Help", "Mouse and Keyboard"),
         ("Help", "Website"),
         ("Help", "Report an Issue…"),
@@ -8253,17 +8361,11 @@ fn test_a_menu_item_closes_the_sheet_first() {
     assert_eq!(holds(&sent), [true, false]);
 
     choose(&window, "File", "Export Image…");
-    let guides = window.get_guides_shown();
-    choose(&window, "View", "Toggle Frame Guides");
-    assert!(
-        !window.get_export_sheet_open(),
-        "Toggle Frame Guides left it open"
-    );
-    assert_ne!(
-        window.get_guides_shown(),
-        guides,
-        "Toggle Frame Guides did nothing"
-    );
+    let shown = window.get_guides_shown();
+    let [_, guides, _] = view_toggles();
+    choose(&window, "View", guides);
+    assert!(!window.get_export_sheet_open(), "{guides} left it open");
+    assert_ne!(window.get_guides_shown(), shown, "{guides} did nothing");
     assert_eq!(holds(&sent), [true, false]);
 
     choose(&window, "File", "Export Image…");

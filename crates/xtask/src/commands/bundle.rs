@@ -675,6 +675,9 @@ fn write_zip(root: &Path, name: &str, items: &[Item], output: &Path) -> Result<(
             // it does not, which is the whole reason the mode question belongs
             // to the tarball instead.
             .unix_permissions(if item.executable { 0o755 } else { 0o644 })
+            // zip records the writing host's system otherwise, and a reader
+            // takes Unix modes only from an entry that says it is Unix's.
+            .system(zip::System::Unix)
             // A release binary is under the four-gigabyte mark by two orders of
             // magnitude, so this is about the header the reader gets rather
             // than about the size.
@@ -753,8 +756,12 @@ pub fn read_back(format: Format, archive: &Path) -> Result<Vec<Archived>, String
                 if entry.is_dir() {
                     continue;
                 }
+                let path = entry
+                    .name()
+                    .map_err(|e| format!("entry {index} of the zip has no readable name: {e}"))?
+                    .into_owned();
                 out.push(Archived {
-                    path: entry.name().to_owned(),
+                    path,
                     bytes: entry.size(),
                     mode: None,
                 });
@@ -1381,7 +1388,7 @@ fn record(
         dirty: git.dirty,
         built_utc: util::format_unix_utc(util::now_unix()),
         duration_secs: started.elapsed().as_secs(),
-        channel: toolchain::read(repo).map(|t| t.channel).unwrap_or_default(),
+        channel: toolchain::read(repo).map_or_default(|t| t.channel),
         toolchain: host_toolchain(runner),
         verified_in: verified.then(|| hosted.runner_image.clone()),
         builder: Builder::Hosted(hosted),
@@ -1427,8 +1434,7 @@ fn host_toolchain(runner: &dyn Runner) -> String {
             .capture(&Cmd::new(program).arg(arg))
             .ok()
             .filter(crate::runner::CommandOutput::success)
-            .map(|out| out.stdout.trim().to_owned())
-            .unwrap_or_default()
+            .map_or_default(|out| out.stdout.trim().to_owned())
     };
     format!("{}\n{}", ask("rustc", "-vV"), ask("cargo", "-V"))
         .trim()
@@ -1848,12 +1854,13 @@ mod tests {
         let mut checked = 0;
         for index in 0..zip.len() {
             let entry = zip.by_index(index).expect("an entry");
-            let expected = if stored(entry.name()) {
+            let name = entry.name().expect("a readable name").into_owned();
+            let expected = if stored(&name) {
                 zip::CompressionMethod::Stored
             } else {
                 zip::CompressionMethod::Deflated
             };
-            assert_eq!(entry.compression(), expected, "{}", entry.name());
+            assert_eq!(entry.compression(), expected, "{name}");
             checked += 1;
         }
         assert_eq!(checked, items.len());
@@ -1914,7 +1921,7 @@ mod tests {
         assert_eq!(Platform::MacOs.slug(), "macos");
         assert_eq!(Platform::MacOs.to_string(), "macos");
         for platform in Platform::ALL {
-            assert!(!platform.slug().is_empty());
+            assert_ne!(platform.slug(), "");
         }
         for target in Target::ALL {
             assert_eq!(Platform::from(target).slug(), target.slug());
@@ -1982,7 +1989,7 @@ mod tests {
     #[test]
     fn a_hosted_record_never_links_to_a_run_it_does_not_have() {
         let hosted = hosted_info();
-        assert!(!hosted.runner_image.is_empty());
+        assert_ne!(hosted.runner_image, "");
         assert!(
             hosted.run_url.is_none() || hosted.run_id.is_some(),
             "{hosted:?}"

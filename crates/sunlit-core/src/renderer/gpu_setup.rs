@@ -332,7 +332,7 @@ pub(super) fn create_renderer(
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("sphere_pipeline_layout"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
 
@@ -628,21 +628,22 @@ fn create_pipeline(
     sample_count: u32,
     spec: &Spec,
 ) -> wgpu::RenderPipeline {
-    let mesh_buffers = [Vertex::buffer_layout()];
-    let star_buffers = [wgpu::VertexBufferLayout {
+    let mesh_buffers = [Some(Vertex::buffer_layout())];
+    let star_buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: stars::RECORD_SIZE as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Instance,
         attributes: &STAR_ATTRIBUTES,
-    }];
-    let (buffers, topology, cull_mode): (&[wgpu::VertexBufferLayout], _, _) = match spec.kind {
-        Kind::SkyQuad => (&[], wgpu::PrimitiveTopology::TriangleStrip, None),
-        Kind::StarSprite => (&star_buffers, wgpu::PrimitiveTopology::TriangleStrip, None),
-        Kind::Mesh { .. } => (
-            &mesh_buffers,
-            wgpu::PrimitiveTopology::TriangleList,
-            Some(wgpu::Face::Back),
-        ),
-    };
+    })];
+    let (buffers, topology, cull_mode): (&[Option<wgpu::VertexBufferLayout>], _, _) =
+        match spec.kind {
+            Kind::SkyQuad => (&[], wgpu::PrimitiveTopology::TriangleStrip, None),
+            Kind::StarSprite => (&star_buffers, wgpu::PrimitiveTopology::TriangleStrip, None),
+            Kind::Mesh { .. } => (
+                &mesh_buffers,
+                wgpu::PrimitiveTopology::TriangleList,
+                Some(wgpu::Face::Back),
+            ),
+        };
     let (blend, depth_write_enabled, depth_compare) = match spec.kind {
         Kind::SkyQuad | Kind::StarSprite => (Some(ADDITIVE), false, wgpu::CompareFunction::Always),
         Kind::Mesh {
@@ -679,8 +680,8 @@ fn create_pipeline(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
-            depth_write_enabled,
-            depth_compare,
+            depth_write_enabled: Some(depth_write_enabled),
+            depth_compare: Some(depth_compare),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),

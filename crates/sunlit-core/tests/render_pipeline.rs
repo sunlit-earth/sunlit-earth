@@ -25,10 +25,11 @@ fn test_mvp(width: u32, height: u32) -> [f32; 16] {
 fn test_mvp_with_eye(width: u32, height: u32, eye: glam::Vec3) -> [f32; 16] {
     let center = glam::Vec3::ZERO;
     let up = glam::Vec3::Y;
-    let view = glam::Mat4::look_at_rh(eye, center, up);
+    let view = glam::camera::rh::view::look_at_mat4(eye, center, up);
     #[allow(clippy::cast_precision_loss)]
     let aspect = width as f32 / height as f32;
-    let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), aspect, 0.1, 100.0);
+    let proj =
+        glam::camera::rh::proj::directx::perspective(20.0_f32.to_radians(), aspect, 0.1, 100.0);
     (proj * view).to_cols_array()
 }
 
@@ -181,7 +182,7 @@ fn create_render_context() -> RenderContext {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("test_pipeline_layout"),
-        bind_group_layouts: &[&bind_group_layout],
+        bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
 
@@ -196,7 +197,7 @@ fn create_render_context() -> RenderContext {
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[Vertex::buffer_layout()],
+            buffers: &[Some(Vertex::buffer_layout())],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -217,8 +218,8 @@ fn create_render_context() -> RenderContext {
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
@@ -2759,7 +2760,7 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("test_shell_pipeline_layout"),
-            bind_group_layouts: &[&ctx.bind_group_layout],
+            bind_group_layouts: &[Some(&ctx.bind_group_layout)],
             immediate_size: 0,
         });
     ctx.device
@@ -2769,7 +2770,7 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
             vertex: wgpu::VertexState {
                 module: &ctx.shader,
                 entry_point: Some(vs_entry),
-                buffers: &[Vertex::buffer_layout()],
+                buffers: &[Some(Vertex::buffer_layout())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2790,8 +2791,8 @@ fn shell_pipeline(ctx: &RenderContext, shell: Shell) -> wgpu::RenderPipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -3522,8 +3523,8 @@ fn looking_along_from(size: u32, axis: glam::Vec3, distance: f32) -> Uniforms {
     } else {
         glam::Vec3::Y
     };
-    let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, up);
-    let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
+    let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, up);
+    let proj = glam::camera::rh::proj::directx::perspective(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
     Uniforms {
         mvp: (proj * view).to_cols_array(),
         eye_pos: eye.into(),
@@ -3889,7 +3890,7 @@ fn probe_cube(
     let vector = |v: [f32; 4]| glam::Vec3::from_slice(&v[..3]).as_dvec3();
     normals
         .iter()
-        .zip(results.chunks_exact(2))
+        .zip(results.as_chunks::<2>().0)
         .map(|(&normal, pair)| Probed {
             normal: normal.normalize(),
             warped: vector(pair[0]),
@@ -4045,10 +4046,10 @@ fn the_warped_direction_is_continuous_across_every_face_edge() {
         );
     }
     let mut worst = ProbeWorst::default();
-    for pair in probed[..edge_samples].chunks_exact(2) {
+    for pair in probed[..edge_samples].as_chunks::<2>().0 {
         worst.neighbors(&pair[0], &pair[1], "across an edge");
     }
-    for corner in probed[edge_samples..].chunks_exact(3) {
+    for corner in probed[edge_samples..].as_chunks::<3>().0 {
         for (i, j) in [(0, 1), (1, 2), (0, 2)] {
             worst.neighbors(&corner[i], &corner[j], "around a corner");
         }

@@ -783,8 +783,8 @@ mod tests {
         let plan = DisplaysSignal::parse(&line).expect("the line the app just wrote");
         assert_eq!(plan.monitors, 0);
         assert_eq!(plan.anchor, -1);
-        assert!(plan.rects.is_empty());
-        assert!(plan.images.is_empty());
+        assert_eq!(plan.rects, [] as [String; 0]);
+        assert_eq!(plan.images, [] as [String; 0]);
     }
 
     #[test]

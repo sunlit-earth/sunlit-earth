@@ -75,8 +75,7 @@ impl Autostart {
             crate::activation::percent_encode(
                 &self
                     .exe()
-                    .map(|exe| exe.to_string_lossy().into_owned())
-                    .unwrap_or_default()
+                    .map_or_default(|exe| exe.to_string_lossy().into_owned())
             )
         )
     }

@@ -224,7 +224,9 @@ fn dispatch(gpu: &BlendGpuContext, cases: &[TestCase]) -> Vec<TestResult> {
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     rx.recv().unwrap().expect("buffer mapping failed");
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("the mapped buffer is readable");
     let results: Vec<TestResult> = bytemuck::cast_slice(&mapped).to_vec();
     drop(mapped);
     staging_buf.unmap();

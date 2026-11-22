@@ -318,7 +318,7 @@ mod tests {
     }
 
     fn assert_progress_runs_from_zero_to_one(seen: &[f32]) {
-        assert!(!seen.is_empty());
+        assert_ne!(seen, []);
         assert!(seen[0] >= 0.0, "{seen:?}");
         assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "{seen:?}");
         approx::assert_relative_eq!(*seen.last().unwrap(), 1.0);
@@ -380,7 +380,11 @@ mod tests {
         result.unwrap();
         let decoded = image::open(&path).unwrap().to_rgb8();
         assert_eq!(decoded.dimensions(), (width, height));
-        let source = pixels.chunks_exact(4).flat_map(|pixel| &pixel[..3]);
+        let source = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|pixel| &pixel[..3]);
         let total: u64 = decoded
             .as_raw()
             .iter()
@@ -400,7 +404,7 @@ mod tests {
         let path = dir.path().join("out.png");
         let (result, _) = write_recording(&path, &[0; 8], 4, 4, ImageFormat::FAST_PNG);
         assert!(matches!(result, Err(WriteError::Failed(_))), "{result:?}");
-        assert!(entries(dir.path()).is_empty());
+        assert_eq!(entries(dir.path()), [] as [String; 0]);
     }
 
     #[test]
@@ -454,6 +458,6 @@ mod tests {
         let path = dir.path().join("no-such-folder").join("out.png");
         let (result, _) = write_recording(&path, &gradient(4, 4), 4, 4, ImageFormat::FAST_PNG);
         assert!(matches!(result, Err(WriteError::Failed(_))), "{result:?}");
-        assert!(entries(dir.path()).is_empty());
+        assert_eq!(entries(dir.path()), [] as [String; 0]);
     }
 }

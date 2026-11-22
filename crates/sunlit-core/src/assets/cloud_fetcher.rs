@@ -875,7 +875,7 @@ mod tests {
         fn fetch_if_changed(&self, known_etag: Option<&str>) -> Result<Option<CloudImage>, String> {
             if self
                 .failures
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |n| (n > 0).then(|| n - 1),
@@ -895,7 +895,7 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let bytes = if self
                 .corrupt
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |n| (n > 0).then(|| n - 1),
@@ -1211,7 +1211,7 @@ mod tests {
         for _ in 0..3 {
             updater.set_resolution(DEFAULT_TEXTURE_RESOLUTION);
         }
-        assert!(source.retargets().is_empty());
+        assert_eq!(source.retargets(), [] as [String; 0]);
 
         let shared = DEFAULT_TEXTURE_RESOLUTION + 1;
         assert_eq!(
@@ -1219,7 +1219,7 @@ mod tests {
             cloud_variant(DEFAULT_TEXTURE_RESOLUTION)
         );
         updater.set_resolution(shared);
-        assert!(source.retargets().is_empty());
+        assert_eq!(source.retargets(), [] as [String; 0]);
     }
 
     /// The widest and narrowest widths on offer, which is what a switch has to

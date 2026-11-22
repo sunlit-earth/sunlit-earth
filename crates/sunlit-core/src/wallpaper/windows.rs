@@ -79,11 +79,12 @@ pub(crate) fn ensure_dpi_awareness() {
 pub(crate) fn enumerate_monitors() -> Result<Vec<crate::display::Monitor>, String> {
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
+    use windows_sys::Win32::Foundation::{LPARAM, RECT, TRUE};
     use windows_sys::Win32::Graphics::Gdi::{
         EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
+    use windows_sys::core::BOOL;
 
     #[allow(unsafe_code)]
     unsafe extern "system" fn enum_callback(

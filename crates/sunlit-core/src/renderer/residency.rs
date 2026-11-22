@@ -1231,7 +1231,7 @@ mod tests {
     fn a_face_on_view_wants_its_face_from_the_middle_out() {
         let output = uhd(camera(0.0, 0.0, 1.5));
         let wanted = want(&[output]);
-        assert!(!wanted.tiles.is_empty());
+        assert_ne!(wanted.tiles, [] as [WantedTile; 0]);
         for tile in &wanted.tiles {
             assert_eq!(tile.id.key.face, 4, "{:?}", tile.id);
             assert_eq!(tile.id.key.level, finest(), "{:?}", tile.id);
@@ -1324,7 +1324,7 @@ mod tests {
     #[test]
     fn the_two_ends_of_the_zoom() {
         let near = want(&[uhd(camera(20.0, 10.0, 1.5))]);
-        assert!(!near.tiles.is_empty());
+        assert_ne!(near.tiles, [] as [WantedTile; 0]);
         assert!(near.tiles.iter().all(|tile| tile.id.key.level == finest()));
         let disk = want(&[uhd(camera(20.0, 10.0, 5.0))]);
         assert!(
@@ -1495,7 +1495,7 @@ mod tests {
                 ..request(&outputs, &everything)
             });
             if finest == floor() {
-                assert!(wanted.tiles.is_empty());
+                assert_eq!(wanted.tiles, [] as [WantedTile; 0]);
                 assert_eq!(wanted.cap, CellLevels::uniform(&GEOMETRY, floor()));
                 continue;
             }
@@ -1641,7 +1641,7 @@ mod tests {
             surfaces: Surfaces::Night,
             ..request(&[uhd(camera(90.0, 0.0, 3.0))], &everything)
         });
-        assert!(!night_alone.tiles.is_empty());
+        assert_ne!(night_alone.tiles, [] as [WantedTile; 0]);
         assert!(
             night_alone
                 .tiles

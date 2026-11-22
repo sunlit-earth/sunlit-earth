@@ -112,7 +112,7 @@ fn reduce(pixels: &[u8], width: usize, height: usize) -> Vec<f32> {
     let columns = box_weights(width, GRID_WIDTH);
     let mut grid = vec![0.0f32; GRID_WIDTH * GRID_HEIGHT];
     let mut accumulated = vec![0.0f32; width];
-    for (grid_row, (first, weights)) in grid.chunks_exact_mut(GRID_WIDTH).zip(&rows) {
+    for (grid_row, (first, weights)) in grid.as_chunks_mut::<GRID_WIDTH>().0.iter_mut().zip(&rows) {
         accumulated.fill(0.0);
         for (offset, &weight) in weights.iter().enumerate() {
             let start = (first + offset) * width;
@@ -151,7 +151,7 @@ fn percentile(grid: &[f32]) -> Vec<f32> {
     let rank = (PERCENTILE * count / 100).min(count - 1);
     let mut out = vec![0.0f32; GRID_WIDTH * GRID_HEIGHT];
 
-    for (y, out_row) in out.chunks_exact_mut(GRID_WIDTH).enumerate() {
+    for (y, out_row) in out.as_chunks_mut::<GRID_WIDTH>().0.iter_mut().enumerate() {
         let rows: Vec<usize> = (0..WINDOW)
             .map(|offset| (y + offset).saturating_sub(half).min(GRID_HEIGHT - 1))
             .collect();
@@ -218,8 +218,10 @@ fn blur(grid: &[f32]) -> Vec<f32> {
     let (width, height) = (GRID_WIDTH as isize, GRID_HEIGHT as isize);
     let mut across = vec![0.0f32; grid.len()];
     for (row, out) in grid
-        .chunks_exact(GRID_WIDTH)
-        .zip(across.chunks_exact_mut(GRID_WIDTH))
+        .as_chunks::<GRID_WIDTH>()
+        .0
+        .iter()
+        .zip(across.as_chunks_mut::<GRID_WIDTH>().0)
     {
         for (x, cell) in out.iter_mut().enumerate() {
             *cell = kernel
@@ -233,7 +235,7 @@ fn blur(grid: &[f32]) -> Vec<f32> {
     }
 
     let mut down = vec![0.0f32; grid.len()];
-    for (y, out) in down.chunks_exact_mut(GRID_WIDTH).enumerate() {
+    for (y, out) in down.as_chunks_mut::<GRID_WIDTH>().0.iter_mut().enumerate() {
         out.fill(0.0);
         for (weight, offset) in kernel.iter().zip(-radius..) {
             let source = (y as isize + offset).clamp(0, height - 1) as usize;

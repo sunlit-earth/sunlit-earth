@@ -451,14 +451,12 @@ fn track_instant(window: &MainWindow, year_track: bool, fraction: f32) -> Offset
 /// The seasons of `year` in the displayed zone, `None` where the ephemeris
 /// has no answer.
 fn seasons_shown(year: i32, utc: bool) -> Vec<OffsetDateTime> {
-    sky::seasons(year)
-        .map(|seasons| {
-            seasons
-                .iter()
-                .map(|&at| at.to_offset(display_offset(utc, at)))
-                .collect()
-        })
-        .unwrap_or_default()
+    sky::seasons(year).map_or_default(|seasons| {
+        seasons
+            .iter()
+            .map(|&at| at.to_offset(display_offset(utc, at)))
+            .collect()
+    })
 }
 
 /// The days of the year, from 0, the seasons of `year` fall on.
@@ -866,8 +864,7 @@ fn register_labels(window: &MainWindow) {
         )]
         let day = (fraction.clamp(0.0, 0.99999) * f32::from(days)).floor() as u16;
         time::Date::from_ordinal_date(local.year(), day + 1)
-            .map(|date| day_and_month(date).into())
-            .unwrap_or_default()
+            .map_or_default(|date| day_and_month(date).into())
     });
 }
 
@@ -1013,7 +1010,7 @@ mod tests {
             for (label, &rate) in labels.iter().zip(kind.ladder()) {
                 let rate = i32::try_from(rate).expect("a rate");
                 assert_eq!(rate_label(-rate, kind), format!("{MINUS}{label}"));
-                assert!(!rate_note(rate, kind).is_empty());
+                assert_ne!(rate_note(rate, kind), "");
             }
         }
         let notes: Vec<String> = ExcursionKind::Clock

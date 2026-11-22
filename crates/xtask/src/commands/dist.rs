@@ -2070,8 +2070,7 @@ fn publish(
 
 fn file_name(path: &Path) -> String {
     path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|n| n.to_string_lossy().into_owned())
 }
 
 fn copy(from: &Path, to: &Path) -> Result<(), String> {
@@ -2264,11 +2263,11 @@ mod tests {
     #[test]
     fn the_build_job_names_every_tool_by_absolute_path() {
         let pinned =
-            crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses");
+            crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.100.0\"\n").expect("parses");
 
         let linux = build_job(Target::Linux, &pinned, &CacheJob::default());
         assert!(linux.contains("$HOME/.cargo/bin/cargo"), "{linux}");
-        assert!(linux.contains("toolchain install 1.94.0"), "{linux}");
+        assert!(linux.contains("toolchain install 1.100.0"), "{linux}");
         assert!(
             linux.contains("build --release --locked -p sunlit-earth"),
             "{linux}"
@@ -2284,7 +2283,7 @@ mod tests {
             windows.contains(r"%USERPROFILE%\.cargo\bin\cargo.exe"),
             "{windows}"
         );
-        assert!(windows.contains("toolchain install 1.94.0"), "{windows}");
+        assert!(windows.contains("toolchain install 1.100.0"), "{windows}");
         assert!(
             windows.contains(&format!(
                 "set LIBCLANG_PATH={}",
@@ -2336,7 +2335,7 @@ mod tests {
     }
 
     fn pin() -> Toolchain {
-        crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.94.0\"\n").expect("parses")
+        crate::guest::toolchain::parse("[toolchain]\nchannel = \"1.100.0\"\n").expect("parses")
     }
 
     /// Step 5 asked for the pack and unpack times, and the risk they settle is
@@ -2615,7 +2614,7 @@ mod tests {
         let store = Store::new(&dir);
         let builder = Image::LinuxBuilder;
         let facts = cache::Facts {
-            channel: "1.94.0".to_owned(),
+            channel: "1.100.0".to_owned(),
             image: builder.slug().to_owned(),
             template_hash: "crc32:1a2b3c4d".to_owned(),
             image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
@@ -2679,13 +2678,16 @@ mod tests {
         // refused and every later build will refuse too, so reading it as "the
         // host already has this" would leave the registry cold for good.
         let mut moved_channel = facts.clone();
-        moved_channel.channel = "1.95.0".to_owned();
+        moved_channel.channel = "1.101.0".to_owned();
         let (job, reports) = plan_cache(&store, builder, &moved_channel, true);
         assert!(job.restore.is_empty(), "{job:?}");
         assert_eq!(job.save, cache::Kind::ALL.to_vec());
         for report in &reports {
             assert!(
-                report.reason.as_ref().is_some_and(|r| r.contains("1.95.0")),
+                report
+                    .reason
+                    .as_ref()
+                    .is_some_and(|r| r.contains("1.101.0")),
                 "{report:?}"
             );
         }
@@ -2727,7 +2729,7 @@ mod tests {
         let store = Store::new(&dir);
         let builder = Image::LinuxBuilder;
         let facts = cache::Facts {
-            channel: "1.94.0".to_owned(),
+            channel: "1.100.0".to_owned(),
             image: builder.slug().to_owned(),
             template_hash: "crc32:1a2b3c4d".to_owned(),
             image_built_utc: "2026-08-28T09:00:00Z".to_owned(),
@@ -2990,8 +2992,8 @@ mod tests {
             dirty: false,
             built_utc: "2026-08-28T12:00:00Z".to_owned(),
             duration_secs: 1_234,
-            channel: "1.94.0".to_owned(),
-            toolchain: "rustc 1.94.0".to_owned(),
+            channel: "1.100.0".to_owned(),
+            toolchain: "rustc 1.100.0".to_owned(),
             cache: vec![cache::Report {
                 archive: cache::Kind::Target.slug().to_owned(),
                 restored: true,
@@ -3029,7 +3031,7 @@ mod tests {
         // The two facts a reader looks for first are the commit and the channel.
         let json = info.to_json();
         assert!(json.contains("\"commit\""), "{json}");
-        assert!(json.contains("\"channel\": \"1.94.0\""), "{json}");
+        assert!(json.contains("\"channel\": \"1.100.0\""), "{json}");
         assert!(json.contains("\"glibc_floor\": \"2.35\""), "{json}");
         // A Linux record carries no Windows fields at all rather than empty ones.
         assert!(!json.contains("crt_static"), "{json}");

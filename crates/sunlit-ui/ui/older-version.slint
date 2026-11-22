@@ -31,10 +31,6 @@ export component OlderVersionWindow inherits Window {
             color: Palette.foreground;
             font-size: 12px;
             wrap: word-wrap;
-            // Slint 1.18 measures a wrapped text's height at its preferred
-            // width, which is otherwise one unwrapped line, and the window
-            // takes its height from that.
-            preferred-width: root.width - layout.padding-left - layout.padding-right;
         }
 
         HorizontalLayout {

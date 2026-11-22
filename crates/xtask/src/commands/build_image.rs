@@ -748,8 +748,7 @@ pub fn record(path: &Path) -> Result<(String, u64, String), String> {
     let checksum = hash::checksum_file(path).map_err(|e| format!("cannot checksum: {e}"))?;
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     Ok((name, bytes, checksum))
 }
 

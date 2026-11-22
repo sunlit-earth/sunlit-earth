@@ -1474,8 +1474,8 @@ mod tests {
         assert_eq!(tail.last(), Some(&"line 19"));
 
         // A log holding only the command line has no last words.
-        assert!(log_tail("the command line\n").is_empty());
-        assert!(log_tail("").is_empty());
+        assert_eq!(log_tail("the command line\n"), [] as [&str; 0]);
+        assert_eq!(log_tail(""), [] as [&str; 0]);
     }
 
     #[test]

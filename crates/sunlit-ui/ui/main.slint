@@ -350,6 +350,13 @@ export component MainWindow inherits Window {
     callback open-data-folder();
     // The camera panel's three resets at once: north up, the look, the frame.
     callback reset-camera();
+    // The View menu's Controls check outside macOS. A checkable item flips its
+    // own `checked` before `activated` runs, so it needs a two-way binding to
+    // keep following H and the buttons over the preview; these two handlers
+    // are that binding for the inverse of `overlays-hidden`.
+    out property <bool> controls-shown: !root.overlays-hidden;
+    changed overlays-hidden => { root.controls-shown = !root.overlays-hidden; }
+    changed controls-shown => { root.overlays-hidden = !root.controls-shown; }
 
     // Full screen is the window's own `full-screen`, which the system may
     // also set, macOS's green button above all. Session state like the frame
@@ -799,9 +806,10 @@ export component MainWindow inherits Window {
                     root.close-window();
                 }
             }
-            // macOS has Quit, with Command + Q, in the App menu Slint builds.
-            if Platform.os != OperatingSystemType.macos : MenuItem {
-                title: "Quit";
+            // On macOS Slint moves the roles quit and about into the App menu.
+            MenuItem {
+                title: Platform.os == OperatingSystemType.macos ? "Quit Sunlit Earth" : "Quit";
+                role: quit;
                 shortcut: @keys(Control + Q);
                 activated => {
                     root.leave-export-sheet();
@@ -819,24 +827,43 @@ export component MainWindow inherits Window {
                 }
             }
             MenuSeparator {}
-            // Nothing in the menu may read a property that changes: Slint
-            // 1.18 rebuilds the whole native menu on any such change, and on
-            // Windows the rebuild flashes the preview white.
-            MenuItem {
+            // On macOS nothing in View may read a property that changes. Slint
+            // replaces a changed entry by its index, and AppKit's own items in
+            // the menu titled View make that index point at the wrong native
+            // item, so the entry is duplicated. Hence plain toggles there.
+            if Platform.os != OperatingSystemType.macos : MenuItem {
+                title: "Controls";
+                checkable: true;
+                checked <=> root.controls-shown;
+                activated => { root.leave-export-sheet(); }
+            }
+            if Platform.os != OperatingSystemType.macos : MenuItem {
+                title: "Frame Guides";
+                checkable: true;
+                checked <=> root.guides-shown;
+                activated => { root.leave-export-sheet(); }
+            }
+            if Platform.os != OperatingSystemType.macos : MenuItem {
+                title: "Pin Time Bar";
+                checkable: true;
+                checked <=> root.time-bar-pinned;
+                activated => { root.leave-export-sheet(); }
+            }
+            if Platform.os == OperatingSystemType.macos : MenuItem {
                 title: "Toggle Controls";
                 activated => {
                     root.leave-export-sheet();
                     root.overlays-hidden = !root.overlays-hidden;
                 }
             }
-            MenuItem {
+            if Platform.os == OperatingSystemType.macos : MenuItem {
                 title: "Toggle Frame Guides";
                 activated => {
                     root.leave-export-sheet();
                     root.guides-shown = !root.guides-shown;
                 }
             }
-            MenuItem {
+            if Platform.os == OperatingSystemType.macos : MenuItem {
                 title: "Toggle Time Bar Pin";
                 activated => {
                     root.leave-export-sheet();
@@ -890,6 +917,7 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem {
                 title: "About Sunlit Earth";
+                role: about;
                 activated => {
                     root.leave-export-sheet();
                     root.show-about();
@@ -2594,8 +2622,6 @@ export component MainWindow inherits Window {
                 // here or it would roll on after it was.
                 if down {
                     image-container.key-e = false;
-                }
-                if down && Platform.os != OperatingSystemType.macos {
                     image-container.key-q = false;
                 }
                 image-container.key-control = down;

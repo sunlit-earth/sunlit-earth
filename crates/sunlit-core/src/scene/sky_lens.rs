@@ -83,9 +83,9 @@ pub fn sky_lens_disc(
     };
     let edge = sky_lens_edge_radius(sky_fov_deg);
     let near = ((theta - half_angle) * 0.5).tan() / edge;
-    let far = ((theta + half_angle) * 0.5).tan() / edge;
+    let far = f32::midpoint(theta, half_angle).tan() / edge;
     let aspect = viewport.x / viewport.y;
-    let ndc = radial * ((near + far) * 0.5) * Vec2::new(1.0, aspect) + screen_offset;
+    let ndc = radial * f32::midpoint(near, far) * Vec2::new(1.0, aspect) + screen_offset;
     Some(ScreenCircle {
         center: ndc_to_pixels(ndc, viewport),
         // The projected plane reaches pixels by one uniform scale, so the disc
@@ -154,7 +154,7 @@ pub fn sky_lens_direction(
 
 fn ndc_to_pixels(ndc: Vec2, viewport: Vec2) -> Vec2 {
     Vec2::new(
-        (ndc.x + 1.0) * 0.5 * viewport.x,
+        f32::midpoint(ndc.x, 1.0) * viewport.x,
         (1.0 - ndc.y) * 0.5 * viewport.y,
     )
 }

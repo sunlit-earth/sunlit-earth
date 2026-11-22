@@ -407,7 +407,7 @@ struct AnswerSlot(Arc<AtomicUsize>);
 impl AnswerSlot {
     fn take(answering: &Arc<AtomicUsize>) -> Option<Self> {
         answering
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
                 (taken < MAX_ANSWERING).then_some(taken + 1)
             })
             .ok()

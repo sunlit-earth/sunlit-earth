@@ -302,7 +302,7 @@ mod tests {
             .expect("defaults fill the rest");
         assert_eq!(parsed.target, "linux");
         assert_eq!(parsed.built_unix, 10);
-        assert!(parsed.images.is_empty());
+        assert_eq!(parsed.images, [] as [ImageRecord; 0]);
         assert_eq!(parsed.template_hash, "");
     }
 

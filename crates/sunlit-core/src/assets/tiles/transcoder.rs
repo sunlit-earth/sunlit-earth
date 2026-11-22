@@ -734,14 +734,13 @@ mod tests {
 
         /// The names in the pack directory, sorted.
         fn files(&self) -> Vec<String> {
-            let mut names: Vec<_> = fs::read_dir(self.cache().join(CACHE_SUBDIR))
-                .map(|entries| {
+            let mut names: Vec<_> =
+                fs::read_dir(self.cache().join(CACHE_SUBDIR)).map_or_default(|entries| {
                     entries
                         .flatten()
                         .map(|e| e.file_name().to_string_lossy().into_owned())
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             names.sort();
             names
         }
@@ -1117,7 +1116,7 @@ mod tests {
             .filter(|phase| *phase != Phase::Checking)
             .collect();
         assert_eq!(phases, [Phase::Building(Day(5)), Phase::Done]);
-        assert!(status.failed.is_empty());
+        assert_eq!(status.failed, [] as [PackFailure; 0]);
         assert_eq!(status.ready.len(), PACKS);
     }
 
@@ -1135,7 +1134,7 @@ mod tests {
         };
         assert!(why.contains("83 of the 84"), "{why}");
         assert!(status.ready.is_empty() && status.failed.is_empty());
-        assert!(transcoder.landed().is_empty());
+        assert_eq!(transcoder.landed(), [] as [PackKind; 0]);
         assert!(!setup.cache().exists(), "nothing was written");
     }
 

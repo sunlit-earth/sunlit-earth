@@ -117,7 +117,7 @@ pub(crate) fn damage_the_day_tiles(cache: &std::path::Path) {
 pub(crate) fn difference(a: &[u8], b: &[u8], by: u8) -> (f64, usize) {
     assert_eq!(a.len(), b.len());
     let (mut sum, mut over) = (0_u64, 0);
-    for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+    for (pa, pb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         let worst = (0..3).map(|c| pa[c].abs_diff(pb[c])).max().expect("three");
         sum += (0..3)
             .map(|c| u64::from(pa[c].abs_diff(pb[c])))

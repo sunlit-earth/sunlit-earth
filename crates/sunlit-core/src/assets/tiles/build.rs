@@ -132,9 +132,9 @@ const CURRENT: Versions = Versions {
 /// subcrates that do the decoding included, and the cache key has to notice.
 const DECODER_VERSIONS: &str = concat!(
     "jxl-bitstream 1.1.0 jxl-coding 1.0.1 jxl-color 0.11.0 jxl-frame 0.13.3 ",
-    "jxl-grid 0.6.1 jxl-image 0.13.0 jxl-jbr 0.2.1 jxl-modular 0.11.2 ",
-    "jxl-oxide 0.12.5 jxl-oxide-common 1.0.0 jxl-render 0.12.3 ",
-    "jxl-threadpool 1.0.0 jxl-vardct 0.11.1 image 0.25.9",
+    "jxl-grid 0.6.2 jxl-image 0.13.0 jxl-jbr 0.2.1 jxl-modular 0.11.3 ",
+    "jxl-oxide 0.12.6 jxl-oxide-common 1.0.0 jxl-render 0.12.4 ",
+    "jxl-threadpool 1.0.0 jxl-vardct 0.11.1 image 0.25.10",
 );
 
 /// The SHA-256 of a source file's contents.
@@ -385,8 +385,8 @@ fn ocean_color(color: &Cube, mask: &Cube) -> [u8; 4] {
     let mut histogram = [[0_u64; 256]; 4];
     let mut count = 0_u64;
     for face in 0..6 {
-        let texels = color.face(face).texels.chunks_exact(4);
-        for (texel, &water) in texels.zip(&mask.face(face).texels) {
+        let texels = color.face(face).texels.as_chunks::<4>().0;
+        for (texel, &water) in texels.iter().zip(&mask.face(face).texels) {
             if water == OPEN_WATER {
                 for (bins, &c) in histogram.iter_mut().zip(texel) {
                     bins[usize::from(c)] += 1;
@@ -561,7 +561,7 @@ fn surface_jobs(
                     }) && flat.is_none_or(|(ocean, tolerance)| {
                         let (r, c) = tile_origin(geometry, row, col);
                         let window = levels[level].window(face, r, c, geometry.layer());
-                        window.chunks_exact(4).all(|texel| {
+                        window.as_chunks::<4>().0.iter().all(|texel| {
                             texel[..3]
                                 .iter()
                                 .zip(ocean)
@@ -834,7 +834,7 @@ mod tests {
             {
                 let blob = pack.read(entry).expect("read");
                 if entry.ocean {
-                    assert!(blob.is_empty());
+                    assert_eq!(blob, [] as [u8; 0]);
                     continue;
                 }
                 assert_eq!(<[u8; 32]>::from(Sha256::digest(&blob)), entry.hash);
@@ -1015,7 +1015,7 @@ mod tests {
             .write(true)
             .open(&face)
             .expect("open a day face");
-        file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(86_400))
+        file.set_modified(std::time::UNIX_EPOCH + Duration::from_hours(24))
             .expect("touch");
         drop(file);
         let mask = setup.textures.mask[3].clone().expect("a face");

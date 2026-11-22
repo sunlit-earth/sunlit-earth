@@ -41,14 +41,16 @@ fn zero_star_intensity_leaves_catalog_pixels_at_the_clear_color() {
     let mut lit_background = 0_usize;
     let mut leaked = Vec::new();
     for (index, (off, on)) in stars_off
-        .chunks_exact(4)
-        .zip(stars_on.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(stars_on.as_chunks::<4>().0)
         .enumerate()
     {
         if off == on {
             continue;
         }
-        if off == CLEAR {
+        if *off == CLEAR {
             lit_background += 1;
         } else if off.iter().zip(on).any(|(a, b)| a.abs_diff(*b) > VISIBLE) {
             leaked.push(index);
@@ -123,9 +125,11 @@ fn larger_star_size_expands_crisp_cores_when_glow_is_disabled() {
     let large_stars = harness.picture(&params, FRAME);
 
     let expanded_core = small_stars
-        .chunks_exact(4)
-        .zip(large_stars.chunks_exact(4))
-        .any(|(small, large)| small == CLEAR && large != CLEAR);
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(large_stars.as_chunks::<4>().0)
+        .any(|(small, large)| *small == CLEAR && *large != CLEAR);
     assert!(
         expanded_core,
         "increasing star size should expand a core without relying on glow"
@@ -145,9 +149,11 @@ fn wider_sky_fov_reveals_more_catalog_directions() {
     let wide_sky = harness.picture(&params, FRAME);
 
     let newly_visible_pixels = narrow_sky
-        .chunks_exact(4)
-        .zip(wide_sky.chunks_exact(4))
-        .filter(|(narrow, wide)| *narrow == CLEAR && *wide != CLEAR)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(wide_sky.as_chunks::<4>().0)
+        .filter(|(narrow, wide)| **narrow == CLEAR && **wide != CLEAR)
         .count();
     assert!(
         newly_visible_pixels > 50,

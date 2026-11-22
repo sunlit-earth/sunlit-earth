@@ -604,7 +604,7 @@ mod tests {
         let command = powershell_command(&shortcut_script(&paths(true)));
         assert!(command.contains("-EncodedCommand "), "{command}");
         let encoded = command.rsplit(' ').next().unwrap_or_default();
-        assert!(!encoded.is_empty());
+        assert_ne!(encoded, "");
         assert!(
             encoded
                 .chars()
@@ -872,7 +872,7 @@ mod tests {
             .split('\'')
             .nth(1)
             .expect("the payload is the quoted part");
-        assert!(!encoded.is_empty());
+        assert_ne!(encoded, "");
         assert!(
             encoded
                 .chars()

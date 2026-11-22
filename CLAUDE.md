@@ -133,10 +133,10 @@ docs/                 see the table above
 
 ## Key constraints
 
-- `rust-toolchain.toml` pins `1.94.0`; the builder images install the same channel from it.
+- `rust-toolchain.toml` pins `1.100.0`; the builder images install the same channel from it.
 - `.cargo/config.toml` sets `+crt-static` for `x86_64-pc-windows-msvc`, so every Windows binary of this tree, e2e binaries included, needs no Visual C++ redistributable. `cargo xtask dist` proves it on the artifact.
 - `unsafe_code = "deny"` workspace-wide. FFI call sites carry a scoped `#[allow(unsafe_code)]` and a `// SAFETY:` comment; follow that pattern for any new FFI.
-- Slint is `~1.18` with no wgpu feature.
+- Slint is `~1.19` with no wgpu feature.
 - One wgpu instance per process, ever: `wgpu_init::instance()`, enforced by `clippy.toml`'s `disallowed-methods`. Dropping the last instance `dlclose`s the Vulkan loader under Mesa's TLS destructors and kills the next thread to exit.
 - One GPU device at a time in tests: shader tests share a `LazyLock<Mutex<GpuContext>>`, the engine and soak targets hold `GPU_SERIAL` for the lifetime of their engine, and the golden target serializes on its own shared `EngineHandle` mutex. Per-test device creation crashes on Windows.
 - WGSL `vec3<f32>` is 16-byte aligned: every `[f32; 3]` in `Uniforms` is followed by `_pad: f32`. `uniforms.rs` declares the block once as a list of Rust type and WGSL type, asserts the struct size at compile time, and has unit tests that parse `sphere.wgsl` and compare the two field lists name for name and offset for offset, so a field added on one side alone fails, a field appended into the trailing padding included.
@@ -158,6 +158,6 @@ docs/                 see the table above
 
 - Run `cargo test` and `cargo clippy --all-targets` after making changes.
 - Do not commit or push without explicit user approval, and wait for confirmation that a change works before committing.
-- `README.md` is edited only with the user's explicit permission. Anything that would have gone there goes in `docs/` instead.
+- `README.md` and `CHANGELOG.md` are edited only with the user's explicit permission. Anything that would have gone in README goes in `docs/` instead.
 - Git worktrees go in `.worktrees/` at the repo root.
 - When implementing a feature, update `docs/roadmap.md` and whichever of the documents above describes the area; measurements and reasoning go there, not here.

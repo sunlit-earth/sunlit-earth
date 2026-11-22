@@ -431,7 +431,7 @@ mod tests {
             assert_eq!(image.parent(), None, "{image}");
             assert!(!image.is_layer(), "{image}");
         }
-        assert!(Image::Linux.children().is_empty());
+        assert_eq!(Image::Linux.children(), [] as [Image; 0]);
         // A layer's disk says in its name that it does not stand on its own.
         assert_eq!(Image::WindowsBuilder.disk_stem(), "layer");
         assert_eq!(Image::Windows.disk_stem(), "golden");

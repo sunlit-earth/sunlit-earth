@@ -37,8 +37,7 @@ impl StarCatalog<'_> {
         let encoded_limit =
             (((magnitude_limit.clamp(-2.0, 8.0) + 2.0) / 10.0) * 255.0).round() as u8;
         let mut low = 0_usize;
-        let mut high =
-            usize::try_from(self.count).map_or(self.payload.len() / RECORD_SIZE, |count| count);
+        let mut high = usize::try_from(self.count).unwrap_or(self.payload.len() / RECORD_SIZE);
         while low < high {
             let middle = low + (high - low) / 2;
             let magnitude = self.payload[middle * RECORD_SIZE + 15];
@@ -48,7 +47,7 @@ impl StarCatalog<'_> {
                 high = middle;
             }
         }
-        u32::try_from(low).map_or(self.count, |count| count)
+        u32::try_from(low).unwrap_or(self.count)
     }
 }
 
@@ -185,21 +184,22 @@ mod tests {
     #[test]
     fn shipped_directions_are_finite_units() {
         let catalog = embedded_catalog();
-        let every_direction_is_valid =
-            catalog
-                .instance_bytes()
-                .chunks_exact(RECORD_SIZE)
-                .all(|record| {
-                    let component = |offset| {
-                        f32::from_le_bytes(
-                            record[offset..offset + 4]
-                                .try_into()
-                                .expect("four-byte component"),
-                        )
-                    };
-                    let direction = glam::Vec3::new(component(0), component(4), component(8));
-                    direction.is_finite() && (direction.length() - 1.0).abs() < 1.0e-5
-                });
+        let every_direction_is_valid = catalog
+            .instance_bytes()
+            .as_chunks::<RECORD_SIZE>()
+            .0
+            .iter()
+            .all(|record| {
+                let component = |offset| {
+                    f32::from_le_bytes(
+                        record[offset..offset + 4]
+                            .try_into()
+                            .expect("four-byte component"),
+                    )
+                };
+                let direction = glam::Vec3::new(component(0), component(4), component(8));
+                direction.is_finite() && (direction.length() - 1.0).abs() < 1.0e-5
+            });
         assert!(every_direction_is_valid);
     }
 
@@ -211,14 +211,15 @@ mod tests {
     #[test]
     fn shipped_magnitudes_are_within_the_encodable_range() {
         let catalog = embedded_catalog();
-        let every_magnitude_is_valid =
-            catalog
-                .instance_bytes()
-                .chunks_exact(RECORD_SIZE)
-                .all(|record| {
-                    let magnitude = f32::from(record[15]) / 255.0 * 10.0 - 2.0;
-                    ENCODABLE_MAGNITUDES.contains(&magnitude)
-                });
+        let every_magnitude_is_valid = catalog
+            .instance_bytes()
+            .as_chunks::<RECORD_SIZE>()
+            .0
+            .iter()
+            .all(|record| {
+                let magnitude = f32::from(record[15]) / 255.0 * 10.0 - 2.0;
+                ENCODABLE_MAGNITUDES.contains(&magnitude)
+            });
         assert!(every_magnitude_is_valid);
     }
 
@@ -228,7 +229,9 @@ mod tests {
         assert!(
             catalog
                 .instance_bytes()
-                .chunks_exact(RECORD_SIZE)
+                .as_chunks::<RECORD_SIZE>()
+                .0
+                .iter()
                 .map(|record| record[15])
                 .is_sorted()
         );

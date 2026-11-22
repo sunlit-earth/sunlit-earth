@@ -50,7 +50,7 @@ fn a_moon_on_the_night_sky_only_adds_light() {
     let off = harness.picture(&without, FRAME);
 
     let mut brighter = 0;
-    for (before, after) in off.chunks_exact(4).zip(on.chunks_exact(4)) {
+    for (before, after) in off.as_chunks::<4>().0.iter().zip(on.as_chunks::<4>().0) {
         let sum = |px: &[u8]| u32::from(px[0]) + u32::from(px[1]) + u32::from(px[2]);
         assert!(
             sum(after) >= sum(before),
@@ -83,8 +83,10 @@ fn a_switched_off_moon_and_a_missing_texture_draw_the_same_frame() {
     let without_texture = plain(&gpu).picture(&params, FRAME);
 
     let differing = with_texture
-        .chunks_exact(4)
-        .zip(without_texture.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(without_texture.as_chunks::<4>().0)
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(
@@ -127,8 +129,10 @@ fn a_moon_at_the_view_antipode_draws_nothing() {
     let off = harness.picture(&without, FRAME);
 
     let differing = behind
-        .chunks_exact(4)
-        .zip(off.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(off.as_chunks::<4>().0)
         .filter(|(a, b)| a != b)
         .count();
     assert_eq!(
@@ -468,8 +472,10 @@ fn a_moon_over_the_sun_fades_the_glare_around_it() {
     let reach = disc.radius * 1.5;
     let mut dimmed = 0;
     for (index, (with, out)) in eclipsed
-        .chunks_exact(4)
-        .zip(burning.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(burning.as_chunks::<4>().0)
         .enumerate()
     {
         #[allow(clippy::cast_precision_loss)]
@@ -520,7 +526,13 @@ fn earthshine_lifts_the_unlit_face_only() {
     let disc = moon_disc(&params, glam::Vec2::new(FRAME.0 as f32, FRAME.1 as f32));
     let mut raised = 0;
     let width = FRAME.0 as usize;
-    for (index, (before, after)) in dark.chunks_exact(4).zip(shone.chunks_exact(4)).enumerate() {
+    for (index, (before, after)) in dark
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(shone.as_chunks::<4>().0)
+        .enumerate()
+    {
         if before == after {
             continue;
         }

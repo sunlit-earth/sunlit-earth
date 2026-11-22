@@ -13,7 +13,7 @@
 //! and differs from the others only in how far it reaches along its long edge.
 //! The renderer takes each lens on its own axis instead:
 //!
-//! - The Earth lens is `Mat4::perspective_rh(fov_y, aspect, ..)`, so its scale in
+//! - The Earth lens is `glam::camera::rh::proj::directx::perspective(fov_y, aspect, ..)`, so its scale in
 //!   pixels per unit of tan-space is `height / (2 * tan(fov / 2))` and does not
 //!   depend on the width at all.
 //! - The sky lens is stereographic and anchored the other way: `sphere.wgsl`
@@ -1184,7 +1184,10 @@ mod tests {
                 "{mode:?} {groups:?}"
             );
         }
-        assert!(render_groups(&[], DisplayMode::EveryScreen, 0).is_empty());
+        assert_eq!(
+            render_groups(&[], DisplayMode::EveryScreen, 0),
+            [] as [RenderGroup; 0]
+        );
     }
 
     /// A canvas whose pixel values encode their own position, so a crop that is
@@ -1325,7 +1328,7 @@ mod tests {
             assert!(text.contains(mode.name()), "{text}");
             assert_eq!(toml::from_str::<Wrapper>(&text).unwrap().mode, mode);
             assert_eq!(DisplayMode::from_name(mode.name()), Some(mode));
-            assert!(!mode.label().is_empty());
+            assert_ne!(mode.label(), "");
         }
         // A name nothing answers to costs the default rather than the rest of
         // the config file.

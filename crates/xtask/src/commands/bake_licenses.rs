@@ -200,8 +200,7 @@ fn parse_catalog(json: &str) -> Result<Catalog, String> {
                 license: package
                     .license
                     .as_deref()
-                    .map(normalize_expression)
-                    .unwrap_or_default(),
+                    .map_or_default(normalize_expression),
                 repository: package.repository.clone(),
             },
         );
@@ -830,7 +829,7 @@ mod tests {
             identifiers("Apache-2.0 WITH LLVM-exception OR MIT"),
             ["Apache-2.0", "LLVM-exception", "MIT"]
         );
-        assert!(identifiers("").is_empty());
+        assert_eq!(identifiers(""), [] as [&str; 0]);
     }
 
     #[test]

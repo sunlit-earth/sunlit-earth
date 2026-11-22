@@ -941,7 +941,7 @@ mod tests {
             Selection::All,
             Scope::RUN_STATE,
         );
-        assert!(plan.vms.is_empty());
+        assert_eq!(plan.vms, [] as [RunState; 0]);
         assert!(plan.refused[0].contains("production-db"), "{plan:?}");
     }
 
@@ -1266,7 +1266,7 @@ mod tests {
             Selection::One(Image::Linux),
             Scope::EVERYTHING,
         );
-        assert!(!plan.files.is_empty());
+        assert_ne!(plan.files, [] as [DeleteItem; 0]);
 
         let outcome = execute(&plan, &|_| Err("the hypervisor said no".to_owned()));
         assert_eq!(outcome.deleted, 0);

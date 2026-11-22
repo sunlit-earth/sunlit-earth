@@ -13,7 +13,7 @@
 //! and differs from the others only in how far it reaches along its long edge.
 //! The renderer takes each lens on its own axis instead:
 //!
-//! - The Earth lens is `Mat4::perspective_rh(fov_y, aspect, ..)`, so its scale in
+//! - The Earth lens is `glam::camera::rh::proj::directx::perspective(fov_y, aspect, ..)`, so its scale in
 //!   pixels per unit of tan-space is `height / (2 * tan(fov / 2))` and does not
 //!   depend on the width at all.
 //! - The sky lens is stereographic and anchored the other way: `sphere.wgsl`

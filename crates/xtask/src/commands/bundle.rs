@@ -675,6 +675,9 @@ fn write_zip(root: &Path, name: &str, items: &[Item], output: &Path) -> Result<(
             // it does not, which is the whole reason the mode question belongs
             // to the tarball instead.
             .unix_permissions(if item.executable { 0o755 } else { 0o644 })
+            // zip records the writing host's system otherwise, and a reader
+            // takes Unix modes only from an entry that says it is Unix's.
+            .system(zip::System::Unix)
             // A release binary is under the four-gigabyte mark by two orders of
             // magnitude, so this is about the header the reader gets rather
             // than about the size.
@@ -753,8 +756,12 @@ pub fn read_back(format: Format, archive: &Path) -> Result<Vec<Archived>, String
                 if entry.is_dir() {
                     continue;
                 }
+                let path = entry
+                    .name()
+                    .map_err(|e| format!("entry {index} of the zip has no readable name: {e}"))?
+                    .into_owned();
                 out.push(Archived {
-                    path: entry.name().to_owned(),
+                    path,
                     bytes: entry.size(),
                     mode: None,
                 });
@@ -1847,12 +1854,13 @@ mod tests {
         let mut checked = 0;
         for index in 0..zip.len() {
             let entry = zip.by_index(index).expect("an entry");
-            let expected = if stored(entry.name()) {
+            let name = entry.name().expect("a readable name").into_owned();
+            let expected = if stored(&name) {
                 zip::CompressionMethod::Stored
             } else {
                 zip::CompressionMethod::Deflated
             };
-            assert_eq!(entry.compression(), expected, "{}", entry.name());
+            assert_eq!(entry.compression(), expected, "{name}");
             checked += 1;
         }
         assert_eq!(checked, items.len());

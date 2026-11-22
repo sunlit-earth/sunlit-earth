@@ -25,10 +25,11 @@ fn test_mvp(width: u32, height: u32) -> [f32; 16] {
 fn test_mvp_with_eye(width: u32, height: u32, eye: glam::Vec3) -> [f32; 16] {
     let center = glam::Vec3::ZERO;
     let up = glam::Vec3::Y;
-    let view = glam::Mat4::look_at_rh(eye, center, up);
+    let view = glam::camera::rh::view::look_at_mat4(eye, center, up);
     #[allow(clippy::cast_precision_loss)]
     let aspect = width as f32 / height as f32;
-    let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), aspect, 0.1, 100.0);
+    let proj =
+        glam::camera::rh::proj::directx::perspective(20.0_f32.to_radians(), aspect, 0.1, 100.0);
     (proj * view).to_cols_array()
 }
 
@@ -3522,8 +3523,8 @@ fn looking_along_from(size: u32, axis: glam::Vec3, distance: f32) -> Uniforms {
     } else {
         glam::Vec3::Y
     };
-    let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, up);
-    let proj = glam::Mat4::perspective_rh(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
+    let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, up);
+    let proj = glam::camera::rh::proj::directx::perspective(20.0_f32.to_radians(), 1.0, 0.1, 100.0);
     Uniforms {
         mvp: (proj * view).to_cols_array(),
         eye_pos: eye.into(),

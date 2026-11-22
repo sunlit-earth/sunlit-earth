@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 524 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
+Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 523 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
 
 ## Packages
 
@@ -104,7 +104,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `derive_more 2.1.1`, [MIT](#license-13), https://github.com/JelteF/derive_more
 - `derive_more-impl 2.1.1`, [MIT](#license-13), https://github.com/JelteF/derive_more
 - `digest 0.11.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/RustCrypto/traits
-- `dirs 6.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/soc/dirs-rs
+- `dirs 7.0.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://codeberg.org/dirs/dirs-rs
 - `dirs-sys 0.5.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/dirs-dev/dirs-sys-rs
 - `dispatch 0.2.0`, [MIT](#license-13), http://github.com/SSheldon/rust-dispatch
 - `dispatch2 0.3.1`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/madsmtm/objc2
@@ -155,7 +155,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `getrandom 0.3.4`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/rust-random/getrandom
 - `gif 0.14.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/image-rs/image-gif
 - `glam 0.25.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bitshifter/glam-rs
-- `glam 0.30.10`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bitshifter/glam-rs
+- `glam 0.34.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bitshifter/glam-rs
 - `glow 0.17.0`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/grovesNL/glow
 - `glow 0.18.0`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/grovesNL/glow
 - `glutin 0.32.3`, [Apache-2.0](#license-2), https://github.com/rust-windowing/glutin
@@ -240,7 +240,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `lyon_extra 1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/nical/lyon
 - `lyon_geom 1.0.20`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/nical/lyon
 - `lyon_path 1.0.19`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/nical/lyon
-- `mach2 0.6.0`, [BSD-2-Clause](#license-3) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/JohnTitor/mach2
+- `mach2 0.7.0`, [BSD-2-Clause](#license-3) OR [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/JohnTitor/mach2
 - `matchers 0.2.0`, [MIT](#license-13), https://github.com/hawkw/matchers
 - `memchr 2.8.3`, [Unlicense](#license-16) OR [MIT](#license-13), https://github.com/BurntSushi/memchr
 - `memmap2 0.9.12`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/RazrFalcon/memmap2-rs
@@ -308,7 +308,6 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `piper 0.2.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/smol-rs/piper
 - `png 0.18.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/image-rs/image-png
 - `polling 3.11.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/smol-rs/polling
-- `pollster 0.4.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/zesterer/pollster
 - `pollster 1.0.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/zesterer/pollster
 - `polycool 0.4.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/linebender/kurbo
 - `portable-atomic 1.15.0`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/taiki-e/portable-atomic
@@ -360,7 +359,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `serde_spanned 1.1.3`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/toml-rs/toml
 - `sha2 0.11.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/RustCrypto/hashes
 - `sharded-slab 0.1.7`, [MIT](#license-13), https://github.com/hawkw/sharded-slab
-- `signal-hook 0.3.18`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/vorner/signal-hook
+- `signal-hook 0.4.6`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/vorner/signal-hook
 - `signal-hook-registry 1.4.8`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/vorner/signal-hook
 - `simd-adler32 0.3.10`, [MIT](#license-13), https://github.com/mcountryman/simd-adler32
 - `simplecss 0.2.2`, [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/linebender/simplecss
@@ -414,8 +413,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `tiny-xlib 0.2.5`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/rust-windowing/tiny-xlib
 - `tinystr 0.8.5`, [Unicode-3.0](#license-15), https://github.com/unicode-org/icu4x
 - `tinyvec 1.13.3`, [Zlib](#license-17) OR [Apache-2.0](#license-2) OR [MIT](#license-13), https://github.com/Lokathor/tinyvec
-- `toml 0.9.12+spec-1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/toml-rs/toml
-- `toml_datetime 0.7.5+spec-1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/toml-rs/toml
+- `toml 1.2.2+spec-1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/toml-rs/toml
 - `toml_datetime 1.1.3+spec-1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/toml-rs/toml
 - `toml_edit 0.25.20+spec-1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/toml-rs/toml
 - `toml_parser 1.1.6+spec-1.1.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/toml-rs/toml
@@ -491,13 +489,14 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `windows-threading 0.2.1`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/microsoft/windows-rs
 - `windows_x86_64_msvc 0.52.6`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/microsoft/windows-rs
 - `winit 0.30.13`, [Apache-2.0](#license-2), https://github.com/rust-windowing/winit
-- `winnow 0.7.15`, [MIT](#license-13), https://github.com/winnow-rs/winnow
 - `winnow 1.0.5`, [MIT](#license-13), https://github.com/winnow-rs/winnow
 - `winreg 0.56.0`, [MIT](#license-13), https://github.com/gentoo90/winreg-rs
 - `writeable 0.6.4`, [Unicode-3.0](#license-15), https://github.com/unicode-org/icu4x
 - `x11-dl 2.21.0`, [MIT](#license-13), https://github.com/AltF02/x11-rs.git
 - `x11rb 0.13.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/psychon/x11rb
+- `x11rb 0.14.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/psychon/x11rb
 - `x11rb-protocol 0.13.2`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/psychon/x11rb
+- `x11rb-protocol 0.14.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/psychon/x11rb
 - `xcursor 0.3.11`, [MIT](#license-13), https://github.com/esposm03/xcursor-rs
 - `xkbcommon-dl 0.4.2`, [MIT](#license-13), https://github.com/rust-windowing/xkbcommon-dl
 - `xkeysym 0.2.1`, [MIT](#license-13) OR [Apache-2.0](#license-2) OR [Zlib](#license-17), https://github.com/notgull/xkeysym

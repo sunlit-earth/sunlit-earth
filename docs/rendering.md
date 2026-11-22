@@ -292,7 +292,7 @@ Producing a wallpaper is the most expensive thing the engine does: a render at t
 
 Two lenses, and the renderer does not anchor them to the same axis:
 
-- The Earth lens is `Mat4::perspective_rh(fov_y, aspect, ..)`. Its scale in pixels per unit of tan-space is `height / (2 * tan(camera_fov / 2))` and does not depend on the width at all.
+- The Earth lens is `glam::camera::rh::proj::directx::perspective(fov_y, aspect, ..)`. Its scale in pixels per unit of tan-space is `height / (2 * tan(camera_fov / 2))` and does not depend on the width at all.
 - The sky lens is stereographic and anchored the other way. `sky_lens_project` builds NDC as `radial * r / edge * vec2(1, aspect)`, which puts the frame's *horizontal* edge at `tan(sky_fov / 4)`, so its scale is `width / (2 * tan(sky_fov / 4))` and does not depend on the height.
 - The pan is in NDC, so it stretches with the frame on both axes.
 

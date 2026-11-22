@@ -253,7 +253,7 @@ impl OrbitalCamera {
         Self {
             longitude_deg,
             // Clamp to avoid gimbal lock: at ±90° the eye aligns with the
-            // up vector, making look_at_rh produce a NaN view matrix.
+            // up vector, making look_at_mat4 produce a NaN view matrix.
             latitude_deg: latitude_deg.clamp(-89.9, 89.9),
             distance,
             fov_deg: DEFAULT_CAMERA_FOV,
@@ -316,7 +316,7 @@ impl OrbitalCamera {
             + right * self.yaw_deg.to_radians().sin()
             + cam_up * self.pitch_deg.to_radians().sin();
 
-        let base_view = Mat4::look_at_rh(eye, target, up);
+        let base_view = glam::camera::rh::view::look_at_mat4(eye, target, up);
 
         let tilt = Mat4::from_rotation_z(self.tilt_deg.to_radians());
         tilt * base_view
@@ -324,7 +324,12 @@ impl OrbitalCamera {
 
     /// Compute the projection matrix for the given aspect ratio.
     pub(crate) fn projection_matrix(&self, aspect_ratio: f32) -> Mat4 {
-        Mat4::perspective_rh(self.fov_deg.to_radians(), aspect_ratio, 0.1, 100.0)
+        glam::camera::rh::proj::directx::perspective(
+            self.fov_deg.to_radians(),
+            aspect_ratio,
+            0.1,
+            100.0,
+        )
     }
 
     /// Compute the combined model-view-projection matrix.

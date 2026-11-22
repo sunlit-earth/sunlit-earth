@@ -216,7 +216,7 @@ mod tests {
         let eye_toward_moon = |distance: f32| {
             let mut i = inputs(&sky, &camera, 1.0);
             i.eye = sky.moon_position.normalize() * distance;
-            i.view = Mat4::look_at_rh(i.eye, sky.moon_position, Vec3::Y);
+            i.view = glam::camera::rh::view::look_at_mat4(i.eye, sky.moon_position, Vec3::Y);
             place_moon(&i).disc.expect("the moon is on screen").radius
         };
         let small = eye_toward_moon(2.0);

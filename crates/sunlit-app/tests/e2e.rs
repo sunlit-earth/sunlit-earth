@@ -644,18 +644,8 @@ fn test_f11_fills_the_monitor_and_escape_restores_the_window() {
     let socket_name = unique_socket_name();
     let (mut guard, _stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
     let pid = guard.child_mut().id();
-    let found = {
-        let deadline = Instant::now() + SETTLE;
-        loop {
-            let window = MainWindow::find(pid);
-            if window.is_some() || Instant::now() >= deadline {
-                break window;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    };
-    let Some((window, (before, monitor))) =
-        found.and_then(|window| window.rects().map(|rects| (window, rects)))
+    let Some((window, (before, monitor))) = find_main_window(pid, SETTLE)
+        .and_then(|window| window.rects().map(|rects| (window, rects)))
     else {
         quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
         skip_case(
@@ -684,6 +674,74 @@ fn test_f11_fills_the_monitor_and_escape_restores_the_window() {
     wait_for(monitor, "F11 fills the monitor");
     window.press(Key::Escape).expect("Escape");
     wait_for(before, "Esc restores the window");
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+}
+
+/// The app's main window once the desktop shows it, or `None` when this
+/// session cannot look or it never appears within `settle`.
+fn find_main_window(pid: u32, settle: Duration) -> Option<MainWindow> {
+    let deadline = Instant::now() + settle;
+    loop {
+        let window = MainWindow::find(pid);
+        if window.is_some() || Instant::now() >= deadline {
+            return window;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A saved window at the origin and taller than any screen, the geometry a
+/// test once wrote into a real config, comes back whole on the screen: inside
+/// the monitor's work area on Windows, inside a monitor with the window
+/// manager's frame on X11.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_a_saved_window_taller_than_the_screen_comes_back_inside_it() {
+    const CASE: &str = "test_a_saved_window_taller_than_the_screen_comes_back_inside_it";
+    const SETTLE: Duration = Duration::from_secs(10);
+
+    let config = isolated_config_path();
+    fs::write(
+        &config,
+        "[sunlit.earth]\nwindow_x = 0\nwindow_y = 0\nwindow_width = 1200\nwindow_height = 5000\n",
+    )
+    .expect("write the throwaway config");
+
+    let socket_name = unique_socket_name();
+    let (mut guard, _stdout_watcher, stderr_watcher) =
+        Spawn::new(&socket_name).config(config).start();
+    let pid = guard.child_mut().id();
+    let Some(window) =
+        find_main_window(pid, SETTLE).filter(|window| window.outer_and_areas().is_some())
+    else {
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+        skip_case(
+            CASE,
+            "this session cannot read the window's rectangle (Wayland, macOS, or no xdotool)",
+        );
+        return;
+    };
+
+    let inside = |[left, top, right, bottom]: [i32; 4], area: &[i32; 4]| {
+        area[0] <= left && area[1] <= top && right <= area[2] && bottom <= area[3]
+    };
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        let (outer, areas) = window
+            .outer_and_areas()
+            .expect("the window's rectangle stays readable");
+        if areas.iter().any(|area| inside(outer, area)) {
+            println!("{CASE}: the window is at {outer:?}, inside one of {areas:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the window is at {outer:?}, inside none of {areas:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }

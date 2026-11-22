@@ -87,11 +87,27 @@ The main window has three menus. On Windows they are in the window's own menu ba
 
 - **File**: Export Image… (Ctrl+E) saves the view as a picture file (Exporting an image, below). Set as Wallpaper, Revert to Saved and Load Defaults do what the panel's three buttons do. Close Window does what the window's close button does: with a tray icon the app keeps running, without one it quits. Quit (Ctrl+Q) ends the app and remembers where the window was and how large. On macOS it is the App menu's Quit Sunlit Earth (⌘Q) instead.
 - **View**: Reset Camera puts north up and the look and the frame back to their defaults, as the N and the two ↺ on the camera panel do, and keeps the position and the zoom. On Windows and Linux, Controls, Frame Guides and Pin Time Bar are checks that do what H, F and the time bar's pin do, and each carries its mark while it is on. On macOS the same three are Toggle Controls, Toggle Frame Guides and Toggle Time Bar Pin, which do the same and carry no mark. On Windows and Linux, Enter Full Screen (F11) is the last entry. On macOS the app adds no entry of its own and relies on the Enter Full Screen that macOS adds to View by itself, which has yet to be seen on a Mac; ⌃⌘F and the green title bar button work either way.
-- **Help**: Mouse and Keyboard (F1) opens and closes the sheet of every gesture and key; F1 works anywhere in the window, a text field included. Website and Report an Issue… open the browser. Open Data Folder opens the folder that holds `config.toml`, the caches and the generated wallpapers (see App data below) in the file manager. About Sunlit Earth opens the About window; on macOS it is in the App menu instead.
+- **Help**: Mouse and Keyboard (F1) opens and closes the sheet of every gesture and key; F1 works anywhere in the window, a text field included. Website and Report an Issue… open the browser. Open Data Folder opens the folder that holds `config.toml`, the caches and the generated wallpapers (see App data below) in the file manager. Check for Updates… opens the update window and checks at once (Checking for updates, below). About Sunlit Earth opens the About window; on macOS it is in the App menu instead.
 
 On macOS the App menu is the one the toolkit makes for every app, with the app's own About Sunlit Earth and Quit Sunlit Earth in it. Its Hide (⌘H) hides the window without the tray menu noticing, so the tray's first entry still says Hide afterwards: choosing it once puts things right, and choosing it again shows the window.
 
-The tray menu has Show or Hide, whichever the window needs next, then Refresh Now, Auto-refresh and Start on login, then Website, About and Quit. On Windows and Linux a click on the tray icon also shows or hides the window; on macOS a click opens the menu.
+The tray menu has Show or Hide, whichever the window needs next, then Refresh Now, Auto-refresh and Start on login, then Check for Updates…, Website, About and Quit. On Windows and Linux a click on the tray icon also shows or hides the window; on macOS a click opens the menu.
+
+## Checking for updates
+
+Once a day Sunlit Earth asks `https://sunlit.earth/releases/v1.json` whether a newer release exists. The first check runs 30 seconds after the app starts, unless the last one was less than a day ago; after that it runs every 24 hours for as long as the app runs, and a computer that slept through the day checks soon after it wakes. A check that fails says nothing and tries again an hour later. Nothing is downloaded or installed: the app tells you, and you update the way you installed it.
+
+While a newer version is on offer, the tray's entry reads "Update Available: 0.7.0…" instead of "Check for Updates…", and a banner at the foot of the panel says "Version 0.7.0 is available" with a Details button and a close button. Details opens the update window. Once the update window has been opened or the banner closed, the banner stays away for that version, across restarts too, and comes back for the next one.
+
+The update window lists every release since the one you run, newest first, with what changed in each, and a Release Notes link to the changelog on GitHub. Each release's version number links to that release's page on GitHub. Below that it says how to update:
+
+- Installed with Scoop: quit Sunlit Earth, then run `scoop update sunlit-earth`, which the window shows in a field with a Copy button. If Scoop still reports the old version as current, run `scoop update` first.
+- Installed with Homebrew: the same with `brew upgrade sunlit-earth` on Linux or `brew upgrade --cask sunlit-earth` on macOS, and `brew update` first if Homebrew reports the old version as current.
+- Unpacked from an archive: a Download button opens the archive for your system in the browser, and below it the window says what to do with it. Where there is no archive for your system, the button opens the website's download section instead.
+
+The tray's entry keeps naming the version until you update. Check for Updates… always checks at once, whatever the schedule and the setting say, and shows a failure with its reason.
+
+To stop the daily check, set `update_check_enabled = false` in `config.toml`; there is no switch in the window yet. Check for Updates… still works, and what an earlier check found is still shown. A check is one request for one static file, with the user agent `sunlit.earth/<version> (<os>; <arch>)`: no identifier, no cookie, nothing about your installation.
 
 ## Exporting an image
 
@@ -161,7 +177,7 @@ Keys act on the preview, which has the keyboard when the window opens and takes 
 
 ## App data and environment overrides
 
-By default, `config.toml`, the cloud cache, the tile packs the Earth is drawn from (`tile_cache/`, about 416 MiB for the year, rebuilt on first launch and when the faces change), generated wallpaper directories, and memory metrics CSV files live under the platform's local app data directory:
+By default, `config.toml`, the cloud cache, the tile packs the Earth is drawn from (`tile_cache/`, about 416 MiB for the year, rebuilt on first launch and when the faces change), generated wallpaper directories, memory metrics CSV files, and the update check's `update_feed.json` (the last release file it received) and `update_state.toml` (when it last checked, its `ETag`, and the version whose banner was dismissed) live under the platform's local app data directory:
 
 - Windows uses `%LOCALAPPDATA%\SunlitEarth`.
 - Linux uses `~/.local/share/SunlitEarth`.

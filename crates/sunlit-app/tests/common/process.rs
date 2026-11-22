@@ -500,12 +500,14 @@ pub(crate) struct Spawn<'a> {
     args: Vec<&'a str>,
     env: Vec<(&'a str, std::ffi::OsString)>,
     clouds: bool,
+    update_feed: Option<String>,
     ready: Ready,
 }
 
 impl<'a> Spawn<'a> {
     /// A start in whichever of tray and windowed mode this session can hold,
-    /// with a throwaway config and no cloud fetcher.
+    /// with a throwaway config, no cloud fetcher and no scheduled update
+    /// check.
     pub(crate) fn new(socket_name: &'a str) -> Self {
         Self {
             socket_name,
@@ -513,6 +515,7 @@ impl<'a> Spawn<'a> {
             args: lifecycle_mode_args().to_vec(),
             env: Vec::new(),
             clouds: false,
+            update_feed: None,
             ready: Ready::FirstFrame,
         }
     }
@@ -543,6 +546,14 @@ impl<'a> Spawn<'a> {
         self
     }
 
+    /// Check for updates against `url` and on the app's own schedule, which
+    /// only the update case wants: every other case asks nothing of
+    /// sunlit.earth.
+    pub(crate) fn with_update_feed(mut self, url: String) -> Self {
+        self.update_feed = Some(url);
+        self
+    }
+
     /// What to wait for before handing the app back.
     pub(crate) fn ready(mut self, ready: Ready) -> Self {
         self.ready = ready;
@@ -556,6 +567,12 @@ impl<'a> Spawn<'a> {
         if !self.clouds {
             command.env("SUNLIT_EARTH_NO_CLOUDS", "1");
         }
+        match &self.update_feed {
+            Some(url) => command
+                .env("SUNLIT_EARTH_UPDATE_URL", url)
+                .env_remove("SUNLIT_EARTH_NO_UPDATE_CHECK"),
+            None => command.env("SUNLIT_EARTH_NO_UPDATE_CHECK", "1"),
+        };
         for (key, value) in &self.env {
             command.env(key, value);
         }

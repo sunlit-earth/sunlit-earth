@@ -96,7 +96,7 @@ cargo xtask manifests --version <version> --assets <dir> --out <dir>
 1. Bump `version` under `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace` so `Cargo.lock` follows, and commit the two files on `main` as `Release X.Y.Z`.
 2. Push `main`, then tag that commit `vX.Y.Z` and push the tag. `release.yml` refuses a tag that does not name the workspace version, and a tag with a suffix such as `v0.3.0-beta.1` becomes a prerelease.
 3. The tag push builds the five targets on native runners, bundles and verifies each with `cargo xtask bundle --verify`, and creates a draft GitHub release with generated notes, the archives and one `build-info.json`. A `workflow_dispatch` of `release.yml` on a branch runs the same builds as a dry run and publishes nothing.
-4. Publishing the draft is done by hand on GitHub. Publishing a stable release runs `package-managers.yml`, which updates `scoop-bucket` and `homebrew-tap`; prereleases leave both alone.
+4. Before the draft is published, the release's highlights go into `changes.toml` in `sunlit-earth/website`, which the website's "What's new" and the update window both show; an entry for a version not yet published is ignored, so it can be pushed ahead of time. Publishing the draft is done by hand on GitHub. Publishing a stable release runs `package-managers.yml`, which updates `scoop-bucket` and `homebrew-tap` and then sends `release-published` to the website, whose rebuild writes `releases/v1.json`, the file the update check reads; prereleases leave all three alone.
 5. The download links in README name the version, so they need updating after publishing, with the user's permission like any README edit.
 
 ### Rare

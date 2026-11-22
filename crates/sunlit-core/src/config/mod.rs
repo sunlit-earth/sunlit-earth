@@ -376,6 +376,12 @@ pub struct AppConfig {
     pub auto_refresh_enabled: bool,
     pub auto_refresh_interval_minutes: u32,
 
+    // Updates
+    /// Whether the app asks for the release file once a day. Help > Check for
+    /// Updates… works either way. No control in the window until there is a
+    /// settings window, so a line in the file turns it off.
+    pub update_check_enabled: bool,
+
     // Displays
     /// How this session's monitors relate to each other.
     ///
@@ -536,6 +542,7 @@ impl Default for AppConfig {
             night_saturation: 0.85,
             auto_refresh_enabled: false,
             auto_refresh_interval_minutes: 5,
+            update_check_enabled: true,
             display_mode: DisplayMode::default(),
             anchor_monitor: String::new(),
             scene_time: SceneTime::Live,
@@ -923,6 +930,7 @@ mod tests {
             anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 15,
+            update_check_enabled: false,
             scene_time: SceneTime::fixed(time::macros::datetime!(2030-03-17 14:30 UTC)),
             overlays_hidden: true,
             time_zone: TimeZoneChoice::Utc,
@@ -1169,6 +1177,7 @@ sky_fov = 111.0
             anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 10,
+            update_check_enabled: false,
             scene_time: SceneTime::fixed(time::macros::datetime!(2020-07-18 08:15:30.25 UTC)),
             overlays_hidden: true,
             time_zone: TimeZoneChoice::Utc,

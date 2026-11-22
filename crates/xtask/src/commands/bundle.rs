@@ -428,8 +428,10 @@ fn readme(platform: Platform, sources: &Sources) -> Item {
 /// the one candidate this layout needed adding.
 ///
 /// `CFBundleShortVersionString` is what a user is shown, so the version is
-/// substituted here rather than left to a build step. The prerelease suffix
-/// goes in as it is.
+/// substituted here rather than left to a build step. Apple allows digits and
+/// periods only in both version keys, so a prerelease or build suffix is cut:
+/// `0.6.0-beta.1` goes in as `0.6.0`. Nothing compares the keys; the update
+/// check compares the version compiled into the binary.
 pub fn app_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String> {
     let template_path = sources.repo.join(INFO_PLIST);
     let template = std::fs::read_to_string(&template_path)
@@ -441,7 +443,8 @@ pub fn app_layout(sources: &Sources, version: &str) -> Result<Vec<Item>, String>
             template_path.display()
         ));
     }
-    let plist = template.replace(VERSION_PLACEHOLDER, version);
+    let numeric = version.split(['-', '+']).next().unwrap_or(version);
+    let plist = template.replace(VERSION_PLACEHOLDER, numeric);
 
     let resources = "Contents/Resources";
     let mut items = vec![
@@ -2050,9 +2053,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `CFBundleShortVersionString` is what a user is shown and what an updater
-    /// would compare, so a bundle whose plist still said `@VERSION@` would be a
-    /// release nobody could name.
+    /// `CFBundleShortVersionString` is what a user is shown, so a bundle whose
+    /// plist still said `@VERSION@` would be a release nobody could name. Both
+    /// keys take digits and periods only, so a prerelease goes in without its
+    /// suffix.
     #[test]
     fn the_plist_carries_the_version_and_the_identity_that_never_changes() {
         let dir = scratch("app_plist");
@@ -2073,7 +2077,8 @@ mod tests {
             );
         };
         let text = String::from_utf8(bytes.clone()).expect("the plist is text");
-        assert!(text.contains("0.1.0-beta.4"), "{text}");
+        assert_eq!(text.matches("<string>0.1.0</string>").count(), 2, "{text}");
+        assert!(!text.contains("beta"), "{text}");
         assert!(!text.contains(VERSION_PLACEHOLDER), "{text}");
 
         // The real template, not the fabricated one: the identifier can never

@@ -318,7 +318,7 @@ mod tests {
     }
 
     fn assert_progress_runs_from_zero_to_one(seen: &[f32]) {
-        assert_ne!(seen, []);
+        assert_ne!(seen, &[] as &[f32]);
         assert!(seen[0] >= 0.0, "{seen:?}");
         assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "{seen:?}");
         approx::assert_relative_eq!(*seen.last().unwrap(), 1.0);

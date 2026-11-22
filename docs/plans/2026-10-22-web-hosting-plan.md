@@ -9,7 +9,7 @@ The governing requirement is that the running cost is zero and stays zero: a hob
 | Host name | Serves | Changes when | Deployed by |
 |---|---|---|---|
 | `sunlit.earth`, `www.sunlit.earth` | The website | The site changes, a release is published | `sunlit-earth/website` |
-| `api.sunlit.earth` | `v1/latest.json`, the update check | A release is published | `sunlit-earth/website` |
+| `api.sunlit.earth` | Dropped: the update check reads `https://sunlit.earth/releases/v1.json` instead ([2026-11-22-update-check-plan.md](2026-11-22-update-check-plan.md)) | | |
 | `clouds.sunlit.earth` | `v1/{w}x{h}/clouds.jpg`, the cloud maps | Upstream publishes a new map, every one to three hours | `sunlit-earth/clouds` |
 
 It comes in four phases, each useful on its own:
@@ -18,6 +18,8 @@ It comes in four phases, each useful on its own:
 2. The cloud mirror, and the app pointed at it.
 3. The update check, in `latest.json` and in the app, and counting the checks.
 4. Our own cloud maps.
+
+Phase 3 is replaced by [2026-11-22-update-check-plan.md](2026-11-22-update-check-plan.md), which puts the file on the main domain as `releases/v1.json`, served by the website's own Worker, in a format of its own, and has `package-managers.yml` send the release dispatch of open item 1. Counting the checks stays here.
 
 ## Status
 
@@ -159,6 +161,8 @@ The three maps update within two hours of upstream changing, a conditional reque
 
 ## Phase 3: The update check
 
+Replaced by [2026-11-22-update-check-plan.md](2026-11-22-update-check-plan.md), except for the counting. That plan serves `releases/v1.json` from the website's own Worker rather than `v1/latest.json` from `api.sunlit.earth`, lists every stable release since the installed one rather than the newest stable release and prerelease, and settles the app side below. What follows is kept as it was written.
+
 This phase has an app side large enough for its own plan. What follows is the hosting half, the file format between the two, and the counting.
 
 ### `latest.json`
@@ -269,4 +273,4 @@ All in phase 1. The website repository's README describes the site as built.
 
 ## Open items
 
-1. **The release dispatch is not sent.** `deploy.yml` in `sunlit-earth/website` runs on a `repository_dispatch` of type `release-published`, and that repository's README says the app repository sends one, but `package-managers.yml` has no such step yet. Until it does, the download links and "What's new" follow a release only after a push to the website repository or a manual `workflow_dispatch`. The 0.5.0 release predates the Zola site, so no release has been missed so far. The `sunlit-earth-packaging` App needs access to `sunlit-earth/website` for the token it creates to send the dispatch.
+1. **The release dispatch is not sent.** Closed by step 9 of [2026-11-22-update-check-plan.md](2026-11-22-update-check-plan.md): the `push` job of `package-managers.yml` sends it as its last step, once the packaging app is installed on the website repository. What follows is the item as it was written. `deploy.yml` in `sunlit-earth/website` runs on a `repository_dispatch` of type `release-published`, and that repository's README says the app repository sends one, but `package-managers.yml` has no such step yet. Until it does, the download links and "What's new" follow a release only after a push to the website repository or a manual `workflow_dispatch`. The 0.5.0 release predates the Zola site, so no release has been missed so far. The `sunlit-earth-packaging` App needs access to `sunlit-earth/website` for the token it creates to send the dispatch.

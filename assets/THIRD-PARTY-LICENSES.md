@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 523 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
+Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` beside this file. This file contains the license of each of the 524 third-party crates the program links. Each text below is the canonical text of its identifier as SPDX publishes it. `LicenseRef-Slint-Royalty-free-2.0` and `LicenseRef-Slint-Software-3.0` are the two texts SPDX does not publish, having no page for either, and those are the copies from Slint's own repository.
 
 ## Packages
 
@@ -351,6 +351,7 @@ Sunlit Earth is licensed under the GPL-3.0-or-later, whose text is in `LICENSE` 
 - `scoped-tls-hkt 0.1.5`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/Diggsey/scoped-tls-hkt
 - `scopeguard 1.2.0`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/bluss/scopeguard
 - `sctk-adwaita 0.10.1`, [MIT](#license-13), https://github.com/PolyMeilex/sctk-adwaita
+- `semver 1.0.28`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/dtolnay/semver
 - `serde 1.0.229`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/serde-rs/serde
 - `serde_core 1.0.229`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/serde-rs/serde
 - `serde_derive 1.0.229`, [MIT](#license-13) OR [Apache-2.0](#license-2), https://github.com/serde-rs/serde

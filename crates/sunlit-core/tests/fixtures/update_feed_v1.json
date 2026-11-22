@@ -1,0 +1,118 @@
+{
+  "releases": [
+    {
+      "version": "0.7.0",
+      "date": "2027-01-12",
+      "notes": "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.7.0",
+      "highlights": [
+        "Check for updates from the Help menu",
+        "Faster start on a CPU adapter"
+      ],
+      "assets": {
+        "windows-x86_64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-windows-x86_64.zip",
+          "size": 35800000
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-linux-x86_64.tar.gz",
+          "size": 36100000
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-linux-aarch64.tar.gz",
+          "size": 35200000
+        },
+        "macos-aarch64-app": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-macos-aarch64-app.zip",
+          "size": 34900000
+        },
+        "macos-x86_64-app": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-macos-x86_64-app.zip",
+          "size": 35600000
+        },
+        "macos-aarch64-terminal": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-macos-aarch64-terminal.tar.gz",
+          "size": 34800000
+        },
+        "macos-x86_64-terminal": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.7.0/sunlit-earth-0.7.0-macos-x86_64-terminal.tar.gz",
+          "size": 35500000
+        }
+      }
+    },
+    {
+      "version": "0.6.1",
+      "date": "2026-12-15",
+      "notes": "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.6.1",
+      "highlights": [],
+      "assets": {
+        "windows-x86_64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.1/sunlit-earth-0.6.1-windows-x86_64.zip",
+          "size": 35800000
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.1/sunlit-earth-0.6.1-linux-x86_64.tar.gz",
+          "size": 36100000
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.1/sunlit-earth-0.6.1-linux-aarch64.tar.gz",
+          "size": 35200000
+        },
+        "macos-aarch64-app": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.1/sunlit-earth-0.6.1-macos-aarch64-app.zip",
+          "size": 34900000
+        },
+        "macos-x86_64-app": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.1/sunlit-earth-0.6.1-macos-x86_64-app.zip",
+          "size": 35600000
+        },
+        "macos-aarch64-terminal": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.1/sunlit-earth-0.6.1-macos-aarch64-terminal.tar.gz",
+          "size": 34800000
+        },
+        "macos-x86_64-terminal": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.1/sunlit-earth-0.6.1-macos-x86_64-terminal.tar.gz",
+          "size": 35500000
+        }
+      }
+    },
+    {
+      "version": "0.6.0",
+      "date": "2026-12-01",
+      "notes": "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.6.0",
+      "highlights": [
+        "Export the current view as an image",
+        "A menu bar, and full screen with F11"
+      ],
+      "assets": {
+        "windows-x86_64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.0/sunlit-earth-0.6.0-windows-x86_64.zip",
+          "size": 35800000
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.0/sunlit-earth-0.6.0-linux-x86_64.tar.gz",
+          "size": 36100000
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.0/sunlit-earth-0.6.0-linux-aarch64.tar.gz",
+          "size": 35200000
+        },
+        "macos-aarch64-app": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.0/sunlit-earth-0.6.0-macos-aarch64-app.zip",
+          "size": 34900000
+        },
+        "macos-x86_64-app": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.0/sunlit-earth-0.6.0-macos-x86_64-app.zip",
+          "size": 35600000
+        },
+        "macos-aarch64-terminal": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.0/sunlit-earth-0.6.0-macos-aarch64-terminal.tar.gz",
+          "size": 34800000
+        },
+        "macos-x86_64-terminal": {
+          "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.6.0/sunlit-earth-0.6.0-macos-x86_64-terminal.tar.gz",
+          "size": 35500000
+        }
+      }
+    }
+  ]
+}

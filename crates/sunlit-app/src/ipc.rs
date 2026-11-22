@@ -233,6 +233,10 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
             debug!("ipc: received {cmd} command");
             report_autostart(cmd, window_weak);
         }
+        "check-update" => {
+            debug!("ipc: received check-update command");
+            slint::invoke_from_event_loop(crate::update::check_now).ok();
+        }
         "export-cancel" => {
             debug!("ipc: received export-cancel command");
             slint::invoke_from_event_loop(crate::export::cancel_from_ipc).ok();

@@ -6979,6 +6979,63 @@ fn test_geometry_is_kept_only_from_a_window_on_screen() {
     assert!(!is_on_screen(window.window()), "hidden");
 }
 
+/// Set as Wallpaper, the display plan and the auto refresh switch all save the
+/// whole config, and the tray drives the last with the window hidden. Those
+/// saves take the geometry under the same rule as closing the window does.
+#[test]
+fn test_a_config_save_keeps_the_stored_geometry_unless_the_window_is_on_screen() {
+    use sunlit_core::config::AppConfig;
+
+    let window = create_window();
+    let stored = AppConfig {
+        window_x: Some(300),
+        window_y: Some(200),
+        window_width: Some(900),
+        window_height: Some(700),
+        ..AppConfig::default()
+    };
+    let geometry = |config: &AppConfig| {
+        (
+            config.window_x,
+            config.window_y,
+            config.window_width,
+            config.window_height,
+        )
+    };
+    let kept = geometry(&stored);
+
+    assert_eq!(geometry(&saved_with(&window, &stored)), kept, "never shown");
+
+    window.show().unwrap();
+    let size = window.window().size();
+    let position = window.window().position();
+    assert_eq!(
+        geometry(&saved_with(&window, &stored)),
+        (
+            Some(position.x),
+            Some(position.y),
+            Some(size.width),
+            Some(size.height)
+        ),
+        "shown, the window's own geometry is saved"
+    );
+
+    window.window().set_minimized(true);
+    assert_eq!(geometry(&saved_with(&window, &stored)), kept, "minimized");
+    window.window().set_minimized(false);
+
+    window.window().set_fullscreen(true);
+    if window.window().is_fullscreen() {
+        assert_eq!(geometry(&saved_with(&window, &stored)), kept, "full screen");
+    } else {
+        println!("skipping the full screen half: the testing backend reports no full screen");
+    }
+    window.window().set_fullscreen(false);
+
+    window.hide().unwrap();
+    assert_eq!(geometry(&saved_with(&window, &stored)), kept, "hidden");
+}
+
 /// The tray's last entry is Quit, the word the File menu and the version
 /// notice use. The testing backend shows no tray menu, so this reads the
 /// source the tray is compiled from.

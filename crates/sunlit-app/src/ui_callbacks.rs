@@ -1287,15 +1287,15 @@ pub fn read_config_from_window(window: &MainWindow, link: &EngineLink) -> AppCon
 ///
 /// `keep_stored_resolution` is the one exception to reading the window: with it
 /// set, the width in the window is a one-run override and the stored one wins.
+/// The geometry is read only when [`crate::menu::current_geometry`] has one, so
+/// a save while the window is hidden, minimized or in full screen keeps the
+/// stored one.
 pub fn read_config_from_window_onto(
     window: &MainWindow,
     aa_counts: &[u32],
     stored: &AppConfig,
     keep_stored_resolution: bool,
 ) -> AppConfig {
-    let pos = window.window().position();
-    let size = window.window().size();
-
     let texture_resolution = if keep_stored_resolution {
         stored.texture_resolution
     } else {
@@ -1315,12 +1315,14 @@ pub fn read_config_from_window_onto(
         texture_resolution,
         display_mode: displays::mode_from_window(window),
         anchor_monitor: displays::anchor_to_store(window, &stored.anchor_monitor),
-        window_x: Some(pos.x),
-        window_y: Some(pos.y),
-        window_width: Some(size.width),
-        window_height: Some(size.height),
         ..stored.clone()
     };
+    if let Some((x, y, width, height)) = crate::menu::current_geometry(window) {
+        config.window_x = Some(x);
+        config.window_y = Some(y);
+        config.window_width = Some(width);
+        config.window_height = Some(height);
+    }
     read_params_from_window(window, aa_counts).write_to_config(&mut config);
     config
 }

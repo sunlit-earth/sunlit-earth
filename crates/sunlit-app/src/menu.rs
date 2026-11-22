@@ -84,24 +84,40 @@ pub fn quit(window: &MainWindow) {
 }
 
 /// Store where the window is and how big, for the next start to open at, when
-/// it is [on screen](is_on_screen) and not in full screen, whose size is the
-/// monitor's. Otherwise the geometry saved before stays, which for full
-/// screen is the window's as it was on entering.
+/// there is a [geometry worth keeping](current_geometry). Otherwise the
+/// geometry saved before stays, which for full screen is the window's as it was
+/// on entering.
 ///
 /// :param window: the main window
 pub fn save_geometry(window: &MainWindow) {
+    if let Some((x, y, width, height)) = current_geometry(window) {
+        config::save_window_geometry(x, y, width, height);
+    }
+}
+
+/// The window's position and size when they are the ones a person placed: it
+/// is [on screen](is_on_screen) and not in full screen, whose size is the
+/// monitor's.
+///
+/// Every save of the geometry goes through this, so a save made while the
+/// window is hidden, minimized or in full screen keeps the stored one.
+///
+/// :param window: the main window
+/// :returns: the outer position and the inner size, or `None` when there is
+///     nothing worth keeping
+pub fn current_geometry(window: &MainWindow) -> Option<(i32, i32, u32, u32)> {
     let window = window.window();
     if !is_on_screen(window) {
         debug!("window not on screen, keeping the saved geometry");
-        return;
+        return None;
     }
     if window.is_fullscreen() {
         debug!("window in full screen, keeping the saved geometry");
-        return;
+        return None;
     }
     let size = window.size();
     let position = window.position();
-    config::save_window_geometry(position.x, position.y, size.width, size.height);
+    Some((position.x, position.y, size.width, size.height))
 }
 
 /// Whether the window's position and size are the ones a person sees.

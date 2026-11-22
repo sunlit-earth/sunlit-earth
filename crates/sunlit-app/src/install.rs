@@ -94,7 +94,7 @@ pub enum UpdateHelp {
         hint: &'static str,
     },
     /// Download the archive, then follow `steps`.
-    Archive { steps: [&'static str; 2] },
+    Archive { steps: &'static [&'static str] },
 }
 
 const COPY_OVER: &str = "Quit Sunlit Earth, unpack the download, and copy the files in its folder over those in the folder Sunlit Earth runs from.";
@@ -117,15 +117,15 @@ pub fn update_help(kind: InstallKind, os: &str, bundled: bool) -> UpdateHelp {
         },
         InstallKind::Archive => UpdateHelp::Archive {
             steps: match os {
-                "windows" => [
+                "windows" => &[
                     COPY_OVER,
-                    "Your settings are kept. Windows may ask once more before it starts the new version.",
+                    "Windows may ask once more before it starts the new version.",
                 ],
-                "macos" if bundled => [
+                "macos" if bundled => &[
                     "Quit Sunlit Earth, unzip the download, and move the new Sunlit Earth.app to Applications in place of the old one.",
-                    "Your settings are kept. macOS may ask once more before it opens the new version, as it did the first time.",
+                    "macOS may ask once more before it opens the new version, as it did the first time.",
                 ],
-                _ => [COPY_OVER, "Your settings are kept."],
+                _ => &[COPY_OVER],
             },
         },
     }
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn every_archive_says_to_quit_first_and_that_the_settings_are_kept() {
+    fn every_archive_says_to_quit_first() {
         for (os, bundled) in [
             ("windows", false),
             ("linux", false),
@@ -259,7 +259,6 @@ mod tests {
                 panic!("an archive has steps");
             };
             assert!(steps[0].starts_with("Quit Sunlit Earth"), "{os}");
-            assert!(steps[1].starts_with("Your settings are kept."), "{os}");
         }
         let UpdateHelp::Archive { steps } = update_help(InstallKind::Archive, "macos", true) else {
             unreachable!()

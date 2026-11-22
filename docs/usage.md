@@ -103,7 +103,7 @@ The update window lists every release since the one you run, newest first, with 
 
 - Installed with Scoop: quit Sunlit Earth, then run `scoop update sunlit-earth`, which the window shows in a field with a Copy button. If Scoop still reports the old version as current, run `scoop update` first.
 - Installed with Homebrew: the same with `brew upgrade sunlit-earth` on Linux or `brew upgrade --cask sunlit-earth` on macOS, and `brew update` first if Homebrew reports the old version as current.
-- Unpacked from an archive: a Download button opens the archive for your system in the browser, and two lines say what to do with it. Where there is no archive for your system, the button opens the website's download section instead. Your settings are kept either way.
+- Unpacked from an archive: a Download button opens the archive for your system in the browser, and below it the window says what to do with it. Where there is no archive for your system, the button opens the website's download section instead.
 
 Skip This Version takes the version off the tray and the banner. Help > Check for Updates… still shows it, and a later version is offered as usual. Check for Updates… always checks at once, whatever the schedule and the setting say, and shows a failure with its reason.
 

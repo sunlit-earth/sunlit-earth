@@ -252,8 +252,7 @@ fn x11_facts() -> Option<X11Facts> {
         conn.query_tree(window)
             .ok()
             .and_then(|cookie| cookie.reply().ok())
-            .map(|reply| reply.children)
-            .unwrap_or_default()
+            .map_or_default(|reply| reply.children)
     };
     let desktop_windows = super::choose::desktop_windows(
         property(root, client_list, AtomEnum::WINDOW.into(), u32::MAX)
@@ -278,7 +277,7 @@ fn x11_facts() -> Option<X11Facts> {
             AtomEnum::STRING.into(),
             256,
         )
-        .map(|reply| {
+        .map_or_default(|reply| {
             reply
                 .value
                 .split(|&b| b == 0)
@@ -286,7 +285,6 @@ fn x11_facts() -> Option<X11Facts> {
                 .map(|part| String::from_utf8_lossy(part).into_owned())
                 .collect()
         })
-        .unwrap_or_default()
     })
     .collect();
 

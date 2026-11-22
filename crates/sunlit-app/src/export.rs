@@ -191,16 +191,6 @@ pub fn check_target(target: &Path) -> Result<(), String> {
     }
 }
 
-/// The folder an export starts in before the first: Pictures where it
-/// exists, else the home folder, else the working directory.
-#[must_use]
-pub fn fallback_folder(pictures: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
-    pictures
-        .filter(|folder| folder.is_dir())
-        .or(home)
-        .unwrap_or_default()
-}
-
 /// The path the field and the save dialog start from: the remembered one
 /// where its folder still exists, else the remembered name in `fallback`, or
 /// `sunlit-earth` there before the first export, with `format`'s extension.
@@ -481,7 +471,7 @@ impl Controller {
         #[expect(clippy::cast_precision_loss, reason = "a slider position")]
         state.set_png_position(position as f32);
         state.set_jpeg_quality(f32::from(stored.export_jpeg_quality.clamp(1, 100)));
-        let fallback = fallback_folder(dirs::picture_dir(), dirs::home_dir());
+        let fallback = sunlit_core::user_state::pictures_dir().unwrap_or_default();
         state.set_path(starting_path(&stored.export_path, &fallback, stored.export_format).into());
         state.set_thumbnail(slint::Image::default());
         self.thumbnail_shown = None;
@@ -1288,20 +1278,6 @@ mod tests {
         let dir = ScratchDir::new("export_start_unset");
         let path = starting_path("", dir.path(), ExportFormat::Png);
         assert_eq!(PathBuf::from(path), dir.path().join("sunlit-earth.png"));
-    }
-
-    #[test]
-    fn without_a_pictures_folder_the_home_folder_is_used() {
-        let dir = ScratchDir::new("export_fallback");
-        let home = dir.path().join("home");
-        let pictures = dir.path().join("no-pictures");
-        assert_eq!(fallback_folder(Some(pictures), Some(home.clone())), home);
-        assert_eq!(fallback_folder(None, Some(home.clone())), home);
-        std::fs::create_dir_all(dir.path().join("pictures")).unwrap();
-        assert_eq!(
-            fallback_folder(Some(dir.path().join("pictures")), Some(home)),
-            dir.path().join("pictures")
-        );
     }
 
     #[test]

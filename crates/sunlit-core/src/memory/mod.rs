@@ -229,14 +229,14 @@ pub fn log_memory_usage(context: &str) {
 /// test-spawned process pollutes the soak data. Returns `None` if the
 /// platform's local data directory cannot be determined.
 fn metrics_path() -> Option<PathBuf> {
-    metrics_path_from(crate::env_override(ENV_METRICS_DIR).as_deref())
+    Some(crate::user_state::metrics_dir()?.join(METRICS_FILE_NAME))
 }
 
 /// Resolve the metrics CSV path from an optional environment override.
 fn metrics_path_from(env_dir: Option<&str>) -> Option<PathBuf> {
     match env_dir {
         Some(dir) => Some(PathBuf::from(dir).join(METRICS_FILE_NAME)),
-        None => Some(crate::app_data_dir()?.join(METRICS_FILE_NAME)),
+        None => Some(crate::user_state::data_dir()?.join(METRICS_FILE_NAME)),
     }
 }
 

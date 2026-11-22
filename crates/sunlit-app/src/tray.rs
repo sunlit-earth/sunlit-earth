@@ -173,7 +173,7 @@ pub fn acquire_single_instance(mutex_name: &str) -> InstanceCheck {
 /// keeps the bare name, which is what this did before.
 #[cfg(target_os = "macos")]
 fn instance_name(name: &str) -> String {
-    let Some(dir) = sunlit_core::app_data_dir() else {
+    let Some(dir) = sunlit_core::user_state::data_dir() else {
         warn!("this system has no data directory to keep the instance lock in");
         return name.to_owned();
     };

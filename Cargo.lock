@@ -5373,7 +5373,6 @@ dependencies = [
  "approx",
  "clap",
  "crossbeam-channel",
- "dirs",
  "embed-resource",
  "glam 0.34.3",
  "i-slint-backend-testing",

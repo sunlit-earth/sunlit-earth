@@ -176,3 +176,19 @@ Both paths go through one function, `menu::current_geometry(window) -> Option<(i
 - Revert the fix to `test_every_menu_item_works_under_the_sheet` locally and confirm the test now fails with the `user_state` message instead of writing.
 - Start the release build with the 2026-11-22 config (1200 by 5000 at the origin): the window fits the work area of the monitor it opens on and stays put when moved.
 - Record the step 5 inventory here.
+
+### Step 5 inventory
+
+`cargo test --no-fail-fast` on Windows on 2026-11-22, with steps 1 to 4 in place and nothing else changed, the three existing overrides and `SUNLIT_EARTH_DATA_DIR` pointed under `target/`. 22 tests panicked with the `user_state` message; every other target passed (engine 157, golden 25, render_pipeline 51, shading 7, soak 1, bc7 4, the app's unit tests 208, xtask 695).
+
+| Test | Target | Reached | How |
+|---|---|---|---|
+| `config_path_without_override_uses_app_folder` | sunlit-core unit | the data folder | resolved the real config path without an override |
+| `the_cache_dir_without_an_override_is_the_app_folder` | sunlit-core unit | the data folder | the same for the cache folder |
+| `metrics_path_without_override_uses_app_folder` | sunlit-core unit | the data folder | the same for the metrics CSV |
+| `the_wallpaper_lives_under_this_systems_local_data_directory` | sunlit-core unit | the data folder | the same for the wallpaper output |
+| `test_every_menu_item_works_under_the_sheet` | slint_ui | the config file | `export_sheet()` opens the sheet, whose `open` reads the real config through `config::load_config()`, before Set as Wallpaper writes it |
+| `test_a_menu_item_closes_the_sheet_first`, `test_an_ipc_export_on_a_hidden_window_lets_the_scene_go`, `test_enter_in_a_field_exports_and_never_cancels`, `test_every_control_of_the_card_has_a_hover_text`, `test_export_waits_for_the_scene`, `test_nothing_in_the_card_moves`, `test_reopening_while_an_export_stops_says_so`, `test_the_cards_buttons_fit_the_smallest_window`, `test_the_open_sheet_blocks_the_window_behind_it`, `test_the_path_field_stays_editable_and_warns_before_replacing`, `test_the_sheet_closes_on_esc_and_its_buttons_but_not_the_backdrop`, `test_the_size_fields_pick_their_entry_and_swap`, `test_the_slider_follows_the_format_and_each_keeps_its_value`, `test_the_time_bar_names_the_held_instant` | slint_ui | the config file | the same read of the real config when the sheet opens, which `docs/testing.md` already noted ("The sheet reads the developer's real config") |
+| `test_close_window_hides_to_the_tray`, `test_the_tray_show_hide_title_follows_the_window`, `test_the_version_notice_is_for_another_version_and_close_dismisses_it` | slint_ui | the startup entry in the registry | creating the tray reads the real `Run` key through `autostart::windows::Location::system()` |
+
+All of these were reads except the one the plan started from: none of the 22 reached a write before panicking, and Set as Wallpaper's save in `test_every_menu_item_works_under_the_sheet` is behind the read that now fails first. The three tray cases reach `linux::system_dir()` and `macos::system_dir()` on the other platforms, which read `XDG_CONFIG_HOME` and `HOME` the same way.

@@ -556,24 +556,16 @@ impl Default for AppConfig {
     }
 }
 
-/// Environment variable overriding the config file location.
-const ENV_CONFIG: &str = "SUNLIT_EARTH_CONFIG";
-
-/// Returns the path to the config file.
-///
-/// On Windows this resolves to `%LOCALAPPDATA%\SunlitEarth\config.toml`.
-/// `SUNLIT_EARTH_CONFIG` overrides the location so tests do not read or write
-/// the developer's real settings. Returns `None` if the platform's local data
-/// directory cannot be determined.
+/// The config file, as [`crate::user_state::config_file`] resolves it.
 pub(crate) fn config_path() -> Option<PathBuf> {
-    config_path_from(crate::env_override(ENV_CONFIG).as_deref())
+    crate::user_state::config_file()
 }
 
 /// Resolve the config file path from an optional environment override.
 fn config_path_from(env_path: Option<&str>) -> Option<PathBuf> {
     match env_path {
         Some(path) => Some(PathBuf::from(path)),
-        None => Some(crate::app_data_dir()?.join("config.toml")),
+        None => Some(crate::user_state::data_dir()?.join("config.toml")),
     }
 }
 

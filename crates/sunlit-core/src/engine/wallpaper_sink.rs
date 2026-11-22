@@ -249,6 +249,7 @@ impl WallpaperSink for SystemWallpaper {
 
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn publish(&self, job: &WallpaperJob) -> Result<String, String> {
+        crate::user_state::require("the desktop wallpaper");
         let note = crate::wallpaper::set_wallpaper_job(job)?;
         crate::memory::log_memory_usage("after wallpaper set");
         Ok(note)

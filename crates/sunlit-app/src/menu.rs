@@ -33,7 +33,7 @@ pub fn wire(window: &MainWindow) {
     window.on_open_url(|url| crate::open::url(&url));
 
     window.on_open_data_folder(|| {
-        if let Some(dir) = sunlit_core::app_data_dir() {
+        if let Some(dir) = sunlit_core::user_state::data_dir() {
             crate::open::folder(&dir);
         } else {
             warn!("this system has no data directory to open");

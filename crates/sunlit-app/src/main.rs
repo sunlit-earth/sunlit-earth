@@ -19,6 +19,8 @@ fn attach_parent_console() {
 }
 
 fn main() -> ExitCode {
+    sunlit_core::user_state::claim();
+
     #[cfg(windows)]
     attach_parent_console();
 

@@ -166,13 +166,13 @@ pub fn poll_interval() -> Duration {
 fn resolve_cache_dir(raw: Option<&str>) -> Option<PathBuf> {
     match raw {
         Some(dir) => Some(PathBuf::from(dir)),
-        None => crate::app_data_dir(),
+        None => crate::user_state::data_dir(),
     }
 }
 
-/// The configured cache directory, honoring `SUNLIT_EARTH_CACHE_DIR`.
+/// The cache directory, as [`crate::user_state::cache_dir`] resolves it.
 pub fn cache_dir() -> Option<PathBuf> {
-    resolve_cache_dir(crate::env_override(ENV_CACHE_DIR).as_deref())
+    crate::user_state::cache_dir()
 }
 
 fn load_cache_meta(path: &Path) -> Option<CacheMeta> {

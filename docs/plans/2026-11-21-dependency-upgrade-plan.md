@@ -167,6 +167,13 @@ Gates as before: `cargo test`, `cargo clippy --all-targets` with no warnings, `c
 
 **Round 2** (range 5f27874..53f6870, docs only): the three fixes verified and the decline accepted. 0 major, 0 minor. Final gates at 53f6870: 2039 passed, 0 failed, 24 ignored; clippy 0 warnings; fmt clean.
 
+**Round 3** (range d41ebed..c27bb23, the macOS follow-up steps 11 to 13): gates measured at c27bb23, 2040 passed, 0 failed, 24 ignored; clippy 0 warnings; fmt clean. 0 major, 3 minor.
+
+- Minor: docs/platforms.md said the window may show for a frame one title bar higher; the first look always comes before the window exists, so it shows there until the next look, 50 ms or more. Fixed in the wording. Shortening the first retry to shrink the jump was offered and not done: when the next turn comes relative to `Resumed` is not established, and the final position is right either way.
+- Minor: the doc on `WINDOW_HANDLE_POLL` and `WINDOW_HANDLE_ATTEMPTS` named only the windowing signal. Fixed: it names both users.
+- Minor: two comments wrapped badly (`place_once_created` in app.rs, the Controls comment in main.slint). Fixed.
+- Noted, not a finding: no test guards that nothing in View reads changing state on macOS. Not added; the plan did not ask for it.
+
 ## Risks
 
 - **Text metrics.** The Windows and macOS default font fix may make text wider or narrower; layouts sized to their text (hints, pills, the export sheet) are what to look at in step 3.

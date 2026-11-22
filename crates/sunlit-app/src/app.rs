@@ -34,7 +34,8 @@ use crate::ui_callbacks;
 const APP_ID: &str = "sunlit-earth";
 
 /// How often the app checks whether a window handle exists yet, and how many
-/// times, before the windowing signal gives up and answers `other`.
+/// times before it gives up: the windowing signal then answers `other`, and the
+/// second placement on macOS leaves the window where it was created.
 const WINDOW_HANDLE_POLL: Duration = Duration::from_millis(50);
 const WINDOW_HANDLE_ATTEMPTS: u32 = 100;
 
@@ -683,8 +684,8 @@ fn placement(window_exists: bool, attempt: u32) -> Placement {
 /// exists.
 ///
 /// On macOS Slint creates it on the event loop's first turns, hidden or shown,
-/// so with
-/// `--tray-start hidden` the frame is in place before the tray first shows it.
+/// so with `--tray-start hidden` the frame is in place before the tray first
+/// shows it.
 /// The handle is what tells: Slint has one only while the system window
 /// exists.
 ///

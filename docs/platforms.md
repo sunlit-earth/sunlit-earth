@@ -125,7 +125,7 @@ The engine holds its automatic publishes while another application covers a whol
 
 The Linux probe reads the session's facts once (`DISPLAY`, `WAYLAND_DISPLAY`, the wlr global, `org.kde.KWin` and `org.gnome.SessionManager` on the session bus), runs each route on a thread of its own, and waits for all of them under one 250 ms deadline; any covered answer wins, clear needs every route clear, and anything else is unknown with each reason. A route still running from an earlier probe is not started again; it answers unknown until it returns.
 
-**Measured on 2026-11-23** in the guests, from the `fullscreen:` lines of `test_another_full_screen_window_is_seen`, debug build, software rendering. The first figure is the probe with the app in full screen, the first probe of a new process; the second the probe after it left.
+**Measured on 2026-11-23** in the guests, from the `fullscreen:` lines of `test_another_full_screen_window_is_seen`, debug build, software rendering. The first figure is a `displays` run as soon as the app's window has settled in full screen, the second one run after it left; each is a new process making a single probe.
 
 | Session | Route that answered | Covered | Clear |
 |---|---|---|---|
@@ -136,9 +136,9 @@ The Linux probe reads the session's facts once (`DISPLAY`, `WAYLAND_DISPLAY`, th
 | KDE, Wayland | KWin script, beside X11 | 114.9 ms | 9.3 ms |
 | GNOME, Wayland | session manager, beside X11 | 4.6 ms | 13.3 ms |
 | sway | wlr, beside X11 | 43.0 ms | 2.0 ms |
-| Windows | `EnumWindows` | WINDOWS_COVERED | WINDOWS_CLEAR |
+| Windows | `EnumWindows` | 0.3 ms | 0.3 ms |
 
-Each `displays` is a new process, so every figure includes connecting to the X server and the session bus; the engine keeps its bus connection, and the 4.4 ms median of a KWin script's load, run and unload measured in step 0 (plan departure 1) is the steady cost of that route. Under Cinnamon the first run found Muffin's input-only guard window, which covers the screen, and counted it (plan departure 7); no compositor overlay window was among the root's children in any session checked.
+Each `displays` is a new process, so every figure includes connecting to the X server and the session bus. The app's probe makes its bus connection once and the engine keeps that probe for its lifetime, so in the running app a probe pays only its routes' own queries. The KDE Wayland figure of 114.9 ms is neither the connection nor KWin starting its scripting: in a fresh KDE Wayland guest twelve `displays` runs with nothing in full screen took 6.0 to 7.9 ms, the first of the session 7.7 ms. It is the moment of the probe. Three more runs of the case read 118.4, 17.9 and 49.2 ms when covered, and with the app held in full screen the fifteen runs half a second apart that found it took 7.0 to 43.7 ms, eleven of them under 10 ms. KWin answers the script slowly while it is still busy with a window that has just gone full screen, which the guest composites in software; the 4.4 ms median of a script's load, run and unload measured in step 0 (plan departure 1), and its 13 ms median beside a full screen client, are the steady cost of that route. Under Cinnamon the first run found Muffin's input-only guard window, which covers the screen, and counted it (plan departure 7); no compositor overlay window was among the root's children in any session checked.
 
 ## The save dialog and the export sheet
 

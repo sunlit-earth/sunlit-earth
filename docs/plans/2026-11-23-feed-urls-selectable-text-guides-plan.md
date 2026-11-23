@@ -134,3 +134,10 @@ Round 1: 0 major, 6 minor, each fixed.
 4. No test held the feed's text literal through `@markdown("\{...}")`. `test_feed_text_is_copied_as_written` gives a release highlight and the failure text markdown and HTML characters and requires Ctrl+A, Ctrl+C to copy them as written. Swapping the highlight, locally and uncommitted, for the same text in a markdown literal made it copy `bold x a y * z` and fail.
 5. The vertical stroke's halo of the center cross was drawn over the horizontal stroke. The cross is now two halos and then two strokes, `cross-halo` and `center-cross`, and the center mark test counts both.
 6. The branch's own lines said "licence"; they say "license" now, and the lines that were there before are left alone. Departure 3 gave a wrong reason for moving the unplug case to a portrait primary: run locally, the original ultrawide primary still gets a frame, since its short edge differs from the portrait anchor's. The ultrawide case is restored and departure 3 says so.
+
+Round 2: all six fixes of round 1 verified; 0 major, 4 minor, each fixed.
+
+1. `docs/usage.md` still described the screen's outline; it now describes the two bands, the labels and the center mark, and says the paragraphs of the update and About windows can be selected and copied.
+2. A sentence of `docs/architecture.md` the branch rewrote still said "licence tab"; it says "license tab" now.
+3. `docs/roadmap.md` and the header comment of `frame-guides.slint` said the whole center mark stays on the panel; they now say the cross does.
+4. `docs/architecture.md` still counted seven rules in the update check plan; it now says rule 6 was dropped and `feed.rs` lists the six that remain.

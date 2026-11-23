@@ -8,6 +8,7 @@
 
 pub mod clock;
 mod cloud_worker;
+mod cover;
 pub mod excursion;
 mod handle;
 mod loading;
@@ -39,6 +40,7 @@ use crate::scene::sky::{self, SkyState};
 
 use clock::Clock;
 use cloud_worker::{CloudWorker, FirstAnswer, spawn_cloud_worker};
+pub use cover::COVER_RECHECK;
 use excursion::{Excursion, ExcursionCommand};
 use handle::AdapterReport;
 pub use handle::{EngineConfig, EngineHandle, start};
@@ -217,6 +219,9 @@ struct Engine {
     sky: Schedule,
     metrics: Option<Schedule>,
     auto_refresh: Option<Schedule>,
+    /// Holds the automatic publishes while another application covers the
+    /// desktop; `None` publishes them as they fall due.
+    cover: Option<cover::CoverGate>,
     cloud: Option<CloudWorker>,
     /// The transcoder and the month in force, when the globe is drawn from the
     /// cube surface.
@@ -261,6 +266,7 @@ impl Engine {
             cloud_poll_interval,
             cache_dir,
             auto_refresh,
+            cover,
             wallpaper,
             display_mode,
             anchor_monitor,
@@ -420,6 +426,7 @@ impl Engine {
             ),
             metrics: record_metrics.then(|| Schedule::new(METRICS_INTERVAL, now)),
             auto_refresh: auto_refresh.map(|i| Schedule::new(i, now)),
+            cover: cover.map(cover::CoverGate::new),
             cloud,
             surface,
         })
@@ -748,6 +755,73 @@ impl Engine {
         );
     }
 
+    /// Whether an automatic publish falling due at `now` may go out, or is
+    /// held because another application covers the desktop. One already owed
+    /// goes out when it can whatever covers the desktop, and this one joins
+    /// it.
+    fn cover_admits(&mut self, now: Duration, what: &str) -> bool {
+        self.wallpaper_owed || self.cover.as_mut().is_none_or(|gate| gate.admit(now, what))
+    }
+
+    /// Publish when the auto-refresh falls due, or when a publish held for a
+    /// cover is let go.
+    fn refresh(&mut self, now: Duration) {
+        if let Some(schedule) = &mut self.auto_refresh
+            && schedule.due(now)
+            && self.cover_admits(now, "auto-refresh")
+        {
+            info!("auto-refresh: updating wallpaper");
+            self.publish_wallpaper();
+        }
+        if self.cover.as_mut().is_some_and(|gate| gate.released(now)) {
+            self.restart_auto_refresh(now);
+            self.publish_wallpaper();
+        }
+    }
+
+    /// Publish what was asked for, what is owed, or a wallpaper to be made
+    /// again now that its tiles are resident.
+    ///
+    /// One publish however many asked for it: a double-click on "Set as
+    /// Wallpaper", or the tray and IPC arriving together, are one wallpaper.
+    /// A hold keeps the request for the release. A publish asked for ends a
+    /// hold for a cover, since it is the same wallpaper.
+    fn publish_requested(&mut self, now: Duration) {
+        let free = self.held.is_none();
+        let asked = free && std::mem::take(&mut self.publish_asked);
+        if asked || (free && self.wallpaper_owed) {
+            if asked
+                && self
+                    .cover
+                    .as_mut()
+                    .is_some_and(|gate| gate.end(now, "a wallpaper update was asked for"))
+            {
+                self.restart_auto_refresh(now);
+            }
+            self.publish_wallpaper();
+        } else if free
+            && self.reexport
+            && !self.renderer.textures_pending(&self.params)
+            && !self.shots_pending()
+        {
+            if self.cover_admits(now, "the tiles a wallpaper went out without") {
+                info!("the tiles a wallpaper went out without are resident; making it again");
+                self.publish_wallpaper();
+            } else {
+                self.reexport = false;
+                self.wallpaper_shots.clear();
+            }
+        }
+    }
+
+    /// Count the auto-refresh's interval from `now`, after a held publish
+    /// went out, so it is not followed by another a few seconds later.
+    fn restart_auto_refresh(&mut self, now: Duration) {
+        if let Some(schedule) = &mut self.auto_refresh {
+            schedule.set_interval(schedule.interval, now);
+        }
+    }
+
     /// Run everything the schedule says is due, then render if anything changed.
     fn tick(&mut self) {
         let now = self.clock.elapsed();
@@ -834,12 +908,7 @@ impl Engine {
             }
         }
 
-        if let Some(schedule) = &mut self.auto_refresh
-            && schedule.due(now)
-        {
-            info!("auto-refresh: updating wallpaper");
-            self.publish_wallpaper();
-        }
+        self.refresh(now);
 
         // After the auto-refresh, so a recheck that lands on the same tick
         // compares against the list that refresh planned with rather than
@@ -866,21 +935,7 @@ impl Engine {
         // After the render, so that a publish held back by a reload goes out on
         // the tick the reload lands and in the order the events describe: the
         // textures became ready, and then the wallpaper was set from them.
-        //
-        // One publish however many asked for it: a double-click on "Set as
-        // Wallpaper", or the tray and IPC arriving together, are one wallpaper.
-        // A hold keeps the request for the release.
-        let free = self.held.is_none();
-        if free && (std::mem::take(&mut self.publish_asked) || self.wallpaper_owed) {
-            self.publish_wallpaper();
-        } else if free
-            && self.reexport
-            && !self.renderer.textures_pending(&self.params)
-            && !self.shots_pending()
-        {
-            info!("the tiles a wallpaper went out without are resident; making it again");
-            self.publish_wallpaper();
-        }
+        self.publish_requested(now);
         self.settle_exports();
 
         // Last, so that the gate opens only when nothing in this tick drew,

@@ -129,6 +129,10 @@ pub(crate) fn engine_config(
         auto_refresh: config
             .auto_refresh_enabled
             .then(|| Duration::from_mins(u64::from(config.auto_refresh_interval_minutes.max(1)))),
+        cover: config
+            .auto_refresh_skip_fullscreen
+            .then(sunlit_core::cover::system_probe)
+            .flatten(),
         wallpaper: Arc::new(SystemWallpaper),
         display_mode: config.display_mode,
         anchor_monitor: config.anchor(),

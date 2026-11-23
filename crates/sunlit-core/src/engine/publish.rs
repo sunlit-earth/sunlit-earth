@@ -358,7 +358,7 @@ impl Engine {
         self.known_monitors = Some(monitors.clone());
         self.see_monitors(&monitors);
         self.emit(EngineEvent::MonitorsChanged(monitors));
-        if self.published {
+        if self.published && self.cover_admits(self.clock.elapsed(), "the display layout change") {
             self.publish_wallpaper();
         }
     }

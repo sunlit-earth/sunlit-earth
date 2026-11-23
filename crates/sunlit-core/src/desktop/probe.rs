@@ -181,7 +181,7 @@ fn portal_facts(bus: &zbus::blocking::Connection) -> PortalFacts {
 
 /// The interface names the compositor advertises, from one registry round
 /// trip over a connection dropped straight after.
-fn wayland_globals() -> Option<Vec<String>> {
+pub(crate) fn wayland_globals() -> Option<Vec<String>> {
     use wayland_client::protocol::wl_registry;
     use wayland_client::{Connection, Dispatch, QueueHandle};
 
@@ -306,7 +306,7 @@ fn x11_facts() -> Option<X11Facts> {
     })
 }
 
-fn name_has_owner(bus: &zbus::blocking::Connection, name: &str) -> bool {
+pub(crate) fn name_has_owner(bus: &zbus::blocking::Connection, name: &str) -> bool {
     let Ok(name) = zbus::names::BusName::try_from(name) else {
         return false;
     };

@@ -324,6 +324,8 @@ pub struct X11Window {
     pub pid: Option<u32>,
     /// In root coordinates.
     pub rect: Rect,
+    /// Mapped, with its ancestors, and drawn: an input-only window, such as
+    /// Mutter's guard window over the whole screen, is never viewable here.
     pub viewable: bool,
     pub hidden: bool,
     pub full_screen: bool,

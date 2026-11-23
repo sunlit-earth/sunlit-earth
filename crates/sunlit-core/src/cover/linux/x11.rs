@@ -9,7 +9,7 @@ use x11rb::cookie::Cookie;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     AtomEnum, ConnectionExt as _, GetGeometryReply, GetPropertyReply, GetWindowAttributesReply,
-    MapState, TranslateCoordinatesReply, Window,
+    MapState, TranslateCoordinatesReply, Window, WindowClass,
 };
 
 use crate::cover::{Coverage, Rect, Screen, X11Type, X11Window, x11_coverage};
@@ -235,7 +235,8 @@ fn answer<C: RequestConnection>(asked: Asked<'_, C>, atoms: &Atoms) -> Option<(X
                 i64::from(geometry.width),
                 i64::from(geometry.height),
             ),
-            viewable: attributes.map_state == MapState::VIEWABLE,
+            viewable: attributes.map_state == MapState::VIEWABLE
+                && attributes.class != WindowClass::INPUT_ONLY,
             hidden: state.contains(&atoms.state_hidden),
             full_screen: state.contains(&atoms.state_full_screen),
             desktop,

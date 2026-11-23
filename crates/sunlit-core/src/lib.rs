@@ -7,6 +7,7 @@
 pub mod assets;
 pub mod color;
 pub mod config;
+pub mod cover;
 pub mod desktop;
 pub mod display;
 pub mod engine;

@@ -34,7 +34,8 @@ use common::window_rect::{Key, MainWindow};
 #[cfg(target_os = "linux")]
 use common::desktop_linux::assert_the_desktop_holds_the_wallpaper;
 use common::desktop_linux::{
-    a_layout_change_this_session_can_make, plasmashell_answers, plasmashell_pid, xrandr,
+    a_layout_change_this_session_can_make, plasmashell_answers, plasmashell_pid,
+    the_window_manager_holds_a_window_of, xrandr,
 };
 
 // ---------------------------------------------------------------------------
@@ -1376,6 +1377,189 @@ fn test_displays_names_the_wallpaper_setter() {
     } else {
         assert!(line.starts_with("setter: none"), "{line}");
     }
+}
+
+/// What `sunlit-earth displays`, run as a process of its own, says covers the
+/// desktop: the `fullscreen:` line without its prefix and its duration. The
+/// whole line is printed, duration included.
+fn fullscreen_coverage() -> String {
+    let out = app_command()
+        .arg("displays")
+        .output()
+        .expect("sunlit-earth displays runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "displays failed: {stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("fullscreen: "))
+        .unwrap_or_else(|| panic!("displays printed no fullscreen line:\n{stdout}"));
+    println!("fullscreen: {line}");
+    let (coverage, took) = line
+        .rsplit_once(" (")
+        .unwrap_or_else(|| panic!("a fullscreen line without its duration: {line}"));
+    assert!(took.ends_with(" ms)"), "{line}");
+    coverage.to_owned()
+}
+
+/// Print the window server's on-screen windows as the macOS probe's debug
+/// lines list them.
+fn print_mac_window_list() {
+    let out = app_command()
+        .arg("displays")
+        .env("RUST_LOG", "sunlit_core::cover=debug")
+        .output()
+        .expect("sunlit-earth displays runs");
+    for line in String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .chain(String::from_utf8_lossy(&out.stdout).lines())
+        .filter(|line| line.contains("an on-screen window"))
+    {
+        println!("{line}");
+    }
+}
+
+/// Ask `displays` until `wanted` holds or ten seconds have passed, since the
+/// compositor may still be moving the window, and return the last answer.
+fn fullscreen_coverage_until(wanted: impl Fn(&str) -> bool) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let coverage = fullscreen_coverage();
+        if wanted(&coverage) || Instant::now() >= deadline {
+            return coverage;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Why the cover probe has no route in this session, or `None` where it has
+/// one: Windows, macOS, every X11 session, and Plasma, GNOME and sway under
+/// Wayland. Another Wayland compositor may offer the wlr protocol or nothing,
+/// which the case cannot tell from the environment.
+fn no_cover_route() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    if !session_is_wayland() {
+        return std::env::var_os("DISPLAY")
+            .is_none_or(|display| display.is_empty())
+            .then(|| "this session has no X display and is not a Wayland session".to_owned());
+    }
+    let known = ["KDE", "GNOME", "sway"];
+    (!desktop
+        .split(':')
+        .any(|name| known.iter().any(|known| name.eq_ignore_ascii_case(known))))
+    .then(|| format!("{desktop:?} under Wayland is none of the desktops a route is known for"))
+}
+
+/// The app's own window in full screen is, to `sunlit-earth displays` running
+/// as another process, a window that covers the desktop, and once it leaves
+/// full screen nothing does. On macOS nothing does once the app has quit.
+///
+/// Each session has its route: the window's geometry on Windows and macOS, its
+/// state on X11, the `KWin` script on Plasma under Wayland, the foreign toplevel
+/// list on wlroots compositors, which names the app ID rather than a process.
+/// GNOME under Wayland shows no other client's window state, so there the case
+/// holds an idle inhibitor of its own around the first query and expects it
+/// named. An answer of unknown fails the case wherever a route is expected.
+#[test]
+#[ignore = "requires desktop environment and GPU"]
+#[serial]
+fn test_another_full_screen_window_is_seen() {
+    const CASE: &str = "test_another_full_screen_window_is_seen";
+    const INHIBITOR: &str = "sunlit-earth-e2e-inhibitor";
+    let gnome_wayland = session_is_wayland()
+        && std::env::var("XDG_CURRENT_DESKTOP")
+            .is_ok_and(|desktop| desktop.split(':').any(|d| d == "GNOME"));
+
+    let socket_name = unique_socket_name();
+    let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
+    let pid = guard.child_mut().id();
+    let switch = |command: &str, answer: &str| {
+        let from = stdout_watcher.line_count();
+        send_ipc_command(&socket_name, command);
+        let line = stdout_watcher.wait_for_signal_line_from("full_screen_", from, SIGNAL_REPLY);
+        println!("{command}: {line}");
+        assert!(line.contains(answer), "{command} answered {line}");
+    };
+
+    assert!(
+        the_window_manager_holds_a_window_of(pid, Duration::from_secs(30)),
+        "no window manager lists the app's window after 30 s: the session's window manager is \
+         not running"
+    );
+    switch("enter-full-screen", "full_screen_entered");
+    let mut inhibitor = gnome_wayland.then(|| {
+        std::process::Command::new("gnome-session-inhibit")
+            .args([
+                "--app-id",
+                INHIBITOR,
+                "--reason",
+                CASE,
+                "--inhibit",
+                "idle",
+                "--inhibit-only",
+            ])
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("gnome-session-inhibit starts")
+    });
+    let covered = fullscreen_coverage_until(|coverage| coverage != "none");
+    if let Some(inhibitor) = inhibitor.as_mut() {
+        let _ = inhibitor.kill();
+        let _ = inhibitor.wait();
+    }
+    if let Some(reason) = covered.strip_prefix("unknown; ") {
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+        let Some(why) = no_cover_route() else {
+            panic!("this session has a route, and the probe cannot tell: {reason}");
+        };
+        skip_case(CASE, &format!("{why}, and the probe cannot tell: {reason}"));
+        return;
+    }
+    if gnome_wayland {
+        assert!(
+            covered.contains(INHIBITOR) && covered.ends_with("keeps the screen awake"),
+            "the idle inhibitor is not what covers the desktop: {covered}"
+        );
+    } else {
+        let names_the_app = covered.contains(&format!("(pid {pid})"))
+            || covered.starts_with(&format!("pid {pid} "))
+            || (!covered.contains("pid ") && covered.starts_with("sunlit-earth "));
+        assert!(
+            names_the_app,
+            "the app (pid {pid}) is not what covers the desktop: {covered}"
+        );
+        assert!(covered.contains(" on "), "no monitor named: {covered}");
+    }
+
+    switch("leave-full-screen", "full_screen_left");
+    if cfg!(target_os = "macos") {
+        println!(
+            "on macOS a broken copy of the window stays on screen after leaving full screen until \
+             the app quits (docs/roadmap.md, \"Full screen on macOS, not observed\"), so the clear \
+             answer is asked for once the app has quit"
+        );
+        fullscreen_coverage();
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+        let cleared = fullscreen_coverage_until(|coverage| coverage == "none");
+        if cleared != "none" {
+            print_mac_window_list();
+        }
+        assert_eq!(
+            cleared, "none",
+            "the desktop is still covered once the app quit"
+        );
+        return;
+    }
+    let cleared = fullscreen_coverage_until(|coverage| coverage == "none");
+    assert_eq!(cleared, "none", "the desktop is still covered");
+
+    quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
 }
 
 /// Whether a publish in this session leaves image files behind. The X11 root

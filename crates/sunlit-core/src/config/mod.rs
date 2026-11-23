@@ -375,6 +375,10 @@ pub struct AppConfig {
     // Auto-refresh (wallpaper scheduler)
     pub auto_refresh_enabled: bool,
     pub auto_refresh_interval_minutes: u32,
+    /// Whether an automatic refresh waits while another application covers
+    /// the desktop, full screen or borderless. No control until there is a
+    /// settings window; read at startup.
+    pub auto_refresh_skip_fullscreen: bool,
 
     // Updates
     /// Whether the app asks for the release file once a day. Help > Check for
@@ -542,6 +546,7 @@ impl Default for AppConfig {
             night_saturation: 0.85,
             auto_refresh_enabled: false,
             auto_refresh_interval_minutes: 5,
+            auto_refresh_skip_fullscreen: true,
             update_check_enabled: true,
             display_mode: DisplayMode::default(),
             anchor_monitor: String::new(),
@@ -930,6 +935,7 @@ mod tests {
             anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 15,
+            auto_refresh_skip_fullscreen: false,
             update_check_enabled: false,
             scene_time: SceneTime::fixed(time::macros::datetime!(2030-03-17 14:30 UTC)),
             overlays_hidden: true,
@@ -1177,6 +1183,7 @@ sky_fov = 111.0
             anchor_monitor: "DP-2".to_owned(),
             auto_refresh_enabled: true,
             auto_refresh_interval_minutes: 10,
+            auto_refresh_skip_fullscreen: false,
             update_check_enabled: false,
             scene_time: SceneTime::fixed(time::macros::datetime!(2020-07-18 08:15:30.25 UTC)),
             overlays_hidden: true,

@@ -56,6 +56,10 @@ pub struct EngineConfig {
     pub cache_dir: Option<PathBuf>,
     /// Unattended wallpaper refresh interval; `None` disables it.
     pub auto_refresh: Option<Duration>,
+    /// Asked before an automatic publish whether another application covers
+    /// the desktop, which holds the publish until it is clear. `None` never
+    /// holds one.
+    pub cover: Option<Arc<dyn crate::cover::CoverProbe>>,
     pub wallpaper: Arc<dyn WallpaperSink>,
     /// How this session's monitors relate to each other.
     pub display_mode: crate::display::layout::DisplayMode,
@@ -129,6 +133,7 @@ impl EngineConfig {
             cloud_poll_interval: Duration::from_hours(1),
             cache_dir: None,
             auto_refresh: None,
+            cover: None,
             wallpaper: Arc::new(wallpaper_sink::SystemWallpaper),
             display_mode: crate::display::layout::DisplayMode::default(),
             anchor_monitor: None,

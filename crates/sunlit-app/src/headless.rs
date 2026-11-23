@@ -25,6 +25,18 @@ const RENDER_TEXTURE_TIMEOUT: Duration = Duration::from_mins(2);
 /// build.
 const CLOUD_TIMEOUT: Duration = Duration::from_mins(1);
 
+/// What covers the desktop right now, as the engine's probe sees it, and how
+/// long the probe took.
+fn fullscreen_line() -> String {
+    let Some(probe) = sunlit_core::cover::system_probe() else {
+        return "unknown; this platform has no probe".to_owned();
+    };
+    let started = std::time::Instant::now();
+    let coverage = probe.probe();
+    let took_ms = started.elapsed().as_secs_f64() * 1000.0;
+    format!("{coverage} ({took_ms:.1} ms)")
+}
+
 /// The `displays` subcommand: no window, no desktop, and no GPU unless asked.
 ///
 /// It exists so that checking this feature on a borrowed two-screen machine is
@@ -63,6 +75,7 @@ pub(crate) fn run_displays(
         Ok(choice) => println!("setter: {}", choice.explanation()),
         Err(refusal) => println!("setter: none; {refusal}"),
     }
+    println!("fullscreen: {}", fullscreen_line());
     let Some(dir) = out else {
         return ExitCode::SUCCESS;
     };

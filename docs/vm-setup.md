@@ -122,7 +122,7 @@ Looking is not optional, and XFCE is why. Its setter exited zero, the case passe
 
 The case count differs by desktop because the tray does. `tests/e2e.rs` asks `gdbus` who owns `org.kde.StatusNotifierWatcher`, and Plasma and xfce4-panel answer while GNOME and Cinnamon do not, so the two cases that need a tray icon run under the first two and skip under the other two, saying so.
 
-Cinnamon's session has a defect worth knowing before looking at one: the shell starts, is signalled a second later, and `cinnamon-launcher` falls back to `metacity`, which this image does not install, so what is left on screen is a modal "Cinnamon just crashed" dialog over a black desktop. The suite is unaffected, since it runs over SSH through `DISPLAY`, and `cinnamon --replace` over `vm ssh` brings the shell and the wallpaper back. `docs/roadmap.md` carries it.
+Cinnamon's session has a defect worth knowing before looking at one: the shell starts, is signalled a second later, and `cinnamon-launcher` falls back to `metacity`, which this image does not install, so what is left on screen is a modal "Cinnamon just crashed" dialog over a black desktop. The suite runs over SSH through `DISPLAY` and mostly does not notice, except `test_another_full_screen_window_is_seen`, which needs a window manager to make a window full screen and fails saying none is running. `cinnamon --replace` over `vm ssh` brings the shell and the wallpaper back. `docs/roadmap.md` carries it.
 
 ## Giving the Linux guest more than one screen
 

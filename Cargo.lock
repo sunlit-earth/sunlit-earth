@@ -5360,6 +5360,7 @@ dependencies = [
  "tracing",
  "ureq",
  "wayland-client",
+ "wayland-protocols-wlr",
  "wgpu",
  "windows",
  "windows-sys 0.61.2",

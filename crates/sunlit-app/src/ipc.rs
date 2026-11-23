@@ -29,8 +29,13 @@
 //!   if it is closed, and answers `SIGNAL:exported path=<path>` or
 //!   `SIGNAL:export_failed reason=<text>`
 //! - `export-cancel`: cancels the sheet's running export
+//! - `enter-full-screen`, `leave-full-screen`: switch the window as the menu
+//!   does, and answer `SIGNAL:full_screen_entered` or `SIGNAL:full_screen_left`
+//!   with the window's size once it has settled, or `SIGNAL:full_screen_failed`
 
 use std::io::{BufRead, BufReader, Write};
+
+use slint::ComponentHandle;
 
 use crate::engine_client::EngineLink;
 use interprocess::local_socket::traits::ListenerExt;
@@ -240,6 +245,26 @@ fn dispatch_command(cmd: &str, window_weak: &slint::Weak<crate::MainWindow>, eng
         "export-cancel" => {
             debug!("ipc: received export-cancel command");
             slint::invoke_from_event_loop(crate::export::cancel_from_ipc).ok();
+        }
+        "enter-full-screen" | "leave-full-screen" => {
+            debug!("ipc: received {cmd}");
+            let target = cmd == "enter-full-screen";
+            let ww = window_weak.clone();
+            slint::invoke_from_event_loop(move || {
+                let Some(win) = ww.upgrade() else {
+                    signal("full_screen_failed reason=no window");
+                    return;
+                };
+                if target {
+                    if !win.window().is_fullscreen() {
+                        win.invoke_toggle_full_screen();
+                    }
+                } else {
+                    win.invoke_leave_full_screen();
+                }
+                report_full_screen(ww, target, 0, None, 0);
+            })
+            .ok();
         }
         _ if cmd.starts_with("export-image ") => {
             debug!("ipc: received {cmd}");
@@ -593,6 +618,48 @@ impl Windowing {
         let name = body.strip_prefix("windowing ")?.trim();
         Self::ALL.into_iter().find(|w| w.name() == name)
     }
+}
+
+/// How often a full screen switch asked for over IPC looks at the window.
+const FULL_SCREEN_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Signal `full_screen_entered` or `full_screen_left` once the window is in
+/// the state asked for and its size has held for a few looks, which is when
+/// the system has finished moving it; `full_screen_failed` after five
+/// seconds without that.
+fn report_full_screen(
+    window: slint::Weak<crate::MainWindow>,
+    target: bool,
+    looks: u32,
+    last: Option<slint::PhysicalSize>,
+    steady: u32,
+) {
+    const STEADY_LOOKS: u32 = 4;
+    const MOST_LOOKS: u32 = 100;
+    slint::Timer::single_shot(FULL_SCREEN_POLL, move || {
+        let Some(win) = window.upgrade() else {
+            signal("full_screen_failed reason=no window");
+            return;
+        };
+        let size = win.window().size();
+        let steady = if last == Some(size) { steady + 1 } else { 0 };
+        if win.window().is_fullscreen() == target && steady >= STEADY_LOOKS {
+            signal(&format!(
+                "{} width={} height={}",
+                if target {
+                    "full_screen_entered"
+                } else {
+                    "full_screen_left"
+                },
+                size.width,
+                size.height
+            ));
+        } else if looks >= MOST_LOOKS {
+            signal("full_screen_failed reason=the window did not settle");
+        } else {
+            report_full_screen(window, target, looks + 1, Some(size), steady);
+        }
+    });
 }
 
 pub(crate) fn signal(name: &str) {

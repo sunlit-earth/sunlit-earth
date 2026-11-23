@@ -584,6 +584,71 @@ pub(crate) fn plasmashell_pid() -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether the X11 window manager lists a window of process `pid` among its
+/// clients before `within` passes. Under Wayland, or with no X display, there
+/// is no such list to read and the answer is yes.
+pub(crate) fn the_window_manager_holds_a_window_of(pid: u32, within: std::time::Duration) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        fn client_pids() -> Vec<u32> {
+            use x11rb::connection::Connection;
+            use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+            let Ok((conn, screen)) = x11rb::connect(None) else {
+                return Vec::new();
+            };
+            let root = conn.setup().roots[screen].root;
+            let atom = |name: &[u8]| {
+                conn.intern_atom(false, name)
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .map(|reply| reply.atom)
+            };
+            let (Some(list), Some(wm_pid)) = (atom(b"_NET_CLIENT_LIST"), atom(b"_NET_WM_PID"))
+            else {
+                return Vec::new();
+            };
+            let windows: Vec<u32> = conn
+                .get_property(false, root, list, AtomEnum::WINDOW, 0, u32::MAX)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .and_then(|reply| reply.value32().map(Iterator::collect))
+                .unwrap_or_default();
+            windows
+                .into_iter()
+                .filter_map(|window| {
+                    conn.get_property(false, window, wm_pid, AtomEnum::CARDINAL, 0, 1)
+                        .ok()?
+                        .reply()
+                        .ok()?
+                        .value32()?
+                        .next()
+                })
+                .collect()
+        }
+
+        let wayland = std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t.trim() == "wayland");
+        if wayland || std::env::var_os("DISPLAY").is_none_or(|display| display.is_empty()) {
+            return true;
+        }
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if client_pids().contains(&pid) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, within);
+        true
+    }
+}
+
 /// Whether plasmashell answers an `evaluateScript`, the same interface the KDE
 /// wallpaper setter drives.
 pub(crate) fn plasmashell_answers() -> bool {

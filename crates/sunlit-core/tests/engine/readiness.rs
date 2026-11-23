@@ -14,12 +14,15 @@ use std::time::{Duration, Instant};
 
 use sunlit_core::assets::tiles::{self, Pack, PackKind};
 use sunlit_core::engine::clock::{Clock, MockClock};
-use sunlit_core::engine::{EngineCommand, EngineEvent, TILE_WAIT, TileGate, TileReport};
+use sunlit_core::engine::{
+    COVER_RECHECK, EngineCommand, EngineEvent, TILE_WAIT, TileGate, TileReport,
+};
 use sunlit_core::params::SceneParams;
 use sunlit_core::renderer::residency::{Output, Request, Residency, Surfaces};
 use sunlit_core::renderer::surface_sampler_descriptor;
 use sunlit_core::renderer::tiles::TileId;
 
+use crate::cover::ScriptedProbe;
 use crate::harness::{Harness, TIMEOUT, gpu};
 use crate::sinks::{RecordingSink, screen};
 use crate::test_support::{self, ScratchDir};
@@ -313,6 +316,54 @@ fn a_publish_that_waits_out_the_tile_wait_goes_out_and_is_made_again_when_the_ti
         published(&rig, 2) == again,
         "the wallpaper made again is not the one every resident tile makes"
     );
+}
+
+/// The wallpaper made again once its tiles land is an automatic publish, and
+/// waits while another application covers the desktop like the others.
+#[test]
+fn a_wallpaper_made_again_is_held_while_the_desktop_is_covered() {
+    let _gpu = gpu();
+    let probe = Arc::new(ScriptedProbe::new());
+    let probe_for_config = Arc::clone(&probe);
+    let rig = rig_configured(
+        "engine_ready_covered",
+        &view(),
+        time::OffsetDateTime::UNIX_EPOCH,
+        |_| {},
+        |config| config.cover = Some(probe_for_config),
+    );
+    let before = settled(&rig.harness, "the preview's tiles", |r| {
+        !r.wanted.is_empty()
+    });
+    ask_with_the_gate_shut(&rig, &before);
+    rig.harness.advance(&rig.clock, TILE_WAIT);
+    assert!(rig.harness.wait_for_publish().is_ok());
+    assert_eq!(
+        probe.asked(),
+        0,
+        "a publish asked for does not ask the probe"
+    );
+
+    probe.cover();
+    rig.gate.open();
+    report_when(&rig.harness, "the screen's tiles land", |r| missing(r) == 0);
+    let deadline = Instant::now() + TIMEOUT;
+    while probe.asked() == 0 {
+        assert!(Instant::now() < deadline, "the tiles landing never asked");
+        rig.harness.advance(&rig.clock, TICK);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    rig.harness.settle();
+    assert_eq!(
+        rig.sink.publications().len(),
+        1,
+        "made again while the desktop was covered"
+    );
+
+    probe.answer(sunlit_core::cover::Coverage::Clear);
+    rig.harness.advance(&rig.clock, COVER_RECHECK);
+    assert!(rig.harness.wait_for_publish().is_ok());
+    assert_eq!(rig.sink.publications().len(), 2);
 }
 
 /// Move the custom date into another month, and hand back that month.

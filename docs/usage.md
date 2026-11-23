@@ -109,6 +109,16 @@ The tray's entry keeps naming the version until you update. Check for Updates…
 
 To stop the daily check, set `update_check_enabled = false` in `config.toml`; there is no switch in the window yet. Check for Updates… still works, and what an earlier check found is still shown. A check is one request for one static file, with the user agent `sunlit.earth/<version> (<os>; <arch>)`: no identifier, no cookie, nothing about your installation.
 
+## Auto-refresh while another application is full screen
+
+Changing the wallpaper makes the desktop repaint every screen, which a game or a video in full screen can show as a stutter. So while another application covers a whole screen, the auto-refresh waits: when a refresh falls due, Sunlit Earth first asks whether any window of another application fills a monitor or is in full screen, and if one is, it asks again every 10 seconds and makes the wallpaper once nothing is. The next refresh is then a whole interval after that one. One covered screen holds the refresh for all of them, since the desktop repaints them together.
+
+What waits: the auto-refresh, the new wallpaper after the screens change, and the redraw once sharper surface tiles arrive. What does not: Set as Wallpaper, Refresh Now and the IPC `set-wallpaper` command, which always run at once, and a refresh held at the moment you quit, which is not made on the way out. Switching the auto-refresh off while a refresh waits drops that refresh; a new wallpaper waiting for the screens or the tiles still comes once nothing covers the desktop.
+
+On Linux the answer depends on the session; [platforms.md](platforms.md) under "Another application in full screen" lists them. Under GNOME on Wayland the app cannot see other applications' windows, and an application that keeps the screen from sleeping stands in for one in full screen there, so a video playing in a window holds the refresh too. Where the app cannot tell at all, it refreshes as before. `sunlit-earth displays` prints what it sees right now on its `fullscreen:` line, and the log names what held a refresh and for how long.
+
+To refresh regardless, set `auto_refresh_skip_fullscreen = false` in `config.toml`; there is no switch in the window yet.
+
 ## Exporting an image
 
 File > Export Image… (Ctrl+E) opens a sheet over the main window that saves the view as a PNG or a JPEG. While it is open the sheet takes the window's pointer and keyboard and the scene stands still: the picture is the one the preview showed when the sheet opened, at that instant, and a running playback stays paused after the sheet closes. Close it with ×, Close, Esc or Ctrl+E again to change the view; a click beside the card does nothing. The menus stay usable, and choosing any item closes the sheet first, cancelling a running export, and then does what the item does: Frame Guides (Toggle Frame Guides on macOS) closes the sheet and toggles the guides, and File > Export Image… only closes it. Opening a menu and leaving it without a choice leaves the sheet alone. Hiding the window or quitting closes it too and cancels a running export.

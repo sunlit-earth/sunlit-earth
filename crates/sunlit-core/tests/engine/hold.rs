@@ -10,6 +10,7 @@ use sunlit_core::engine::excursion::{ExcursionCommand, ExcursionKind};
 use sunlit_core::engine::{EngineCommand, EngineEvent};
 use sunlit_core::scene::scene_time::SceneTime;
 
+use crate::display_change::NOTHING_HAPPENS_IN;
 use crate::groups::{Plain, plain};
 use crate::harness::{Harness, TIMEOUT, gpu, test_params};
 use crate::sinks::{RecordingSink, two_screens};
@@ -162,16 +163,48 @@ fn a_refresh_due_during_a_hold_runs_once_at_the_release() {
         "a wallpaper went out during the hold"
     );
 
-    group.engine.send(EngineCommand::SetAutoRefresh {
-        enabled: false,
-        interval: Duration::from_secs(60),
-    });
     group.engine.send(EngineCommand::Hold(false));
     group
         .wait_for_publish()
         .expect("the recording sink accepts");
     group.settle();
     assert_eq!(group.sink.publications().len(), before + 1);
+    group.engine.send(EngineCommand::SetAutoRefresh {
+        enabled: false,
+        interval: Duration::from_secs(60),
+    });
+    group.settle();
+}
+
+/// A refresh that came due during a hold is dropped when the auto-refresh is
+/// switched off before the release.
+#[test]
+fn a_refresh_parked_behind_a_hold_is_dropped_when_the_auto_refresh_goes_off() {
+    let gpu = gpu();
+    let group = plain(&gpu);
+    group.settle_at(&test_params());
+    let before = group.sink.publications().len();
+
+    group.engine.send(EngineCommand::SetAutoRefresh {
+        enabled: true,
+        interval: Duration::from_secs(60),
+    });
+    hold(group, true);
+    group.advance(&group.clock, Duration::from_secs(61));
+    group.settle();
+    group.engine.send(EngineCommand::SetAutoRefresh {
+        enabled: false,
+        interval: Duration::from_secs(60),
+    });
+    hold(group, false);
+    group.advance(&group.clock, Duration::from_secs(1));
+    group.settle();
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(
+        group.sink.publications().len(),
+        before,
+        "a refresh went out after the auto-refresh was switched off"
+    );
 }
 
 /// Taking the hold with everything resident announces `TexturesReady` again.

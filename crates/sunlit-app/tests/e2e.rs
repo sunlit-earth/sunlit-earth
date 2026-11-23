@@ -1405,6 +1405,23 @@ fn fullscreen_coverage() -> String {
     coverage.to_owned()
 }
 
+/// Print the window server's on-screen windows as the macOS probe's debug
+/// lines list them.
+fn print_mac_window_list() {
+    let out = app_command()
+        .arg("displays")
+        .env("RUST_LOG", "sunlit_core::cover=debug")
+        .output()
+        .expect("sunlit-earth displays runs");
+    for line in String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .chain(String::from_utf8_lossy(&out.stdout).lines())
+        .filter(|line| line.contains("an on-screen window"))
+    {
+        println!("{line}");
+    }
+}
+
 /// Ask `displays` until `wanted` holds or ten seconds have passed, since the
 /// compositor may still be moving the window, and return the last answer.
 fn fullscreen_coverage_until(wanted: impl Fn(&str) -> bool) -> String {
@@ -1522,6 +1539,15 @@ fn test_another_full_screen_window_is_seen() {
 
     switch("leave-full-screen", "full_screen_left");
     let cleared = fullscreen_coverage_until(|coverage| coverage == "none");
+    if cleared != "none" && cfg!(target_os = "macos") {
+        print_mac_window_list();
+        quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
+        let after_quit = fullscreen_coverage();
+        print_mac_window_list();
+        panic!(
+            "the desktop is still covered after leaving full screen: {cleared}; once the app              quit: {after_quit}"
+        );
+    }
     assert_eq!(cleared, "none", "the desktop is still covered");
 
     quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);

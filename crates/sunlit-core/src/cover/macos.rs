@@ -12,8 +12,10 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{
     CGDisplayBounds, CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo,
-    CGWindowListOption, kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerPID,
+    CGWindowListOption, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowNumber,
+    kCGWindowOwnerPID,
 };
+use tracing::debug;
 
 use super::{CoverProbe, Coverage, MacWindow, Rect, Screen, mac_coverage};
 
@@ -69,8 +71,15 @@ fn windows() -> Result<Vec<MacWindow>, String> {
     // SAFETY: the window list keys are immutable CFString constants that
     // CoreGraphics exports for the life of the process.
     #[allow(unsafe_code)]
-    let (layer_key, pid_key, bounds_key) =
-        unsafe { (kCGWindowLayer, kCGWindowOwnerPID, kCGWindowBounds) };
+    let (layer_key, pid_key, bounds_key, number_key, alpha_key) = unsafe {
+        (
+            kCGWindowLayer,
+            kCGWindowOwnerPID,
+            kCGWindowBounds,
+            kCGWindowNumber,
+            kCGWindowAlpha,
+        )
+    };
 
     let mut windows = Vec::new();
     let mut withheld = 0usize;
@@ -89,6 +98,16 @@ fn windows() -> Result<Vec<MacWindow>, String> {
             let ok = unsafe { CGRectMakeWithDictionaryRepresentation(Some(dict), &raw mut rect) };
             ok.then_some(rect)
         });
+        debug!(
+            window = ?number(number_key),
+            pid = ?number(pid_key),
+            layer = ?number(layer_key),
+            bounds = ?bounds.map(rect_of),
+            alpha = ?info
+                .get(alpha_key)
+                .and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_f64)),
+            "an on-screen window"
+        );
         match (number(layer_key), number(pid_key), bounds) {
             (Some(layer), Some(pid), Some(bounds)) => windows.push(MacWindow {
                 pid: u32::try_from(pid).unwrap_or(0),

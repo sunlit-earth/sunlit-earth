@@ -112,7 +112,7 @@ impl CoverGate {
                 info!(
                     %cover,
                     ?what,
-                    "another application covers the desktop; the wallpaper update is dropped                      at exit"
+                    "another application covers the desktop; the wallpaper update is dropped at exit"
                 );
                 false
             }

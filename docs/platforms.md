@@ -27,6 +27,7 @@ A row moves up only when the evidence exists. That is the retrospective's rule a
 | Release bundle | zip, verified on its own runner | tarball, verified on its own runner | ad-hoc signed `.app` zip and a tarball, both verified on the runner |
 | Package manager install | Scoop, runner: installed from the generated manifest, renders through the shim; no `Zone.Identifier` and the Start Menu shortcut proven once | Homebrew formula, runner, on x86_64 and aarch64: renders through `bin/`; the caveat's desktop entry installs and uninstalls, proven once | Homebrew cask, runner, on both architectures: quarantine removed, the app's own binary renders, `open -a` starts the app (proven once); through the `bin/` symlink compiled only (see below); that no Gatekeeper dialog appears needs a tester |
 | Update check | the install kinds unit-tested against made-up trees; the e2e case passes in the guest (archive, `windows-x86_64`); the tray title, the banner and Download on a desktop, and the window from a Scoop install, to be observed | the install kinds unit-tested; the e2e case passes in the KDE X11 and GNOME Wayland guests (archive, `linux-x86_64`); the drawn menu, the tray title in a tray host and Download opening the browser to be observed | the install kinds unit-tested; runner: the e2e case passes on Apple Silicon and Intel, the suite's binary answering archive with `macos-aarch64-terminal` and `macos-x86_64-terminal`; the bundle's answer, the cask rule, the window and the banner need a tester with a Mac (plan departure 2) |
+| Hold the auto-refresh while another app is full screen | `EnumWindows` geometry; the e2e case passes in the guest; real full screen applications to be observed | a route per session (X11, KWin script, wlr, GNOME's idle inhibitors); the e2e case passes in seven sessions; a real video to be observed | window list bounds, compiled; needs a tester |
 | Desktop e2e (`tests/e2e.rs`) | yes, on the desktop or in a local VM (17 of the 20 cases in the guest; the setter-line case needs Linux, the layout-change case moves a layout through `xrandr` and the plasmashell-survival case needs a Plasma session, none of which the Windows guest is) | yes, in a local VM (19 cases compile, the 20th being Windows only; on 2026-09-23, before the seventeenth and eighteenth cases existed, all 16 then present passed in each of eight sessions: KDE, GNOME, XFCE, Cinnamon and i3 on X11, KDE, GNOME and sway on Wayland, the tray, Plasma and layout-change cases skipping themselves where their session lacks what they need; Cinnamon passed 15 on one earlier boot, see `docs/testing.md`) | runner; Intel 14 of 14 with one screen, the layout-change and plasmashell cases skipping themselves; Apple Silicon 13 of 14 with one screen or two, `test_render_and_exit` failing on exit memory |
 
 The macOS CI job is not green. As of 2026-09-07 one engine case fails there, `stars::zero_star_intensity_leaves_catalog_pixels_at_the_clear_color`, on a single pixel the paravirtual Metal device does not reproduce when the star draw enters the pass; `testing.md` has the measurement and the revision written for it, which no macOS run has seen. Every other target passes. Nothing in the table below rests on that case, but a reader should not take "compiled" to mean the job came back green.
@@ -107,6 +108,37 @@ Full screen is winit's borderless full screen on the monitor the window is on, t
 - The Windows desktop, by hand: the cursor hides with the idle controls and comes back with them, the tray's hide works while the window is in full screen, and so does closing the app.
 
 Not observed: Wayland (KDE, GNOME, sway), where no tool in the guest can press a key into the app and the e2e case skips; on Windows, whether the native menu bar goes in full screen and whether a maximized window comes back maximized; and on the Windows desktop with a GPU, in a debug and in a release build, that the switch through black shows no stretched sidebar, that the notice shows while the first full screen frame renders, and that the picture does not jump in framing when it appears.
+
+## Another application in full screen
+
+The engine holds its automatic publishes while another application covers a whole monitor, so a wallpaper change does not make a game or a video stutter; `docs/architecture.md` has the engine's side and `docs/usage.md` the user's ([plans/2026-11-23-fullscreen-pause-plan.md](plans/2026-11-23-fullscreen-pause-plan.md), research beside it). A window covers when it belongs to another process and its rectangle contains a monitor's, or the platform reports it in full screen. The probe is `sunlit_core::cover::system_probe()`, and `sunlit-earth displays` prints its answer and how long it took on a `fullscreen:` line: `none`, the cover (`sunlit-earth (pid 1426) on Virtual-1, full screen state`), or `unknown; <reason>`. An unknown answer holds nothing.
+
+| Platform and session | Route | Names | Evidence |
+|---|---|---|---|
+| Windows | `EnumWindows`: visible, not minimized, not cloaked, not a tool window, not a layered click-through overlay, not the shell's own classes; `GetWindowRect` containing the monitor's `rcMonitor`, in physical pixels under per monitor DPI awareness v2. Also `SHQueryUserNotificationState` answering exclusive Direct3D or presentation mode | process ID, monitor | the e2e case in the Windows guest; VLC, a browser video, a borderless game and the overlays on a desktop are to be observed |
+| Linux, X11, and Xwayland windows under Wayland | `_NET_CLIENT_LIST_STACKING` with each client's state, desktop, type, process ID and geometry, then the root's viewable override-redirect children; `_NET_WM_STATE_FULLSCREEN` or a rectangle containing a `RandR` monitor. Input-only windows never count, Mutter's and Muffin's full screen guard window among them | process ID, `WM_CLASS`, monitor | the e2e case in KDE, XFCE, Cinnamon and i3 on X11 |
+| KDE Plasma on Wayland | a one-shot KWin script, loaded over D-Bus, that reports back by `callDBus` the windows that are full screen or whose rounded frame contains their output | process ID, resource class, output | the e2e case in KDE on Wayland |
+| wlroots compositors (sway, Hyprland, labwc and others) | `zwlr_foreign_toplevel_manager_v1` on a connection of the probe's own: toplevels in the full screen state that have entered an output | app ID, output; no process ID, so the app's own full screen window counts there | the e2e case in sway |
+| GNOME on Wayland, and any Wayland session with the session manager and no route above | `org.gnome.SessionManager`'s `IsInhibited(8)`: an application keeping the screen awake stands in for full screen, which also holds the refresh for a video in a window | the inhibiting app ID | the e2e case in GNOME on Wayland, with an inhibitor of its own |
+| Any other Wayland compositor | none for native Wayland windows: `unknown` unless the X11 route finds an Xwayland window covering | | unit tests of the route choice |
+| macOS | `CGWindowListCopyWindowInfo` with on-screen windows only, layer 0, another process; bounds containing `CGDisplayBounds` with the top up to 50 points lower, for the notch. Only process ID, layer and bounds are read, which need no Screen Recording permission | process ID, display | compiled; a tester is asked in `docs/macos-testing.md` |
+
+The Linux probe reads the session's facts once (`DISPLAY`, `WAYLAND_DISPLAY`, the wlr global, `org.kde.KWin` and `org.gnome.SessionManager` on the session bus), runs each route on a thread of its own, and waits for all of them under one 250 ms deadline; any covered answer wins, clear needs every route clear, and anything else is unknown with each reason. A route still running from an earlier probe is not started again; it answers unknown until it returns.
+
+**Measured on 2026-11-23** in the guests, from the `fullscreen:` lines of `test_another_full_screen_window_is_seen`, debug build, software rendering. The first figure is the probe with the app in full screen, the first probe of a new process; the second the probe after it left.
+
+| Session | Route that answered | Covered | Clear |
+|---|---|---|---|
+| KDE, X11 | X11 | 18.2 ms | 7.1 ms |
+| XFCE, X11 | X11 | 9.6 ms | 13.3 ms |
+| Cinnamon, X11 | X11 | 11.9 ms | 3.9 ms |
+| i3, X11 | X11 | 3.5 ms | 7.0 ms |
+| KDE, Wayland | KWin script, beside X11 | 114.9 ms | 9.3 ms |
+| GNOME, Wayland | session manager, beside X11 | 4.6 ms | 13.3 ms |
+| sway | wlr, beside X11 | 43.0 ms | 2.0 ms |
+| Windows | `EnumWindows` | WINDOWS_COVERED | WINDOWS_CLEAR |
+
+Each `displays` is a new process, so every figure includes connecting to the X server and the session bus; the engine keeps its bus connection, and the 4.4 ms median of a KWin script's load, run and unload measured in step 0 (plan departure 1) is the steady cost of that route. Under Cinnamon the first run found Muffin's input-only guard window, which covers the screen, and counted it (plan departure 7); no compositor overlay window was among the root's children in any session checked.
 
 ## The save dialog and the export sheet
 

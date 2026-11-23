@@ -1540,7 +1540,9 @@ fn test_another_full_screen_window_is_seen() {
     switch("leave-full-screen", "full_screen_left");
     if cfg!(target_os = "macos") {
         println!(
-            "on macOS a broken copy of the window stays on screen after leaving full screen until              the app quits (docs/roadmap.md, \"Full screen on macOS, not observed\"), so the clear              answer is asked for once the app has quit"
+            "on macOS a broken copy of the window stays on screen after leaving full screen until \
+             the app quits (docs/roadmap.md, \"Full screen on macOS, not observed\"), so the clear \
+             answer is asked for once the app has quit"
         );
         fullscreen_coverage();
         quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);

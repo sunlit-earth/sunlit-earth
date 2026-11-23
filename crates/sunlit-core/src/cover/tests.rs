@@ -296,6 +296,7 @@ fn x11_window(rect: Rect) -> X11Window {
         pid: Some(4711),
         rect,
         viewable: true,
+        input_only: false,
         hidden: false,
         full_screen: false,
         desktop: Some(0),
@@ -346,6 +347,13 @@ fn each_x11_skip_rule_skips() {
             "unviewable",
             X11Window {
                 viewable: false,
+                ..base.clone()
+            },
+        ),
+        (
+            "input only",
+            X11Window {
+                input_only: true,
                 ..base.clone()
             },
         ),
@@ -421,6 +429,23 @@ fn an_override_redirect_window_covers_by_geometry_alone() {
     };
     assert_eq!(
         x11_coverage(&[], &[unmapped], &x11_monitors(), Some(0), OWN),
+        Coverage::Clear
+    );
+}
+
+/// Mutter and its forks keep an input-only guard window over the whole
+/// screen, override-redirect, with neither a class nor a process.
+#[test]
+fn an_input_only_window_over_the_whole_screen_does_not_cover() {
+    let guard = X11Window {
+        application: None,
+        pid: None,
+        desktop: None,
+        input_only: true,
+        ..x11_window(Rect::from_origin(0, 0, 3840, 1080))
+    };
+    assert_eq!(
+        x11_coverage(&[], &[guard], &x11_monitors(), Some(0), OWN),
         Coverage::Clear
     );
 }

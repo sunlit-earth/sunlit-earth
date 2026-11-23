@@ -7,9 +7,15 @@
 //! probe writes a script with a token of its own, has `KWin` load and run it,
 //! and the script calls back to an object the probe exports on its session bus
 //! connection, by the connection's unique name.
+//!
+//! The script lives in the cache folder while `KWin` has it, under a name that
+//! carries the process ID. A process that ended while one was loaded leaves it
+//! behind, and the first query of the next process unloads and deletes it.
 
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use crossbeam_channel::Sender;
 use zbus::blocking::Connection;
@@ -20,6 +26,10 @@ use crate::cover::{Candidate, Coverage, Rect, Screen, coverage_of};
 const KWIN: &str = "org.kde.KWin";
 const OBJECT: &str = "/org/sunlitearth/CoverProbe";
 const INTERFACE: &str = "org.sunlitearth.CoverProbe";
+const PREFIX: &str = "sunlit-earth-cover-";
+
+/// Whether this process has swept away the scripts earlier ones left behind.
+static SWEPT: Once = Once::new();
 
 /// The probe waiting for a report, by its token, and where to hand it.
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(0);
@@ -89,12 +99,28 @@ impl KWinRoute {
             std::process::id(),
             NEXT_TOKEN.fetch_add(1, Ordering::Relaxed)
         );
-        let name = format!("sunlit-earth-cover-{token}");
-        let dir = crate::user_state::cache_dir().unwrap_or_else(std::env::temp_dir);
+        let name = format!("{PREFIX}{token}");
+        let dir =
+            crate::user_state::cache_dir().ok_or("there is no cache folder for the script")?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        SWEPT.call_once(|| sweep(bus, &dir));
         let path = dir.join(format!("{name}.js"));
-        std::fs::write(&path, script(&unique, &token))
-            .map_err(|e| format!("the script could not be written to {}: {e}", path.display()))?;
+        let written = |e: std::io::Error| {
+            format!("the script could not be written to {}: {e}", path.display())
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(written)?;
+        let _script = Script {
+            bus,
+            path: path.clone(),
+            name: name.clone(),
+        };
+        file.write_all(script(&unique, &token).as_bytes())
+            .map_err(written)?;
+        drop(file);
 
         // A channel of one, read below by this query until its deadline, and
         // filled by the report object on zbus's executor thread when KWin
@@ -116,21 +142,75 @@ impl KWinRoute {
             .waiting
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        let _ = bus.call_method(
-            Some(KWIN),
-            "/Scripting",
-            Some("org.kde.kwin.Scripting"),
-            "unloadScript",
-            &(name.as_str(),),
-        );
-        let _ = std::fs::remove_file(&path);
         let (candidates, screens) = parse(&report?, std::process::id());
         Ok(coverage_of(&candidates, &screens))
     }
 }
 
+/// A script file written for one query: `KWin` unloads it and the file goes
+/// when the query ends, however it ends.
+struct Script<'b> {
+    bus: &'b Connection,
+    path: PathBuf,
+    name: String,
+}
+
+impl Drop for Script<'_> {
+    fn drop(&mut self) {
+        unload(self.bus, &self.name);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn unload(bus: &Connection, name: &str) {
+    let _ = bus.call_method(
+        Some(KWIN),
+        "/Scripting",
+        Some("org.kde.kwin.Scripting"),
+        "unloadScript",
+        &(name,),
+    );
+}
+
+/// Unload and delete the scripts in `dir` that processes no longer running
+/// left behind, and any of this process's ID, which an earlier process of the
+/// same ID left behind since this one has written none yet.
+fn sweep(bus: &Connection, dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let files: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    let alive = |pid: u32| Path::new("/proc").join(pid.to_string()).exists();
+    for name in stale(&files, std::process::id(), alive) {
+        tracing::debug!(
+            name,
+            "unloading a KWin script an earlier process left behind"
+        );
+        unload(bus, name);
+        let _ = std::fs::remove_file(dir.join(format!("{name}.js")));
+    }
+}
+
+/// The script names among `files` whose process is this one or no longer
+/// runs.
+fn stale(files: &[String], own_pid: u32, alive: impl Fn(u32) -> bool) -> Vec<&str> {
+    files
+        .iter()
+        .filter_map(|file| {
+            let name = file.strip_suffix(".js")?;
+            let (pid, count) = name.strip_prefix(PREFIX)?.split_once('-')?;
+            count.parse::<u64>().ok()?;
+            let pid = pid.parse::<u32>().ok()?;
+            (pid == own_pid || !alive(pid)).then_some(name)
+        })
+        .collect()
+}
+
 /// Load and start the script at `path` under `name`.
-fn run(bus: &Connection, path: &std::path::Path, name: &str) -> Result<(), String> {
+fn run(bus: &Connection, path: &Path, name: &str) -> Result<(), String> {
     let failed = |e: zbus::Error| format!("KWin refused the script: {e}");
     let id: i32 = bus
         .call_method(
@@ -263,6 +343,25 @@ mod tests {
         let report = "1\t1\t0\t0\t10\t10\tDP-1\t0\t0\t1920\t1080\tself\nnot a line";
         let (candidates, _) = parse(report, 1);
         assert_eq!(candidates.len(), 0);
+    }
+
+    #[test]
+    fn scripts_of_ended_processes_and_of_this_pid_are_stale() {
+        let files = [
+            "sunlit-earth-cover-100-0.js",
+            "sunlit-earth-cover-200-3.js",
+            "sunlit-earth-cover-300-1.js",
+            "sunlit-earth-cover-300-1.js~",
+            "sunlit-earth-cover-x-1.js",
+            "sunlit-earth-cover-400.js",
+            "tiles.pack",
+        ]
+        .map(str::to_owned);
+        let alive = |pid: u32| pid == 200 || pid == 300;
+        assert_eq!(
+            stale(&files, 300, alive),
+            ["sunlit-earth-cover-100-0", "sunlit-earth-cover-300-1"]
+        );
     }
 
     #[test]

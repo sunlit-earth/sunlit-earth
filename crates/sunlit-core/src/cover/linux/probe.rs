@@ -1,13 +1,13 @@
 //! The live probe: the session's facts, read once, and its routes asked in
 //! parallel under one deadline.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, RecvTimeoutError};
 
-use super::{Route, SessionFacts, combine, routes};
+use super::{Route, SessionFacts, combine, on_a_thread, routes};
 use crate::cover::{CoverProbe, Coverage};
 
 /// How long a probe waits for the session's facts and every route's answer
@@ -104,11 +104,13 @@ impl CoverProbe for LinuxProbe {
             .map(|(route, answer)| {
                 let coverage = match answer {
                     None => Coverage::Unknown("the previous query has not returned".to_owned()),
-                    Some(answer) => answer.recv_deadline(deadline).unwrap_or_else(|_| {
-                        Coverage::Unknown(format!(
-                            "no answer within {} ms",
-                            PROBE_DEADLINE.as_millis()
-                        ))
+                    Some(answer) => answer.recv_deadline(deadline).unwrap_or_else(|e| {
+                        Coverage::Unknown(match e {
+                            RecvTimeoutError::Timeout => {
+                                format!("no answer within {} ms", PROBE_DEADLINE.as_millis())
+                            }
+                            RecvTimeoutError::Disconnected => "the query failed".to_owned(),
+                        })
                     }),
                 };
                 (route, coverage)
@@ -116,36 +118,6 @@ impl CoverProbe for LinuxProbe {
             .collect();
         combine(answers, facts)
     }
-}
-
-/// Run `query` on a thread of its own and hand back where its answer will
-/// arrive, unless the last query under `busy` is still running.
-///
-/// The answer crosses in a channel of one, read by the probe that started the
-/// query, or by nobody once that probe's deadline has passed, in which case
-/// the query finishes, clears `busy` and its answer is dropped with the
-/// channel.
-fn on_a_thread<T: Send + 'static>(
-    busy: &Arc<AtomicBool>,
-    query: impl FnOnce() -> T + Send + 'static,
-) -> Option<Receiver<T>> {
-    if busy.swap(true, Ordering::AcqRel) {
-        return None;
-    }
-    let (tx, rx) = crossbeam_channel::bounded(1);
-    let flag = Arc::clone(busy);
-    let spawned = std::thread::Builder::new()
-        .name("cover probe".to_owned())
-        .spawn(move || {
-            let answer = query();
-            flag.store(false, Ordering::Release);
-            let _ = tx.send(answer);
-        });
-    if spawned.is_err() {
-        busy.store(false, Ordering::Release);
-        return None;
-    }
-    Some(rx)
 }
 
 fn session_facts(bus: &OnceLock<Option<zbus::blocking::Connection>>) -> SessionFacts {

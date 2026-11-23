@@ -319,14 +319,20 @@ pub enum X11Type {
 /// X11: what one client of the window manager, or one override-redirect child
 /// of the root, is.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per window property the X server reports"
+)]
 pub struct X11Window {
     pub application: Option<String>,
     pub pid: Option<u32>,
     /// In root coordinates.
     pub rect: Rect,
-    /// Mapped, with its ancestors, and drawn: an input-only window, such as
-    /// Mutter's guard window over the whole screen, is never viewable here.
+    /// Mapped, with its ancestors.
     pub viewable: bool,
+    /// Of class `InputOnly`, which draws nothing, such as Mutter's guard
+    /// window over the whole screen.
+    pub input_only: bool,
     pub hidden: bool,
     pub full_screen: bool,
     pub desktop: Option<u32>,
@@ -334,13 +340,18 @@ pub struct X11Window {
 }
 
 impl X11Window {
+    /// Whether the window shows anything: mapped and not input-only.
+    pub fn drawn(&self) -> bool {
+        self.viewable && !self.input_only
+    }
+
     /// Whether this client can cover a monitor at all.
     pub fn counts(&self, current_desktop: Option<u32>, own_pid: u32) -> bool {
         let on_this_desktop = match (self.desktop, current_desktop) {
             (Some(X11_ALL_DESKTOPS) | None, _) | (_, None) => true,
             (Some(desktop), Some(current)) => desktop == current,
         };
-        self.viewable
+        self.drawn()
             && !self.hidden
             && on_this_desktop
             && self.kind == X11Type::Other
@@ -371,7 +382,7 @@ pub fn x11_coverage(
     candidates.extend(
         override_redirect
             .iter()
-            .filter(|window| window.viewable && window.pid != Some(own_pid))
+            .filter(|window| window.drawn() && window.pid != Some(own_pid))
             .map(|window| Candidate {
                 application: window.application.clone(),
                 pid: window.pid,

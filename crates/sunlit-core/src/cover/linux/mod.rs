@@ -10,6 +10,11 @@
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crossbeam_channel::Receiver;
+
 use super::Coverage;
 
 #[cfg(target_os = "linux")]
@@ -127,8 +132,49 @@ pub fn combine(answers: Vec<(Route, Coverage)>, facts: SessionFacts) -> Coverage
     }
 }
 
+/// Run `query` on a thread of its own and hand back where its answer will
+/// arrive, unless the last query under `busy` is still running.
+///
+/// The answer crosses in a channel of one, read by the probe that started the
+/// query, or by nobody once that probe's deadline has passed, in which case
+/// the query finishes, clears `busy` and its answer is dropped with the
+/// channel. `busy` is cleared however the query ends, a panic included.
+pub(crate) fn on_a_thread<T: Send + 'static>(
+    busy: &Arc<AtomicBool>,
+    query: impl FnOnce() -> T + Send + 'static,
+) -> Option<Receiver<T>> {
+    struct Running(Arc<AtomicBool>);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+
+    if busy.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let running = Running(Arc::clone(busy));
+    let spawned = std::thread::Builder::new()
+        .name("cover probe".to_owned())
+        .spawn(move || {
+            let answer = {
+                let _running = running;
+                query()
+            };
+            let _ = tx.send(answer);
+        });
+    if spawned.is_err() {
+        busy.store(false, Ordering::Release);
+        return None;
+    }
+    Some(rx)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::cover::{Cover, Signal};
 
@@ -232,6 +278,34 @@ mod tests {
             facts,
         );
         assert_eq!(answer, covered("vlc"));
+    }
+
+    #[test]
+    fn a_query_still_running_is_not_started_again() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let (release, wait) = crossbeam_channel::bounded::<()>(0);
+        let first = on_a_thread(&busy, move || wait.recv().is_ok()).expect("started");
+        assert!(
+            on_a_thread(&busy, || true).is_none(),
+            "started on top of itself"
+        );
+        release.send(()).expect("the query waits");
+        assert_eq!(first.recv_timeout(Duration::from_secs(10)), Ok(true));
+        let again = on_a_thread(&busy, || true).expect("started once it returned");
+        assert_eq!(again.recv_timeout(Duration::from_secs(10)), Ok(true));
+    }
+
+    #[test]
+    fn a_query_that_panics_frees_its_route() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let answer =
+            on_a_thread(&busy, || -> bool { panic!("the route failed") }).expect("started");
+        assert!(
+            answer.recv_timeout(Duration::from_secs(10)).is_err(),
+            "a panicking query answers nothing"
+        );
+        let again = on_a_thread(&busy, || true).expect("the route was freed");
+        assert_eq!(again.recv_timeout(Duration::from_secs(10)), Ok(true));
     }
 
     #[test]

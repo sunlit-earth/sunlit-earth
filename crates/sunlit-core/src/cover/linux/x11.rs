@@ -235,8 +235,8 @@ fn answer<C: RequestConnection>(asked: Asked<'_, C>, atoms: &Atoms) -> Option<(X
                 i64::from(geometry.width),
                 i64::from(geometry.height),
             ),
-            viewable: attributes.map_state == MapState::VIEWABLE
-                && attributes.class != WindowClass::INPUT_ONLY,
+            viewable: attributes.map_state == MapState::VIEWABLE,
+            input_only: attributes.class == WindowClass::INPUT_ONLY,
             hidden: state.contains(&atoms.state_hidden),
             full_screen: state.contains(&atoms.state_full_screen),
             desktop,

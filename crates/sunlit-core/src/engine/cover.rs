@@ -100,6 +100,26 @@ impl CoverGate {
         }
     }
 
+    /// Whether the automatic publishes `what`, due as the engine stops, may
+    /// go out. Nothing is held, since there is no tick left to release it in,
+    /// and a publish already held stays in.
+    pub(super) fn admit_at_exit(&mut self, what: &[Automatic]) -> bool {
+        if self.held.is_some() {
+            return false;
+        }
+        match self.ask() {
+            Coverage::Covered(cover) => {
+                info!(
+                    %cover,
+                    ?what,
+                    "another application covers the desktop; the wallpaper update is dropped                      at exit"
+                );
+                false
+            }
+            Coverage::Clear | Coverage::Unknown(_) => true,
+        }
+    }
+
     /// Whether the publish held is to go out at `now`, and why: the recheck
     /// fell due and the probe no longer answers covered. Ends the hold if so.
     pub(super) fn released(&mut self, now: Duration) -> Option<Release> {

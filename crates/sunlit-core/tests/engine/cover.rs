@@ -68,7 +68,9 @@ impl std::ops::Deref for Covering {
     }
 }
 
-static COVERING: LazyLock<Covering> = LazyLock::new(|| {
+static COVERING: LazyLock<Covering> = LazyLock::new(start_covering);
+
+fn start_covering() -> Covering {
     let sink = Arc::new(RecordingSink::new(two_screens()));
     let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
     let probe = Arc::new(ScriptedProbe::new());
@@ -86,7 +88,7 @@ static COVERING: LazyLock<Covering> = LazyLock::new(|| {
         clock,
         probe,
     }
-});
+}
 
 /// The engine with a scripted probe and a one minute auto-refresh, with no
 /// hold standing, the desk holding one of its pictures, the countdown
@@ -220,17 +222,12 @@ fn a_layout_change_republish_is_held_the_same_way() {
 #[test]
 fn quitting_while_held_publishes_nothing() {
     let _gpu = gpu();
-    let sink = Arc::new(RecordingSink::new(two_screens()));
-    let clock = Arc::new(MockClock::new(time::OffsetDateTime::UNIX_EPOCH));
-    let probe = Arc::new(ScriptedProbe::new());
-    let (sink_for_config, clock_for_config, probe_for_config) =
-        (Arc::clone(&sink), Arc::clone(&clock), Arc::clone(&probe));
-    let harness = Harness::start(move |config| {
-        config.wallpaper = sink_for_config;
-        config.clock = clock_for_config;
-        config.cover = Some(probe_for_config);
-        config.auto_refresh = Some(INTERVAL);
-    });
+    let Covering {
+        harness,
+        sink,
+        clock,
+        probe,
+    } = start_covering();
     harness.settle();
     probe.cover();
     harness.advance(&clock, INTERVAL);
@@ -240,6 +237,46 @@ fn quitting_while_held_publishes_nothing() {
     assert_eq!(probe.asked(), 1);
     drop(harness);
     assert!(sink.publications().is_empty());
+}
+
+/// Quit with a refresh parked behind the scene hold and the probe answering
+/// `coverage` at exit, and return how many publishes went out and how many
+/// times the probe was asked.
+fn quit_with_a_parked_refresh(coverage: Coverage) -> (usize, usize) {
+    let _gpu = gpu();
+    let Covering {
+        harness,
+        sink,
+        clock,
+        probe,
+    } = start_covering();
+    harness.settle();
+    harness.engine.send(EngineCommand::Hold(true));
+    harness.settle();
+    harness.advance(&clock, INTERVAL);
+    for _ in 0..2 {
+        let _ = harness.engine.memory_report();
+    }
+    assert_eq!(probe.asked(), 0, "asked while the scene was held");
+    probe.answer(coverage);
+    drop(harness);
+    (sink.publications().len(), probe.asked())
+}
+
+#[test]
+fn a_refresh_parked_behind_the_scene_hold_goes_out_at_exit_when_clear() {
+    assert_eq!(quit_with_a_parked_refresh(Coverage::Clear), (1, 1));
+}
+
+#[test]
+fn a_refresh_parked_behind_the_scene_hold_stays_in_at_exit_when_covered() {
+    let covered = Coverage::Covered(Cover {
+        application: Some("player".to_owned()),
+        pid: Some(4711),
+        monitor: Some("DP-1".to_owned()),
+        signal: Signal::FullScreenState,
+    });
+    assert_eq!(quit_with_a_parked_refresh(covered), (0, 1));
 }
 
 fn scene_hold(group: &Covering, hold: bool) {
@@ -270,6 +307,52 @@ fn a_refresh_parked_behind_the_scene_hold_asks_the_probe_at_the_release() {
     assert!(group.wait_for_publish().is_ok());
     std::thread::sleep(NOTHING_HAPPENS_IN);
     assert_eq!(published(group), 1, "one held refresh is one publish");
+}
+
+/// A refresh held for a cover whose recheck fell due while the scene was
+/// held, and a refresh parked behind that hold, are one publish at the release.
+#[test]
+fn a_cover_released_with_a_refresh_parked_behind_the_scene_hold_publishes_once() {
+    let gpu = gpu();
+    let group = covering(&gpu);
+    group.probe.cover();
+    advance(group, INTERVAL);
+    assert_eq!(group.probe.asked(), 1);
+
+    scene_hold(group, true);
+    group.probe.answer(Coverage::Clear);
+    advance(group, INTERVAL);
+    assert_eq!(group.probe.asked(), 1, "rechecked while the scene was held");
+
+    group.engine.send(EngineCommand::Hold(false));
+    assert!(group.wait_for_publish().is_ok());
+    advance(group, Duration::from_secs(1));
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(published(group), 1, "the release and the parked refresh");
+}
+
+/// A publish asked for while the scene was held, whose release lands on the
+/// tick the cover's recheck does, is the same wallpaper and goes out once.
+#[test]
+fn a_cover_released_with_a_publish_asked_behind_the_scene_hold_publishes_once() {
+    let gpu = gpu();
+    let group = covering(&gpu);
+    group.probe.cover();
+    advance(group, INTERVAL);
+    assert_eq!(group.probe.asked(), 1);
+
+    scene_hold(group, true);
+    group.probe.answer(Coverage::Clear);
+    advance(group, COVER_RECHECK);
+    group.engine.send(EngineCommand::RenderWallpaperNow);
+    let _ = group.engine.memory_report();
+    assert_eq!(published(group), 0, "a publish reached past the scene hold");
+
+    group.engine.send(EngineCommand::Hold(false));
+    assert!(group.wait_for_publish().is_ok());
+    advance(group, Duration::from_secs(1));
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(published(group), 1, "the release and the asked publish");
 }
 
 /// Switching the auto-refresh off drops a refresh held for a cover: nothing

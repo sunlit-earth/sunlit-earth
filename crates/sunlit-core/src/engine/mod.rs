@@ -567,34 +567,42 @@ impl Engine {
                 self.drain.next = Duration::ZERO;
             }
             EngineCommand::Shutdown => {
-                // A publish asked for in the same drain batch as the shutdown,
-                // or one still waiting for its tiles, is still someone's
-                // request, and there is no tick left to do it in or to wait
-                // in. So is an automatic one parked behind the scene hold,
-                // unless a cover holds it. The wallpaper shows the clock; an
-                // export keeps the held instant.
-                let parked = std::mem::take(&mut self.parked);
-                let now = self.clock.elapsed();
-                if std::mem::take(&mut self.publish_asked)
-                    || self.wallpaper_owed
-                    || (!parked.is_empty() && self.cover_admits(now, &parked))
-                {
-                    let held = self.held.take();
-                    self.publish_wallpaper_at_exit();
-                    self.held = held;
-                }
-                // A caller waiting on an export is answered with what is
-                // resident rather than with a closed channel.
-                if !self.exports.is_empty() {
-                    self.prepare_export();
-                    for export in std::mem::take(&mut self.exports) {
-                        self.answer(export);
-                    }
-                }
+                self.shut_down();
                 return false;
             }
         }
         true
+    }
+
+    /// Do what is still owed before the engine stops.
+    fn shut_down(&mut self) {
+        // A publish asked for in the same drain batch as the shutdown,
+        // or one still waiting for its tiles, is still someone's
+        // request, and there is no tick left to do it in or to wait
+        // in. So is an automatic one parked behind the scene hold,
+        // unless a cover holds it. The wallpaper shows the clock; an
+        // export keeps the held instant.
+        let parked = std::mem::take(&mut self.parked);
+        if std::mem::take(&mut self.publish_asked)
+            || self.wallpaper_owed
+            || (!parked.is_empty()
+                && self
+                    .cover
+                    .as_mut()
+                    .is_none_or(|gate| gate.admit_at_exit(&parked)))
+        {
+            let held = self.held.take();
+            self.publish_wallpaper_at_exit();
+            self.held = held;
+        }
+        // A caller waiting on an export is answered with what is
+        // resident rather than with a closed channel.
+        if !self.exports.is_empty() {
+            self.prepare_export();
+            for export in std::mem::take(&mut self.exports) {
+                self.answer(export);
+            }
+        }
     }
 
     /// How long the loop waits for a command: a frame's worth while an
@@ -797,7 +805,9 @@ impl Engine {
     }
 
     /// Publish when the auto-refresh falls due, or when a publish held for a
-    /// cover is let go. A hold is rechecked only while the scene is free.
+    /// cover is let go. A hold is rechecked only while the scene is free, so
+    /// its release can land on the tick the scene is released: the publishes
+    /// parked behind the scene hold and one asked for go out with it.
     fn refresh(&mut self, now: Duration) {
         if let Some(schedule) = &mut self.auto_refresh
             && schedule.due(now)
@@ -812,6 +822,8 @@ impl Engine {
                 .is_some()
         {
             self.restart_auto_refresh(now);
+            self.parked.clear();
+            self.publish_asked = false;
             self.publish_wallpaper();
         }
     }

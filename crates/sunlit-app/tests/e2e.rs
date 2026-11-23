@@ -1438,7 +1438,7 @@ fn test_another_full_screen_window_is_seen() {
 
     let socket_name = unique_socket_name();
     let (mut guard, stdout_watcher, stderr_watcher) = Spawn::new(&socket_name).start();
-    let pid = guard.pid();
+    let pid = guard.child_mut().id();
     let switch = |command: &str, answer: &str| {
         let from = stdout_watcher.line_count();
         send_ipc_command(&socket_name, command);

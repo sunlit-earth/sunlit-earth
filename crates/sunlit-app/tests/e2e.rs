@@ -1417,15 +1417,37 @@ fn fullscreen_coverage_until(wanted: impl Fn(&str) -> bool) -> String {
     }
 }
 
+/// Why the cover probe has no route in this session, or `None` where it has
+/// one: Windows, macOS, every X11 session, and Plasma, GNOME and sway under
+/// Wayland. Another Wayland compositor may offer the wlr protocol or nothing,
+/// which the case cannot tell from the environment.
+fn no_cover_route() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    if !session_is_wayland() {
+        return std::env::var_os("DISPLAY")
+            .is_none_or(|display| display.is_empty())
+            .then(|| "this session has no X display and is not a Wayland session".to_owned());
+    }
+    let known = ["KDE", "GNOME", "sway"];
+    (!desktop
+        .split(':')
+        .any(|name| known.iter().any(|known| name.eq_ignore_ascii_case(known))))
+    .then(|| format!("{desktop:?} under Wayland is none of the desktops a route is known for"))
+}
+
 /// The app's own window in full screen is, to `sunlit-earth displays` running
 /// as another process, a window that covers the desktop, and once it leaves
 /// full screen nothing does.
 ///
-/// Each session has its route: the window's geometry on Windows, its state on
-/// X11, the `KWin` script on Plasma under Wayland, the foreign toplevel list on
-/// wlroots compositors, which names the app ID rather than a process. GNOME
-/// under Wayland shows no other client's window state, so there the case holds
-/// an idle inhibitor of its own around the first query and expects it named.
+/// Each session has its route: the window's geometry on Windows and macOS, its
+/// state on X11, the `KWin` script on Plasma under Wayland, the foreign toplevel
+/// list on wlroots compositors, which names the app ID rather than a process.
+/// GNOME under Wayland shows no other client's window state, so there the case
+/// holds an idle inhibitor of its own around the first query and expects it
+/// named. An answer of unknown fails the case wherever a route is expected.
 #[test]
 #[ignore = "requires desktop environment and GPU"]
 #[serial]
@@ -1469,7 +1491,10 @@ fn test_another_full_screen_window_is_seen() {
     }
     if let Some(reason) = covered.strip_prefix("unknown; ") {
         quit_and_expect_clean_exit(&socket_name, &mut guard, &stderr_watcher);
-        skip_case(CASE, &format!("the probe cannot tell here: {reason}"));
+        let Some(why) = no_cover_route() else {
+            panic!("this session has a route, and the probe cannot tell: {reason}");
+        };
+        skip_case(CASE, &format!("{why}, and the probe cannot tell: {reason}"));
         return;
     }
     if gnome_wayland {
@@ -1479,7 +1504,8 @@ fn test_another_full_screen_window_is_seen() {
         );
     } else {
         let names_the_app = covered.contains(&format!("(pid {pid})"))
-            || (!covered.contains("(pid ") && covered.starts_with("sunlit-earth "));
+            || covered.starts_with(&format!("pid {pid} "))
+            || (!covered.contains("pid ") && covered.starts_with("sunlit-earth "));
         assert!(
             names_the_app,
             "the app (pid {pid}) is not what covers the desktop: {covered}"

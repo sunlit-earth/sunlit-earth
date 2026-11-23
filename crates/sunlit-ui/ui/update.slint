@@ -86,20 +86,16 @@ export component UpdateWindow inherits Window {
                     wrap: word-wrap;
                 }
 
-                if root.phase == UpdatePhase.checking && root.known != "": known-text := StyledText {
-                    text: @markdown("\{root.known}");
-                    default-color: Palette.foreground;
-                    selectable: true;
-                    accessible-role: text;
-                    accessible-label: root.known;
+                if root.phase == UpdatePhase.checking && root.known != "": Text {
+                    text: root.known;
+                    color: Palette.foreground;
+                    wrap: word-wrap;
                 }
 
-                if root.phase == UpdatePhase.failed: failure-text := StyledText {
-                    text: @markdown("\{root.failure}");
-                    default-color: Palette.foreground;
-                    selectable: true;
-                    accessible-role: text;
-                    accessible-label: root.failure;
+                if root.phase == UpdatePhase.failed: Text {
+                    text: root.failure;
+                    color: Palette.foreground;
+                    wrap: word-wrap;
                 }
 
                 if root.phase == UpdatePhase.available: release-panel := Rectangle {
@@ -145,12 +141,10 @@ export component UpdateWindow inherits Window {
                                         }
                                     }
 
-                                    for line in release.highlights: release-line := StyledText {
-                                        text: @markdown("\{line}");
-                                        default-color: Palette.foreground;
-                                        selectable: true;
-                                        accessible-role: text;
-                                        accessible-label: line;
+                                    for line in release.highlights: release-line := Text {
+                                        text: line;
+                                        color: Palette.foreground;
+                                        wrap: word-wrap;
                                     }
                                 }
                             }
@@ -198,12 +192,10 @@ export component UpdateWindow inherits Window {
                         }
                     }
 
-                    command-hint-text := StyledText {
-                        text: @markdown("\{root.command-hint}");
-                        default-color: Palette.foreground;
-                        selectable: true;
-                        accessible-role: text;
-                        accessible-label: root.command-hint;
+                    Text {
+                        text: root.command-hint;
+                        color: Palette.foreground;
+                        wrap: word-wrap;
                     }
                 }
 
@@ -220,12 +212,10 @@ export component UpdateWindow inherits Window {
                         }
                     }
 
-                    archive-step-text := StyledText {
-                        text: @markdown("\{root.archive-step}");
-                        default-color: Palette.foreground;
-                        selectable: true;
-                        accessible-role: text;
-                        accessible-label: root.archive-step;
+                    Text {
+                        text: root.archive-step;
+                        color: Palette.foreground;
+                        wrap: word-wrap;
                     }
                 }
             }

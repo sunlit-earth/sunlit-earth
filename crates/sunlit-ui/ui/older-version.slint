@@ -14,7 +14,6 @@ export component OlderVersionWindow inherits Window {
     callback dismiss();
 
     property <string> tray-icon: Platform.os == OperatingSystemType.macos ? "menu bar icon" : "tray icon";
-    property <string> body-text: "An older version of Sunlit Earth is already running, so Sunlit Earth " + root.version + " did not start. Open the running one from its " + root.tray-icon + ", or quit it there and open Sunlit Earth again.";
 
     layout := VerticalLayout {
         padding: 20px;
@@ -35,13 +34,11 @@ export component OlderVersionWindow inherits Window {
                 font-weight: 600;
             }
 
-            body := StyledText {
-                text: @markdown("\{root.body-text}");
-                default-color: Palette.foreground;
-                default-font-size: 12px;
-                selectable: true;
-                accessible-role: text;
-                accessible-label: root.body-text;
+            Text {
+                text: "An older version of Sunlit Earth is already running, so Sunlit Earth " + root.version + " did not start. Open the running one from its " + root.tray-icon + ", or quit it there and open Sunlit Earth again.";
+                color: Palette.foreground;
+                font-size: 12px;
+                wrap: word-wrap;
             }
         }
 

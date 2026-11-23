@@ -3288,15 +3288,12 @@ fn test_the_frame_guides_toggle_and_hide_with_the_overlays() {
     assert_eq!(read(&window), off, "the guides are not a setting");
 }
 
-/// Show `frame` in the window as the engine would hand it over: its size,
-/// the short edge it was framed on, and the screen it was framed for.
-fn show_frame(window: &MainWindow, frame: (i32, i32), short_edge: f32, screen: Option<(i32, i32)>) {
-    let (screen_width, screen_height) = screen.unwrap_or((0, 0));
+/// Show `frame` in the window as the engine would hand it over: its size and
+/// the short edge it was framed on.
+fn show_frame(window: &MainWindow, frame: (i32, i32), short_edge: f32) {
     window.set_frame_width(frame.0);
     window.set_frame_height(frame.1);
     window.set_frame_short_edge(short_edge);
-    window.set_frame_screen_width(screen_width);
-    window.set_frame_screen_height(screen_height);
 }
 
 /// A guide's rectangle, `[x, y, width, height]`.
@@ -3309,15 +3306,11 @@ fn container(window: &MainWindow) -> (f32, f32) {
     (window.get_viewport_width(), window.get_viewport_height())
 }
 
-/// The rectangle of `aspect` the guides should draw for a displayed short
-/// edge `short_edge`, centered on the container.
+/// The rectangle of the landscape `aspect` the guides should draw for a
+/// displayed short edge `short_edge`, centered on the container.
 fn expected_rect(window: &MainWindow, aspect: f32, short_edge: f32) -> [f32; 4] {
     let (width, height) = container(window);
-    let (w, h) = if aspect >= 1.0 {
-        (short_edge * aspect, short_edge)
-    } else {
-        (short_edge, short_edge / aspect)
-    };
+    let (w, h) = (short_edge * aspect, short_edge);
     [(width - w) / 2.0, (height - h) / 2.0, w, h]
 }
 
@@ -3333,108 +3326,193 @@ fn assert_rect(actual: [f32; 4], expected: [f32; 4], what: &str) {
 /// A frame of the container's own shape, framed for `screen` the way the
 /// engine frames the preview: the screen's rectangle as tall as the frame.
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-fn frame_filling_the_container(window: &MainWindow, screen: Option<(i32, i32)>) -> f32 {
+fn frame_filling_the_container(window: &MainWindow, screen: (i32, i32)) -> f32 {
     let (width, height) = container(window);
     let frame = (width.round() as i32, height.round() as i32);
-    let short_edge = match screen {
-        Some((w, h)) => frame.1 as f32 * (w as f32 / h as f32).min(1.0),
-        None => frame.1 as f32,
-    };
-    show_frame(window, frame, short_edge, screen);
+    let short_edge = frame.1 as f32 * (screen.0 as f32 / screen.1 as f32).min(1.0);
+    show_frame(window, frame, short_edge);
     short_edge * height / frame.1 as f32
 }
 
-/// Where the guides sit: each aspect's rectangle has its short side the
-/// displayed short edge and is centered, a landscape screen's as tall as the
-/// frame in a wide panel and a narrow one, a portrait screen's too, a screen
-/// within 1% of 16:9 sharing that rectangle and its labels, and no screen
-/// leaving only 16:9 and 4:3.
+/// An element of the frame guides, `[x, y, width, height]` in the
+/// container's coordinates, for every instance of `id` on the panel, left to
+/// right.
+fn guide_elements(window: &MainWindow, id: &str) -> Vec<[f32; 4]> {
+    let origin = the_element(window, "MainWindow::image-container").absolute_position();
+    let mut found: Vec<[f32; 4]> = ElementHandle::find_by_element_id(window, id)
+        .map(|element| {
+            let (at, size) = (element.absolute_position(), element.size());
+            [at.x - origin.x, at.y - origin.y, size.width, size.height]
+        })
+        .collect();
+    found.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    found
+}
+
+/// Where the guides sit: 16:9 and 4:3 are centered with their short side the
+/// displayed short edge, so equally tall, in a wide panel, a 4:3 one, one
+/// narrower than 4:3 and a portrait one, framed for a landscape screen and
+/// for a portrait one. 16:9's top and bottom run from its side bars to 4:3's
+/// outer edge, so no point is under two bands, and each label sits in its
+/// own rectangle's top left corner, inside the band.
 #[test]
-#[allow(clippy::cast_precision_loss)]
 fn test_the_frame_guides_outline_each_aspect_on_the_displayed_short_edge() {
     let window = create_window();
     window.set_guides_shown(true);
 
-    for (size, what) in [
-        ((3000, 900), "a wide panel"),
-        ((1200, 1400), "a narrow panel"),
+    // Every band is on the panel in a wide one, which is where they are
+    // measured: a query does not find what is off the panel.
+    window
+        .window()
+        .set_size(slint::PhysicalSize::new(3000, 900));
+    frame_filling_the_container(&window, (2560, 1440));
+    let (wide, classic) = (window.get_guide_wide(), window.get_guide_classic());
+    let segment = window.get_guide_wide_segment_width();
+    let sides = guide_elements(&window, "FrameGuides::wide-side");
+    let tops = guide_elements(&window, "FrameGuides::wide-top");
+    let bottoms = guide_elements(&window, "FrameGuides::wide-bottom");
+    let classic_band = guide_elements(&window, "FrameGuides::classic-band");
+    assert_eq!(
+        (sides.len(), tops.len(), bottoms.len(), classic_band.len()),
+        (2, 2, 2, 1)
+    );
+    let band = sides[0][2];
+    assert!(band > 1.0, "the bands are {band} px wide");
+    assert_rect(classic_band[0], guide_rect(&classic), "the 4:3 band");
+    assert_rect(
+        sides[0],
+        [wide.x, wide.y, band, wide.height],
+        "the left 16:9 side",
+    );
+    assert_rect(
+        sides[1],
+        [wide.x + wide.width - band, wide.y, band, wide.height],
+        "the right 16:9 side",
+    );
+    for (row, y) in [(&tops, wide.y), (&bottoms, wide.y + wide.height - band)] {
+        assert_rect(
+            row[0],
+            [wide.x + band, y, classic.x - wide.x - band, band],
+            "the left 16:9 segment",
+        );
+        assert_rect(
+            row[1],
+            [classic.x + classic.width, y, segment, band],
+            "the right 16:9 segment",
+        );
+    }
+
+    for (size, screen, what) in [
+        ((3000, 900), (2560, 1440), "a wide panel"),
+        ((1600, 1200), (2560, 1440), "a 4:3 panel"),
+        ((1300, 1200), (2560, 1440), "a panel narrower than 4:3"),
+        ((900, 1600), (2560, 1440), "a portrait panel"),
+        (
+            (900, 1600),
+            (1080, 1920),
+            "a portrait panel framed for a portrait screen",
+        ),
     ] {
         window
             .window()
             .set_size(slint::PhysicalSize::new(size.0, size.1));
-        let short_edge = frame_filling_the_container(&window, Some((2560, 1440)));
-        let (width, height) = container(&window);
-        approx::assert_relative_eq!(window.get_displayed_short_edge(), height, epsilon = 0.5);
-        let screen = window.get_guide_screen();
-        assert!(screen.shown, "{what}");
+        let short_edge = frame_filling_the_container(&window, screen);
+        let (_, height) = container(&window);
+        approx::assert_relative_eq!(window.get_displayed_short_edge(), short_edge, epsilon = 0.5);
+        let (wide, classic) = (window.get_guide_wide(), window.get_guide_classic());
         assert_rect(
-            guide_rect(&screen),
-            expected_rect(&window, 2560.0 / 1440.0, short_edge),
+            guide_rect(&wide),
+            expected_rect(&window, 16.0 / 9.0, short_edge),
             what,
         );
-        approx::assert_relative_eq!(screen.height, height, epsilon = 0.5);
-        assert_eq!(screen.label, "Screen 2560 × 1440");
-        if what == "a narrow panel" {
-            assert!(
-                screen.width > width,
-                "the screen's sides are clipped in {what}"
-            );
-        }
-        // 2560x1440 is 16:9, so the screen's rectangle carries both labels,
-        // a row apart.
-        let wide = window.get_guide_wide();
-        assert!(
-            !wide.shown,
-            "{what}: 16:9 is drawn as the screen's rectangle"
-        );
-        approx::assert_relative_eq!(wide.label_x, screen.label_x);
-        assert!(wide.label_y > screen.label_y + 10.0, "{what}");
-        let classic = window.get_guide_classic();
-        assert!(classic.shown);
         assert_rect(
             guide_rect(&classic),
             expected_rect(&window, 4.0 / 3.0, short_edge),
             what,
         );
-        assert!(classic.label_y > wide.label_y, "{what}: the labels stack");
+        if screen.0 > screen.1 {
+            approx::assert_relative_eq!(wide.height, height, epsilon = 0.5);
+        } else {
+            assert!(wide.height < height - 1.0, "{what}: {}", wide.height);
+        }
+        approx::assert_relative_eq!(
+            wide.x + band + window.get_guide_wide_segment_width(),
+            classic.x,
+            epsilon = 0.01
+        );
+
+        for guide in [&wide, &classic] {
+            let (dx, dy) = (guide.label_x - guide.x, guide.label_y - guide.y);
+            approx::assert_relative_eq!(dx, dy, epsilon = 0.01);
+            assert!(
+                dx > band && dx < band + 10.0,
+                "{what}: the {} label is {dx} px into its corner",
+                guide.label
+            );
+        }
+        approx::assert_relative_eq!(
+            wide.label_x - wide.x,
+            classic.label_x - classic.x,
+            epsilon = 0.01
+        );
+        assert_eq!(
+            (wide.label.as_str(), classic.label.as_str()),
+            ("16:9", "4:3")
+        );
     }
+}
 
-    // A portrait screen: its rectangle as tall as the frame, its width the
-    // short edge.
-    window
-        .window()
-        .set_size(slint::PhysicalSize::new(2400, 1000));
-    let short_edge = frame_filling_the_container(&window, Some((1080, 1920)));
-    let (_, height) = container(&window);
-    let screen = window.get_guide_screen();
-    assert_rect(
-        guide_rect(&screen),
-        expected_rect(&window, 1080.0 / 1920.0, short_edge),
-        "a portrait screen",
-    );
-    approx::assert_relative_eq!(screen.height, height, epsilon = 0.5);
-    assert!(window.get_guide_wide().shown && window.get_guide_classic().shown);
+/// The center mark is a 16:9 rectangle a third of the panel's height,
+/// centered, at any panel shape, and its cross is on the panel whenever the
+/// guides are, the outlines off it or not. The rectangle's corners are on it
+/// where the rectangle fits, which a portrait panel narrower than 16:27 is
+/// not.
+#[test]
+fn test_the_center_mark_shows_with_the_guides_at_any_size() {
+    let window = create_window();
+    let found =
+        |window: &MainWindow, id: &str| ElementHandle::find_by_element_id(window, id).count();
 
-    // Within 1% of 16:9 is 16:9.
-    frame_filling_the_container(&window, Some((1366, 768)));
-    assert!(
-        !window.get_guide_wide().shown,
-        "1366x768 shares 16:9's rectangle"
-    );
-    frame_filling_the_container(&window, Some((1920, 1200)));
-    assert!(window.get_guide_wide().shown, "16:10 is not 16:9");
+    for size in [(3000, 900), (1600, 1200), (1300, 1200), (900, 1600)] {
+        window
+            .window()
+            .set_size(slint::PhysicalSize::new(size.0, size.1));
+        frame_filling_the_container(&window, (2560, 1440));
+        let (width, height) = container(&window);
+        let expected_height = height / 3.0;
+        let expected_width = expected_height * 16.0 / 9.0;
+        assert_rect(
+            guide_rect(&window.get_guide_center()),
+            [
+                (width - expected_width) / 2.0,
+                (height - expected_height) / 2.0,
+                expected_width,
+                expected_height,
+            ],
+            &format!("the center rectangle in a {size:?} panel"),
+        );
 
-    // No screen: only 16:9 and 4:3, labelled from the top row.
-    let short_edge = frame_filling_the_container(&window, None);
-    assert!(!window.get_guide_screen().shown);
-    let (wide, classic) = (window.get_guide_wide(), window.get_guide_classic());
-    assert!(wide.shown && classic.shown);
-    assert_rect(
-        guide_rect(&wide),
-        expected_rect(&window, 16.0 / 9.0, short_edge),
-        "no screen",
-    );
-    assert!(classic.label_y > wide.label_y);
+        window.set_guides_shown(false);
+        assert!(!window.get_guides_visible());
+        assert_eq!(
+            found(&window, "FrameGuides::center-mark"),
+            0,
+            "{size:?}: hidden with the guides"
+        );
+        window.set_guides_shown(true);
+        assert!(window.get_guides_visible());
+        let corners = if expected_width < width { 4 } else { 0 };
+        assert_eq!(
+            [
+                found(&window, "FrameGuides::center-mark"),
+                found(&window, "FrameGuides::center-corner"),
+                found(&window, "FrameGuides::cross-halo"),
+                found(&window, "FrameGuides::center-cross"),
+            ],
+            [1, corners, 2, 2],
+            "{size:?}: shown with the guides"
+        );
+    }
 }
 
 /// The guides follow the frame shown rather than the panel: a frame drawn
@@ -3449,7 +3527,7 @@ fn test_the_frame_guides_follow_the_frame_shown_while_a_resize_settles() {
     let (width, height) = container(&window);
     // A square frame from before the panel was widened: `cover` scales it to
     // the panel's width and crops its top and bottom.
-    show_frame(&window, (500, 500), 500.0, Some((1920, 1080)));
+    show_frame(&window, (500, 500), 500.0);
     let scale = (width / 500.0).max(height / 500.0);
     approx::assert_relative_eq!(
         window.get_displayed_short_edge(),
@@ -3457,7 +3535,7 @@ fn test_the_frame_guides_follow_the_frame_shown_while_a_resize_settles() {
         epsilon = 0.5
     );
     assert_rect(
-        guide_rect(&window.get_guide_screen()),
+        guide_rect(&window.get_guide_wide()),
         expected_rect(&window, 16.0 / 9.0, 500.0 * scale),
         "the old frame",
     );

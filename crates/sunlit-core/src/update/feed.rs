@@ -1,12 +1,11 @@
 //! The release file, `releases/v1.json`, and what the app makes of it.
 //!
-//! Every release of the app follows the same seven rules from the first one,
+//! Every release of the app follows the same six rules from the first one,
 //! which is what lets the file grow without a `v2`: unknown fields are ignored,
 //! an entry that cannot be read is skipped, a stable build ignores prereleases,
 //! the version on offer is the greatest considered one above the app's own,
-//! what changed runs from there down to the app's own, a URL outside the
-//! project's release pages counts as missing, and a body over [`BODY_LIMIT`] is
-//! a failed check. `docs/plans/2026-11-22-update-check-plan.md` has the format.
+//! what changed runs from there down to the app's own, and a body over
+//! [`BODY_LIMIT`] is a failed check. `docs/plans/2026-11-22-update-check-plan.md` has the format.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -19,34 +18,10 @@ use time::macros::format_description;
 /// The largest body a check accepts.
 pub const BODY_LIMIT: u64 = 256 * 1024;
 
-/// What a release page's URL starts with.
-pub const NOTES_PREFIX: &str = "https://github.com/sunlit-earth/sunlit-earth/releases/";
-
-/// What an archive's URL starts with.
-pub const ASSET_PREFIX: &str = "https://github.com/sunlit-earth/sunlit-earth/releases/download/";
-
-/// Whether `url` is `prefix` followed by a plain path.
-///
-/// Every segment of that path is ASCII letters, digits, `.`, `_`, `-` and `+`,
-/// and none is empty, `.` or `..`. So nothing a browser or a downloader
-/// resolves can climb out of the prefix: no dot segment, no `%` to encode one
-/// or a slash, no `\` that a browser reads as `/`, and no query, fragment,
-/// userinfo or port.
-fn is_under(url: &str, prefix: &str) -> bool {
-    url.strip_prefix(prefix).is_some_and(|path| {
-        path.split('/').all(|segment| {
-            !matches!(segment, "" | "." | "..")
-                && segment
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
-        })
-    })
-}
-
 /// One archive of a release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
-    /// `None` when the file had none, or one outside [`ASSET_PREFIX`].
+    /// As the file gives it, `None` when it had none.
     pub url: Option<String>,
     /// In bytes.
     pub size: Option<u64>,
@@ -57,8 +32,7 @@ pub struct Asset {
 pub struct Release {
     pub version: Version,
     pub date: Option<Date>,
-    /// The release's page, `None` when the file had none, or one outside
-    /// [`NOTES_PREFIX`].
+    /// The release's page as the file gives it, `None` when it had none.
     pub notes: Option<String>,
     pub highlights: Vec<String>,
     /// By the keys [`asset_key`] makes.
@@ -124,7 +98,6 @@ fn read_release(entry: &Value) -> Option<Release> {
     let notes = entry
         .get("notes")
         .and_then(Value::as_str)
-        .filter(|url| is_under(url, NOTES_PREFIX))
         .map(ToOwned::to_owned);
     let highlights = entry
         .get("highlights")
@@ -163,7 +136,6 @@ fn read_asset(asset: &Value) -> Asset {
         url: asset
             .get("url")
             .and_then(Value::as_str)
-            .filter(|url| is_under(url, ASSET_PREFIX))
             .map(ToOwned::to_owned),
         size: asset.get("size").and_then(Value::as_u64),
     }
@@ -376,68 +348,6 @@ mod tests {
         assert!(parse(&at_limit).is_err());
     }
 
-    #[test]
-    fn a_url_outside_its_prefix_is_missing() {
-        let feed = feed_of(&[serde_json::json!({
-            "version": "1.0.0",
-            "assets": {
-                "a": { "url": "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v1.0.0" },
-                "b": { "url": "http://github.com/sunlit-earth/sunlit-earth/releases/download/v1.0.0/x.zip" },
-                "c": { "url": "https://github.com/sunlit-earth/sunlit-earth-fork/releases/download/v1.0.0/x.zip" },
-                "d": { "url": "https://github.com/sunlit-earth/sunlit-earth/releases/download/v1.0.0/x.zip" },
-            },
-        })]);
-        let release = &feed.releases[0];
-        let usable: Vec<&str> = release
-            .assets
-            .iter()
-            .filter(|(_, asset)| asset.url.is_some())
-            .map(|(key, _)| key.as_str())
-            .collect();
-        assert_eq!(usable, ["d"]);
-    }
-
-    #[test]
-    fn a_release_page_counts_only_on_this_repositorys_releases() {
-        let page = "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v1.0.0";
-        let notes = |url: &str| {
-            feed_of(&[serde_json::json!({ "version": "1.0.0", "notes": url })]).releases[0]
-                .notes
-                .clone()
-        };
-        assert_eq!(notes(page).as_deref(), Some(page));
-        for foreign in [
-            "https://example.com/sunlit-earth/sunlit-earth/releases/tag/v1.0.0",
-            "https://github.com/sunlit-earth/sunlit-earth-fork/releases/tag/v1.0.0",
-            "https://github.com/someone/sunlit-earth/releases/tag/v1.0.0",
-            "http://github.com/sunlit-earth/sunlit-earth/releases/tag/v1.0.0",
-        ] {
-            assert_eq!(notes(foreign), None, "{foreign}");
-        }
-    }
-
-    /// Paths after a prefix that a browser or a downloader could resolve to
-    /// somewhere outside it, or that carry more than a path.
-    const ESCAPES: [&str; 17] = [
-        "../../../attacker/repo",
-        "tag/../../../attacker/repo",
-        "tag/..",
-        "./tag/v1.0.0",
-        "tag/./v1.0.0",
-        "%2e%2e/%2e%2e/attacker/repo",
-        "tag%2Fv1.0.0",
-        "..%2F..%2Fattacker",
-        "..\\..\\attacker\\repo",
-        "tag\\v1.0.0",
-        "tag//v1.0.0",
-        "tag/v1.0.0/",
-        "tag/v1.0.0?redirect=https://example.com",
-        "tag/v1.0.0#top",
-        "tag/v1.0.0@example.com",
-        "tag/v1.0.0:443",
-        "tag/v1.0.0 x",
-    ];
-
     fn read_both(notes: &str, asset: &str) -> (Option<String>, Option<String>) {
         let feed = feed_of(&[serde_json::json!({
             "version": "1.0.0",
@@ -453,25 +363,36 @@ mod tests {
 
     #[test]
     fn the_shapes_the_website_writes_are_kept() {
-        let page = format!("{NOTES_PREFIX}tag/v0.5.0");
-        let archive = format!("{ASSET_PREFIX}v0.5.0/sunlit-earth-0.5.0-windows-x86_64.zip");
-        assert_eq!(read_both(&page, &archive), (Some(page), Some(archive)));
-        let beta = format!(
-            "{ASSET_PREFIX}v0.6.0-beta.1/sunlit-earth-0.6.0-beta.1+b2-linux-aarch64.tar.gz"
+        let page = "https://github.com/sunlit-earth/sunlit-earth/releases/tag/v0.5.0";
+        let archive = "https://github.com/sunlit-earth/sunlit-earth/releases/download/v0.5.0/sunlit-earth-0.5.0-windows-x86_64.zip";
+        assert_eq!(
+            read_both(page, archive),
+            (Some(page.to_owned()), Some(archive.to_owned()))
         );
-        assert_eq!(read_both("", &beta).1, Some(beta));
     }
 
     #[test]
-    fn a_url_that_could_climb_out_of_its_prefix_is_missing() {
-        for escape in ESCAPES {
-            let page = format!("{NOTES_PREFIX}{escape}");
-            let archive = format!("{ASSET_PREFIX}{escape}");
-            assert_eq!(read_both(&page, &archive), (None, None), "{escape}");
-            let nested = format!("{ASSET_PREFIX}v1.0.0/{escape}");
-            assert_eq!(read_both(&page, &nested), (None, None), "{escape}");
+    fn a_url_on_any_host_is_kept() {
+        for (page, archive) in [
+            (
+                "https://example.com/releases/0.6.0",
+                "https://downloads.example.org/sunlit-earth/0.6.0/sunlit-earth-0.6.0-windows-x86_64.zip",
+            ),
+            (
+                "http://mirror.example.net/sunlit-earth/v0.6.0.html",
+                "http://mirror.example.net/sunlit-earth/v0.6.0/sunlit-earth-0.6.0+b2-linux-aarch64.tar.gz",
+            ),
+            (
+                "https://codeberg.org/someone/sunlit-earth/releases/tag/v0.6.0?from=feed",
+                "https://example.com/get?file=sunlit-earth-0.6.0-macos-aarch64.dmg",
+            ),
+        ] {
+            assert_eq!(
+                read_both(page, archive),
+                (Some(page.to_owned()), Some(archive.to_owned())),
+                "{page} {archive}"
+            );
         }
-        assert_eq!(read_both(NOTES_PREFIX, ASSET_PREFIX), (None, None));
     }
 
     #[test]

@@ -1,16 +1,13 @@
-// Outlines of the pictures the preview stands for: the anchor screen's, a
-// 16:9 render's and a 4:3 render's, each centered on the preview with its
-// short side the frame's short edge as it is displayed. Every output is the
-// same picture scaled until the short edges match, so a rectangle is exactly
-// what a render of that shape shows.
+// Outlines of the pictures the preview stands for, a 16:9 render's and a 4:3
+// render's, each centered on the preview with its short side the frame's
+// short edge as it is displayed. Every output is the same picture scaled until
+// the short edges match, so a rectangle is exactly what a render of that shape
+// shows. A cross at the center stays on the panel when the outlines do not.
 
 import { OverlayStyle } from "common.slint";
 
-// One outline, in the coordinates of the container it is drawn over.
+// One rectangle, in the coordinates of the container it is drawn over.
 export struct FrameGuide {
-    // Whether the outline is drawn. One that coincides with the screen's is
-    // not, and its label goes inside the screen's.
-    shown: bool,
     x: length,
     y: length,
     width: length,
@@ -20,16 +17,8 @@ export struct FrameGuide {
     label-y: length,
 }
 
-component GuideOutline inherits Rectangle {
-    in property <FrameGuide> guide;
-    in property <color> line-color;
-
-    x: guide.x;
-    y: guide.y;
-    width: guide.width;
-    height: guide.height;
-    border-width: guide.shown ? 1px : 0;
-    border-color: line-color;
+component Band inherits Rectangle {
+    background: OverlayStyle.fg.with-alpha(0.18);
 }
 
 component GuideLabel inherits Text {
@@ -38,104 +27,162 @@ component GuideLabel inherits Text {
     x: guide.label-x;
     y: guide.label-y;
     text: guide.label;
-    font-size: 11px;
+    font-size: 16px;
+    color: OverlayStyle.fg.with-alpha(0.7);
+}
+
+// One bar of the center cross, `thickness` across and `arm` to each side.
+component CrossBar inherits Rectangle {
+    in property <bool> horizontal;
+    in property <length> arm;
+    in property <length> thickness;
+
+    width: horizontal ? 2 * arm + thickness : thickness;
+    height: horizontal ? thickness : 2 * arm + thickness;
+}
+
+// One corner of the center rectangle: two arms along its edges, inside it.
+component CenterCorner inherits Rectangle {
+    in property <bool> right;
+    in property <bool> bottom;
+    in property <length> arm-x;
+    in property <length> arm-y;
+    property <length> thickness: 3px;
+    property <color> stroke: OverlayStyle.fg.with-alpha(0.5);
+
+    width: arm-x;
+    height: arm-y;
+
+    Rectangle {
+        x: 0;
+        y: bottom ? parent.height - root.thickness : 0;
+        width: parent.width;
+        height: root.thickness;
+        background: root.stroke;
+    }
+
+    Rectangle {
+        x: right ? parent.width - root.thickness : 0;
+        y: bottom ? 0 : root.thickness;
+        width: root.thickness;
+        height: parent.height - root.thickness;
+        background: root.stroke;
+    }
 }
 
 export component FrameGuides inherits Rectangle {
     // The frame's short edge as it is displayed, in logical pixels.
     in property <length> short-edge;
-    // The anchor screen the frame was framed for, or zero for none known.
-    in property <int> screen-width;
-    in property <int> screen-height;
 
-    property <bool> has-screen: screen-width > 0 && screen-height > 0;
-    property <float> screen-aspect: has-screen ? screen-width / screen-height : 1;
-    // Within 1% of a guide's aspect ratio, the screen is that guide.
-    property <bool> screen-is-wide: has-screen && abs(screen-aspect * 9 / 16 - 1) < 0.01;
-    property <bool> screen-is-classic: has-screen && abs(screen-aspect * 3 / 4 - 1) < 0.01;
-    // One label row: the labels of outlines whose edges are close stack
-    // rather than overlap.
-    property <length> label-row: 15px;
+    property <length> band: 10px;
     property <length> inset: 5px;
+    property <length> cross-arm: 12px;
+    property <length> corner-arm: 22px;
 
-    // The outline of an aspect ratio `aspect` whose short side is the short
-    // edge, centered.
-    pure function outline(aspect: float) -> FrameGuide {
-        let w = aspect >= 1 ? root.short-edge * aspect : root.short-edge;
-        let h = aspect >= 1 ? root.short-edge : root.short-edge / aspect;
+    // The rectangle of a landscape aspect ratio `aspect` whose height is the
+    // short edge, centered.
+    pure function outline(aspect: float, label: string) -> FrameGuide {
+        let w = root.short-edge * aspect;
+        let h = root.short-edge;
+        let x = (root.width - w) / 2;
+        let y = (root.height - h) / 2;
         return {
-            shown: true,
-            x: (root.width - w) / 2,
-            y: (root.height - h) / 2,
+            x: x,
+            y: y,
             width: w,
             height: h,
+            label: label,
+            label-x: x + root.band + root.inset,
+            label-y: y + root.band + root.inset,
         };
     }
 
-    property <FrameGuide> screen-outline: outline(screen-aspect);
-    property <FrameGuide> wide-outline: outline(16 / 9);
-    property <FrameGuide> classic-outline: outline(4 / 3);
-
-    out property <FrameGuide> screen: {
-        shown: has-screen,
-        x: screen-outline.x,
-        y: screen-outline.y,
-        width: screen-outline.width,
-        height: screen-outline.height,
-        label: has-screen ? "Screen " + screen-width + " × " + screen-height : "",
-        label-x: screen-outline.x + inset,
-        label-y: screen-outline.y + inset,
-    };
-    out property <FrameGuide> wide: {
-        shown: !screen-is-wide,
-        x: wide-outline.x,
-        y: wide-outline.y,
-        width: wide-outline.width,
-        height: wide-outline.height,
-        label: "16:9",
-        label-x: (screen-is-wide ? screen-outline.x : wide-outline.x) + inset,
-        label-y: (screen-is-wide ? screen-outline.y : wide-outline.y) + inset + (has-screen ? label-row : 0),
-    };
-    out property <FrameGuide> classic: {
-        shown: !screen-is-classic,
-        x: classic-outline.x,
-        y: classic-outline.y,
-        width: classic-outline.width,
-        height: classic-outline.height,
-        label: "4:3",
-        label-x: (screen-is-classic ? screen-outline.x : classic-outline.x) + inset,
-        label-y: (screen-is-classic ? screen-outline.y : classic-outline.y) + inset + (has-screen ? label-row * 2 : label-row),
+    out property <FrameGuide> wide: outline(16 / 9, "16:9");
+    out property <FrameGuide> classic: outline(4 / 3, "4:3");
+    // 4:3 lies inside 16:9 at the same height, so 16:9's top and bottom are
+    // drawn only where 4:3's are not: from each side bar to 4:3's outer edge.
+    // No point is then covered by two bands.
+    out property <length> wide-segment-width: max(0, root.classic.x - root.wide.x - root.band);
+    out property <FrameGuide> center: {
+        x: (root.width - root.height / 3 * 16 / 9) / 2,
+        y: root.height / 3,
+        width: root.height / 3 * 16 / 9,
+        height: root.height / 3,
     };
 
-    property <color> other: OverlayStyle.fg.with-alpha(0.55);
-
-    GuideOutline {
-        guide: root.classic;
-        line-color: root.other;
+    classic-band := Rectangle {
+        x: root.classic.x;
+        y: root.classic.y;
+        width: root.classic.width;
+        height: root.classic.height;
+        border-width: root.band;
+        border-color: OverlayStyle.fg.with-alpha(0.18);
     }
 
-    GuideOutline {
+    for side in [0, 1]: Rectangle {
+        property <length> outer-x: side == 0 ? root.wide.x : root.wide.x + root.wide.width - root.band;
+        property <length> segment-x: side == 0 ? root.wide.x + root.band : root.classic.x + root.classic.width;
+
+        wide-side := Band {
+            x: parent.outer-x;
+            y: root.wide.y;
+            width: root.band;
+            height: root.wide.height;
+        }
+
+        wide-top := Band {
+            x: parent.segment-x;
+            y: root.wide.y;
+            width: root.wide-segment-width;
+            height: root.band;
+        }
+
+        wide-bottom := Band {
+            x: parent.segment-x;
+            y: root.wide.y + root.wide.height - root.band;
+            width: root.wide-segment-width;
+            height: root.band;
+        }
+    }
+
+    wide-label := GuideLabel {
         guide: root.wide;
-        line-color: root.other;
     }
 
-    GuideOutline {
-        guide: root.screen;
-        line-color: OverlayStyle.accent;
-    }
-
-    if root.has-screen: GuideLabel {
-        guide: root.screen;
-        color: OverlayStyle.accent;
-    }
-
-    GuideLabel {
-        guide: root.wide;
-        color: root.other;
-    }
-
-    GuideLabel {
+    classic-label := GuideLabel {
         guide: root.classic;
-        color: root.other;
+    }
+
+    center-mark := Rectangle {
+        property <length> arm-x: min(root.corner-arm, root.center.width / 2);
+        property <length> arm-y: min(root.corner-arm, root.center.height / 2);
+
+        for corner in [0, 1, 2, 3]: center-corner := CenterCorner {
+            right: corner == 1 || corner == 3;
+            bottom: corner >= 2;
+            arm-x: parent.arm-x;
+            arm-y: parent.arm-y;
+            x: self.right ? root.center.x + root.center.width - self.arm-x : root.center.x;
+            y: self.bottom ? root.center.y + root.center.height - self.arm-y : root.center.y;
+        }
+
+        // Both halos under both strokes, so neither halo dims the other's stroke.
+        for horizontal in [true, false]: cross-halo := CrossBar {
+            horizontal: horizontal;
+            arm: root.cross-arm;
+            thickness: 3px;
+            x: root.width / 2 - self.width / 2;
+            y: root.height / 2 - self.height / 2;
+            background: #00000080;
+        }
+
+        for horizontal in [true, false]: center-cross := CrossBar {
+            horizontal: horizontal;
+            arm: root.cross-arm;
+            thickness: 1px;
+            x: root.width / 2 - self.width / 2;
+            y: root.height / 2 - self.height / 2;
+            background: OverlayStyle.fg.with-alpha(0.8);
+        }
     }
 }

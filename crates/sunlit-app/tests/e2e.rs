@@ -34,7 +34,8 @@ use common::window_rect::{Key, MainWindow};
 #[cfg(target_os = "linux")]
 use common::desktop_linux::assert_the_desktop_holds_the_wallpaper;
 use common::desktop_linux::{
-    a_layout_change_this_session_can_make, plasmashell_answers, plasmashell_pid, xrandr,
+    a_layout_change_this_session_can_make, plasmashell_answers, plasmashell_pid,
+    the_window_manager_holds_a_window_of, xrandr,
 };
 
 // ---------------------------------------------------------------------------
@@ -1465,9 +1466,15 @@ fn test_another_full_screen_window_is_seen() {
         let from = stdout_watcher.line_count();
         send_ipc_command(&socket_name, command);
         let line = stdout_watcher.wait_for_signal_line_from("full_screen_", from, SIGNAL_REPLY);
+        println!("{command}: {line}");
         assert!(line.contains(answer), "{command} answered {line}");
     };
 
+    assert!(
+        the_window_manager_holds_a_window_of(pid, Duration::from_secs(30)),
+        "no window manager lists the app's window after 30 s: the session's window manager is \
+         not running"
+    );
     switch("enter-full-screen", "full_screen_entered");
     let mut inhibitor = gnome_wayland.then(|| {
         std::process::Command::new("gnome-session-inhibit")

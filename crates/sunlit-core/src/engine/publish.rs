@@ -117,7 +117,7 @@ impl Engine {
 
     fn publish(&mut self, exiting: bool) {
         if self.held.is_some() && !exiting {
-            self.publish_asked = true;
+            debug_assert!(false, "a publish reached past the scene hold");
             return;
         }
         // The month is judged before the textures are: a publish can arrive
@@ -358,8 +358,8 @@ impl Engine {
         self.known_monitors = Some(monitors.clone());
         self.see_monitors(&monitors);
         self.emit(EngineEvent::MonitorsChanged(monitors));
-        if self.published && self.cover_admits(self.clock.elapsed(), "the display layout change") {
-            self.publish_wallpaper();
+        if self.published {
+            self.publish_automatic(self.clock.elapsed(), super::cover::Automatic::LayoutChange);
         }
     }
 

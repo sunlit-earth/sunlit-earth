@@ -241,3 +241,85 @@ fn quitting_while_held_publishes_nothing() {
     drop(harness);
     assert!(sink.publications().is_empty());
 }
+
+fn scene_hold(group: &Covering, hold: bool) {
+    group.engine.send(EngineCommand::Hold(hold));
+    group.settle();
+}
+
+/// A refresh that falls due while the scene is held is an automatic publish
+/// still, and asks the probe at the release rather than going out as one the
+/// user asked for.
+#[test]
+fn a_refresh_parked_behind_the_scene_hold_asks_the_probe_at_the_release() {
+    let gpu = gpu();
+    let group = covering(&gpu);
+    scene_hold(group, true);
+    advance(group, INTERVAL);
+    assert_eq!(group.probe.asked(), 0, "asked while the scene was held");
+
+    group.probe.cover();
+    scene_hold(group, false);
+    advance(group, Duration::from_secs(1));
+    assert_eq!(group.probe.asked(), 1, "the release did not ask");
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(published(group), 0, "a covered desktop holds the refresh");
+
+    group.probe.answer(Coverage::Clear);
+    advance(group, COVER_RECHECK);
+    assert!(group.wait_for_publish().is_ok());
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(published(group), 1, "one held refresh is one publish");
+}
+
+/// Switching the auto-refresh off drops a refresh held for a cover: nothing
+/// goes out when the cover lifts, and the probe is not asked again.
+#[test]
+fn a_refresh_held_for_a_cover_is_dropped_when_the_auto_refresh_goes_off() {
+    let gpu = gpu();
+    let group = covering(&gpu);
+    group.probe.cover();
+    advance(group, INTERVAL);
+    assert_eq!(group.probe.asked(), 1);
+
+    group.engine.send(EngineCommand::SetAutoRefresh {
+        enabled: false,
+        interval: INTERVAL,
+    });
+    group.settle();
+    group.probe.answer(Coverage::Clear);
+    advance(group, COVER_RECHECK);
+    advance(group, COVER_RECHECK);
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(group.probe.asked(), 1, "a dropped hold was rechecked");
+    assert_eq!(published(group), 0, "a dropped refresh went out");
+}
+
+/// A layout change republish held with the refresh stays held when the
+/// auto-refresh goes off, and goes out once the cover lifts.
+#[test]
+fn a_layout_change_held_with_the_refresh_survives_the_auto_refresh_going_off() {
+    let gpu = gpu();
+    let group = covering(&gpu);
+    group.probe.cover();
+    advance(group, INTERVAL);
+    let docked = vec![screen("docked", 0, 1600, 900, true)];
+    group.sink.set_monitors(docked.clone());
+    group.hint();
+    advance(group, DISPLAY_SETTLE + Duration::from_secs(1));
+    assert_eq!(group.next_layout(CHANGE_TIMEOUT), Some(docked));
+
+    group.engine.send(EngineCommand::SetAutoRefresh {
+        enabled: false,
+        interval: INTERVAL,
+    });
+    group.settle();
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(published(group), 0);
+
+    group.probe.answer(Coverage::Clear);
+    advance(group, COVER_RECHECK);
+    assert!(group.wait_for_publish().is_ok());
+    std::thread::sleep(NOTHING_HAPPENS_IN);
+    assert_eq!(published(group), 1, "the held republish went out once");
+}

@@ -74,7 +74,7 @@ fn windows() -> Result<Vec<MacWindow>, String> {
 
     let mut windows = Vec::new();
     let mut withheld = 0usize;
-    for info in &list {
+    for info in list.iter() {
         let number = |key: &CFString| {
             info.get(key)
                 .and_then(|value| value.downcast_ref::<CFNumber>().and_then(CFNumber::as_i64))

@@ -105,8 +105,6 @@ The update window lists every release since the one you run, newest first, with 
 - Installed with Homebrew: the same with `brew upgrade sunlit-earth` on Linux or `brew upgrade --cask sunlit-earth` on macOS, and `brew update` first if Homebrew reports the old version as current.
 - Unpacked from an archive: a Download button opens the archive for your system in the browser, and below it the window says what to do with it. Where there is no archive for your system, the button opens the website's download section instead.
 
-The paragraphs in the update window and the About window can be selected with the mouse and copied with Ctrl+C (⌘C on macOS); Ctrl+A selects the whole paragraph that was clicked.
-
 The tray's entry keeps naming the version until you update. Check for Updates… always checks at once, whatever the schedule and the setting say, and shows a failure with its reason.
 
 To stop the daily check, set `update_check_enabled = false` in `config.toml`; there is no switch in the window yet. Check for Updates… still works, and what an earlier check found is still shown. A check is one request for one static file, with the user agent `sunlit.earth/<version> (<os>; <arch>)`: no identifier, no cookie, nothing about your installation.

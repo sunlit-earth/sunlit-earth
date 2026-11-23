@@ -38,6 +38,8 @@ The website's script drops its prefix check as well, or the first release hosted
 
 ### 2. Prose is selectable; headings and link labels are not
 
+Built, then reverted at the user's word (departure 7): no text in these windows is selectable.
+
 | Window | Element | Becomes |
 |---|---|---|
 | About | attributions and third-party paragraphs and items | `StyledText` with `selectable: true` |
@@ -55,7 +57,7 @@ Settled with the user on 2026-11-23 against a mockup (the Design artifact "Frame
 - **Two guides, 4:3 and 16:9.** The anchor screen's guide is dropped, and with it `screen-width`, `screen-height`, `has-screen`, `screen-is-wide`, `screen-is-classic`, the `guide-screen` out property, `frame-screen-width` and `frame-screen-height` on `MainWindow`, and their two setters in `engine_client.rs`. `PreviewFrame::screen` in core goes too if nothing else reads it once the setters are gone; that is checked during implementation.
 - **Thick, translucent outlines.** Each guide is a 10 px band drawn inside its rectangle, in `OverlayStyle.fg` at 18% alpha, the same color for both; the accent is not used. Both rectangles have their short side on the displayed short edge, so they are always equally tall and their top and bottom edges always lie at the same height, on the panel's own edges in a landscape panel and across the panel in a portrait one.
 - **No band drawn twice.** 4:3 is narrower than 16:9 at the same height, so it always lies inside it. 4:3 is drawn as a whole rectangle; 16:9 as its two side bars plus, on each side, a top and a bottom segment that runs from its own side bar to the outer edge of the 4:3 rectangle. Every visible point of a band is therefore one layer, and the translucency is the same everywhere.
-- **Labels in their own corner.** "16:9" and "4:3" each sit in the top left corner of their own rectangle, inside the band plus a 5 px inset, in `OverlayStyle.fg` at 70%. They move with their outline and leave the panel with it: no clamping, no stacking, no markers for a guide wider than the panel. The two corners are 0.22 of the short edge apart horizontally, so the labels, about 25 px wide at 11 px, only meet on a short edge under about 115 px.
+- **Labels in their own corner.** "16:9" and "4:3" each sit in the top left corner of their own rectangle, inside the band plus a 5 px inset, in `OverlayStyle.fg` at 70%. They move with their outline and leave the panel with it: no clamping, no stacking, no markers for a guide wider than the panel. The two corners are 0.22 of the short edge apart horizontally, so the labels, about 37 px wide at 16 px, only meet on a short edge under about 170 px. The mockup had 11 px; the user asked for about half again as large after seeing the app.
 - **A center mark, visible at any size.** A cross at the center of the panel, two 1 px strokes with arms of 12 px in `OverlayStyle.fg` at 80% over a 3 px dark halo, and around it a 16:9 rectangle one third of the panel's height, centered, drawn as its four corners only: two arms of 22 px each, 3 px thick, `OverlayStyle.fg` at 50%. It is the part that says the guides are on when the outlines are off the panel.
 - Visibility is unchanged: everything shows with `guides-visible`, fades with `idle-hidden`, and stays under every control drawn over the preview.
 
@@ -75,7 +77,7 @@ The hint in `overlays/common.slint` ("Outline this screen, 16:9 and 4:3 on the p
 ## Implementation steps
 
 1. **Feed URLs.** `feed.rs`: delete the prefixes and `is_under`, simplify `read_release` and `read_asset`, rewrite the module doc and the field docs of `Asset::url` and `Release::notes`. Tests: remove `a_url_outside_its_prefix_is_missing`, `a_url_that_could_climb_out_of_its_prefix_is_missing` and the rejection cases of the notes test; add `a_url_on_any_host_is_kept` for both fields. `update.rs` is unchanged.
-2. **Selectable text.** Convert the elements of decision 2. Keep the element ids the tests use (`release-line`, `attributions-paragraph`, `license-body` and the rest). Where `StyledText` does not expose its text as `accessible-label` the way `Text` does, set `accessible-role: text` and `accessible-label` explicitly, so the tests and screen readers keep finding it.
+2. **Selectable text** (reverted, departure 7). Convert the elements of decision 2. Keep the element ids the tests use (`release-line`, `attributions-paragraph`, `license-body` and the rest). Where `StyledText` does not expose its text as `accessible-label` the way `Text` does, set `accessible-role: text` and `accessible-label` explicitly, so the tests and screen readers keep finding it.
 3. **Frame guides.** Remove the screen guide and its plumbing; replace the 1 px outlines with the 10 px bands and the split 16:9 segments; move the labels into their corners; add the center mark; update the hint.
 4. **Docs**, below.
 
@@ -87,7 +89,7 @@ The hint in `overlays/common.slint` ("Outline this screen, 16:9 and 4:3 on the p
 
 ### `slint_ui`
 
-- Each element of decision 2 has `selectable` set, found by its id. Where the testing backend delivers pointer events, a drag across a release highlight inside the update window's `ScrollView` leaves `has-selection` true and the view's `viewport-y` unchanged; if it does not, that case is covered in the manual check below instead.
+- (Reverted with decision 2, departure 7.) Each element of decision 2 has `selectable` set, found by its id. Where the testing backend delivers pointer events, a drag across a release highlight inside the update window's `ScrollView` leaves `has-selection` true and the view's `viewport-y` unchanged; if it does not, that case is covered in the manual check below instead.
 - Escape still closes the About window and the update window after a click into a selectable paragraph has taken the focus.
 - The license body still carries the license text and does not wrap: its width is wider than the tab.
 - `test_the_frame_guides_outline_each_aspect_on_the_displayed_short_edge` drops its screen cases and covers a wide panel, a 4:3 panel, a panel narrower than 4:3 and a portrait panel: both rectangles are centered with their short side on the displayed short edge, the 16:9 segments end exactly at the 4:3 rectangle's outer edge (so no point is covered by two bands), and each label lies at its own rectangle's top left corner plus the band and the inset.
@@ -96,7 +98,7 @@ The hint in `overlays/common.slint` ("Outline this screen, 16:9 and 4:3 on the p
 
 ### Manual, on this desktop
 
-- Select and copy a paragraph from each About tab, a highlight and the failure text from the update window (`SUNLIT_EARTH_UPDATE_URL` at an unreachable address gives a failure), and paste them elsewhere.
+- (Reverted with decision 2.) Select and copy a paragraph from each About tab, a highlight and the failure text from the update window (`SUNLIT_EARTH_UPDATE_URL` at an unreachable address gives a failure), and paste them elsewhere.
 - Look at the guides at a wide, a 4:3, a narrow and a portrait window, windowed and in full screen, over the day side and over space.
 
 ## Docs
@@ -123,6 +125,8 @@ The hint in `overlays/common.slint` ("Outline this screen, 16:9 and 4:3 on the p
 5. **The center rectangle's corners leave a narrow portrait panel.** One third of the panel's height at 16:9 is wider than a panel narrower than 16:27 of its height, so there the four corners are off the panel and only the cross stays; the test expects exactly that. The plan's "visible at any size" holds for the cross. The cross's halo, which the plan calls dark without a value, is black at 50%.
 
 6. **The guides' bands carry element ids.** `classic-band`, `wide-side`, `wide-top`, `wide-bottom`, `wide-label`, `classic-label`, `center-mark`, `center-corner` and `center-cross` let the guide test measure the bands in a wide panel, where all are on screen, so "no point under two bands" is checked on what is drawn rather than only on the exported numbers.
+
+7. **Selectable text is reverted.** Trying it in the app, the user found that Ctrl+A selects only the clicked paragraph and a drag cannot run on into the next one. That is Slint 1.19's model: a selectable `StyledText` takes the focus on a press and its selection goes with the focus, so at most one element holds a selection, and nothing reports which character lies under the pointer, so a selection across elements cannot be built on top either. 1.19.0 is the newest release. The ways around it were a Copy button per document, or one element per document (a single `StyledText`, or a read-only `TextInput` as plain text), which gives up the block layout of the About tabs, the gaps and hanging indents of the release notes, and the links on each version. The user chose none of them, so `about.slint`, `update.slint` and `older-version.slint` are back to how they were, with the selection tests, `test_feed_text_is_copied_as_written` and the docs of decision 2. Departures 1, 2 and 4 and the selection items of the validation rounds below describe the reverted work. The license tab is plain `Text` again, as before this plan.
 
 ## Validation
 

@@ -201,16 +201,13 @@ export component MainWindow inherits Window {
 
     in property <string> version;
     in property <image> rendered-image;
-    // How the frame in `rendered-image` was framed: its size in pixels, the
-    // short edge the settings are measured on there, and the anchor screen it
-    // was framed for, zero for none known. They travel with the frame, so
-    // what follows them follows the frame shown, the old one shown scaled
-    // while a resize settles included.
+    // How the frame in `rendered-image` was framed: its size in pixels and
+    // the short edge the settings are measured on there. They travel with the
+    // frame, so what follows them follows the frame shown, the old one shown
+    // scaled while a resize settles included.
     in property <int> frame-width;
     in property <int> frame-height;
     in property <float> frame-short-edge;
-    in property <int> frame-screen-width;
-    in property <int> frame-screen-height;
     // How large one of the frame's pixels is shown: as `cover` would, or,
     // after leaving full screen until the windowed frame comes, so that the
     // short edges meet and the Earth stays the size it was.
@@ -227,9 +224,10 @@ export component MainWindow inherits Window {
     // rather than a setting.
     in-out property <bool> guides-shown: false;
     out property <bool> guides-visible: root.guides-shown && !root.overlays-hidden && !root.idle-gone;
-    out property <FrameGuide> guide-screen: frame-guides.screen;
     out property <FrameGuide> guide-wide: frame-guides.wide;
     out property <FrameGuide> guide-classic: frame-guides.classic;
+    out property <FrameGuide> guide-center: frame-guides.center;
+    out property <length> guide-wide-segment-width: frame-guides.wide-segment-width;
     in property <string> renderer-info: "Initializing...";
     in property <[string]> aa-options: ["None", "MSAA 4\u{d7}"];
     in-out property <int> aa-index;
@@ -2480,8 +2478,6 @@ export component MainWindow inherits Window {
             opacity: root.idle-hidden ? 0 : 1;
             animate opacity { duration: root.idle-hidden ? root.idle-fade-out : 0ms; }
             short-edge: root.displayed-short-edge;
-            screen-width: root.frame-screen-width;
-            screen-height: root.frame-screen-height;
         }
 
         property <length> last-mouse-x;

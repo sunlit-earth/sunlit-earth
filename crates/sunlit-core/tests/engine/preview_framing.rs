@@ -39,11 +39,11 @@ fn frame_after(harness: &Harness, command: EngineCommand) -> Framed {
     harness.next_framed()
 }
 
-/// The frame says which screen it was framed for and on what short edge, and
-/// follows the anchor as the display plan and the layout move it: the
-/// startup enumeration, a stored anchor, and a layout that changed under it.
+/// The frame says on what short edge it was framed, and follows the anchor
+/// as the display plan and the layout move it: the startup enumeration, a
+/// stored anchor, and a layout that changed under it.
 #[test]
-fn the_preview_frame_says_which_screen_it_was_framed_for() {
+fn the_preview_frame_is_framed_for_the_anchor_screen() {
     let _gpu = gpu();
     let (harness, sink, clock) = framing_rig(
         (512, 256),
@@ -56,7 +56,6 @@ fn the_preview_frame_says_which_screen_it_was_framed_for() {
     moved.camera.longitude += 5.0;
     let first = frame_after(&harness, EngineCommand::UpdateParams(Box::new(moved)));
     assert_eq!((first.width, first.height), (512, 256));
-    assert_eq!(first.screen, Some((1920, 1080)));
     approx::assert_relative_eq!(first.short_edge, 256.0);
 
     // A portrait anchor: its rectangle is as tall as the frame, so the short
@@ -68,19 +67,18 @@ fn the_preview_frame_says_which_screen_it_was_framed_for() {
             anchor: Some("tall".to_owned()),
         },
     );
-    assert_eq!(tall.screen, Some((1080, 1920)));
     approx::assert_relative_eq!(tall.short_edge, 256.0 * 1080.0 / 1920.0);
 
-    // The anchor is unplugged: the plan falls back to the new primary, and
-    // the preview follows it once the layout change is announced.
+    // The anchor is unplugged: the plan falls back to the new primary, a
+    // portrait screen of another shape, and the preview follows it once the
+    // layout change is announced.
     harness.settle();
-    sink.set_monitors(vec![screen("ultrawide", 0, 3440, 1440, true)]);
+    sink.set_monitors(vec![screen("portrait", 0, 1200, 1920, true)]);
     harness.hint();
     harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
     assert!(harness.next_layout(CHANGE_TIMEOUT).is_some());
-    let ultrawide = harness.next_framed();
-    assert_eq!(ultrawide.screen, Some((3440, 1440)));
-    approx::assert_relative_eq!(ultrawide.short_edge, 256.0);
+    let portrait = harness.next_framed();
+    approx::assert_relative_eq!(portrait.short_edge, 256.0 * 1200.0 / 1920.0);
 }
 
 #[test]
@@ -90,7 +88,6 @@ fn a_preview_with_no_screen_known_frames_on_its_own_height() {
     let mut moved = test_params();
     moved.camera.longitude += 5.0;
     let frame = frame_after(&harness, EngineCommand::UpdateParams(Box::new(moved)));
-    assert_eq!(frame.screen, None);
     approx::assert_relative_eq!(frame.short_edge, 480.0);
 }
 

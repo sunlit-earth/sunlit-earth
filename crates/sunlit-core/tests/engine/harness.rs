@@ -115,7 +115,6 @@ pub(crate) struct Framed {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) short_edge: f32,
-    pub(crate) screen: Option<(u32, u32)>,
 }
 
 pub(crate) struct Harness {
@@ -266,7 +265,6 @@ impl Harness {
                 width,
                 height,
                 short_edge,
-                screen,
                 ..
             } = event
             {
@@ -275,7 +273,6 @@ impl Harness {
                     width,
                     height,
                     short_edge,
-                    screen,
                 };
             }
         }

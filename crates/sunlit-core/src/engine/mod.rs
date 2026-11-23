@@ -200,9 +200,9 @@ struct Engine {
     /// The instant the last draw was drawn at, which the preview frame read
     /// back from it shows.
     drawn_instant: time::OffsetDateTime,
-    /// The short edge the last draw was framed on, in frame pixels, and the
-    /// anchor screen it was framed for, which the preview frame carries.
-    drawn_framing: (f32, Option<(u32, u32)>),
+    /// The short edge the last draw was framed on, in frame pixels, which the
+    /// preview frame carries.
+    drawn_short_edge: f32,
     /// Set when something happened that the next render must pick up.
     dirty: bool,
     textures_ready: bool,
@@ -402,7 +402,7 @@ impl Engine {
             excursion: None,
             held: None,
             drawn_instant,
-            drawn_framing: (0.0, None),
+            drawn_short_edge: 0.0,
             dirty: true,
             textures_ready: false,
             clouds_settled: false,
@@ -983,9 +983,8 @@ impl Engine {
     ///
     /// A screen of another size but the same shape frames the preview the
     /// same way, and so does a landscape screen standing in for none, so the
-    /// frame already drawn is the answer and goes out again saying which
-    /// screen it is for. Drawing it again would cost a frame and close the
-    /// transcoder's pause gate for nothing.
+    /// frame already drawn is the answer. Drawing it again would cost a frame
+    /// and close the transcoder's pause gate for nothing.
     fn update_preview_screen(&mut self) {
         let screen = preview_screen_of(&self.preview_monitors, self.anchor_monitor.as_deref());
         if screen == self.preview_screen {
@@ -994,10 +993,7 @@ impl Engine {
         debug!(?screen, "the preview's anchor screen changed");
         let before = self.preview_output();
         self.preview_screen = screen;
-        if self.preview_output() == before {
-            self.drawn_framing.1 = screen;
-            self.preview.owed = true;
-        } else {
+        if self.preview_output() != before {
             self.dirty = true;
             self.retime_sky();
         }
@@ -1029,7 +1025,7 @@ impl Engine {
         let (output, short_edge) = self.preview_output();
         let outcome = self.renderer.render(&output, &sky);
         self.drawn_instant = at;
-        self.drawn_framing = (short_edge, self.preview_screen);
+        self.drawn_short_edge = short_edge;
         self.note_readiness();
         (outcome, sky)
     }
@@ -1230,8 +1226,7 @@ impl Engine {
             rgba,
             width,
             height,
-            short_edge: self.drawn_framing.0,
-            screen: self.drawn_framing.1,
+            short_edge: self.drawn_short_edge,
             instant: self.drawn_instant,
         });
         true

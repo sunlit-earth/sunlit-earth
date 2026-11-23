@@ -69,16 +69,15 @@ fn the_preview_frame_is_framed_for_the_anchor_screen() {
     );
     approx::assert_relative_eq!(tall.short_edge, 256.0 * 1080.0 / 1920.0);
 
-    // The anchor is unplugged: the plan falls back to the new primary, a
-    // portrait screen of another shape, and the preview follows it once the
-    // layout change is announced.
+    // The anchor is unplugged: the plan falls back to the new primary, and
+    // the preview follows it once the layout change is announced.
     harness.settle();
-    sink.set_monitors(vec![screen("portrait", 0, 1200, 1920, true)]);
+    sink.set_monitors(vec![screen("ultrawide", 0, 3440, 1440, true)]);
     harness.hint();
     harness.advance(&clock, DISPLAY_SETTLE + Duration::from_secs(1));
     assert!(harness.next_layout(CHANGE_TIMEOUT).is_some());
-    let portrait = harness.next_framed();
-    approx::assert_relative_eq!(portrait.short_edge, 256.0 * 1200.0 / 1920.0);
+    let ultrawide = harness.next_framed();
+    approx::assert_relative_eq!(ultrawide.short_edge, 256.0);
 }
 
 #[test]

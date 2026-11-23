@@ -3501,9 +3501,10 @@ fn test_the_center_mark_shows_with_the_guides_at_any_size() {
             [
                 found(&window, "FrameGuides::center-mark"),
                 found(&window, "FrameGuides::center-corner"),
+                found(&window, "FrameGuides::cross-halo"),
                 found(&window, "FrameGuides::center-cross"),
             ],
-            [1, corners, 2],
+            [1, corners, 2, 2],
             "{size:?}: shown with the guides"
         );
     }
@@ -9825,7 +9826,7 @@ fn copy_all_of(window: &slint::Window, element: &ElementHandle) -> String {
 
 /// Every text in the About window that is not a link can be selected and
 /// copied: the header's name, version and copyright, each tab's headings,
-/// paragraphs and list items, and the licence.
+/// paragraphs and list items, and the license.
 #[test]
 fn test_the_about_window_text_can_be_selected_and_copied() {
     let window = about_window();
@@ -9835,7 +9836,7 @@ fn test_the_about_window_text_can_be_selected_and_copied() {
     window.set_third_party(sunlit_earth::about::document_model(
         "# Crates\n\nthe preamble\n\n- `a 1.0.0`: MIT\n",
     ));
-    window.set_license_text("a licence\n    indented line\n".into());
+    window.set_license_text("a license\n    indented line\n".into());
     materialize_about(&window);
 
     let cases: [(usize, &str, &str); 10] = [
@@ -9848,7 +9849,7 @@ fn test_the_about_window_text_can_be_selected_and_copied() {
         (
             1,
             "AboutWindow::license-body",
-            "a licence\n    indented line\n",
+            "a license\n    indented line\n",
         ),
         (2, "AboutWindow::third-party-heading", "Crates"),
         (2, "AboutWindow::third-party-paragraph", "the preamble"),
@@ -9932,6 +9933,36 @@ fn test_the_update_window_text_can_be_selected_and_copied() {
             .to_string();
         assert!(!text.is_empty(), "{id}");
         assert_eq!(copy_all_of(window.window(), &element), text, "{id}");
+    }
+}
+
+/// Text from the feed and from a failure is shown and copied as written:
+/// markdown and HTML in it are characters, not markup.
+#[test]
+fn test_feed_text_is_copied_as_written() {
+    use sunlit_core::update::UpdateStatus;
+    use sunlit_earth::update::Showing;
+
+    const WRITTEN: &str = r"**bold** `x` [a](b) <i>y</i> \* _z_";
+    let UpdateStatus::Available(mut offer) = fixture_offer() else {
+        unreachable!()
+    };
+    offer.releases[0].highlights[0] = WRITTEN.to_owned();
+    for (showing, id) in [
+        (
+            Showing::Answer(UpdateStatus::Available(offer)),
+            "UpdateWindow::release-line",
+        ),
+        (
+            Showing::Answer(UpdateStatus::Failed(WRITTEN.to_owned())),
+            "UpdateWindow::failure-text",
+        ),
+    ] {
+        let window = update_window(&showing, &archive_install("windows", "x86_64"));
+        let element = ElementHandle::find_by_element_id(&window, id)
+            .find(|element| element.accessible_label().as_deref() == Some(WRITTEN))
+            .unwrap_or_else(|| panic!("no {id} labeled {WRITTEN:?}"));
+        assert_eq!(copy_all_of(window.window(), &element), WRITTEN, "{id}");
     }
 }
 

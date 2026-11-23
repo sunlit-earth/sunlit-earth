@@ -31,21 +31,14 @@ component GuideLabel inherits Text {
     color: OverlayStyle.fg.with-alpha(0.7);
 }
 
-// One stroke of the center cross, over its halo.
-component CrossStroke inherits Rectangle {
+// One bar of the center cross, `thickness` across and `arm` to each side.
+component CrossBar inherits Rectangle {
     in property <bool> horizontal;
     in property <length> arm;
-    property <length> halo: 3px;
+    in property <length> thickness;
 
-    width: horizontal ? 2 * arm + halo : halo;
-    height: horizontal ? halo : 2 * arm + halo;
-    background: #00000080;
-
-    Rectangle {
-        width: horizontal ? 2 * arm + 1px : 1px;
-        height: horizontal ? 1px : 2 * arm + 1px;
-        background: OverlayStyle.fg.with-alpha(0.8);
-    }
+    width: horizontal ? 2 * arm + thickness : thickness;
+    height: horizontal ? thickness : 2 * arm + thickness;
 }
 
 // One corner of the center rectangle: two arms along its edges, inside it.
@@ -173,11 +166,23 @@ export component FrameGuides inherits Rectangle {
             y: self.bottom ? root.center.y + root.center.height - self.arm-y : root.center.y;
         }
 
-        for horizontal in [true, false]: center-cross := CrossStroke {
+        // Both halos under both strokes, so neither halo dims the other's stroke.
+        for horizontal in [true, false]: cross-halo := CrossBar {
             horizontal: horizontal;
             arm: root.cross-arm;
+            thickness: 3px;
             x: root.width / 2 - self.width / 2;
             y: root.height / 2 - self.height / 2;
+            background: #00000080;
+        }
+
+        for horizontal in [true, false]: center-cross := CrossBar {
+            horizontal: horizontal;
+            arm: root.cross-arm;
+            thickness: 1px;
+            x: root.width / 2 - self.width / 2;
+            y: root.height / 2 - self.height / 2;
+            background: OverlayStyle.fg.with-alpha(0.8);
         }
     }
 }

@@ -2197,10 +2197,9 @@ fn test_scrolling_a_tab_leaves_the_header_where_it_was() {
     window.set_attributions(sunlit_earth::about::document_model(&"line\n\n".repeat(200)));
     materialize_about(&window);
 
-    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
-        .match_type_name("StyledText")
-        .find_first()
-        .expect("the attributions tab has no StyledText");
+    let body = ElementHandle::find_by_element_id(&window, "AboutWindow::attributions-paragraph")
+        .next()
+        .expect("the attributions tab has no paragraph");
     let header_before = window.get_version_y();
     let body_before = body.absolute_position().y;
 
@@ -2250,16 +2249,12 @@ fn test_the_tab_bar_offers_all_three_tabs() {
 fn test_the_license_tab_is_wider_than_a_narrow_window() {
     let window = about_window();
     window.window().set_size(slint::PhysicalSize::new(360, 400));
-    window.set_license_text("x".repeat(200).into());
+    let text = "x".repeat(200);
+    window.set_license_text(text.clone().into());
     open_tab(&window, 1);
 
-    let body = i_slint_backend_testing::ElementQuery::from_root(&window)
-        .match_type_name("Text")
-        .find_all()
-        .into_iter()
-        .max_by(|a, b| a.size().width.total_cmp(&b.size().width))
-        .expect("the licence tab has no Text");
-
+    let body = one_element(&window, "AboutWindow::license-body");
+    assert_eq!(body.accessible_value().as_deref(), Some(text.as_str()));
     assert!(
         body.size().width > 360.0,
         "the licence body is {} wide in a 360 px window, so it was wrapped or clipped",
@@ -9650,7 +9645,14 @@ slint::slint! {
         public function paste() {
             field.paste();
         }
-        field := TextInput { }
+        public function put(text: string) {
+            field.text = text;
+            field.select-all();
+            field.copy();
+        }
+        field := TextInput {
+            single-line: false;
+        }
     }
 }
 
@@ -9685,4 +9687,268 @@ fn test_copy_puts_the_package_managers_command_on_the_clipboard() {
     let probe = ClipboardProbe::new().unwrap();
     probe.invoke_paste();
     assert_eq!(probe.get_text(), "scoop update sunlit-earth");
+}
+
+/// What the clipboard holds before a test copies, so that a copy that does
+/// nothing reads as this rather than as what an earlier case left there.
+const NOTHING_COPIED: &str = "nothing was copied";
+
+fn press_and_release(window: &slint::Window, position: slint::LogicalPosition) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: PointerEventButton::Left,
+    });
+    // Past the double click interval, so the next press is a click of its own.
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(1000));
+}
+
+/// Press `key` with Control held, the platform's shortcut modifier as Slint
+/// reads it.
+fn control_tap(window: &slint::Window, key: &str) {
+    use slint::platform::{Key, WindowEvent};
+
+    window.dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Control.into(),
+    });
+    window.dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+    window.dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+    window.dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Control.into(),
+    });
+}
+
+/// What Ctrl+C leaves on the clipboard after `select`, or [`NOTHING_COPIED`].
+fn copied_after(window: &slint::Window, select: impl FnOnce()) -> String {
+    let probe = ClipboardProbe::new().unwrap();
+    probe.invoke_put(NOTHING_COPIED.into());
+    select();
+    control_tap(window, "c");
+    probe.invoke_paste();
+    probe.get_text().to_string()
+}
+
+/// A click on the first glyphs of `element`, then Ctrl+A and Ctrl+C: what a
+/// person does to copy a whole paragraph, and what only selectable text
+/// answers, since the click is what gives it the keys.
+fn copy_all_of(window: &slint::Window, element: &ElementHandle) -> String {
+    copied_after(window, || {
+        let at = element.absolute_position();
+        let dy = (element.size().height / 2.0).min(6.0);
+        press_and_release(window, slint::LogicalPosition::new(at.x + 3.0, at.y + dy));
+        control_tap(window, "a");
+    })
+}
+
+/// Every text in the About window that is not a link can be selected and
+/// copied: the header's name, version and copyright, each tab's headings,
+/// paragraphs and list items, and the licence.
+#[test]
+fn test_the_about_window_text_can_be_selected_and_copied() {
+    let window = about_window();
+    window.set_attributions(sunlit_earth::about::document_model(
+        "# Imagery\n\nbody text\n\n- an item\n",
+    ));
+    window.set_third_party(sunlit_earth::about::document_model(
+        "# Crates\n\nthe preamble\n\n- `a 1.0.0`: MIT\n",
+    ));
+    window.set_license_text("a licence\n    indented line\n".into());
+    materialize_about(&window);
+
+    let cases: [(usize, &str, &str); 10] = [
+        (0, "AboutWindow::title", "Sunlit Earth"),
+        (0, "AboutWindow::version-line", "Version 1.2.3"),
+        (0, "AboutWindow::copyright", "© 2026 Sebastian Straub"),
+        (0, "AboutWindow::attributions-heading", "Imagery"),
+        (0, "AboutWindow::attributions-paragraph", "body text"),
+        (0, "AboutWindow::attributions-item", "an item"),
+        (
+            1,
+            "AboutWindow::license-body",
+            "a licence\n    indented line\n",
+        ),
+        (2, "AboutWindow::third-party-heading", "Crates"),
+        (2, "AboutWindow::third-party-paragraph", "the preamble"),
+        (2, "AboutWindow::third-party-body", "a 1.0.0: MIT"),
+    ];
+    for (tab, id, expected) in cases {
+        open_tab(&window, tab);
+        let element = one_element(&window, id);
+        assert_eq!(copy_all_of(window.window(), &element), expected, "{id}");
+    }
+}
+
+/// A click into a paragraph takes the keyboard from the window's own key
+/// handler, and Esc still closes the window.
+#[test]
+fn test_escape_closes_the_about_window_after_a_click_into_its_text() {
+    use slint::platform::{Key, WindowEvent};
+
+    let window = about_window();
+    let dismissed = Rc::new(RefCell::new(0));
+    let counter = Rc::clone(&dismissed);
+    window.on_dismiss(move || *counter.borrow_mut() += 1);
+    let paragraph = one_element(&window, "AboutWindow::attributions-paragraph");
+    assert_eq!(copy_all_of(window.window(), &paragraph), "credits");
+
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    window.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert_eq!(*dismissed.borrow(), 1);
+}
+
+/// The update window's prose can be selected and copied in every state that
+/// shows it: what the kept file said while checking, a failure, each release
+/// highlight, and the steps under the download or the command.
+#[test]
+fn test_the_update_window_text_can_be_selected_and_copied() {
+    use sunlit_earth::install::InstallKind;
+    use sunlit_earth::update::{Install, Showing};
+
+    let failure = sunlit_core::update::UpdateStatus::Failed("the server said 503".to_owned());
+    let states = [
+        (
+            Showing::Checking {
+                known: Some(fixture_offer()),
+            },
+            archive_install("windows", "x86_64"),
+            "UpdateWindow::known-text",
+        ),
+        (
+            Showing::Answer(failure),
+            archive_install("windows", "x86_64"),
+            "UpdateWindow::failure-text",
+        ),
+        (
+            Showing::Answer(fixture_offer()),
+            archive_install("windows", "x86_64"),
+            "UpdateWindow::archive-step-text",
+        ),
+        (
+            Showing::Answer(fixture_offer()),
+            Install::of(InstallKind::Scoop, "windows", "x86_64", false),
+            "UpdateWindow::command-hint-text",
+        ),
+        (
+            Showing::Answer(fixture_offer()),
+            archive_install("windows", "x86_64"),
+            "UpdateWindow::release-line",
+        ),
+    ];
+    for (showing, install, id) in states {
+        let window = update_window(&showing, &install);
+        let element = ElementHandle::find_by_element_id(&window, id)
+            .next()
+            .unwrap_or_else(|| panic!("no {id}"));
+        let text = element
+            .accessible_label()
+            .unwrap_or_else(|| panic!("{id} has no label"))
+            .to_string();
+        assert!(!text.is_empty(), "{id}");
+        assert_eq!(copy_all_of(window.window(), &element), text, "{id}");
+    }
+}
+
+/// A drag across a release highlight selects part of it and leaves the
+/// release list where it was: the list's scroll area does not take a mouse
+/// drag for a pan.
+#[test]
+fn test_a_drag_across_a_release_highlight_selects_it_without_scrolling() {
+    use slint::platform::{PointerEventButton, WindowEvent};
+
+    let window = update_window(
+        &sunlit_earth::update::Showing::Answer(fixture_offer()),
+        &archive_install("windows", "x86_64"),
+    );
+    let line = ElementHandle::find_by_element_id(&window, "UpdateWindow::release-line")
+        .next()
+        .expect("a release highlight");
+    let text = line.accessible_label().expect("a label").to_string();
+    let before = line.absolute_position();
+    let y = before.y + (line.size().height / 2.0).min(6.0);
+
+    let copied = copied_after(window.window(), || {
+        let start = slint::LogicalPosition::new(before.x + 2.0, y);
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerMoved { position: start });
+        window.window().dispatch_event(WindowEvent::PointerPressed {
+            position: start,
+            button: PointerEventButton::Left,
+        });
+        for step in 1..=10u8 {
+            let x = before.x + 2.0 + f32::from(step) * 12.0;
+            window.window().dispatch_event(WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(x, y),
+            });
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(16));
+        }
+        window
+            .window()
+            .dispatch_event(WindowEvent::PointerReleased {
+                position: slint::LogicalPosition::new(before.x + 122.0, y),
+                button: PointerEventButton::Left,
+            });
+    });
+
+    assert!(
+        copied != NOTHING_COPIED && copied.len() > 1 && text.contains(&copied),
+        "the drag across {text:?} copied {copied:?}"
+    );
+    let after = line.absolute_position();
+    approx::assert_relative_eq!(after.y, before.y);
+    approx::assert_relative_eq!(after.x, before.x);
+}
+
+/// Esc closes the update window after a click into a release highlight has
+/// taken the keyboard.
+#[test]
+fn test_escape_closes_the_update_window_after_a_click_into_its_text() {
+    use slint::platform::{Key, WindowEvent};
+
+    let window = update_window(
+        &sunlit_earth::update::Showing::Answer(fixture_offer()),
+        &archive_install("windows", "x86_64"),
+    );
+    let dismissed = Rc::new(RefCell::new(0));
+    let counter = Rc::clone(&dismissed);
+    window.on_dismiss(move || *counter.borrow_mut() += 1);
+    let line = ElementHandle::find_by_element_id(&window, "UpdateWindow::release-line")
+        .next()
+        .expect("a release highlight");
+    assert_ne!(copy_all_of(window.window(), &line), NOTHING_COPIED);
+
+    window.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Escape.into(),
+    });
+    window.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Escape.into(),
+    });
+    assert_eq!(*dismissed.borrow(), 1);
+}
+
+/// The older version notice's paragraph can be selected and copied.
+#[test]
+fn test_the_older_version_notice_text_can_be_selected_and_copied() {
+    init();
+    let window = sunlit_earth::activation::older_version_window().unwrap();
+    window.show().unwrap();
+    window.window().request_redraw();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(50));
+
+    let body = ElementHandle::find_by_element_id(&window, "OlderVersionWindow::body")
+        .next()
+        .expect("the notice's paragraph");
+    let text = body.accessible_label().expect("a label").to_string();
+    assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+    assert_eq!(copy_all_of(window.window(), &body), text);
 }

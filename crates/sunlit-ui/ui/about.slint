@@ -74,18 +74,27 @@ export component AboutWindow inherits Window {
                     spacing: 2px;
                     horizontal-stretch: 1;
 
-                    Text {
-                        text: "Sunlit Earth";
-                        font-size: 22px;
-                        font-weight: 700;
+                    // `StyledText` has no font weight; markdown's bold is 700.
+                    title := StyledText {
+                        text: @markdown("**Sunlit Earth**");
+                        default-font-size: 22px;
+                        selectable: true;
+                        accessible-role: text;
+                        accessible-label: "Sunlit Earth";
                     }
 
-                    version-line := Text {
-                        text: "Version " + root.version;
+                    version-line := StyledText {
+                        text: @markdown("Version \{root.version}");
+                        selectable: true;
+                        accessible-role: text;
+                        accessible-label: "Version " + root.version;
                     }
 
-                    Text {
-                        text: "© 2026 Sebastian Straub";
+                    copyright := StyledText {
+                        text: @markdown("© 2026 Sebastian Straub");
+                        selectable: true;
+                        accessible-role: text;
+                        accessible-label: "© 2026 Sebastian Straub";
                     }
 
                     HorizontalLayout {
@@ -160,14 +169,17 @@ export component AboutWindow inherits Window {
                                 padding-top: block.kind == 1 ? 8px : 0px;
                                 padding-left: self.indent;
 
-                                if block.kind == 1 : attributions-heading := Text {
-                                    text: block.heading;
-                                    font-weight: 700;
-                                    font-size: block.depth == 1 ? 18px : 16px;
+                                if block.kind == 1 : attributions-heading := StyledText {
+                                    text: @markdown("**\{block.heading}**");
+                                    default-font-size: block.depth == 1 ? 18px : 16px;
+                                    selectable: true;
+                                    accessible-role: text;
+                                    accessible-label: block.heading;
                                 }
 
                                 if block.kind == 0 : attributions-paragraph := StyledText {
                                     text: block.body;
+                                    selectable: true;
 
                                     link-clicked(link) => {
                                         root.open-url(link);
@@ -176,6 +188,7 @@ export component AboutWindow inherits Window {
 
                                 if block.kind == 2 : attributions-item := StyledText {
                                     text: block.body;
+                                    selectable: true;
 
                                     link-clicked(link) => {
                                         root.open-url(link);
@@ -216,8 +229,12 @@ export component AboutWindow inherits Window {
                             padding: 12px;
                             alignment: start;
 
-                            license-body := Text {
+                            // A read-only `TextInput`: a `Text` cannot be selected,
+                            // and a `StyledText` always wraps to its width.
+                            license-body := TextInput {
                                 text: root.license-text;
+                                read-only: true;
+                                single-line: false;
                                 wrap: no-wrap;
                                 font-family: root.mono-family;
                                 font-size: 12px;
@@ -249,14 +266,17 @@ export component AboutWindow inherits Window {
                                 padding-top: block.kind == 1 ? 8px : 0px;
                                 padding-left: self.indent;
 
-                                if block.kind == 1 : third-party-heading := Text {
-                                    text: block.heading;
-                                    font-weight: 700;
-                                    font-size: block.depth == 1 ? 18px : 16px;
+                                if block.kind == 1 : third-party-heading := StyledText {
+                                    text: @markdown("**\{block.heading}**");
+                                    default-font-size: block.depth == 1 ? 18px : 16px;
+                                    selectable: true;
+                                    accessible-role: text;
+                                    accessible-label: block.heading;
                                 }
 
                                 if block.kind == 0 : third-party-paragraph := StyledText {
                                     text: block.body;
+                                    selectable: true;
 
                                     link-clicked(link) => {
                                         root.open-url(link);
@@ -265,6 +285,7 @@ export component AboutWindow inherits Window {
 
                                 if block.kind == 2 : third-party-body := StyledText {
                                     text: block.body;
+                                    selectable: true;
 
                                     link-clicked(link) => {
                                         root.open-url(link);
